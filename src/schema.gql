@@ -2,7 +2,13 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+type HealthStatus {
+  status: String!
+  supabaseConnected: Boolean!
+  timestamp: String!
+}
+
 type Query {
-  """Health check - Test is API running"""
-  hello: String!
+  """Health check - API & DB Status"""
+  health: HealthStatus!
 }

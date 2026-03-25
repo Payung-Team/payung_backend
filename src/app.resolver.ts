@@ -1,11 +1,14 @@
 import { Query, Resolver } from '@nestjs/graphql';
+import { HealthStatus } from './health/health.model';
 
-// Resolver นี้มีไว้เพื่อให้ GraphQL Schema มี Query อย่างน้อย 1 ตัว
-// ถ้าไม่มีเลย NestJS จะ error ตอน start ครับ
 @Resolver()
 export class AppResolver {
-  @Query(() => String, { description: 'Health check - Test is API running' })
-  hello(): string {
-    return '🌂 Payung API is running!';
+  @Query(() => HealthStatus, { description: 'Health check - API & DB Status' })
+  health(): HealthStatus {
+    return {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      supabaseConnected: true, // Mock ไว้ก่อน รอต่อ Supabase จริง
+    };
   }
 }
