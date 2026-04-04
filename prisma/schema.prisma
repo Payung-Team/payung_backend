@@ -1,0 +1,37 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+// ─── User Model ──────────────────────────────────────────────────────────────
+// ตาราง users เก็บข้อมูลผู้ใช้ในระบบของเรา
+//
+// ทำไมต้องมีตาราง users ของเราเอง ทั้งที่ Supabase Auth ก็เก็บ user อยู่แล้ว?
+// → เพราะ Supabase Auth เก็บแค่ email + password (สำหรับ login)
+//   แต่เราต้องการเก็บข้อมูลเพิ่ม เช่น role, displayName, isActive
+//   ดังนั้นเราจึงใช้ supabaseUid เชื่อมโยงข้อมูลทั้ง 2 ฝั่งเข้าด้วยกัน
+//
+// @map("snake_case") = ใน TypeScript ใช้ camelCase แต่ใน database ใช้ snake_case
+// @@map("users")     = ตั้งชื่อ table ใน database เป็น "users" (ไม่ใช่ "User")
+model User {
+  id          String   @id @default(uuid())       // Primary key, สร้าง UUID ให้อัตโนมัติ
+  supabaseUid String   @unique @map("supabase_uid") // เชื่อมกับ Supabase Auth user
+  email       String   @unique                    // Email ห้ามซ้ำ
+  displayName String   @map("display_name")       // ชื่อแสดงผล
+  role        String   @default("patient")        // "patient" | "caregiver"
+  isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
+  createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
+  updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
+
+  @@map("users")
+}

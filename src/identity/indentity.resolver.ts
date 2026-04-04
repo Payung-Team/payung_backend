@@ -1,6 +1,5 @@
 import { Resolver, Query, Mutation } from '@nestjs/graphql';
 import { User } from './models/user.model';
-import { Caregiver } from './models/caregiver.model';
 import { AuthPayload } from './models/auth-payload.model';
 
 @Resolver()
@@ -28,14 +27,7 @@ export class IdentityResolver {
   register(): AuthPayload {
     return {
       accessToken: 'mock-jwt-token',
-      user: this.getMe(),
-    };
-  }
-
-  @Mutation(() => AuthPayload, { description: 'Login user' })
-  login(): AuthPayload {
-    return {
-      accessToken: 'mock-jwt-token',
+      refreshToken: 'mock-refresh-token',
       user: this.getMe(),
     };
   }
