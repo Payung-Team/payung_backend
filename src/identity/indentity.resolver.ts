@@ -1,6 +1,6 @@
 import { Resolver, Query, Mutation } from '@nestjs/graphql';
-import { User } from './models/user.model';
-import { Caregiver } from './models/caregiver.model';
+// ใช้ User entity ตัวใหม่ที่มี field ครบถ้วน (avatarUrl, updatedAt, ฯลฯ)
+import { User } from './auth/entities/user.entity';
 import { AuthPayload } from './models/auth-payload.model';
 
 @Resolver()
@@ -15,6 +15,7 @@ export class IdentityResolver {
       role: 'USER',
       isActive: true,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
   }
 
@@ -28,14 +29,7 @@ export class IdentityResolver {
   register(): AuthPayload {
     return {
       accessToken: 'mock-jwt-token',
-      user: this.getMe(),
-    };
-  }
-
-  @Mutation(() => AuthPayload, { description: 'Login user' })
-  login(): AuthPayload {
-    return {
-      accessToken: 'mock-jwt-token',
+      refreshToken: 'mock-refresh-token',
       user: this.getMe(),
     };
   }
