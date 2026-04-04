@@ -10,7 +10,9 @@
  * - user:         ข้อมูลของ user ที่ login (id, email, role, ฯลฯ)
  */
 import { ObjectType, Field } from '@nestjs/graphql';
-import { User } from './user.model';
+// ใช้ User entity ตัวใหม่แทน user.model.ts ตัวเก่า
+// เพราะตัวใหม่มี field ครบกว่า (avatarUrl, updatedAt, displayName nullable)
+import { User } from '../auth/entities/user.entity';
 
 @ObjectType()
 export class AuthPayload {

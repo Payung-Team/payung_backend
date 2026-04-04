@@ -27,7 +27,8 @@ model User {
   id          String   @id @default(uuid())       // Primary key, สร้าง UUID ให้อัตโนมัติ
   supabaseUid String   @unique @map("supabase_uid") // เชื่อมกับ Supabase Auth user
   email       String   @unique                    // Email ห้ามซ้ำ
-  displayName String   @map("display_name")       // ชื่อแสดงผล
+  displayName String?  @map("display_name")       // ชื่อแสดงผล (อาจเป็น null ถ้ายังไม่ตั้ง)
+  avatarUrl   String?  @map("avatar_url")         // URL รูปโปรไฟล์ (อาจเป็น null ถ้ายังไม่อัปโหลด)
   role        String   @default("patient")        // "patient" | "caregiver"
   isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง

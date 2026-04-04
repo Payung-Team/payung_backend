@@ -79,10 +79,12 @@ export class AuthService {
       user: {
         id: user.id,
         email: user.email,
-        displayName: user.displayName,
+        displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
+        avatarUrl: user.avatarUrl ?? undefined,     // เช่นเดียวกัน — แปลง null → undefined
         role: user.role,
         isActive: user.isActive,
         createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
       },
     };
   }
