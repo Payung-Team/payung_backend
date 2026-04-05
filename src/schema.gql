@@ -2,13 +2,75 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+type AuthPayload {
+  """JWT access token for API requests"""
+  accessToken: String!
+
+  """Refresh token for renewing the session"""
+  refreshToken: String!
+
+  """The authenticated user"""
+  user: User!
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
 type HealthStatus {
   status: String!
   supabaseConnected: Boolean!
   timestamp: String!
 }
 
+input LoginInput {
+  """Email address of the user"""
+  email: String!
+
+  """Password of the user"""
+  password: String!
+}
+
+type Mutation {
+  """Login user with email and password"""
+  login(input: LoginInput!): AuthPayload!
+  register(input: RegisterInput!): AuthPayload!
+}
+
 type Query {
   """Health check - API & DB Status"""
   health: HealthStatus!
+}
+
+input RegisterInput {
+  email: String!
+  password: String!
+  role: String!
+}
+
+type User {
+  """Avatar image URL"""
+  avatarUrl: String
+
+  """Account creation timestamp"""
+  createdAt: DateTime!
+
+  """Display name of the user"""
+  displayName: String
+
+  """Email address of the user"""
+  email: String!
+
+  """Unique identifier of the user"""
+  id: ID!
+
+  """Whether the user account is active"""
+  isActive: Boolean!
+
+  """User role: patient, caregiver, or admin"""
+  role: String!
+
+  """Last profile update timestamp"""
+  updatedAt: DateTime!
 }

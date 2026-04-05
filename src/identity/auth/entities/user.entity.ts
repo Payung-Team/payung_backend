@@ -33,11 +33,11 @@ import { ObjectType, Field, ID } from '@nestjs/graphql';
 export class User {
   /** UUID ของ user ในระบบเรา (ไม่ใช่ supabaseUid) */
   @Field(() => ID, { description: 'Unique identifier of the user' })
-  id: string;
+  id!: string;
 
   /** Email ของ user — ใช้สำหรับ login */
   @Field({ description: 'Email address of the user' })
-  email: string;
+  email!: string;
 
   /**
    * ชื่อแสดงผล — อาจเป็น null ได้ถ้ายังไม่เคยตั้ง
@@ -60,17 +60,17 @@ export class User {
    * - 'admin'     = ผู้ดูแลระบบ
    */
   @Field({ description: 'User role: patient, caregiver, or admin' })
-  role: string;
+  role!: string;
 
   /** สถานะว่า account ยังใช้งานได้อยู่หรือไม่ */
   @Field({ description: 'Whether the user account is active' })
-  isActive: boolean;
+  isActive!: boolean;
 
   /** วันเวลาที่สร้าง account */
   @Field({ description: 'Account creation timestamp' })
-  createdAt: Date;
+  createdAt!: Date;
 
   /** วันเวลาที่อัปเดตข้อมูลล่าสุด */
   @Field({ description: 'Last profile update timestamp' })
-  updatedAt: Date;
+  updatedAt!: Date;
 }
