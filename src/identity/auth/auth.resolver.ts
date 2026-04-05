@@ -13,6 +13,7 @@ import { Resolver, Mutation, Args } from '@nestjs/graphql';
 import { AuthPayload } from '../models/auth-payload.model';
 import { LoginInput } from './dto/login.input';
 import { AuthService } from './auth.service';
+import { RegisterInput } from './dto/register.input';
 
 @Resolver()
 export class AuthResolver {
@@ -32,10 +33,15 @@ export class AuthResolver {
    *
    * @Args('input') = ดึงค่า "input" จาก GraphQL arguments
    */
-  @Mutation(() => AuthPayload, { description: 'Login user with email and password' })
-  async login(
-    @Args('input') input: LoginInput,
-  ): Promise<AuthPayload> {
+  @Mutation(() => AuthPayload, {
+    description: 'Login user with email and password',
+  })
+  async login(@Args('input') input: LoginInput): Promise<AuthPayload> {
     return this.authService.login(input);
+  }
+
+  @Mutation(() => AuthPayload)
+  async register(@Args('input') input: RegisterInput): Promise<AuthPayload> {
+    return this.authService.register(input);
   }
 }

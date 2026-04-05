@@ -14,13 +14,17 @@
  *   4. ส่ง { accessToken, refreshToken, user } กลับไปให้ client
  */
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
+  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
+import { RegisterInput } from './dto/register.input';
 
 @Injectable()
 export class AuthService {
@@ -80,7 +84,85 @@ export class AuthService {
         id: user.id,
         email: user.email,
         displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
-        avatarUrl: user.avatarUrl ?? undefined,     // เช่นเดียวกัน — แปลง null → undefined
+        avatarUrl: user.avatarUrl ?? undefined, // เช่นเดียวกัน — แปลง null → undefined
+        role: user.role,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+    };
+  }
+
+  /**
+   * Register ด้วย email + password + role
+   *
+   * Flow:
+   *   1. สร้าง user ใน Supabase Auth (จัดการ password ให้)
+   *   2. INSERT row ลง users table ของเรา (เก็บ role, displayName ฯลฯ)
+   *   3. คืน { accessToken, refreshToken, user } เหมือน login
+   *
+   * ทำไมต้อง 2 ขั้น?
+   *   Supabase Auth รู้แค่ email+password
+   *   users table ของเราเก็บข้อมูล business เช่น role, displayName
+   *   ต้องสร้างทั้งสองพร้อมกันเสมอ ถ้าขาดอันใดอันหนึ่ง → ระบบพัง
+   */
+  async register(input: RegisterInput): Promise<AuthPayload> {
+    const supabase = this.supabaseService.getClient();
+
+    // ── ขั้นตอนที่ 1: สร้าง user ใน Supabase Auth ──────────────────────
+    // signUp จะ hash password ให้อัตโนมัติ (ไม่เก็บ plain text)
+    // ถ้า email ซ้ำ Supabase จะ return error
+    const { data, error } = await supabase.auth.signUp({
+      email: input.email,
+      password: input.password,
+    });
+
+    // ── ขั้นตอนที่ 2: handle errors จาก Supabase ───────────────────────
+    if (error) {
+      // email ซ้ำ — Supabase ส่ง message นี้มา
+      if (error.message.toLowerCase().includes('already registered')) {
+        throw new ConflictException('Email is already in use');
+      }
+
+      // password อ่อนเกินไป (Supabase ตรวจสอบ policy)
+      if (error.message.toLowerCase().includes('password')) {
+        throw new BadRequestException(error.message);
+      }
+
+      // error อื่นๆ ที่ไม่คาดคิด
+      throw new InternalServerErrorException('Registration failed');
+    }
+
+    // ตรวจว่าได้ user กลับมาจริงๆ (กรณี edge case)
+    if (!data.user || !data.session) {
+      throw new InternalServerErrorException(
+        'Registration failed: no user returned',
+      );
+    }
+
+    // ── ขั้นตอนที่ 3: สร้าง row ใน users table ของเรา ─────────────────
+    // ทำหลังจาก Supabase สำเร็จเท่านั้น
+    // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
+    const user = await this.prismaService.user.create({
+      data: {
+        supabaseUid: data.user.id, // UUID จาก Supabase
+        email: input.email,
+        role: input.role,
+        displayName: input.email.split('@')[0], // default จาก email prefix
+        isActive: true,
+      },
+    });
+
+    // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
+    // client จะได้ token ทันที ไม่ต้อง login ซ้ำหลัง register
+    return {
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName ?? undefined,
+        avatarUrl: user.avatarUrl ?? undefined,
         role: user.role,
         isActive: user.isActive,
         createdAt: user.createdAt,
