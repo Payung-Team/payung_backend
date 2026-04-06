@@ -1,18 +1,33 @@
-import { Resolver, Query, Mutation } from '@nestjs/graphql';
-// ใช้ User entity ตัวใหม่ที่มี field ครบถ้วน (avatarUrl, updatedAt, ฯลฯ)
+/**
+ * IdentityResolver — GraphQL Resolver สำหรับ Identity queries
+ *
+ * Guards ที่ใช้:
+ * - SupabaseAuthGuard = ตรวจสอบ JWT token
+ * - RolesGuard        = เช็คว่า user มี role ที่อนุญาต
+ *
+ * ลำดับ Guard สำคัญ: Auth ก่อน → Roles ทีหลัง
+ */
+import { Resolver, Query } from '@nestjs/graphql';
+import { UseGuards } from '@nestjs/common';
 import { User } from './auth/entities/user.entity';
-import { AuthPayload } from './models/auth-payload.model';
+import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  CurrentUser,
+  AuthUser,
+} from '../common/decorators/current-user.decorator';
 
 @Resolver()
 export class IdentityResolver {
-  // --- Queries ---
+  // ─── Protected: ดึงข้อมูล user ที่ login อยู่ ─────────────────────────
   @Query(() => User, { name: 'me', description: 'Get current logged-in user' })
-  getMe(): User {
+  @UseGuards(SupabaseAuthGuard, RolesGuard)
+  getMe(@CurrentUser() user: AuthUser): User {
     return {
-      id: 'mock-user-123',
-      email: 'test@payung.com',
-      displayName: 'Payung User',
-      role: 'USER',
+      id: user.id,
+      email: user.email,
+      displayName: undefined,
+      role: user.role,
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -20,32 +35,8 @@ export class IdentityResolver {
   }
 
   @Query(() => String, { description: 'Get KYC status of caregiver' })
+  @UseGuards(SupabaseAuthGuard)
   kycStatus(): string {
     return 'PENDING';
-  }
-
-  // --- Mutations ---
-  @Mutation(() => AuthPayload, { description: 'Register a new user' })
-  register(): AuthPayload {
-    return {
-      accessToken: 'mock-jwt-token',
-      refreshToken: 'mock-refresh-token',
-      user: this.getMe(),
-    };
-  }
-
-  @Mutation(() => Boolean, { description: 'Logout user' })
-  logout(): boolean {
-    return true;
-  }
-
-  @Mutation(() => Boolean, { description: 'Submit KYC information' })
-  submitKyc(): boolean {
-    return true;
-  }
-
-  @Mutation(() => Boolean, { description: 'Upload KYC document' })
-  uploadKycDocument(): boolean {
-    return true;
   }
 }

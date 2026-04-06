@@ -20,6 +20,8 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
@@ -31,6 +33,7 @@ export class AuthService {
   constructor(
     private supabaseService: SupabaseService,
     private prismaService: PrismaService,
+    private configService: ConfigService,
   ) {}
 
   /**
@@ -169,5 +172,31 @@ export class AuthService {
         updatedAt: user.updatedAt,
       },
     };
+  }
+
+  /**
+   * Logout session
+   * สร้าง temp client ชั่วคราวที่มี Auth Header เป็น token ปัจจุบัน
+   * แล้วเรียก signOut() เพื่อทำลาย session ของ token นั้นๆ บน Supabase
+   */
+  async logout(accessToken: string): Promise<boolean> {
+    const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
+    const supabaseKey = this.configService.getOrThrow<string>('SUPABASE_ANON_KEY');
+
+    const tempClient = createClient(supabaseUrl, supabaseKey, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    });
+
+    const { error } = await tempClient.auth.signOut();
+
+    if (error) {
+      throw new InternalServerErrorException('Logout failed: ' + error.message);
+    }
+
+    return true;
   }
 }
