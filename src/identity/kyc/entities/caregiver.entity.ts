@@ -69,6 +69,10 @@ export class Caregiver {
   @Field({ nullable: true, description: 'When KYC was submitted' })
   kycSubmittedAt?: Date;
 
+  /** วันเวลาที่ admin verify KYC ผ่าน — null ถ้ายังไม่ผ่าน */
+  @Field({ nullable: true, description: 'When KYC was verified by admin' })
+  kycVerifiedAt?: Date;
+
   /** ถ้า true = caregiver จะปรากฏในผลการค้นหา (เปิดใช้หลังผ่าน KYC) */
   @Field({ description: 'Whether caregiver appears in search results' })
   isSearchable!: boolean;

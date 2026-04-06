@@ -15,10 +15,19 @@
 import { Module } from '@nestjs/common';
 import { KycResolver } from './kyc.resolver';
 import { KycService } from './kyc.service';
+import { CaregiverService } from './caregiver.service';
+import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
 @Module({
-  providers: [KycResolver, KycService, SupabaseAuthGuard, RolesGuard],
+  providers: [
+    KycResolver,
+    KycService,
+    CaregiverService,       // CRUD สำหรับ caregivers table
+    KycDocumentService,     // CRUD สำหรับ kyc_documents table
+    SupabaseAuthGuard,
+    RolesGuard,
+  ],
 })
 export class KycModule {}

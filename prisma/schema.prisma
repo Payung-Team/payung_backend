@@ -34,10 +34,12 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
   updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
 
+  // Relations — ตาราง Caregiver, KycDocument, KycReview reference กลับมาหา User
+  caregiver   Caregiver?
+  documents   KycDocument[]
+  reviews     KycReview[]    // admin reviews
+
   @@map("users")
-  caregivers Caregiver[]
-  kycReviews KycReview[]
-  kycDocuments KycDocument[]
 }
 
 
@@ -54,6 +56,7 @@ model Caregiver {
   kycStatus       String    @default("none") @map("kyc_status")
   // "none" | "pending" | "verified" | "rejected" <-- เปลี่ยนเป็น verified ให้ตรงกับ DB Constraint
   kycSubmittedAt  DateTime? @map("kyc_submitted_at")
+  kycVerifiedAt   DateTime? @map("kyc_verified_at")   // วันที่ admin verify KYC (null ถ้ายังไม่ผ่าน)
   isSearchable    Boolean   @default(false) @map("is_searchable")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
