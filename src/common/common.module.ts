@@ -12,10 +12,11 @@
 import { Global, Module } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { PrismaService } from './prisma.service';
+import { SupabaseStorageService } from './supabase-storage.service';
 
 @Global()
 @Module({
-  providers: [SupabaseService, PrismaService],
-  exports: [SupabaseService, PrismaService],
+  providers: [SupabaseService, PrismaService, SupabaseStorageService],
+  exports: [SupabaseService, PrismaService, SupabaseStorageService],
 })
 export class CommonModule {}

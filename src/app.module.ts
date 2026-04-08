@@ -3,6 +3,8 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ConfigModule } from '@nestjs/config';
 import { join } from 'path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { GraphQLUpload } = require('graphql-upload');
 import { AppResolver } from './app.resolver';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './identity/auth/auth.module';
@@ -22,9 +24,12 @@ import { IdentityModule } from './identity/identity.module';
       // autoSchemaFile: สร้าง schema.gql อัตโนมัติจาก TypeScript Decorators
       // join(...) = เซฟไฟล์ไว้ที่ src/schema.gql (เอาไว้ดู/debug)
       autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
-
-      // sortSchema: เรียง field ใน schema ตามตัวอักษร (อ่านง่ายขึ้น)
       sortSchema: true,
+
+      // ลง Upload scalar จาก graphql-upload (Apollo Server 4+ ไม่รองรับ upload built-in)
+      buildSchemaOptions: {
+        scalarsMap: [{ type: GraphQLUpload, scalar: GraphQLUpload }],
+      },
 
       // playground: เปิดหน้า UI ทดสอบ API ที่ localhost:3000/graphql
       playground: true,

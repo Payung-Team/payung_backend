@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
+import { graphqlUploadExpress } from 'graphql-upload';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -16,6 +17,12 @@ async function bootstrap() {
       // เข้มกว่า whitelist อย่างเดียว ที่แค่ตัดออกเงียบๆ
       forbidNonWhitelisted: true,
     }),
+  );
+
+  // graphql-upload middleware — ต้องอยู่ก่อน Apollo จัดการ request
+  // รับ multipart/form-data แล้วแปลงเป็น GraphQL Upload scalar
+  app.use(
+    graphqlUploadExpress({ maxFileSize: 10 * 1024 * 1024, maxFiles: 1 }),
   );
 
   // CORS สำหรับให้ Frontend เรียกใช้งาน Api Backend ได้
