@@ -25,7 +25,10 @@ type PrismaUser = {
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
-  role: string;
+  phone: string | null;
+  address: string | null;
+  bio: string | null;
+  role: number;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -46,6 +49,9 @@ export class UserService {
       email: user.email,
       displayName: user.displayName ?? undefined,
       avatarUrl: user.avatarUrl ?? undefined,
+      phone: user.phone ?? undefined,
+      address: user.address ?? undefined,
+      bio: user.bio ?? undefined,
       role: user.role,
       isActive: user.isActive,
       createdAt: user.createdAt,
@@ -106,13 +112,13 @@ export class UserService {
    *
    * @param supabaseUid - UUID จาก Supabase Auth
    * @param email       - email ของ user
-   * @param role        - "patient" | "caregiver"
+   * @param role        - "patient" | "caregiver" (role name string)
    * @throws InternalServerErrorException ถ้า insert ล้มเหลว
    */
   async createUser(
     supabaseUid: string,
     email: string,
-    role: string,
+    role: number,
   ): Promise<User> {
     try {
       const user = await this.prismaService.user.create({
@@ -138,20 +144,26 @@ export class UserService {
   }
 
   /**
-   * อัปเดตโปรไฟล์ user (displayName และ/หรือ avatarUrl)
+   * อัปเดตโปรไฟล์ user (displayName, phone, address, bio, avatarUrl)
    *
-   * ใช้เมื่อ: user แก้ไขโปรไฟล์ตัวเอง เช่น เปลี่ยนชื่อหรืออัปโหลดรูป
+   * ใช้เมื่อ: user แก้ไขโปรไฟล์ตัวเอง เช่น เปลี่ยนชื่อหรือเพิ่มข้อมูลส่วนตัว
    * รับเฉพาะ fields ที่จะอัปเดต (partial update) — fields ที่ไม่ส่งมาจะไม่เปลี่ยน
    *
    * @param id      - users.id ของ user ที่ต้องการอัปเดต
-   * @param updates - object ที่มี displayName และ/หรือ avatarUrl
+   * @param updates - object ที่มี displayName, phone, address, bio, avatarUrl
    * @throws NotFoundException ถ้าไม่พบ user
    */
   async updateProfile(
     id: string,
-    updates: { displayName?: string; avatarUrl?: string },
+    updates: {
+      displayName?: string;
+      phone?: string;
+      address?: string;
+      bio?: string;
+      avatarUrl?: string;
+    },
   ): Promise<User> {
-    // ตรวจสอบว่า user มีอยู่จริงก่อน (Prisma จะ throw ถ้าไม่พบ แต่ error message ไม่ user-friendly)
+    // ตรวจสอบว่า user มีอยู่จริงก่อน
     await this.findById(id);
 
     const user = await this.prismaService.user.update({
@@ -160,6 +172,15 @@ export class UserService {
         // undefined fields จะถูก Prisma ข้ามไป (ไม่อัปเดต)
         ...(updates.displayName !== undefined && {
           displayName: updates.displayName,
+        }),
+        ...(updates.phone !== undefined && {
+          phone: updates.phone,
+        }),
+        ...(updates.address !== undefined && {
+          address: updates.address,
+        }),
+        ...(updates.bio !== undefined && {
+          bio: updates.bio,
         }),
         ...(updates.avatarUrl !== undefined && {
           avatarUrl: updates.avatarUrl,

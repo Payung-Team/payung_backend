@@ -15,12 +15,15 @@
  *   }
  */
 import { InputType, Field } from '@nestjs/graphql';
+import { IsEmail, MinLength } from 'class-validator';
 
 @InputType()
 export class LoginInput {
   @Field({ description: 'Email address of the user' })
+  @IsEmail({}, { message: 'Invalid email format' })
   email!: string;
 
   @Field({ description: 'Password of the user' })
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
   password!: string;
 }

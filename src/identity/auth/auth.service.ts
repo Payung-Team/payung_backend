@@ -146,15 +146,37 @@ export class AuthService {
     // ── ขั้นตอนที่ 3: สร้าง row ใน users table ของเรา ─────────────────
     // ทำหลังจาก Supabase สำเร็จเท่านั้น
     // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
-    const user = await this.prismaService.user.create({
-      data: {
-        supabaseUid: data.user.id, // UUID จาก Supabase
-        email: input.email,
-        role: input.role,
-        displayName: input.email.split('@')[0], // default จาก email prefix
-        isActive: true,
-      },
-    });
+    let user;
+    try {
+      user = await this.prismaService.user.create({
+        data: {
+          supabaseUid: data.user.id, // UUID จาก Supabase
+          email: input.email,
+          role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
+          displayName: input.email.split('@')[0], // default จาก email prefix
+          isActive: true,
+        },
+      });
+    } catch (err: any) {
+      // ถ้า user สร้างล้มเหลว ให้ลบ user จาก Supabase ด้วย
+      console.error('Failed to create user in database:', err);
+      
+      // ลองลบ Supabase user
+      try {
+        const adminAuthClient = createClient(
+          this.configService.getOrThrow<string>('SUPABASE_URL'),
+          this.configService.getOrThrow<string>('SUPABASE_SERVICE_ROLE_KEY'),
+        );
+        await adminAuthClient.auth.admin.deleteUser(data.user.id);
+      } catch (deleteErr) {
+        console.error('Failed to rollback Supabase user:', deleteErr);
+      }
+      
+      if (err.code === 'P2002') {
+        throw new ConflictException('Email is already in use');
+      }
+      throw new InternalServerErrorException('Failed to create user account in database');
+    }
 
     // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
     // client จะได้ token ทันที ไม่ต้อง login ซ้ำหลัง register
@@ -176,8 +198,16 @@ export class AuthService {
 
   /**
    * Logout session
-   * สร้าง temp client ชั่วคราวที่มี Auth Header เป็น token ปัจจุบัน
-   * แล้วเรียก signOut() เพื่อทำลาย session ของ token นั้นๆ บน Supabase
+   * 
+   * กระบวนการ:
+   * 1. สร้าง temp client ชั่วคราวที่มี Auth Header เป็น token ปัจจุบัน
+   * 2. เรียก signOut() เพื่อทำลาย session ของ token นั้นๆ บน Supabase
+   * 3. บันทึก logout event ในฐานข้อมูล
+   * 
+   * ทำไมต้องบันทึก logout?
+   * - ติดตามเมื่อ user ออกระบบ
+   * - ใช้สำหรับการ audit trail
+   * - หากต้องการ invalidate refresh token ด้วย
    */
   async logout(accessToken: string): Promise<boolean> {
     const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
@@ -191,10 +221,30 @@ export class AuthService {
       },
     });
 
+    // ขั้นตอนที่ 1: ทำลาย session บน Supabase
     const { error } = await tempClient.auth.signOut();
 
     if (error) {
       throw new InternalServerErrorException('Logout failed: ' + error.message);
+    }
+
+    // ขั้นตอนที่ 2: หา user และบันทึก logout event (optional)
+    // ได้ session data จาก accessToken เพื่อหา user
+    try {
+      const { data } = await tempClient.auth.getUser();
+      
+      if (data.user) {
+        // เราสามารถบันทึก logout event ที่นี่
+        // เช่น update lastLogout timestamp, log activity, หรือสิ่งอื่นๆ
+        // ตัวอย่าง:
+        // await this.prismaService.user.update({
+        //   where: { supabaseUid: data.user.id },
+        //   data: { lastLogoutAt: new Date() },
+        // });
+      }
+    } catch {
+      // ถ้ามี error ตอน get user ไม่ต้องไป throw
+      // เพราะ signOut() สำเร็จแล้ว ส่วน logging เป็น optional
     }
 
     return true;

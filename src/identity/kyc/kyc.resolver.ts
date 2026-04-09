@@ -58,7 +58,7 @@ export class KycResolver {
   @Mutation(() => Caregiver, {
     description: 'Submit KYC information (caregiver only)',
   })
-  @Roles('caregiver') // เฉพาะ caregiver role เท่านั้น
+  @Roles(2) // 2 = caregiver role เท่านั้น
   async submitKyc(
     @CurrentUser() user: AuthUser,
     @Args('input') input: KycInput,

@@ -21,7 +21,7 @@ export class RolesGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     // อ่าน roles ที่กำหนดไว้ใน @Roles() decorator
-    const requiredRoles = this.reflector.getAllAndOverride<string[]>(
+    const requiredRoles = this.reflector.getAllAndOverride<number[]>(
       ROLES_KEY,
       [context.getHandler(), context.getClass()],
     );

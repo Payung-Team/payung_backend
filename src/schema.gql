@@ -30,6 +30,9 @@ type Caregiver {
 
   """When KYC was submitted"""
   kycSubmittedAt: DateTime
+
+  """When KYC was verified by admin"""
+  kycVerifiedAt: DateTime
   phone: String!
   skills: [String!]!
   updatedAt: DateTime!
@@ -68,7 +71,7 @@ input KycInput {
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!
 
-  """Contact phone number"""
+  """Contact phone number (Thai format)"""
   phone: String!
 
   """List of caregiver skills"""
@@ -86,10 +89,18 @@ input LoginInput {
 type Mutation {
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
+
+  """Logout user"""
+  logout: Boolean!
+
+  """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
+
+  """Update current user profile"""
+  updateProfile(input: UpdateProfileInput!): User!
 }
 
 type Query {
@@ -106,12 +117,35 @@ type Query {
 input RegisterInput {
   email: String!
   password: String!
-  role: String!
+  role: Int!
+}
+
+input UpdateProfileInput {
+  """User address"""
+  address: String
+
+  """Avatar image URL"""
+  avatarUrl: String
+
+  """Bio or personal description"""
+  bio: String
+
+  """Display name of the user"""
+  displayName: String
+
+  """Phone number"""
+  phone: String
 }
 
 type User {
+  """User address"""
+  address: String
+
   """Avatar image URL"""
   avatarUrl: String
+
+  """Bio or personal description"""
+  bio: String
 
   """Account creation timestamp"""
   createdAt: DateTime!
@@ -128,8 +162,11 @@ type User {
   """Whether the user account is active"""
   isActive: Boolean!
 
-  """User role: patient, caregiver, or admin"""
-  role: String!
+  """Phone number"""
+  phone: String
+
+  """User role ID: 1=patient, 2=caregiver, 3=admin"""
+  role: Int!
 
   """Last profile update timestamp"""
   updatedAt: DateTime!

@@ -14,7 +14,7 @@ export class AuthUser {
   id!: string; // users.id (internal UUID)
   supabaseUid!: string; // Supabase Auth UID
   email!: string;
-  role!: string;
+  role!: number; // role id (1=patient, 2=caregiver) — เก็บเป็น number ในฐานข้อมูล
 }
 
 export const CurrentUser = createParamDecorator(

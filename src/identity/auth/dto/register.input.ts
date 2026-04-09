@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
-import { InputType, Field } from '@nestjs/graphql';
+import { InputType, Field, Int } from '@nestjs/graphql';
 import { IsEmail, IsIn, MinLength } from 'class-validator';
 
 @InputType()
@@ -9,12 +9,12 @@ export class RegisterInput {
   email!: string;
 
   @Field()
-  @MinLength(6, { message: 'Password must be at least 6 characters' })
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
   password!: string;
 
-  @Field()
-  @IsIn(['patient', 'caregiver'], {
-    message: 'Role must be patient or caregiver',
+  @Field(() => Int)
+  @IsIn([1, 2], {
+    message: 'Role must be 1 (patient) or 2 (caregiver)',
   })
-  role!: string;
+  role!: number;
 }
