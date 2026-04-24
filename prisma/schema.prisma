@@ -34,13 +34,15 @@ model User {
   bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
   role        Int      @default(1)                // 1 = patient, 2 = caregiver
   isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
+  emailPreferences Boolean @default(true) @map("email_preferences") // รับอีเมลแจ้งเตือนมั้ย (PYG-95)
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
   updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
 
-  // Relations — ตาราง Caregiver, KycDocument, KycReview reference กลับมาหา User
-  caregiver   Caregiver?
-  documents   KycDocument[]
-  reviews     KycReview[]    // admin reviews
+  // Relations — ตาราง Caregiver, KycDocument, KycReview, Notification reference กลับมาหา User
+  caregiver     Caregiver?
+  documents     KycDocument[]
+  reviews       KycReview[]    // admin reviews
+  notifications Notification[] // in-app notifications (PYG-95)
 
   @@map("users")
 }
@@ -102,4 +104,41 @@ model KycReview {
   reviewer      User      @relation(fields: [reviewerId], references: [id]) // Assuming User model handles Admin
 
   @@map("kyc_reviews")
+}
+
+// ─── Notification Feature (PYG-95) ───────────────────────────────────────────
+// In-app notifications สำหรับแจ้งเตือน user เช่น KYC status, booking update
+//
+// ทำไมต้องเป็น enum?
+// - เพื่อจำกัด type ให้เป็นค่าที่กำหนด ป้องกัน typo (เช่น "kyc_submited")
+// - Prisma enum จะ generate TypeScript type + Postgres enum type ให้อัตโนมัติ
+//
+// เวลาเพิ่ม type ใหม่ → เพิ่มที่นี่ + rerun migration
+enum NotificationType {
+  kyc_submitted    // caregiver ส่ง KYC เข้ามา (แจ้ง admin)
+  kyc_verified     // KYC ผ่าน (แจ้ง caregiver)
+  kyc_rejected     // KYC ไม่ผ่าน (แจ้ง caregiver)
+  kyc_resubmitted  // caregiver ส่ง KYC ใหม่หลังถูก reject
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")      // คนที่ได้รับ notification
+  type      NotificationType                       // ประเภทแจ้งเตือน (enum)
+  title     String                                 // หัวข้อสั้นๆ แสดงใน list
+  body      String                                 // เนื้อหารายละเอียด
+  data      Json?                                  // metadata เพิ่มเติม เช่น { caregiverId, bookingId }
+  isRead    Boolean          @default(false) @map("is_read")
+  readAt    DateTime?        @map("read_at")       // เวลาที่ user อ่าน (null = ยังไม่อ่าน)
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user      User             @relation(fields: [userId], references: [id])
+
+  // Index สำหรับ query ยอดนิยม:
+  // - ดู notification ของ user ตัวเอง เรียงจากใหม่ไปเก่า
+  // - filter unreadOnly ได้เร็ว
+  @@index([userId, isRead, createdAt(sort: Desc)])
+
+  @@map("notifications")
 }
