@@ -13,7 +13,7 @@
  * - updateStatus()  — เปลี่ยน kycStatus (admin approve/reject)
  * - setSearchable() — เปิด/ปิดการแสดงในผลค้นหา
  */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
@@ -34,6 +34,7 @@ type PrismaCaregiver = {
   kycSubmittedAt: Date | null;
   kycVerifiedAt: Date | null;
   isSearchable: boolean;
+  resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
 };
@@ -51,6 +52,8 @@ type CreateCaregiverData = {
 
 @Injectable()
 export class CaregiverService {
+  private readonly logger = new Logger(CaregiverService.name);
+
   constructor(
     private prismaService: PrismaService,
     private supabaseService: SupabaseService,
@@ -84,9 +87,9 @@ export class CaregiverService {
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       kycVerifiedAt: caregiver.kycVerifiedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
-      resubmitCount: 0,
     };
   }
 
@@ -208,6 +211,61 @@ export class CaregiverService {
     const caregiver = await this.prismaService.caregiver.update({
       where: { id: caregiverId },
       data: { isSearchable },
+    });
+
+    return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * setSearchableByUser — เปิด/ปิดการแสดงในผลค้นหา (caregiver-facing)
+   *
+   * ต่างจาก setSearchable() ตรงที่:
+   * - รับ userId แทน caregiverId (caregiver รู้แค่ userId ของตัเอง)
+   * - Guard: kycStatus ต้องเป็น 'verified' เท่านั้น → ForbiddenException ถ้าไม่ใช่
+   * - เก็บล็อก toggle event เพื่อ analytics
+   *
+   * @param userId       - internal user ID จาก JWT
+   * @param isSearchable - true = แสดงในผลค้นหา, false = ซ่อน
+   * @throws NotFoundException   ถ้าไม่พบ caregiver record
+   * @throws ForbiddenException  ถ้า kycStatus ไม่ใช่ 'verified'
+   */
+  async setSearchableByUser(
+    userId: string,
+    isSearchable: boolean,
+  ): Promise<Caregiver> {
+    // ── 1: ค้นหา caregiver จาก userId ────────────────────────────
+    const existing = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(
+        `Caregiver with userId "${userId}" not found`,
+      );
+    }
+
+    // ── 2: Guard — kycStatus ต้องเป็น 'verified' ────────────────────
+    if (existing.kycStatus !== 'verified') {
+      throw new ForbiddenException(
+        'ต้องผ่านการยืนยันตัวตนก่อน',
+      );
+    }
+
+    // ── 3: อัปเดต is_searchable ─────────────────────────────────
+    const caregiver = await this.prismaService.caregiver.update({
+      where: { userId },
+      data: { isSearchable },
+    });
+
+    // ── 4: Log toggle event เพื่อ analytics ──────────────────────
+    this.logger.log({
+      event: 'caregiver.availability.toggled',
+      caregiverId: caregiver.id,
+      userId: caregiver.userId,
+      isSearchable,
+      previousValue: existing.isSearchable,
+      changed: existing.isSearchable !== isSearchable,
+      timestamp: new Date().toISOString(),
     });
 
     return this.mapToEntity(caregiver);

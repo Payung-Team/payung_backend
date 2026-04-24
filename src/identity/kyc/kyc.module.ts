@@ -19,6 +19,7 @@
 import { Module } from '@nestjs/common';
 import { KycResolver } from './kyc.resolver';
 import { KycService } from './kyc.service';
+import { CaregiverResolver } from './caregiver.resolver';
 import { CaregiverService } from './caregiver.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
@@ -32,6 +33,7 @@ import { NotificationModule } from '../../notification/notification.module';
   providers: [
     KycResolver,
     KycService,
+    CaregiverResolver,      // setSearchable mutation
     CaregiverService,       // CRUD สำหรับ caregivers table + signed URL generation
     KycDocumentService,     // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,

@@ -158,6 +158,9 @@ type Mutation {
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
 
+  """Toggle caregiver availability in search results (verified only)"""
+  setSearchable(isSearchable: Boolean!): Caregiver!
+
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
 
