@@ -9,8 +9,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ─── User Model ──────────────────────────────────────────────────────────────
@@ -29,10 +29,116 @@ model User {
   email       String   @unique                    // Email ห้ามซ้ำ
   displayName String?  @map("display_name")       // ชื่อแสดงผล (อาจเป็น null ถ้ายังไม่ตั้ง)
   avatarUrl   String?  @map("avatar_url")         // URL รูปโปรไฟล์ (อาจเป็น null ถ้ายังไม่อัปโหลด)
-  role        String   @default("patient")        // "patient" | "caregiver"
+  phone       String?  @map("phone")              // เบอร์โทรศัพท์
+  address     String?  @map("address")            // ที่อยู่
+  bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
+  role        Int      @default(1)                // 1 = patient, 2 = caregiver
   isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
+  emailPreferences Boolean @default(true) @map("email_preferences") // รับอีเมลแจ้งเตือนมั้ย (PYG-95)
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
   updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
 
+  // Relations — ตาราง Caregiver, KycDocument, KycReview, Notification reference กลับมาหา User
+  caregiver     Caregiver?
+  documents     KycDocument[]
+  reviews       KycReview[]    // admin reviews
+  notifications Notification[] // in-app notifications (PYG-95)
+
   @@map("users")
+}
+
+
+model Caregiver {
+  id              String    @id @default(uuid())
+  userId          String    @unique @map("user_id")
+  fullName        String?   @map("full_name")
+  idCardNumber    String?   @map("id_card_number")
+  phone           String?
+  skills          String[]  // array of strings
+  experienceYears Int?      @map("experience_years")
+  hourlyRate      Float?    @map("hourly_rate")
+  bio             String?
+  kycStatus       String    @default("none") @map("kyc_status")
+  // "none" | "pending" | "verified" | "rejected" <-- เปลี่ยนเป็น verified ให้ตรงกับ DB Constraint
+  kycSubmittedAt  DateTime? @map("kyc_submitted_at")
+  kycVerifiedAt   DateTime? @map("kyc_verified_at")   // วันที่ admin verify KYC (null ถ้ายังไม่ผ่าน)
+  isSearchable    Boolean   @default(false) @map("is_searchable")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  user            User          @relation(fields: [userId], references: [id])
+  documents       KycDocument[]
+  reviews         KycReview[]   // เพิ่ม Relation มายัง KycReview
+
+  @@map("caregivers")
+}
+
+model KycDocument {
+  id            String    @id @default(uuid())
+  caregiverId   String?   @map("caregiver_id")   // nullable ก่อน submit
+  userId        String    @map("user_id")              // ← เพิ่ม: เชื่อมกับ user ที่อัปโหลด
+  documentType  String    @map("doc_type")  // "id_card" | "certificate" | "license" | "photo"
+  fileUrl       String    @map("file_url")
+  fileName      String    @map("file_name")      // เพิ่มตาม Data Dictionary
+  fileSize      Int       @map("file_size")      // เพิ่มตาม Data Dictionary (Bytes)
+  mimeType      String    @map("mime_type")      // เพิ่มตาม Data Dictionary
+  uploadedAt    DateTime  @default(now()) @map("uploaded_at")
+
+  // Relations
+  caregiver     Caregiver? @relation(fields: [caregiverId], references: [id])
+  user          User       @relation(fields: [userId], references: [id])
+  @@map("kyc_documents")
+}
+
+model KycReview {
+  id            String    @id @default(uuid())
+  caregiverId   String    @map("caregiver_id")
+  reviewerId    String    @map("reviewer_id")
+  action        String    // "approved" | "rejected"
+  reason        String?
+  reviewedAt    DateTime  @default(now()) @map("reviewed_at")
+
+  // Relations
+  caregiver     Caregiver @relation(fields: [caregiverId], references: [id])
+  reviewer      User      @relation(fields: [reviewerId], references: [id]) // Assuming User model handles Admin
+
+  @@map("kyc_reviews")
+}
+
+// ─── Notification Feature (PYG-95) ───────────────────────────────────────────
+// In-app notifications สำหรับแจ้งเตือน user เช่น KYC status, booking update
+//
+// ทำไมต้องเป็น enum?
+// - เพื่อจำกัด type ให้เป็นค่าที่กำหนด ป้องกัน typo (เช่น "kyc_submited")
+// - Prisma enum จะ generate TypeScript type + Postgres enum type ให้อัตโนมัติ
+//
+// เวลาเพิ่ม type ใหม่ → เพิ่มที่นี่ + rerun migration
+enum NotificationType {
+  kyc_submitted    // caregiver ส่ง KYC เข้ามา (แจ้ง admin)
+  kyc_verified     // KYC ผ่าน (แจ้ง caregiver)
+  kyc_rejected     // KYC ไม่ผ่าน (แจ้ง caregiver)
+  kyc_resubmitted  // caregiver ส่ง KYC ใหม่หลังถูก reject
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")      // คนที่ได้รับ notification
+  type      NotificationType                       // ประเภทแจ้งเตือน (enum)
+  title     String                                 // หัวข้อสั้นๆ แสดงใน list
+  body      String                                 // เนื้อหารายละเอียด
+  data      Json?                                  // metadata เพิ่มเติม เช่น { caregiverId, bookingId }
+  isRead    Boolean          @default(false) @map("is_read")
+  readAt    DateTime?        @map("read_at")       // เวลาที่ user อ่าน (null = ยังไม่อ่าน)
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user      User             @relation(fields: [userId], references: [id])
+
+  // Index สำหรับ query ยอดนิยม:
+  // - ดู notification ของ user ตัวเอง เรียงจากใหม่ไปเก่า
+  // - filter unreadOnly ได้เร็ว
+  @@index([userId, isRead, createdAt(sort: Desc)])
+
+  @@map("notifications")
 }

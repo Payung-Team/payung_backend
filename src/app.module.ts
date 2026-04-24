@@ -6,6 +6,8 @@ import { join } from 'path';
 import { AppResolver } from './app.resolver';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './identity/auth/auth.module';
+import { IdentityModule } from './identity/identity.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -38,6 +40,8 @@ import { AuthModule } from './identity/auth/auth.module';
 
     // ─── 4. Feature Modules ──────────────────────────────────────────────
     AuthModule,
+    IdentityModule,
+    NotificationModule,  // PYG-95: in-app notifications
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

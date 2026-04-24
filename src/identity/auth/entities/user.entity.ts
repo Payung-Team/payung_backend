@@ -27,17 +27,17 @@
  *     }
  *   }
  */
-import { ObjectType, Field, ID } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
 
 @ObjectType()
 export class User {
   /** UUID ของ user ในระบบเรา (ไม่ใช่ supabaseUid) */
   @Field(() => ID, { description: 'Unique identifier of the user' })
-  id: string;
+  id!: string;
 
   /** Email ของ user — ใช้สำหรับ login */
   @Field({ description: 'Email address of the user' })
-  email: string;
+  email!: string;
 
   /**
    * ชื่อแสดงผล — อาจเป็น null ได้ถ้ายังไม่เคยตั้ง
@@ -53,24 +53,36 @@ export class User {
   @Field({ nullable: true, description: 'Avatar image URL' })
   avatarUrl?: string;
 
+  /** เบอร์โทรศัพท์ — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Phone number' })
+  phone?: string;
+
+  /** ที่อยู่ — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'User address' })
+  address?: string;
+
+  /** เกี่ยวกับตัวเอง / บรรยายสั้น — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Bio or personal description' })
+  bio?: string;
+
   /**
-   * Role ของ user ในระบบ:
-   * - 'patient'   = ผู้ป่วย / ผู้ใช้ทั่วไป
-   * - 'caregiver' = ผู้ดูแล
-   * - 'admin'     = ผู้ดูแลระบบ
+   * Role ID ของ user ในระบบ:
+   * - 1 = patient (ผู้ป่วย / ผู้ใช้ทั่วไป)
+   * - 2 = caregiver (ผู้ดูแล)
+   * - 3 = admin (ผู้ดูแลระบบ)
    */
-  @Field({ description: 'User role: patient, caregiver, or admin' })
-  role: string;
+  @Field(() => Int, { description: 'User role ID: 1=patient, 2=caregiver, 3=admin' })
+  role!: number;
 
   /** สถานะว่า account ยังใช้งานได้อยู่หรือไม่ */
   @Field({ description: 'Whether the user account is active' })
-  isActive: boolean;
+  isActive!: boolean;
 
   /** วันเวลาที่สร้าง account */
   @Field({ description: 'Account creation timestamp' })
-  createdAt: Date;
+  createdAt!: Date;
 
   /** วันเวลาที่อัปเดตข้อมูลล่าสุด */
   @Field({ description: 'Last profile update timestamp' })
-  updatedAt: Date;
+  updatedAt!: Date;
 }

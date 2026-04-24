@@ -17,11 +17,11 @@ import { User } from '../auth/entities/user.entity';
 @ObjectType()
 export class AuthPayload {
   @Field({ description: 'JWT access token for API requests' })
-  accessToken: string;
+  accessToken!: string;
 
   @Field({ description: 'Refresh token for renewing the session' })
-  refreshToken: string;
+  refreshToken!: string;
 
   @Field(() => User, { description: 'The authenticated user' })
-  user: User;
+  user!: User;
 }
