@@ -5,10 +5,12 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { SupabaseService } from '../../common/supabase.service';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
 import { Caregiver } from './entities/caregiver.entity';
@@ -21,6 +23,7 @@ import { NotificationType } from '../../notification/entities/notification-type.
 export class KycService {
   constructor(
     private prismaService: PrismaService,
+    private supabaseService: SupabaseService,
     private caregiverService: CaregiverService,
     private notificationService: NotificationService,
   ) { }
@@ -335,6 +338,88 @@ export class KycService {
       });
 
     return this.mapPrismaToEntity(updated);
+  }
+
+  /**
+   * deleteKycDocument — ลบเอกสาร KYC สำหรับ caregiver
+   *
+   * Business rules:
+   * - document ต้องมีอยู่จริง                     → 404 NotFoundException
+   * - document ต้องเป็นของ user คนนี้        → 403 ForbiddenException
+   * - kyc_status ต้องเป็น 'rejected' หรือ 'none' → 409 ConflictException (ถ้า pending/verified)
+   *
+   * Flow:
+   * 1. findUnique kyc_document by id → 404 ถ้าไม่เจอ
+   * 2. ตรวจ userId → 403 ถ้าไม่ใช่เจ้าของ
+   * 3. ถ้า caregiverId มีค่า → load caregiver และตรวจ status → 409 ถ้า pending/verified
+   * 4. ลบไฟล์จาก Supabase Storage (best-effort — ไม่ fatal ถ้าล้ม)
+   * 5. ลบ row จาก kyc_documents
+   *
+   * @param documentId - UUID ของ document
+   * @param userId     - internal user ID จาก JWT token
+   * @returns true เสมอ (exception ถ้าเกิด error)
+   */
+  async deleteKycDocument(documentId: string, userId: string): Promise<boolean> {
+    // ── 1: ค้นหา document ──────────────────────────────────────────
+    const doc = await this.prismaService.kycDocument.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!doc) {
+      throw new NotFoundException(
+        `KYC document "${documentId}" not found`,
+      );
+    }
+
+    // ── 2: ตรวจสอบ ownership ──────────────────────────────────
+    if (doc.userId !== userId) {
+      throw new ForbiddenException(
+        'You do not have permission to delete this document',
+      );
+    }
+
+    // ── 3: ตรวจสอบ KYC status ─────────────────────────────────
+    // ถ้า doc ถูก link กับ caregiver → เช็ค status ของ caregiver
+    if (doc.caregiverId) {
+      const caregiver = await this.prismaService.caregiver.findUnique({
+        where: { id: doc.caregiverId },
+        select: { kycStatus: true },
+      });
+
+      if (caregiver && (caregiver.kycStatus === 'pending' || caregiver.kycStatus === 'verified')) {
+        throw new ConflictException(
+          `ไม่สามารถลบเอกสารได้ในสถานะ "${caregiver.kycStatus}" — อนุญาตเฉพาะสถานะ rejected หรือ none เท่านั้น`,
+        );
+      }
+    }
+
+    // ── 4: ลบไฟล์จาก Supabase Storage (best-effort) ───────────────
+    // ถ้าลบไฟล์ล้มเหลว → ยังลบรอว DB ต่อ (ไม่ให้ orphan record ค้างอยู่)
+    try {
+      const storageSegment = doc.fileUrl.split('/storage/v1/object/')[1];
+      if (storageSegment) {
+        const withoutPublic = storageSegment.startsWith('public/')
+          ? storageSegment.slice('public/'.length)
+          : storageSegment;
+        const slashIndex = withoutPublic.indexOf('/');
+        if (slashIndex !== -1) {
+          const bucket = withoutPublic.slice(0, slashIndex);
+          const objectPath = withoutPublic.slice(slashIndex + 1);
+
+          const supabase = this.supabaseService.getClient();
+          await supabase.storage.from(bucket).remove([objectPath]);
+        }
+      }
+    } catch {
+      // ลบไฟล์ล้มเหลว → ไม่เป็น fatal (record เสียหายไปแล้วเมื่อลบ row)
+    }
+
+    // ── 5: ลบ row จาก kyc_documents ────────────────────────────────
+    await this.prismaService.kycDocument.delete({
+      where: { id: documentId },
+    });
+
+    return true;
   }
 
   private mapPrismaToEntity(caregiver: any): Caregiver {

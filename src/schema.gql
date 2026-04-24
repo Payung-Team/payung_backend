@@ -143,6 +143,9 @@ input LoginInput {
 }
 
 type Mutation {
+  """Delete a KYC document (allowed only when status is rejected or none)"""
+  deleteKycDocument(documentId: String!): Boolean!
+
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
 

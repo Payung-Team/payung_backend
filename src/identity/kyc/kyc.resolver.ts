@@ -140,5 +140,30 @@ export class KycResolver {
   ): Promise<Caregiver> {
     return this.kycService.resubmitKyc(user, input);
   }
+
+  /**
+   * deleteKycDocument mutation — ลบเอกสาร KYC
+   *
+   * mutation {
+   *   deleteKycDocument(documentId: "uuid-here")
+   * }
+   *
+   * Error cases:
+   * - document ไม่มีอยู่                        → 404 NotFoundException
+   * - document ไม่ใช่ของ user คนนี้             → 403 ForbiddenException
+   * - status = pending หรือ verified            → 409 ConflictException
+   * - status = rejected หรือ none (ไม่มี link) → ✅ ลบได้
+   */
+  @Mutation(() => Boolean, {
+    description: 'Delete a KYC document (allowed only when status is rejected or none)',
+  })
+  @Roles(2) // 2 = caregiver role เท่านั้น
+  async deleteKycDocument(
+    @CurrentUser() user: AuthUser,
+    @Args('documentId', { type: () => String }) documentId: string,
+  ): Promise<boolean> {
+    return this.kycService.deleteKycDocument(documentId, user.id);
+  }
 }
+
 
