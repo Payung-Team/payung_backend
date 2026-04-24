@@ -15,7 +15,7 @@
  *
  * Resolver ไม่ควรมี business logic ซับซ้อน — มันแค่รับ request แล้วส่งต่อให้ Service ทำงาน
  */
-import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { Args, Mutation, Resolver, Query } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
 import { KycInput } from './dto/kyc.input';
@@ -64,5 +64,13 @@ export class KycResolver {
     @Args('input') input: KycInput,
   ): Promise<Caregiver> {
     return this.kycService.submitKyc(user, input);
+  }
+
+  @Query(() => Caregiver, {
+    description: 'Get current caregiver profile',
+  })
+  @Roles(2) // 2 = caregiver role เท่านั้น
+  async myCaregiverProfile(@CurrentUser() user: AuthUser): Promise<Caregiver> {
+    return this.kycService.getCaregiverByUserId(user.id);
   }
 }
