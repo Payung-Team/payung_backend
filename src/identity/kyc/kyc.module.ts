@@ -23,8 +23,12 @@ import { CaregiverService } from './caregiver.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { NotificationModule } from '../../notification/notification.module';
 
 @Module({
+  imports: [
+    NotificationModule,   // KycService ต้องการ NotificationService สำหรับ kyc_resubmitted
+  ],
   providers: [
     KycResolver,
     KycService,

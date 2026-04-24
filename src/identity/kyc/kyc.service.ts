@@ -3,6 +3,7 @@
  * ...
  */
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -13,12 +14,15 @@ import { KycStatusPayload } from './dto/kyc-status.payload';
 import { Caregiver } from './entities/caregiver.entity';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CaregiverService } from './caregiver.service';
+import { NotificationService } from '../../notification/notification.service';
+import { NotificationType } from '../../notification/entities/notification-type.enum';
 
 @Injectable()
 export class KycService {
   constructor(
     private prismaService: PrismaService,
     private caregiverService: CaregiverService,
+    private notificationService: NotificationService,
   ) { }
 
   /**
@@ -202,6 +206,137 @@ export class KycService {
     return payload;
   }
 
+  /**
+   * resubmitKyc — ยื่น KYC ใหม่หลังถูก reject
+   *
+   * Business rules:
+   * - status = "rejected" เท่านั้น → resubmit ได้
+   * - status = "none"              → BadRequestException (ยังไม่เคย submit)
+   * - status = "pending"           → ConflictException (กำลังรอ review อยู่)
+   * - status = "verified"          → ConflictException (ผ่านแล้ว ไม่ต้อง resubmit)
+   *
+   * Flow (atomic transaction):
+   * 1. Validate status → ต้อง "rejected"
+   * 2. Validate documentIds → ต้องมีอยู่จริง และเป็นของ user นี้
+   * 3. Update caregivers row:
+   *    - อัปเดต fields ทั้งหมดจาก input
+   *    - kycStatus = 'pending', kycSubmittedAt = now(), kycVerifiedAt = null
+   *    - resubmitCount += 1 (audit log)
+   * 4. Link document_ids ใหม่ → caregiverId
+   * 5. (หลัง tx) Fire notification: kyc_resubmitted
+   *
+   * @param user  - user ที่ login อยู่ (inject โดย SupabaseAuthGuard)
+   * @param input - ข้อมูล KYC ที่ resubmit (reuse KycInput DTO)
+   * @returns Caregiver entity ที่ถูกอัปเดต
+   */
+  async resubmitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
+    // ── 1: ค้นหา caregiver และตรวจสอบ status ────────────────────────
+    const existing = await this.prismaService.caregiver.findUnique({
+      where: { userId: user.id },
+    });
+
+    if (!existing) {
+      throw new BadRequestException(
+        'ไม่พบข้อมูล KYC — กรุณา submit KYC ก่อน',
+      );
+    }
+
+    if (existing.kycStatus === 'pending') {
+      throw new ConflictException(
+        'KYC กำลังรอการตรวจสอบอยู่ — ไม่สามารถ resubmit ได้ในขณะนี้',
+      );
+    }
+
+    if (existing.kycStatus === 'verified') {
+      throw new ConflictException(
+        'KYC ผ่านการตรวจสอบแล้ว — ไม่จำเป็นต้อง resubmit',
+      );
+    }
+
+    if (existing.kycStatus !== 'rejected') {
+      // guard ป้องกัน status ที่ไม่คาดคิด
+      throw new BadRequestException(
+        `ไม่สามารถ resubmit ได้ในสถานะ "${existing.kycStatus}"`,
+      );
+    }
+
+    // ── 2: Validate documentIds ─────────────────────────────────────
+    if (input.documentIds.length > 0) {
+      const foundDocs = await this.prismaService.kycDocument.findMany({
+        where: {
+          id: { in: input.documentIds },
+          userId: user.id,
+        },
+        select: { id: true },
+      });
+
+      const foundIds = foundDocs.map((d) => d.id);
+      const missingIds = input.documentIds.filter(
+        (id) => !foundIds.includes(id),
+      );
+
+      if (missingIds.length > 0) {
+        throw new NotFoundException(
+          `Document IDs not found or not owned by user: ${missingIds.join(', ')}`,
+        );
+      }
+    }
+
+    // ── 3 & 4: Update caregiver + link documents (atomic transaction) ──
+    const updated = await this.prismaService.$transaction(async (tx) => {
+      // 3a. อัปเดต caregivers row
+      const caregiver = await tx.caregiver.update({
+        where: { userId: user.id },
+        data: {
+          // อัปเดต fields จาก input
+          fullName: input.fullName,
+          idCardNumber: input.idCardNumber,
+          phone: input.phone,
+          skills: input.skills,
+          experienceYears: input.experienceYears,
+          hourlyRate: input.hourlyRate,
+          bio: input.bio,
+          // Reset KYC status
+          kycStatus: 'pending',
+          kycSubmittedAt: new Date(),
+          kycVerifiedAt: null,       // clear verifiedAt
+          // Audit log: increment resubmitCount
+          resubmitCount: { increment: 1 },
+        },
+      });
+
+      // 3b. Link document_ids ใหม่ → caregiverId
+      if (input.documentIds.length > 0) {
+        await tx.kycDocument.updateMany({
+          where: {
+            id: { in: input.documentIds },
+            userId: user.id,
+          },
+          data: { caregiverId: caregiver.id },
+        });
+      }
+
+      return caregiver;
+    });
+
+    // ── 5: Fire notification (หลัง tx เพื่อไม่ให้ rollback notification) ──
+    // fire-and-forget: ไม่ await เพื่อไม่ให้ response ช้า
+    // ถ้า notification ล้มเหลว → ไม่ควรทำให้ resubmit fail
+    void this.notificationService
+      .create(
+        user.id,
+        NotificationType.kyc_resubmitted,
+        'ส่งเอกสาร KYC ใหม่แล้ว',
+        'เราได้รับเอกสาร KYC ของคุณแล้ว ทีมงานจะตรวจสอบภายใน 1-3 วันทำการ',
+        { caregiverId: updated.id, resubmitCount: updated.resubmitCount },
+      )
+      .catch(() => {
+        // log เพื่อ debug แต่ไม่ throw — ไม่ให้ resubmit fail เพราะ notification
+      });
+
+    return this.mapPrismaToEntity(updated);
+  }
+
   private mapPrismaToEntity(caregiver: any): Caregiver {
     return {
       id: caregiver.id,
@@ -216,6 +351,7 @@ export class KycService {
       kycStatus: caregiver.kycStatus,
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
     };

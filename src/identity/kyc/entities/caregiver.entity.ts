@@ -77,6 +77,10 @@ export class Caregiver {
   @Field({ description: 'Whether caregiver appears in search results' })
   isSearchable!: boolean;
 
+  /** จำนวนครั้งที่ resubmit KYC หลังถูก reject (audit log) */
+  @Field(() => Int, { description: 'Number of times KYC was resubmitted after rejection' })
+  resubmitCount!: number;
+
   /** วันเวลาที่สร้าง caregiver record */
   @Field()
   createdAt!: Date;

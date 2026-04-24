@@ -86,6 +86,7 @@ export class CaregiverService {
       isSearchable: caregiver.isSearchable,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      resubmitCount: 0,
     };
   }
 

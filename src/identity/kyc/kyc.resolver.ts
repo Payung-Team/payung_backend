@@ -104,4 +104,41 @@ export class KycResolver {
   async myCaregiverProfile(@CurrentUser() user: AuthUser): Promise<Caregiver> {
     return this.kycService.getCaregiverByUserId(user.id);
   }
+
+  /**
+   * resubmitKyc mutation — ยื่น KYC ใหม่หลังถูก reject
+   *
+   * mutation {
+   *   resubmitKyc(input: {
+   *     fullName: "สมชาย ใจดี"
+   *     idCardNumber: "1234567890123"
+   *     phone: "0812345678"
+   *     skills: ["elder_care"]
+   *     experienceYears: 3
+   *     hourlyRate: 150.0
+   *     documentIds: ["uuid-new-1", "uuid-new-2"]
+   *   }) {
+   *     id kycStatus kycSubmittedAt resubmitCount
+   *   }
+   * }
+   *
+   * Guard:
+   * - ต้องเป็น caregiver (role = 2)
+   * - ต้อง login อยู่ (SupabaseAuthGuard)
+   * - kycStatus ต้องเป็น 'rejected' — ตรวจสอบใน KycService
+   *   - none     → BadRequestException
+   *   - pending  → ConflictException
+   *   - verified → ConflictException
+   */
+  @Mutation(() => Caregiver, {
+    description: 'Resubmit KYC after rejection (caregiver only, status must be rejected)',
+  })
+  @Roles(2) // 2 = caregiver role เท่านั้น
+  async resubmitKyc(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: KycInput,
+  ): Promise<Caregiver> {
+    return this.kycService.resubmitKyc(user, input);
+  }
 }
+

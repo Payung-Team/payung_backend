@@ -34,6 +34,9 @@ type Caregiver {
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
   phone: String
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
   skills: [String]
   updatedAt: DateTime!
 
@@ -148,6 +151,9 @@ type Mutation {
 
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
+
+  """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
+  resubmitKyc(input: KycInput!): Caregiver!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
