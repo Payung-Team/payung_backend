@@ -2,7 +2,7 @@
 /**
  * UpdateProfileInput — DTO สำหรับ updateProfile mutation
  *
- * ใช้อัปเดตโปรไฟล์ user (displayName และ/หรือ avatarUrl)
+ * ใช้อัปเดตโปรไฟล์ user (displayName, phone, address, bio, avatarUrl)
  * ทุก field เป็น optional — ส่งเฉพาะ field ที่ต้องการเปลี่ยน (partial update)
  */
 import { InputType, Field } from '@nestjs/graphql';
@@ -17,6 +17,27 @@ export class UpdateProfileInput {
   @MinLength(1, { message: 'Display name must not be empty' })
   @MaxLength(50, { message: 'Display name must be at most 50 characters' })
   displayName?: string;
+
+  /** เบอร์โทรศัพท์ — 0-10 ตัวอักษร */
+  @Field({ nullable: true, description: 'Phone number' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10, { message: 'Phone number must be at most 10 characters' })
+  phone?: string;
+
+  /** ที่อยู่ — 0-200 ตัวอักษร */
+  @Field({ nullable: true, description: 'User address' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200, { message: 'Address must be at most 200 characters' })
+  address?: string;
+
+  /** เกี่ยวกับตัวเอง — 0-300 ตัวอักษร */
+  @Field({ nullable: true, description: 'Bio or personal description' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300, { message: 'Bio must be at most 300 characters' })
+  bio?: string;
 
   /** URL รูปโปรไฟล์ — ต้องเป็น URL ที่ถูกต้อง */
   @Field({ nullable: true, description: 'Avatar image URL' })

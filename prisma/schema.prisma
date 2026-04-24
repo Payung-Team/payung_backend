@@ -9,8 +9,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ─── User Model ──────────────────────────────────────────────────────────────
@@ -29,7 +29,10 @@ model User {
   email       String   @unique                    // Email ห้ามซ้ำ
   displayName String?  @map("display_name")       // ชื่อแสดงผล (อาจเป็น null ถ้ายังไม่ตั้ง)
   avatarUrl   String?  @map("avatar_url")         // URL รูปโปรไฟล์ (อาจเป็น null ถ้ายังไม่อัปโหลด)
-  role        String   @default("patient")        // "patient" | "caregiver"
+  phone       String?  @map("phone")              // เบอร์โทรศัพท์
+  address     String?  @map("address")            // ที่อยู่
+  bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
+  role        Int      @default(1)                // 1 = patient, 2 = caregiver
   isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
   updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)

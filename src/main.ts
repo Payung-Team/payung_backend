@@ -17,6 +17,13 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+
+  // CORS สำหรับให้ Frontend เรียกใช้งาน Api Backend ได้
+  app.enableCors({
+    origin: '*', // ถ้า Deploy จริงให้ใส่ URL ของ Frontend (e.g., 'http://localhost:5173')
+    credentials: true,
+  });
+
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
