@@ -5,6 +5,7 @@
  * - คือ "ตัวรับ request" จาก GraphQL
  * - เหมือน Controller ใน REST API แต่สำหรับ GraphQL
  * - @Mutation = รับ request ที่เปลี่ยนแปลงข้อมูล (submitKyc)
+ * - @Query    = รับ request ที่ดึงข้อมูล (kycStatus, myCaregiverProfile)
  *
  * Guard ที่ใช้:
  * - SupabaseAuthGuard = ตรวจสอบ JWT token ก่อนทุก request
@@ -19,6 +20,7 @@ import { Args, Mutation, Resolver, Query } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
 import { KycInput } from './dto/kyc.input';
+import { KycStatusPayload } from './dto/kyc-status.payload';
 import { Caregiver } from './entities/caregiver.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -64,6 +66,35 @@ export class KycResolver {
     @Args('input') input: KycInput,
   ): Promise<Caregiver> {
     return this.kycService.submitKyc(user, input);
+  }
+
+  /**
+   * kycStatus query — ดึงข้อมูล KYC status ครบสำหรับ Status Page
+   *
+   * query {
+   *   kycStatus {
+   *     status
+   *     submittedAt
+   *     verifiedAt
+   *     rejectedAt
+   *     rejectedReason
+   *     caregiver { id fullName kycStatus }
+   *     documents { id docType fileName signedUrl }
+   *   }
+   * }
+   *
+   * รองรับทุก status:
+   * - "none"     → { status: 'none', documents: [] }
+   * - "pending"  → { status, submittedAt, caregiver, documents[] }
+   * - "verified" → { status, submittedAt, verifiedAt, caregiver, documents[] }
+   * - "rejected" → { status, submittedAt, rejectedAt, rejectedReason, caregiver, documents[] }
+   */
+  @Query(() => KycStatusPayload, {
+    description: 'Get KYC status with full details for the Status Page',
+  })
+  @Roles(2) // 2 = caregiver role เท่านั้น
+  async kycStatus(@CurrentUser() user: AuthUser): Promise<KycStatusPayload> {
+    return this.kycService.getKycStatus(user.id);
   }
 
   @Query(() => Caregiver, {

@@ -10,6 +10,10 @@
  * - SupabaseAuthGuard inject SupabaseService + PrismaService (มาจาก @Global() CommonModule)
  * - RolesGuard inject Reflector (มาจาก NestJS core โดยอัตโนมัติ)
  *
+ * Dependency Graph:
+ * KycResolver → KycService → { PrismaService, CaregiverService }
+ * CaregiverService → { PrismaService, SupabaseService }
+ *
  * providers = service/resolver/guard ที่อยู่ใน module นี้
  */
 import { Module } from '@nestjs/common';
@@ -24,10 +28,10 @@ import { RolesGuard } from '../../common/guards/roles.guard';
   providers: [
     KycResolver,
     KycService,
-    CaregiverService,       // CRUD สำหรับ caregivers table
+    CaregiverService,       // CRUD สำหรับ caregivers table + signed URL generation
     KycDocumentService,     // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,
     RolesGuard,
   ],
 })
-export class KycModule {}
+export class KycModule { }

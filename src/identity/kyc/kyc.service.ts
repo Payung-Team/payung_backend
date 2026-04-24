@@ -9,12 +9,17 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { KycInput } from './dto/kyc.input';
+import { KycStatusPayload } from './dto/kyc-status.payload';
 import { Caregiver } from './entities/caregiver.entity';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
+import { CaregiverService } from './caregiver.service';
 
 @Injectable()
 export class KycService {
-  constructor(private prismaService: PrismaService) {}
+  constructor(
+    private prismaService: PrismaService,
+    private caregiverService: CaregiverService,
+  ) { }
 
   /**
    * submitKyc — สร้างหรืออัปเดต caregiver record พร้อม link เอกสาร KYC
@@ -132,6 +137,69 @@ export class KycService {
     }
 
     return this.mapPrismaToEntity(caregiver);
+  }
+
+  /**
+   * getKycStatus — ดึงข้อมูล KYC status ครบสำหรับ Status Page
+   *
+   * รองรับทุก status:
+   * - "none"     → { status: 'none', documents: [] }
+   * - "pending"  → { status, submittedAt, caregiver, documents[] }
+   * - "verified" → { status, submittedAt, verifiedAt, caregiver, documents[] }
+   * - "rejected" → { status, submittedAt, rejectedAt, rejectedReason, caregiver, documents[] }
+   *
+   * สำหรับ rejected: ดึง KycReview ล่าสุดที่ action = 'rejected' เพื่อหา rejectedAt + reason
+   *
+   * @param userId - internal user ID จาก JWT token
+   * @returns KycStatusPayload ครบทุก field
+   */
+  async getKycStatus(userId: string): Promise<KycStatusPayload> {
+    // ── 1: ค้นหา caregiver จาก userId ──────────────────────────────
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    // ยังไม่เคย submit → คืน status: 'none' พร้อม empty documents
+    if (!caregiver) {
+      return {
+        status: 'none',
+        documents: [],
+      };
+    }
+
+    const caregiverEntity = this.mapPrismaToEntity(caregiver);
+
+    // ── 2: โหลดเอกสาร KYC พร้อม signed URLs ───────────────────────
+    const documents = await this.caregiverService.getDocumentsWithSignedUrls(
+      caregiver.id,
+    );
+
+    // ── 3: Base payload ───────────────────────────────────────────
+    const payload: KycStatusPayload = {
+      status: caregiver.kycStatus,
+      submittedAt: caregiver.kycSubmittedAt ?? undefined,
+      verifiedAt: caregiver.kycVerifiedAt ?? undefined,
+      caregiver: caregiverEntity,
+      documents,
+    };
+
+    // ── 4: ถ้า rejected → ดึง KycReview ล่าสุดเพื่อหา rejectedAt + reason
+    if (caregiver.kycStatus === 'rejected') {
+      const latestReview = await this.prismaService.kycReview.findFirst({
+        where: {
+          caregiverId: caregiver.id,
+          action: 'rejected',
+        },
+        orderBy: { reviewedAt: 'desc' },
+      });
+
+      if (latestReview) {
+        payload.rejectedAt = latestReview.reviewedAt;
+        payload.rejectedReason = latestReview.reason ?? undefined;
+      }
+    }
+
+    return payload;
   }
 
   private mapPrismaToEntity(caregiver: any): Caregiver {

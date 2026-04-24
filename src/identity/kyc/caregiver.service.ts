@@ -15,7 +15,9 @@
  */
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
+import { KycDocument } from './entities/kyc-document.entity';
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -49,7 +51,10 @@ type CreateCaregiverData = {
 
 @Injectable()
 export class CaregiverService {
-  constructor(private prismaService: PrismaService) {}
+  constructor(
+    private prismaService: PrismaService,
+    private supabaseService: SupabaseService,
+  ) { }
 
   // ─── Private helper ──────────────────────────────────────────────────────
 
@@ -205,5 +210,81 @@ export class CaregiverService {
     });
 
     return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * ดึงเอกสาร KYC ของ caregiver พร้อม signed URL (หมดอายุ 1 ชั่วโมง)
+   *
+   * ทำไมต้อง signed URL?
+   * - ไฟล์ใน Supabase Storage bucket ที่เป็น private ไม่สามารถเข้าถึงได้ผ่าน public URL
+   * - signed URL = URL ชั่วคราวที่ฝัง token ของ Supabase ไว้ → ผู้ถือ URL เข้าได้โดยไม่ต้อง login
+   * - หมดอายุ 3,600 วินาที (1 ชั่วโมง) ตามข้อกำหนด
+   *
+   * Flow:
+   * 1. Query kyc_documents WHERE caregiver_id = caregiverId
+   * 2. สำหรับแต่ละ document → ดึง storage path จาก fileUrl
+   * 3. เรียก supabase.storage.from(bucket).createSignedUrl(path, 3600)
+   * 4. ถ้า sign ล้มเหลว → คืน fileUrl เดิม (graceful fallback)
+   *
+   * @param caregiverId - UUID ของ caregiver
+   * @returns รายการเอกสารพร้อม signedUrl (array ว่างถ้าไม่มีเอกสาร)
+   */
+  async getDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+    const docs = await this.prismaService.kycDocument.findMany({
+      where: { caregiverId },
+      orderBy: { uploadedAt: 'desc' },
+    });
+
+    if (docs.length === 0) return [];
+
+    const supabase = this.supabaseService.getClient();
+
+    const enriched = await Promise.all(
+      docs.map(async (doc) => {
+        const entity: KycDocument = {
+          id: doc.id,
+          caregiverId: doc.caregiverId ?? undefined,
+          userId: doc.userId,
+          docType: doc.documentType,
+          fileUrl: doc.fileUrl,
+          fileName: doc.fileName,
+          fileSize: doc.fileSize,
+          mimeType: doc.mimeType,
+          uploadedAt: doc.uploadedAt,
+        };
+
+        try {
+          // fileUrl format: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
+          // หรือ: https://<project>.supabase.co/storage/v1/object/<bucket>/<path>
+          // ต้องดึง bucket name และ object path ออกมา
+          const storageSegment = doc.fileUrl.split('/storage/v1/object/')[1];
+          if (storageSegment) {
+            // ตัด "public/" ออกถ้ามี
+            const withoutPublic = storageSegment.startsWith('public/')
+              ? storageSegment.slice('public/'.length)
+              : storageSegment;
+            const slashIndex = withoutPublic.indexOf('/');
+            if (slashIndex !== -1) {
+              const bucket = withoutPublic.slice(0, slashIndex);
+              const objectPath = withoutPublic.slice(slashIndex + 1);
+
+              const { data, error } = await supabase.storage
+                .from(bucket)
+                .createSignedUrl(objectPath, 3600); // 1 hour
+
+              if (!error && data?.signedUrl) {
+                entity.signedUrl = data.signedUrl;
+              }
+            }
+          }
+        } catch {
+          // ถ้า sign URL ล้มเหลว → ใช้ fileUrl เดิม (ไม่ให้ query พัง)
+        }
+
+        return entity;
+      }),
+    );
+
+    return enriched;
   }
 }
