@@ -29,5 +29,8 @@ import { RolesGuard } from '../../common/guards/roles.guard';
     SupabaseAuthGuard,
     RolesGuard,
   ],
+  // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
+  // me { caregiver { ... } } (PYG-90)
+  exports: [CaregiverService],
 })
 export class KycModule {}
