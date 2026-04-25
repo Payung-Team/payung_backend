@@ -8,6 +8,7 @@ import { CommonModule } from './common/common.module';
 import { AuthModule } from './identity/auth/auth.module';
 import { IdentityModule } from './identity/identity.module';
 import { NotificationModule } from './notification/notification.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { NotificationModule } from './notification/notification.module';
     AuthModule,
     IdentityModule,
     NotificationModule,  // PYG-95: in-app notifications
+    EmailModule,         // PYG-96: Resend email service
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
