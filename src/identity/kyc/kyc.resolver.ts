@@ -168,6 +168,7 @@ export class KycResolver {
     @Args('documentId', { type: () => String }) documentId: string,
   ): Promise<boolean> {
     return this.kycService.deleteKycDocument(documentId, user.id);
+  }
   @Mutation(() => KycDocument, {
     description: 'Save uploaded KYC document information',
   })
