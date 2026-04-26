@@ -25,28 +25,28 @@ export class Caregiver {
   userId!: string;
 
   /** ชื่อ-นามสกุลจริง (ต้องตรงกับบัตรประชาชน) */
-  @Field({ nullable: true })
-  fullName?: string;
+  @Field()
+  fullName!: string;
 
   /** เลขบัตรประชาชน 13 หลัก */
-  @Field({ nullable: true })
-  idCardNumber?: string;
+  @Field()
+  idCardNumber!: string;
 
   /** เบอร์โทรศัพท์ติดต่อ */
-  @Field({ nullable: true })
-  phone?: string;
+  @Field()
+  phone!: string;
 
   /** รายการทักษะของ caregiver */
-  @Field(() => [String], { nullable: 'itemsAndList' })
-  skills?: string[];
+  @Field(() => [String])
+  skills!: string[];
 
   /** จำนวนปีของประสบการณ์ */
-  @Field(() => Int, { nullable: true })
-  experienceYears?: number;
+  @Field(() => Int)
+  experienceYears!: number;
 
   /** ค่าบริการต่อชั่วโมง (บาท) */
-  @Field(() => Float, { nullable: true })
-  hourlyRate?: number;
+  @Field(() => Float)
+  hourlyRate!: number;
 
   /**
    * แนะนำตัวสั้นๆ — อาจเป็น null ได้ถ้ายังไม่ได้กรอก

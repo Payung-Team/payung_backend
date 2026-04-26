@@ -15,14 +15,11 @@
  *
  * Resolver ไม่ควรมี business logic ซับซ้อน — มันแค่รับ request แล้วส่งต่อให้ Service ทำงาน
  */
-import { Args, Mutation, Resolver, Query } from '@nestjs/graphql';
+import { Args, Mutation, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
-import { KycDocumentService } from './kyc-document.service';
 import { KycInput } from './dto/kyc.input';
-import { UploadDocumentInput } from './dto/upload-document.input';
 import { Caregiver } from './entities/caregiver.entity';
-import { KycDocument } from './entities/kyc-document.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -34,10 +31,8 @@ import {
 @Resolver()
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 export class KycResolver {
-  constructor(
-    private kycService: KycService,
-    private kycDocumentService: KycDocumentService,
-  ) {}
+  // NestJS จะ inject KycService เข้ามาอัตโนมัติ (Dependency Injection)
+  constructor(private kycService: KycService) {}
 
   /**
    * submitKyc mutation — ใช้ใน GraphQL Playground แบบนี้:
@@ -69,31 +64,5 @@ export class KycResolver {
     @Args('input') input: KycInput,
   ): Promise<Caregiver> {
     return this.kycService.submitKyc(user, input);
-  }
-
-  @Query(() => Caregiver, {
-    description: 'Get current caregiver profile',
-  })
-  @Roles(2) // 2 = caregiver role เท่านั้น
-  async myCaregiverProfile(@CurrentUser() user: AuthUser): Promise<Caregiver> {
-    return this.kycService.getCaregiverByUserId(user.id);
-  }
-
-  @Mutation(() => KycDocument, {
-    description: 'Save uploaded KYC document information',
-  })
-  @Roles(2) // 2 = caregiver role เท่านั้น
-  async uploadKycDocument(
-    @CurrentUser() user: AuthUser,
-    @Args('input') input: UploadDocumentInput,
-  ): Promise<KycDocument> {
-    return this.kycDocumentService.create({
-      userId: user.id,
-      documentType: input.docType,
-      fileUrl: input.fileUrl,
-      fileName: input.fileName,
-      fileSize: input.fileSize,
-      mimeType: input.mimeType,
-    });
   }
 }

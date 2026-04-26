@@ -128,14 +128,6 @@ export class UserService {
           role,
           displayName: email.split('@')[0], // "john" จาก "john@example.com"
           isActive: true,
-          // ซ้อนการสร้าง caregiver ถ้า role เป็น 2
-          ...(role === 2 && {
-            caregiver: {
-              create: {
-                kycStatus: 'none',
-              },
-            },
-          }),
         },
       });
 

@@ -114,36 +114,19 @@ export class KycService {
       return upserted;
     });
 
-    return this.mapPrismaToEntity(caregiver);
-  }
-
-  /**
-   * getCaregiverByUserId — ดึงข้อมูล caregiver ของ user
-   *
-   * @param userId - ID ของ user ที่ต้องการดึงข้อมูล
-   */
-  async getCaregiverByUserId(userId: string): Promise<Caregiver> {
-    const caregiver = await this.prismaService.caregiver.findUnique({
-      where: { userId },
-    });
-
-    if (!caregiver) {
-      throw new NotFoundException(`Caregiver not found for user ${userId}`);
-    }
-
-    return this.mapPrismaToEntity(caregiver);
-  }
-
-  private mapPrismaToEntity(caregiver: any): Caregiver {
+    // ── ขั้นตอนที่ 4: Map Prisma model → GraphQL entity ──────────────
+    // Prisma schema มี optional fields เป็น string | null แต่เราเพิ่ง upsert
+    // ค่าจริงลงไปแล้ว จึงใช้ non-null assertion (!) ได้อย่างปลอดภัย
+    // ยกเว้น bio กับ kycSubmittedAt ที่ GraphQL entity กำหนดให้ nullable จริงๆ
     return {
       id: caregiver.id,
       userId: caregiver.userId,
-      fullName: caregiver.fullName ?? undefined,
-      idCardNumber: caregiver.idCardNumber ?? undefined,
-      phone: caregiver.phone ?? undefined,
-      skills: caregiver.skills ?? undefined,
-      experienceYears: caregiver.experienceYears ?? undefined,
-      hourlyRate: caregiver.hourlyRate ?? undefined,
+      fullName: caregiver.fullName!,
+      idCardNumber: caregiver.idCardNumber!,
+      phone: caregiver.phone!,
+      skills: caregiver.skills,
+      experienceYears: caregiver.experienceYears!,
+      hourlyRate: caregiver.hourlyRate!,
       bio: caregiver.bio ?? undefined,
       kycStatus: caregiver.kycStatus,
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,

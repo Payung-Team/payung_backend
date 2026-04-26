@@ -16,11 +16,11 @@ type AuthPayload {
 type Caregiver {
   bio: String
   createdAt: DateTime!
-  experienceYears: Int
-  fullName: String
-  hourlyRate: Float
+  experienceYears: Int!
+  fullName: String!
+  hourlyRate: Float!
   id: ID!
-  idCardNumber: String
+  idCardNumber: String!
 
   """Whether caregiver appears in search results"""
   isSearchable: Boolean!
@@ -33,8 +33,8 @@ type Caregiver {
 
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
-  phone: String
-  skills: [String]
+  phone: String!
+  skills: [String!]!
   updatedAt: DateTime!
 
   """Internal user ID linked to this caregiver"""
@@ -112,9 +112,6 @@ type Query {
 
   """Get current logged-in user"""
   me: User!
-
-  """Get current caregiver profile"""
-  myCaregiverProfile: Caregiver!
 }
 
 input RegisterInput {
