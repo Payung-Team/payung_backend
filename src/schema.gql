@@ -34,6 +34,9 @@ type Caregiver {
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
   phone: String
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
   skills: [String]
   updatedAt: DateTime!
 
@@ -50,6 +53,36 @@ type HealthStatus {
   status: String!
   supabaseConnected: Boolean!
   timestamp: String!
+}
+
+type KycDocument {
+  """Caregiver ID (null before KYC submit)"""
+  caregiverId: String
+
+  """Document type: id_card | certificate | license | photo"""
+  docType: String!
+
+  """Original file name"""
+  fileName: String!
+
+  """File size in bytes"""
+  fileSize: Int!
+
+  """File URL in storage"""
+  fileUrl: String!
+  id: ID!
+
+  """MIME type (e.g. image/jpeg, application/pdf)"""
+  mimeType: String!
+
+  """Temporary signed URL (1hr expiry)"""
+  signedUrl: String
+
+  """Upload timestamp"""
+  uploadedAt: DateTime!
+
+  """User who uploaded this document"""
+  userId: String!
 }
 
 input KycInput {
@@ -78,6 +111,29 @@ input KycInput {
   skills: [String!]!
 }
 
+type KycStatusPayload {
+  """Caregiver profile (null if never submitted)"""
+  caregiver: Caregiver
+
+  """KYC documents with temporary signed URLs (1hr expiry)"""
+  documents: [KycDocument!]!
+
+  """When KYC was rejected by admin"""
+  rejectedAt: DateTime
+
+  """Reason for rejection (if rejected)"""
+  rejectedReason: String
+
+  """KYC status: none | pending | verified | rejected"""
+  status: String!
+
+  """When KYC was submitted"""
+  submittedAt: DateTime
+
+  """When KYC was verified by admin"""
+  verifiedAt: DateTime
+}
+
 input LoginInput {
   """Email address of the user"""
   email: String!
@@ -87,6 +143,9 @@ input LoginInput {
 }
 
 type Mutation {
+  """Delete a KYC document (allowed only when status is rejected or none)"""
+  deleteKycDocument(documentId: String!): Boolean!
+
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
 
@@ -95,6 +154,12 @@ type Mutation {
 
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
+
+  """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
+  resubmitKyc(input: KycInput!): Caregiver!
+
+  """Toggle caregiver availability in search results (verified only)"""
+  setSearchable(isSearchable: Boolean!): Caregiver!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -107,8 +172,8 @@ type Query {
   """Health check - API & DB Status"""
   health: HealthStatus!
 
-  """Get KYC status of caregiver"""
-  kycStatus: String!
+  """Get KYC status with full details for the Status Page"""
+  kycStatus: KycStatusPayload!
 
   """Get current logged-in user"""
   me: User!

@@ -13,9 +13,11 @@
  * - updateStatus()  — เปลี่ยน kycStatus (admin approve/reject)
  * - setSearchable() — เปิด/ปิดการแสดงในผลค้นหา
  */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
+import { KycDocument } from './entities/kyc-document.entity';
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -32,6 +34,7 @@ type PrismaCaregiver = {
   kycSubmittedAt: Date | null;
   kycVerifiedAt: Date | null;
   isSearchable: boolean;
+  resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
 };
@@ -49,7 +52,12 @@ type CreateCaregiverData = {
 
 @Injectable()
 export class CaregiverService {
-  constructor(private prismaService: PrismaService) {}
+  private readonly logger = new Logger(CaregiverService.name);
+
+  constructor(
+    private prismaService: PrismaService,
+    private supabaseService: SupabaseService,
+  ) { }
 
   // ─── Private helper ──────────────────────────────────────────────────────
 
@@ -79,6 +87,7 @@ export class CaregiverService {
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       kycVerifiedAt: caregiver.kycVerifiedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
     };
@@ -205,5 +214,136 @@ export class CaregiverService {
     });
 
     return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * setSearchableByUser — เปิด/ปิดการแสดงในผลค้นหา (caregiver-facing)
+   *
+   * ต่างจาก setSearchable() ตรงที่:
+   * - รับ userId แทน caregiverId (caregiver รู้แค่ userId ของตัเอง)
+   * - Guard: kycStatus ต้องเป็น 'verified' เท่านั้น → ForbiddenException ถ้าไม่ใช่
+   * - เก็บล็อก toggle event เพื่อ analytics
+   *
+   * @param userId       - internal user ID จาก JWT
+   * @param isSearchable - true = แสดงในผลค้นหา, false = ซ่อน
+   * @throws NotFoundException   ถ้าไม่พบ caregiver record
+   * @throws ForbiddenException  ถ้า kycStatus ไม่ใช่ 'verified'
+   */
+  async setSearchableByUser(
+    userId: string,
+    isSearchable: boolean,
+  ): Promise<Caregiver> {
+    // ── 1: ค้นหา caregiver จาก userId ────────────────────────────
+    const existing = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(
+        `Caregiver with userId "${userId}" not found`,
+      );
+    }
+
+    // ── 2: Guard — kycStatus ต้องเป็น 'verified' ────────────────────
+    if (existing.kycStatus !== 'verified') {
+      throw new ForbiddenException(
+        'ต้องผ่านการยืนยันตัวตนก่อน',
+      );
+    }
+
+    // ── 3: อัปเดต is_searchable ─────────────────────────────────
+    const caregiver = await this.prismaService.caregiver.update({
+      where: { userId },
+      data: { isSearchable },
+    });
+
+    // ── 4: Log toggle event เพื่อ analytics ──────────────────────
+    this.logger.log({
+      event: 'caregiver.availability.toggled',
+      caregiverId: caregiver.id,
+      userId: caregiver.userId,
+      isSearchable,
+      previousValue: existing.isSearchable,
+      changed: existing.isSearchable !== isSearchable,
+      timestamp: new Date().toISOString(),
+    });
+
+    return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * ดึงเอกสาร KYC ของ caregiver พร้อม signed URL (หมดอายุ 1 ชั่วโมง)
+   *
+   * ทำไมต้อง signed URL?
+   * - ไฟล์ใน Supabase Storage bucket ที่เป็น private ไม่สามารถเข้าถึงได้ผ่าน public URL
+   * - signed URL = URL ชั่วคราวที่ฝัง token ของ Supabase ไว้ → ผู้ถือ URL เข้าได้โดยไม่ต้อง login
+   * - หมดอายุ 3,600 วินาที (1 ชั่วโมง) ตามข้อกำหนด
+   *
+   * Flow:
+   * 1. Query kyc_documents WHERE caregiver_id = caregiverId
+   * 2. สำหรับแต่ละ document → ดึง storage path จาก fileUrl
+   * 3. เรียก supabase.storage.from(bucket).createSignedUrl(path, 3600)
+   * 4. ถ้า sign ล้มเหลว → คืน fileUrl เดิม (graceful fallback)
+   *
+   * @param caregiverId - UUID ของ caregiver
+   * @returns รายการเอกสารพร้อม signedUrl (array ว่างถ้าไม่มีเอกสาร)
+   */
+  async getDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+    const docs = await this.prismaService.kycDocument.findMany({
+      where: { caregiverId },
+      orderBy: { uploadedAt: 'desc' },
+    });
+
+    if (docs.length === 0) return [];
+
+    const supabase = this.supabaseService.getClient();
+
+    const enriched = await Promise.all(
+      docs.map(async (doc) => {
+        const entity: KycDocument = {
+          id: doc.id,
+          caregiverId: doc.caregiverId ?? undefined,
+          userId: doc.userId,
+          docType: doc.documentType,
+          fileUrl: doc.fileUrl,
+          fileName: doc.fileName,
+          fileSize: doc.fileSize,
+          mimeType: doc.mimeType,
+          uploadedAt: doc.uploadedAt,
+        };
+
+        try {
+          // fileUrl format: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
+          // หรือ: https://<project>.supabase.co/storage/v1/object/<bucket>/<path>
+          // ต้องดึง bucket name และ object path ออกมา
+          const storageSegment = doc.fileUrl.split('/storage/v1/object/')[1];
+          if (storageSegment) {
+            // ตัด "public/" ออกถ้ามี
+            const withoutPublic = storageSegment.startsWith('public/')
+              ? storageSegment.slice('public/'.length)
+              : storageSegment;
+            const slashIndex = withoutPublic.indexOf('/');
+            if (slashIndex !== -1) {
+              const bucket = withoutPublic.slice(0, slashIndex);
+              const objectPath = withoutPublic.slice(slashIndex + 1);
+
+              const { data, error } = await supabase.storage
+                .from(bucket)
+                .createSignedUrl(objectPath, 3600); // 1 hour
+
+              if (!error && data?.signedUrl) {
+                entity.signedUrl = data.signedUrl;
+              }
+            }
+          }
+        } catch {
+          // ถ้า sign URL ล้มเหลว → ใช้ fileUrl เดิม (ไม่ให้ query พัง)
+        }
+
+        return entity;
+      }),
+    );
+
+    return enriched;
   }
 }

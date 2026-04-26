@@ -55,4 +55,12 @@ export class KycDocument {
   /** วันเวลาที่อัปโหลด */
   @Field({ description: 'Upload timestamp' })
   uploadedAt!: Date;
+
+  /**
+   * Signed URL สำหรับเข้าถึงไฟล์ชั่วคราว (หมดอายุ 1 ชั่วโมง)
+   * - ถูก generate ตอน query kycStatus เท่านั้น
+   * - ไม่ได้เก็บใน DB (runtime field)
+   */
+  @Field({ nullable: true, description: 'Temporary signed URL (1hr expiry)' })
+  signedUrl?: string;
 }

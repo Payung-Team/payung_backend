@@ -62,6 +62,7 @@ model Caregiver {
   // "none" | "pending" | "verified" | "rejected" <-- เปลี่ยนเป็น verified ให้ตรงกับ DB Constraint
   kycSubmittedAt  DateTime? @map("kyc_submitted_at")
   kycVerifiedAt   DateTime? @map("kyc_verified_at")   // วันที่ admin verify KYC (null ถ้ายังไม่ผ่าน)
+  resubmitCount   Int       @default(0) @map("resubmit_count")  // จำนวนครั้งที่ resubmit (audit log)
   isSearchable    Boolean   @default(false) @map("is_searchable")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
