@@ -43,6 +43,7 @@ type PrismaNotification = {
 /** options สำหรับ findByUser */
 export type FindByUserOptions = {
   limit?: number;         // จำกัดจำนวน (default: ไม่จำกัด)
+  offset?: number;        // ข้ามกี่รายการ (สำหรับ pagination — PYG-97)
   unreadOnly?: boolean;   // true = ดึงเฉพาะที่ยังไม่อ่าน
 };
 
@@ -123,7 +124,7 @@ export class NotificationService {
     userId: string,
     options: FindByUserOptions = {},
   ): Promise<Notification[]> {
-    const { limit, unreadOnly } = options;
+    const { limit, offset, unreadOnly } = options;
 
     const notifications = await this.prismaService.notification.findMany({
       where: {
@@ -132,8 +133,9 @@ export class NotificationService {
         ...(unreadOnly ? { isRead: false } : {}),
       },
       orderBy: { createdAt: 'desc' },
-      // ถ้า limit = undefined → Prisma ไม่จำกัด
+      // ถ้า limit/offset = undefined → Prisma ไม่จำกัด
       take: limit,
+      skip: offset,
     });
 
     return notifications.map((n) => this.mapToEntity(n));

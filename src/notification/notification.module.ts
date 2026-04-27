@@ -12,9 +12,15 @@
  */
 import { Module } from '@nestjs/common';
 import { NotificationService } from './notification.service';
+import { NotificationResolver } from './notification.resolver';
+import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 
 @Module({
-  providers: [NotificationService],
+  providers: [
+    NotificationService,
+    NotificationResolver,    // PYG-97: GraphQL endpoints
+    SupabaseAuthGuard,       // ใช้ใน @UseGuards บน NotificationResolver
+  ],
   exports: [NotificationService],  // ให้ module อื่น inject ได้
 })
 export class NotificationModule {}

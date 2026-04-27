@@ -30,6 +30,7 @@ type PrismaUser = {
   bio: string | null;
   role: number;
   isActive: boolean;
+  emailPreferences: boolean;  // PYG-97
   createdAt: Date;
   updatedAt: Date;
 };
@@ -54,6 +55,7 @@ export class UserService {
       bio: user.bio ?? undefined,
       role: user.role,
       isActive: user.isActive,
+      emailPreferences: user.emailPreferences,  // PYG-97
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
@@ -187,6 +189,29 @@ export class UserService {
         }),
         // updatedAt อัปเดตอัตโนมัติ เพราะ @updatedAt ใน Prisma schema
       },
+    });
+
+    return this.mapToEntity(user);
+  }
+
+  /**
+   * อัปเดตการรับ email notification (PYG-97)
+   *
+   * ใช้เมื่อ: user เปิด/ปิดการรับอีเมลแจ้งเตือนใน settings
+   * - true  = รับอีเมล (KYC submitted/verified/rejected ฯลฯ)
+   * - false = EmailService จะ skip การส่ง email ทุกประเภท
+   *
+   * @param id      - users.id
+   * @param enabled - true = รับ, false = ไม่รับ
+   * @throws NotFoundException ถ้าไม่พบ user
+   */
+  async updateEmailPreference(id: string, enabled: boolean): Promise<User> {
+    // ตรวจว่า user มีอยู่จริง
+    await this.findById(id);
+
+    const user = await this.prismaService.user.update({
+      where: { id },
+      data: { emailPreferences: enabled },
     });
 
     return this.mapToEntity(user);

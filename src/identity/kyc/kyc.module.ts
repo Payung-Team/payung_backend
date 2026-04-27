@@ -19,8 +19,13 @@ import { CaregiverService } from './caregiver.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { NotificationModule } from '../../notification/notification.module';
+import { EmailModule } from '../../email/email.module';
 
 @Module({
+  // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
+  // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
+  imports: [NotificationModule, EmailModule],
   providers: [
     KycResolver,
     KycService,
