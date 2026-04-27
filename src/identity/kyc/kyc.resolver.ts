@@ -15,11 +15,12 @@
  *
  * Resolver ไม่ควรมี business logic ซับซ้อน — มันแค่รับ request แล้วส่งต่อให้ Service ทำงาน
  */
-import { Args, Mutation, Resolver } from '@nestjs/graphql';
+import { Args, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
 import { KycInput } from './dto/kyc.input';
 import { Caregiver } from './entities/caregiver.entity';
+import { KycStatusPayload } from './entities/kyc-status.payload';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -55,6 +56,15 @@ export class KycResolver {
    * @CurrentUser() = ดึง user ที่ login อยู่จาก JWT token (inject โดย SupabaseAuthGuard)
    * @Args('input') = ดึงค่า "input" จาก GraphQL arguments
    */
+  @Query(() => KycStatusPayload, {
+    description: 'Get KYC status of the current user',
+  })
+  async kycStatus(
+    @CurrentUser() user: AuthUser,
+  ): Promise<KycStatusPayload> {
+    return this.kycService.getKycStatus(user.id);
+  }
+
   @Mutation(() => Caregiver, {
     description: 'Submit KYC information (caregiver only)',
   })
