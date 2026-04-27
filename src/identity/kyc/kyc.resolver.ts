@@ -18,8 +18,13 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
+import { KycDocumentService } from './kyc-document.service';
+import { CaregiverService } from './caregiver.service';
 import { KycInput } from './dto/kyc.input';
+import { UploadDocumentInput } from './dto/upload-document.input';
+import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { Caregiver } from './entities/caregiver.entity';
+import { KycDocument } from './entities/kyc-document.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -31,8 +36,11 @@ import {
 @Resolver()
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 export class KycResolver {
-  // NestJS จะ inject KycService เข้ามาอัตโนมัติ (Dependency Injection)
-  constructor(private kycService: KycService) {}
+  constructor(
+    private kycService: KycService,
+    private kycDocumentService: KycDocumentService,
+    private caregiverService: CaregiverService,
+  ) {}
 
   /**
    * submitKyc mutation — ใช้ใน GraphQL Playground แบบนี้:
@@ -58,11 +66,40 @@ export class KycResolver {
   @Mutation(() => Caregiver, {
     description: 'Submit KYC information (caregiver only)',
   })
-  @Roles(2) // 2 = caregiver role เท่านั้น
+  @Roles(2)
   async submitKyc(
     @CurrentUser() user: AuthUser,
     @Args('input') input: KycInput,
   ): Promise<Caregiver> {
     return this.kycService.submitKyc(user, input);
+  }
+
+  @Mutation(() => Caregiver, {
+    description: 'Update caregiver profile (verified caregiver only)',
+  })
+  @Roles(2)
+  async updateCaregiverProfile(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: UpdateCaregiverInput,
+  ): Promise<Caregiver> {
+    return this.caregiverService.updateProfile(user.id, input);
+  }
+
+  @Mutation(() => KycDocument, {
+    description: 'Register a KYC document record after uploading to storage',
+  })
+  @Roles(2)
+  async uploadKycDocument(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: UploadDocumentInput,
+  ): Promise<KycDocument> {
+    return this.kycDocumentService.create({
+      userId: user.id,
+      documentType: input.docType,
+      fileUrl: input.fileUrl,
+      fileName: input.fileName,
+      fileSize: input.fileSize,
+      mimeType: input.mimeType,
+    });
   }
 }

@@ -24,6 +24,10 @@ export class Caregiver {
   @Field({ description: 'Internal user ID linked to this caregiver' })
   userId!: string;
 
+  /** รหัสประจำตัว caregiver ที่ system generate ให้ เช่น CG-0001 */
+  @Field({ nullable: true, description: 'System-generated caregiver number e.g. CG-0001' })
+  caregiverNumber?: string;
+
   /** ชื่อ-นามสกุลจริง (ต้องตรงกับบัตรประชาชน) */
   @Field()
   fullName!: string;
@@ -31,6 +35,18 @@ export class Caregiver {
   /** เลขบัตรประชาชน 13 หลัก */
   @Field()
   idCardNumber!: string;
+
+  /** เพศ: "male" | "female" | "other" */
+  @Field({ nullable: true })
+  gender?: string;
+
+  /** วันเกิด */
+  @Field({ nullable: true })
+  dateOfBirth?: Date;
+
+  /** ที่อยู่ */
+  @Field({ nullable: true })
+  address?: string;
 
   /** เบอร์โทรศัพท์ติดต่อ */
   @Field()

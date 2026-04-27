@@ -95,12 +95,19 @@ export class KycService {
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
+      // Generate caregiverNumber เฉพาะ record ใหม่ (CG-0001, CG-0002, ...)
+      const count = await tx.caregiver.count();
+      const caregiverNumber = `CG-${String(count + 1).padStart(4, '0')}`;
+
       const upserted = await tx.caregiver.upsert({
         where: { userId: user.id },
         create: {
           userId: user.id,
+          caregiverNumber,
           fullName: input.fullName,
           idCardNumber: input.idCardNumber,
+          gender: input.gender,
+          dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
@@ -113,6 +120,8 @@ export class KycService {
         update: {
           fullName: input.fullName,
           idCardNumber: input.idCardNumber,
+          gender: input.gender,
+          dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
@@ -120,8 +129,6 @@ export class KycService {
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
-          // ลบ kycVerifiedAt ออกในกรณี resubmit (เคลียร์สถานะ verify เก่า)
-          // ถ้า case นี้ kycVerifiedAt ควรเป็น null อยู่แล้วเพราะมาจาก rejected — แต่ set ชัดเจนเพื่อความแน่นอน
           kycVerifiedAt: null,
         },
       });
@@ -313,8 +320,11 @@ export class KycService {
   private mapToEntity(caregiver: {
     id: string;
     userId: string;
+    caregiverNumber: string | null;
     fullName: string | null;
     idCardNumber: string | null;
+    gender: string | null;
+    dateOfBirth: Date | null;
     phone: string | null;
     skills: string[];
     experienceYears: number | null;
@@ -330,8 +340,11 @@ export class KycService {
     return {
       id: caregiver.id,
       userId: caregiver.userId,
+      caregiverNumber: caregiver.caregiverNumber ?? undefined,
       fullName: caregiver.fullName!,
       idCardNumber: caregiver.idCardNumber!,
+      gender: caregiver.gender ?? undefined,
+      dateOfBirth: caregiver.dateOfBirth ?? undefined,
       phone: caregiver.phone!,
       skills: caregiver.skills,
       experienceYears: caregiver.experienceYears!,
