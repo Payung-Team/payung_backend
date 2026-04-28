@@ -159,6 +159,14 @@ export class AuthService {
           role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
           displayName: input.email.split('@')[0], // default จาก email prefix
           isActive: true,
+          // หากเป็น caregiver (role=2) ให้สร้าง row ในตาราง caregiver ด้วย
+          ...(input.role === 2 ? {
+            caregiver: {
+              create: {
+                kycStatus: 'none',
+              }
+            }
+          } : {})
         },
       });
     } catch (err: any) {
