@@ -88,8 +88,12 @@ export class AuthService {
         email: user.email,
         displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
         avatarUrl: user.avatarUrl ?? undefined, // เช่นเดียวกัน — แปลง null → undefined
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
+        emailPreferences: user.emailPreferences,  // PYG-97
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -155,13 +159,6 @@ export class AuthService {
           role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
           displayName: input.email.split('@')[0], // default จาก email prefix
           isActive: true,
-          ...(input.role === 2 && {
-            caregiver: {
-              create: {
-                kycStatus: 'none',
-              },
-            },
-          }),
         },
       });
     } catch (err: any) {
@@ -195,8 +192,12 @@ export class AuthService {
         email: user.email,
         displayName: user.displayName ?? undefined,
         avatarUrl: user.avatarUrl ?? undefined,
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
+        emailPreferences: user.emailPreferences,  // PYG-97
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },

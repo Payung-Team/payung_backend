@@ -65,4 +65,25 @@ export class AuthResolver {
   ): Promise<User> {
     return this.userService.updateProfile(user.id, input);
   }
+
+  /**
+   * updateEmailPreference (PYG-97) — เปิด/ปิดรับอีเมลแจ้งเตือน
+   *
+   * mutation {
+   *   updateEmailPreference(enabled: false) { id emailPreferences }
+   * }
+   *
+   * เมื่อ false → EmailService จะ skip การส่งอีเมลทุกชนิดให้ user คนนี้
+   * (in-app notification ยังคงทำงานปกติ — ปิดเฉพาะ email)
+   */
+  @Mutation(() => User, {
+    description: 'Toggle email notification preference',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async updateEmailPreference(
+    @CurrentUser() user: AuthUser,
+    @Args('enabled', { type: () => Boolean }) enabled: boolean,
+  ): Promise<User> {
+    return this.userService.updateEmailPreference(user.id, enabled);
+  }
 }

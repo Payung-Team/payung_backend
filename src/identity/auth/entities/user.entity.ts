@@ -78,6 +78,10 @@ export class User {
   @Field({ description: 'Whether the user account is active' })
   isActive!: boolean;
 
+  /** PYG-97: รับอีเมลแจ้งเตือนหรือไม่ (default: true) */
+  @Field({ description: 'Whether the user receives email notifications' })
+  emailPreferences!: boolean;
+
   /** วันเวลาที่สร้าง account */
   @Field({ description: 'Account creation timestamp' })
   createdAt!: Date;

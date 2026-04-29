@@ -16,15 +16,12 @@
  *
  * Resolver ไม่ควรมี business logic ซับซ้อน — มันแค่รับ request แล้วส่งต่อให้ Service ทำงาน
  */
-import { Args, Mutation, Resolver, Query } from '@nestjs/graphql';
+import { Args, Mutation, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { KycService } from './kyc.service';
-import { KycDocumentService } from './kyc-document.service';
 import { KycInput } from './dto/kyc.input';
-import { KycStatusPayload } from './dto/kyc-status.payload';
 import { UploadDocumentInput } from './dto/upload-document.input';
 import { Caregiver } from './entities/caregiver.entity';
-import { KycDocument } from './entities/kyc-document.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -36,10 +33,8 @@ import {
 @Resolver()
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 export class KycResolver {
-  constructor(
-    private kycService: KycService,
-    private kycDocumentService: KycDocumentService,
-  ) {}
+  // NestJS จะ inject KycService เข้ามาอัตโนมัติ (Dependency Injection)
+  constructor(private kycService: KycService) {}
 
   /**
    * submitKyc mutation — ใช้ใน GraphQL Playground แบบนี้:
@@ -73,35 +68,6 @@ export class KycResolver {
     return this.kycService.submitKyc(user, input);
   }
 
-  /**
-   * kycStatus query — ดึงข้อมูล KYC status ครบสำหรับ Status Page
-   *
-   * query {
-   *   kycStatus {
-   *     status
-   *     submittedAt
-   *     verifiedAt
-   *     rejectedAt
-   *     rejectedReason
-   *     caregiver { id fullName kycStatus }
-   *     documents { id docType fileName signedUrl }
-   *   }
-   * }
-   *
-   * รองรับทุก status:
-   * - "none"     → { status: 'none', documents: [] }
-   * - "pending"  → { status, submittedAt, caregiver, documents[] }
-   * - "verified" → { status, submittedAt, verifiedAt, caregiver, documents[] }
-   * - "rejected" → { status, submittedAt, rejectedAt, rejectedReason, caregiver, documents[] }
-   */
-  @Query(() => KycStatusPayload, {
-    description: 'Get KYC status with full details for the Status Page',
-  })
-  @Roles(2) // 2 = caregiver role เท่านั้น
-  async kycStatus(@CurrentUser() user: AuthUser): Promise<KycStatusPayload> {
-    return this.kycService.getKycStatus(user.id);
-  }
-
   @Query(() => Caregiver, {
     description: 'Get current caregiver profile',
   })
@@ -110,65 +76,6 @@ export class KycResolver {
     return this.kycService.getCaregiverByUserId(user.id);
   }
 
-  /**
-   * resubmitKyc mutation — ยื่น KYC ใหม่หลังถูก reject
-   *
-   * mutation {
-   *   resubmitKyc(input: {
-   *     fullName: "สมชาย ใจดี"
-   *     idCardNumber: "1234567890123"
-   *     phone: "0812345678"
-   *     skills: ["elder_care"]
-   *     experienceYears: 3
-   *     hourlyRate: 150.0
-   *     documentIds: ["uuid-new-1", "uuid-new-2"]
-   *   }) {
-   *     id kycStatus kycSubmittedAt resubmitCount
-   *   }
-   * }
-   *
-   * Guard:
-   * - ต้องเป็น caregiver (role = 2)
-   * - ต้อง login อยู่ (SupabaseAuthGuard)
-   * - kycStatus ต้องเป็น 'rejected' — ตรวจสอบใน KycService
-   *   - none     → BadRequestException
-   *   - pending  → ConflictException
-   *   - verified → ConflictException
-   */
-  @Mutation(() => Caregiver, {
-    description: 'Resubmit KYC after rejection (caregiver only, status must be rejected)',
-  })
-  @Roles(2) // 2 = caregiver role เท่านั้น
-  async resubmitKyc(
-    @CurrentUser() user: AuthUser,
-    @Args('input') input: KycInput,
-  ): Promise<Caregiver> {
-    return this.kycService.resubmitKyc(user, input);
-  }
-
-  /**
-   * deleteKycDocument mutation — ลบเอกสาร KYC
-   *
-   * mutation {
-   *   deleteKycDocument(documentId: "uuid-here")
-   * }
-   *
-   * Error cases:
-   * - document ไม่มีอยู่                        → 404 NotFoundException
-   * - document ไม่ใช่ของ user คนนี้             → 403 ForbiddenException
-   * - status = pending หรือ verified            → 409 ConflictException
-   * - status = rejected หรือ none (ไม่มี link) → ✅ ลบได้
-   */
-  @Mutation(() => Boolean, {
-    description: 'Delete a KYC document (allowed only when status is rejected or none)',
-  })
-  @Roles(2) // 2 = caregiver role เท่านั้น
-  async deleteKycDocument(
-    @CurrentUser() user: AuthUser,
-    @Args('documentId', { type: () => String }) documentId: string,
-  ): Promise<boolean> {
-    return this.kycService.deleteKycDocument(documentId, user.id);
-  }
   @Mutation(() => KycDocument, {
     description: 'Save uploaded KYC document information',
   })
