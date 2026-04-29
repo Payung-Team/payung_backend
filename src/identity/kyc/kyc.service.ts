@@ -20,6 +20,7 @@ import {
 import { PrismaService } from '../../common/prisma.service';
 import { KycInput } from './dto/kyc.input';
 import { Caregiver } from './entities/caregiver.entity';
+import { KycStatusPayload } from './entities/kyc-status.payload';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
@@ -296,6 +297,39 @@ export class KycService {
     } catch (err) {
       this.logCaught('email kyc_rejected', userId, err);
     }
+  }
+
+  /**
+   * getKycStatus — ดึงสถานะ KYC ของ user
+   *
+   * - ไม่พบ caregiver record → { status: 'none' }
+   * - rejected → ดึง rejectedReason จาก KycReview ล่าสุด
+   */
+  async getKycStatus(userId: string): Promise<KycStatusPayload> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (!caregiver) {
+      return { status: 'none' };
+    }
+
+    let rejectedReason: string | undefined;
+    if (caregiver.kycStatus === 'rejected') {
+      const latestReview = await this.prismaService.kycReview.findFirst({
+        where: { caregiverId: caregiver.id, action: 'rejected' },
+        orderBy: { reviewedAt: 'desc' },
+        select: { reason: true },
+      });
+      rejectedReason = latestReview?.reason ?? undefined;
+    }
+
+    return {
+      status: caregiver.kycStatus,
+      submittedAt: caregiver.kycSubmittedAt ?? undefined,
+      verifiedAt: caregiver.kycVerifiedAt ?? undefined,
+      rejectedReason,
+    };
   }
 
   /** Helper สำหรับ log error ที่ swallow ไว้ — ป้องกัน silent failure */
