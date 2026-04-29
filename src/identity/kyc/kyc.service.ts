@@ -12,25 +12,24 @@
  *   เหตุผล: business action สำเร็จแล้ว, side-effect (แจ้งเตือน) ไม่ควรย้อนกลับ
  */
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { KycInput } from './dto/kyc.input';
+import { KycStatusPayload } from './dto/kyc-status.payload';
 import { Caregiver } from './entities/caregiver.entity';
-import { KycStatusPayload } from './entities/kyc-status.payload';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
-import { NotificationType } from '../../notification/entities/notification-type.enum';
 import { EmailService } from '../../email/email.service';
+import { NotificationType } from '../../notification/entities/notification-type.enum';
 
-// Statuses ที่อนุญาตให้ submit/resubmit ได้
-// 'none'     = ครั้งแรก
-// 'rejected' = resubmit หลังถูก admin reject (PYG-97)
-// 'pending' / 'verified' = ห้าม submit ซ้ำ (กันรบกวน admin queue + กันแก้หลังผ่าน)
+/** สถานะที่อนุญาตให้ยื่น KYC ได้ (first time หรือ resubmit) */
 const SUBMITTABLE_STATUSES = new Set(['none', 'rejected']);
 
 @Injectable()
@@ -38,10 +37,10 @@ export class KycService {
   private readonly logger = new Logger(KycService.name);
 
   constructor(
-    private readonly prismaService: PrismaService,
-    private readonly caregiverService: CaregiverService,
-    private readonly notificationService: NotificationService,
-    private readonly emailService: EmailService,
+    private prismaService: PrismaService,
+    private caregiverService: CaregiverService,
+    private notificationService: NotificationService,
+    private emailService: EmailService,
   ) {}
 
   /**
@@ -72,7 +71,6 @@ export class KycService {
     const isResubmit = currentStatus === 'rejected';
 
     // ── ขั้นตอนที่ 2: Validate documentIds ───────────────────────────
-    // ต้องมีอยู่จริง + เป็นของ user คนนี้ (กัน user A ใช้ doc ของ user B)
     if (input.documentIds.length > 0) {
       const foundDocs = await this.prismaService.kycDocument.findMany({
         where: {
@@ -96,12 +94,22 @@ export class KycService {
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
+      // Generate caregiverNumber เฉพาะ record ใหม่
+      let caregiverNumber = existing?.caregiverNumber;
+      if (!caregiverNumber) {
+        const count = await tx.caregiver.count();
+        caregiverNumber = `CG-${String(count + 1).padStart(4, '0')}`;
+      }
+
       const upserted = await tx.caregiver.upsert({
         where: { userId: user.id },
         create: {
           userId: user.id,
+          caregiverNumber,
           fullName: input.fullName,
           idCardNumber: input.idCardNumber,
+          gender: input.gender,
+          dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
@@ -114,6 +122,8 @@ export class KycService {
         update: {
           fullName: input.fullName,
           idCardNumber: input.idCardNumber,
+          gender: input.gender,
+          dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
@@ -121,9 +131,8 @@ export class KycService {
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
-          // ลบ kycVerifiedAt ออกในกรณี resubmit (เคลียร์สถานะ verify เก่า)
-          // ถ้า case นี้ kycVerifiedAt ควรเป็น null อยู่แล้วเพราะมาจาก rejected — แต่ set ชัดเจนเพื่อความแน่นอน
           kycVerifiedAt: null,
+          resubmitCount: isResubmit ? (existing?.resubmitCount ?? 0) + 1 : 0,
         },
       });
 
@@ -153,15 +162,75 @@ export class KycService {
   }
 
   /**
-   * onKycVerified — เรียกจาก admin endpoint (Sprint 3) ตอน approve KYC (PYG-97)
-   *
-   * Side-effects:
-   * - update caregiver.kycStatus = 'verified' + set kycVerifiedAt
-   * - trigger notification (kyc_verified) + email
-   *
-   * @param caregiverId - UUID ของ caregiver ที่จะ approve
-   * @returns Caregiver entity ที่ผ่านการ approve แล้ว
-   * @throws NotFoundException ถ้าไม่พบ caregiver
+   * resubmitKyc — ยื่น KYC ใหม่หลังถูก reject
+   */
+  async resubmitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
+    return this.submitKyc(user, input);
+  }
+
+  /**
+   * getKycStatus — ดึงข้อมูล KYC status ครบชุดสำหรับ Status Page
+   */
+  async getKycStatus(userId: string): Promise<KycStatusPayload> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (!caregiver) {
+      return {
+        status: 'none',
+        documents: [],
+      };
+    }
+
+    const documents = await this.caregiverService.getDocumentsWithSignedUrls(
+      caregiver.id,
+    );
+
+    return {
+      status: caregiver.kycStatus,
+      submittedAt: caregiver.kycSubmittedAt ?? undefined,
+      verifiedAt: caregiver.kycVerifiedAt ?? undefined,
+      caregiver: this.mapToEntity(caregiver),
+      documents,
+    };
+  }
+
+  /**
+   * deleteKycDocument — ลบเอกสาร KYC
+   */
+  async deleteKycDocument(documentId: string, userId: string): Promise<boolean> {
+    const doc = await this.prismaService.kycDocument.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!doc) {
+      throw new NotFoundException(`Document with ID "${documentId}" not found`);
+    }
+
+    if (doc.userId !== userId) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์ลบเอกสารนี้');
+    }
+
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (caregiver && (caregiver.kycStatus === 'pending' || caregiver.kycStatus === 'verified')) {
+      throw new ConflictException(
+        'ไม่สามารถลบเอกสารได้ขณะที่อยู่ระหว่างการตรวจสอบหรือผ่านการยืนยันแล้ว',
+      );
+    }
+
+    await this.prismaService.kycDocument.delete({
+      where: { id: documentId },
+    });
+
+    return true;
+  }
+
+  /**
+   * onKycVerified — เรียกจาก admin endpoint เมื่อ approve KYC
    */
   async onKycVerified(caregiverId: string): Promise<Caregiver> {
     // updateStatus จะ throw ถ้าไม่พบ caregiver + set kycVerifiedAt อัตโนมัติ
@@ -201,11 +270,7 @@ export class KycService {
 
   // ─── Private helpers — trigger notification + email ──────────────────
 
-  /** First-time KYC submit → kyc_submitted event */
-  private async triggerKycSubmitted(
-    userId: string,
-    caregiverId: string,
-  ): Promise<void> {
+  private async triggerKycSubmitted(userId: string, caregiverId: string): Promise<void> {
     try {
       await this.notificationService.create(
         userId,
@@ -274,19 +339,14 @@ export class KycService {
     }
   }
 
-  /** Admin reject → kyc_rejected event (พร้อม reason) */
-  private async triggerKycRejected(
-    userId: string,
-    caregiverId: string,
-    reason: string,
-  ): Promise<void> {
+  private async triggerKycRejected(userId: string, caregiverId: string, reason: string): Promise<void> {
     try {
       await this.notificationService.create(
         userId,
         NotificationType.kyc_rejected,
-        'ไม่ผ่านการตรวจสอบ',
-        `เหตุผล: ${reason} — กรุณาส่งเอกสารใหม่`,
-        { caregiverId, linkPath: '/kyc', reason },
+        'การยืนยันตัวตนไม่ผ่าน',
+        `เหตุผล: ${reason}`,
+        { caregiverId, linkPath: '/kyc/resubmit' },
       );
     } catch (err) {
       this.logCaught('notification kyc_rejected', userId, err);
@@ -299,82 +359,32 @@ export class KycService {
     }
   }
 
-  /**
-   * getKycStatus — ดึงสถานะ KYC ของ user
-   *
-   * - ไม่พบ caregiver record → { status: 'none' }
-   * - rejected → ดึง rejectedReason จาก KycReview ล่าสุด
-   */
-  async getKycStatus(userId: string): Promise<KycStatusPayload> {
-    const caregiver = await this.prismaService.caregiver.findUnique({
-      where: { userId },
-    });
-
-    if (!caregiver) {
-      return { status: 'none' };
-    }
-
-    let rejectedReason: string | undefined;
-    if (caregiver.kycStatus === 'rejected') {
-      const latestReview = await this.prismaService.kycReview.findFirst({
-        where: { caregiverId: caregiver.id, action: 'rejected' },
-        orderBy: { reviewedAt: 'desc' },
-        select: { reason: true },
-      });
-      rejectedReason = latestReview?.reason ?? undefined;
-    }
-
-    return {
-      status: caregiver.kycStatus,
-      submittedAt: caregiver.kycSubmittedAt ?? undefined,
-      verifiedAt: caregiver.kycVerifiedAt ?? undefined,
-      rejectedReason,
-    };
+  private logCaught(action: string, userId: string, error: any) {
+    this.logger.error(
+      `Failed to trigger ${action} for user ${userId}: ${error.message}`,
+      error.stack,
+    );
   }
 
-  /** Helper สำหรับ log error ที่ swallow ไว้ — ป้องกัน silent failure */
-  private logCaught(action: string, userId: string, err: unknown): void {
-    const msg = err instanceof Error ? err.message : String(err);
-    this.logger.warn(`Failed to trigger "${action}" for user ${userId}: ${msg}`);
-  }
-
-  // ─── Private mapper ──────────────────────────────────────────────────
-
-  /**
-   * แปลง Prisma Caregiver → GraphQL Caregiver entity
-   * ใช้ in submitKyc — fields ที่ submit ใหม่จะมีค่าเสมอ ใช้ ! ได้
-   */
-  private mapToEntity(caregiver: {
-    id: string;
-    userId: string;
-    fullName: string | null;
-    idCardNumber: string | null;
-    phone: string | null;
-    skills: string[];
-    experienceYears: number | null;
-    hourlyRate: number | null;
-    bio: string | null;
-    kycStatus: string;
-    kycSubmittedAt: Date | null;
-    kycVerifiedAt: Date | null;
-    isSearchable: boolean;
-    createdAt: Date;
-    updatedAt: Date;
-  }): Caregiver {
+  private mapToEntity(caregiver: any): Caregiver {
     return {
       id: caregiver.id,
       userId: caregiver.userId,
-      fullName: caregiver.fullName!,
-      idCardNumber: caregiver.idCardNumber!,
-      phone: caregiver.phone!,
+      caregiverNumber: caregiver.caregiverNumber ?? undefined,
+      fullName: caregiver.fullName ?? '',
+      idCardNumber: caregiver.idCardNumber ?? '',
+      gender: caregiver.gender ?? undefined,
+      dateOfBirth: caregiver.dateOfBirth ?? undefined,
+      phone: caregiver.phone ?? '',
       skills: caregiver.skills,
-      experienceYears: caregiver.experienceYears!,
-      hourlyRate: caregiver.hourlyRate!,
+      experienceYears: caregiver.experienceYears ?? 0,
+      hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,
       kycStatus: caregiver.kycStatus,
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       kycVerifiedAt: caregiver.kycVerifiedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
     };

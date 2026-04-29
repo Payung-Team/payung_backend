@@ -51,18 +51,22 @@ model User {
 model Caregiver {
   id              String    @id @default(uuid())
   userId          String    @unique @map("user_id")
+  caregiverNumber String?   @unique @map("caregiver_number") // CG-0001, system-generated
   fullName        String?   @map("full_name")
   idCardNumber    String?   @map("id_card_number")
+  gender          String?   // "male" | "female" | "other"
+  dateOfBirth     DateTime? @map("date_of_birth")
+  address         String?
   phone           String?
   skills          String[]  // array of strings
   experienceYears Int?      @map("experience_years")
   hourlyRate      Float?    @map("hourly_rate")
   bio             String?
   kycStatus       String    @default("none") @map("kyc_status")
-  // "none" | "pending" | "verified" | "rejected" <-- เปลี่ยนเป็น verified ให้ตรงกับ DB Constraint
+  // "none" | "pending" | "verified" | "rejected"
   kycSubmittedAt  DateTime? @map("kyc_submitted_at")
-  kycVerifiedAt   DateTime? @map("kyc_verified_at")   // วันที่ admin verify KYC (null ถ้ายังไม่ผ่าน)
-  resubmitCount   Int       @default(0) @map("resubmit_count")  // จำนวนครั้งที่ resubmit (audit log)
+  kycVerifiedAt   DateTime? @map("kyc_verified_at")
+  resubmitCount   Int       @default(0) @map("resubmit_count")
   isSearchable    Boolean   @default(false) @map("is_searchable")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")

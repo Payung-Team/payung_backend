@@ -17,14 +17,19 @@ import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nest
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
+import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { KycDocument } from './entities/kyc-document.entity';
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
   id: string;
   userId: string;
+  caregiverNumber: string | null;
   fullName: string | null;
   idCardNumber: string | null;
+  gender: string | null;
+  dateOfBirth: Date | null;
+  address: string | null;
   phone: string | null;
   skills: string[];
   experienceYears: number | null;
@@ -74,14 +79,16 @@ export class CaregiverService {
     return {
       id: caregiver.id,
       userId: caregiver.userId,
-      // fields เหล่านี้อาจ null ก่อน submit KYC — ใช้ fallback เป็น empty string/0
+      caregiverNumber: caregiver.caregiverNumber ?? undefined,
       fullName: caregiver.fullName ?? '',
       idCardNumber: caregiver.idCardNumber ?? '',
+      gender: caregiver.gender ?? undefined,
+      dateOfBirth: caregiver.dateOfBirth ?? undefined,
+      address: caregiver.address ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
-      // nullable fields ใน GraphQL → ใช้ ?? undefined
       bio: caregiver.bio ?? undefined,
       kycStatus: caregiver.kycStatus,
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
@@ -197,7 +204,6 @@ export class CaregiverService {
     caregiverId: string,
     isSearchable: boolean,
   ): Promise<Caregiver> {
-    // ตรวจว่า caregiver มีอยู่จริง
     const existing = await this.prismaService.caregiver.findUnique({
       where: { id: caregiverId },
     });
@@ -211,6 +217,50 @@ export class CaregiverService {
     const caregiver = await this.prismaService.caregiver.update({
       where: { id: caregiverId },
       data: { isSearchable },
+    });
+
+    return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * updateProfile — แก้ไข profile ของ caregiver (เฉพาะ whitelist fields)
+   *
+   * Whitelist: bio, hourlyRate, skills, experienceYears, phone
+   * Locked: fullName, idCardNumber, gender, dateOfBirth, caregiverNumber
+   *
+   * @param userId - internal user id ของ caregiver ที่ login อยู่
+   * @param input  - fields ที่ต้องการเปลี่ยน (partial update)
+   * @throws NotFoundException  ถ้าไม่พบ caregiver record
+   * @throws ForbiddenException ถ้า kycStatus ไม่ใช่ "verified"
+   */
+  async updateProfile(
+    userId: string,
+    input: UpdateCaregiverInput,
+  ): Promise<Caregiver> {
+    const existing = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Caregiver not found`);
+    }
+
+    if (existing.kycStatus !== 'verified') {
+      throw new ForbiddenException(
+        'กรุณารอผลตรวจสอบ KYC ก่อนแก้ไขโปรไฟล์',
+      );
+    }
+
+    const caregiver = await this.prismaService.caregiver.update({
+      where: { userId },
+      data: {
+        ...(input.bio !== undefined && { bio: input.bio }),
+        ...(input.hourlyRate !== undefined && { hourlyRate: input.hourlyRate }),
+        ...(input.skills !== undefined && { skills: input.skills }),
+        ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
+        ...(input.phone !== undefined && { phone: input.phone }),
+        ...(input.address !== undefined && { address: input.address }),
+      },
     });
 
     return this.mapToEntity(caregiver);
