@@ -14,6 +14,7 @@
  */
 import { Module } from '@nestjs/common';
 import { KycResolver } from './kyc.resolver';
+import { CaregiverResolver } from './caregiver.resolver';
 import { KycService } from './kyc.service';
 import { CaregiverService } from './caregiver.service';
 import { KycDocumentService } from './kyc-document.service';
@@ -28,9 +29,10 @@ import { EmailModule } from '../../email/email.module';
   imports: [NotificationModule, EmailModule],
   providers: [
     KycResolver,
+    CaregiverResolver,
     KycService,
-    CaregiverService,       // CRUD สำหรับ caregivers table
-    KycDocumentService,     // CRUD สำหรับ kyc_documents table
+    CaregiverService, // CRUD สำหรับ caregivers table
+    KycDocumentService, // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,
     RolesGuard,
   ],

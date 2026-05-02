@@ -14,10 +14,16 @@ type AuthPayload {
 }
 
 type Caregiver {
+  address: String
   bio: String
+
+  """System-generated caregiver number e.g. CG-0001"""
+  caregiverNumber: String
   createdAt: DateTime!
+  dateOfBirth: DateTime
   experienceYears: Int!
   fullName: String!
+  gender: String
   hourlyRate: Float!
   id: ID!
   idCardNumber: String!
@@ -89,6 +95,9 @@ input KycInput {
   """Short bio / introduction"""
   bio: String
 
+  """Date of birth"""
+  dateOfBirth: DateTime
+
   """IDs of previously uploaded KYC documents"""
   documentIds: [String!]!
 
@@ -97,6 +106,9 @@ input KycInput {
 
   """Full legal name (must match ID card)"""
   fullName: String!
+
+  """Gender: male | female | other"""
+  gender: String
 
   """Hourly rate in THB"""
   hourlyRate: Float!
@@ -152,6 +164,12 @@ type Mutation {
   """Logout user"""
   logout: Boolean!
 
+  """Mark all notifications of current user as read"""
+  markAllAsRead: Boolean!
+
+  """Mark a single notification as read"""
+  markAsRead(id: String!): Notification!
+
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
 
@@ -164,11 +182,52 @@ type Mutation {
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
 
+  """Update caregiver profile (verified caregiver only)"""
+  updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
+
+  """Toggle email notification preference"""
+  updateEmailPreference(enabled: Boolean!): User!
+
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
 
   """Register a KYC document record after uploading to storage"""
   uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+}
+
+type Notification {
+  """Body / detail of the notification"""
+  body: String!
+
+  """When the notification was created"""
+  createdAt: DateTime!
+
+  """Optional JSON-stringified payload"""
+  data: String
+  id: ID!
+
+  """Whether the notification has been read"""
+  isRead: Boolean!
+
+  """When the notification was read (null if unread)"""
+  readAt: DateTime
+
+  """Short title shown in notification list"""
+  title: String!
+
+  """Notification category"""
+  type: NotificationType!
+
+  """Recipient user ID"""
+  userId: String!
+}
+
+"""Type of in-app notification"""
+enum NotificationType {
+  kyc_rejected
+  kyc_resubmitted
+  kyc_submitted
+  kyc_verified
 }
 
 type Query {
@@ -180,12 +239,41 @@ type Query {
 
   """Get current logged-in user"""
   me: User!
+
+  """Get current caregiver profile"""
+  myCaregiverProfile: Caregiver!
+
+  """List notifications of current user (newest first)"""
+  notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
+
+  """Count of unread notifications for current user"""
+  unreadCount: Int!
 }
 
 input RegisterInput {
   email: String!
   password: String!
   role: Int!
+}
+
+input UpdateCaregiverInput {
+  """Address"""
+  address: String
+
+  """Short bio / introduction"""
+  bio: String
+
+  """Years of caregiving experience"""
+  experienceYears: Int
+
+  """Hourly rate in THB"""
+  hourlyRate: Float
+
+  """Contact phone number (Thai format)"""
+  phone: String
+
+  """List of caregiver skills"""
+  skills: [String!]
 }
 
 input UpdateProfileInput {
@@ -232,6 +320,9 @@ type User {
   """Bio or personal description"""
   bio: String
 
+  """Caregiver profile (null if user is not a caregiver)"""
+  caregiver: Caregiver
+
   """Account creation timestamp"""
   createdAt: DateTime!
 
@@ -240,6 +331,9 @@ type User {
 
   """Email address of the user"""
   email: String!
+
+  """Whether the user receives email notifications"""
+  emailPreferences: Boolean!
 
   """Unique identifier of the user"""
   id: ID!
