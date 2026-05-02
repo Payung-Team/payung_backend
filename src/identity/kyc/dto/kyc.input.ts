@@ -121,6 +121,14 @@ export class KycInput {
   dateOfBirth?: Date;
 
   /**
+   * ที่อยู่ — optional
+   */
+  @Field({ nullable: true, description: 'Address' })
+  @IsOptional()
+  @IsString({ message: 'ที่อยู่ต้องเป็นข้อความ' })
+  address?: string;
+
+  /**
    * แนะนำตัวสั้นๆ — optional, สูงสุด 500 ตัวอักษร
    */
   @Field({ nullable: true, description: 'Short bio / introduction' })

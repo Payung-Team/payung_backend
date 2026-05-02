@@ -92,6 +92,9 @@ type KycDocument {
 }
 
 input KycInput {
+  """Address"""
+  address: String
+
   """Short bio / introduction"""
   bio: String
 
