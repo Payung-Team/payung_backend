@@ -27,13 +27,15 @@ import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
+import { CaregiverService } from '../kyc/caregiver.service';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private supabaseService: SupabaseService,
-    private prismaService: PrismaService,
-    private configService: ConfigService,
+    private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
+    private readonly configService: ConfigService,
+    private readonly caregiverService: CaregiverService,
   ) {}
 
   /**
@@ -152,26 +154,40 @@ export class AuthService {
     // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
     let user;
     try {
-      user = await this.prismaService.user.create({
-        data: {
-          supabaseUid: data.user.id, // UUID จาก Supabase
-          email: input.email,
-          role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
-          displayName: input.email.split('@')[0], // default จาก email prefix
-          isActive: true,
-          // หากเป็น caregiver (role=2) ให้สร้าง row ในตาราง caregiver ด้วย
-          ...(input.role === 2 ? {
-            caregiver: {
-              create: {
-                kycStatus: 'none',
-              }
+      // Generate caregiverNumber ก่อน ถ้า role เป็น caregiver
+      let caregiverNumber: string | undefined;
+      if (input.role === 2) {
+        caregiverNumber = await this.caregiverService.generateCaregiverNumber();
+        console.log('[AuthService.register] Generated caregiverNumber:', caregiverNumber);
+      }
+
+      const createData = {
+        supabaseUid: data.user.id, // UUID จาก Supabase
+        email: input.email,
+        role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
+        displayName: input.email.split('@')[0], // default จาก email prefix
+        isActive: true,
+        // หากเป็น caregiver (role=2) ให้สร้าง row ในตาราง caregiver ด้วย
+        ...(input.role === 2 ? {
+          caregiver: {
+            create: {
+              caregiverNumber, // เพิ่ม caregiverNumber ตั้งแต่แรก
+              kycStatus: 'none',
             }
-          } : {})
-        },
+          }
+        } : {})
+      };
+
+      console.log('[AuthService.register] Creating user with data:', JSON.stringify(createData, null, 2));
+
+      user = await this.prismaService.user.create({
+        data: createData,
       });
+
+      console.log('[AuthService.register] User created successfully:', user.id);
     } catch (err: any) {
       // ถ้า user สร้างล้มเหลว ให้ลบ user จาก Supabase ด้วย
-      console.error('Failed to create user in database:', err);
+      console.error('[AuthService.register] Failed to create user in database:', err);
       
       // ลองลบ Supabase user
       try {
@@ -181,13 +197,13 @@ export class AuthService {
         );
         await adminAuthClient.auth.admin.deleteUser(data.user.id);
       } catch (deleteErr) {
-        console.error('Failed to rollback Supabase user:', deleteErr);
+        console.error('[AuthService.register] Failed to rollback Supabase user:', deleteErr);
       }
       
       if (err.code === 'P2002') {
         throw new ConflictException('Email is already in use');
       }
-      throw new InternalServerErrorException('Failed to create user account in database');
+      throw new InternalServerErrorException('Failed to create user account in database: ' + err.message);
     }
 
     // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────

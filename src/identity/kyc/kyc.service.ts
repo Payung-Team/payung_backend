@@ -94,11 +94,12 @@ export class KycService {
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
-      // Generate caregiverNumber เฉพาะ record ใหม่
+      // Generate caregiverNumber เฉพาะ record ใหม่ (format: CG-YYMMDD-XXXX)
       let caregiverNumber = existing?.caregiverNumber;
       if (!caregiverNumber) {
-        const count = await tx.caregiver.count();
-        caregiverNumber = `CG-${String(count + 1).padStart(4, '0')}`;
+        caregiverNumber = await this.caregiverService.generateCaregiverNumber(
+          tx,
+        );
       }
 
       const upserted = await tx.caregiver.upsert({

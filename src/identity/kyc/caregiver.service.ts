@@ -60,9 +60,9 @@ export class CaregiverService {
   private readonly logger = new Logger(CaregiverService.name);
 
   constructor(
-    private prismaService: PrismaService,
-    private supabaseService: SupabaseService,
-  ) { }
+    private readonly prismaService: PrismaService,
+    private readonly supabaseService: SupabaseService,
+  ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
 
@@ -319,6 +319,76 @@ export class CaregiverService {
     });
 
     return this.mapToEntity(caregiver);
+  }
+
+  /**
+   * generateCaregiverNumber — สร้าง caregiver number ในรูปแบบ CG-YYMMDD-XXXX
+   *
+   * Format:
+   * - CG = prefix ระบุว่าเป็น caregiver
+   * - YYMMDD = วันที่สมัคร (e.g., 260503 = 3 May 2026)
+   * - XXXX = running number ของวันนั้นๆ ซึ่งจะ reset ทุกวัน
+   *
+   * ตัวอย่าง:
+   * - วันแรก (3 May 2026): CG-260503-0001, CG-260503-0002, ...
+   * - วันถัดไป (4 May 2026): CG-260504-0001, CG-260504-0002, ...
+   *
+   * Overloads:
+   * - generateCaregiverNumber(): ใช้ PrismaService โดยตรง (for register flow)
+   * - generateCaregiverNumber(tx): ใช้ transaction client (for submitKyc flow)
+   */
+  async generateCaregiverNumber(): Promise<string>;
+  async generateCaregiverNumber(tx: any): Promise<string>;
+  async generateCaregiverNumber(tx?: any): Promise<string> {
+    const client = tx || this.prismaService;
+
+    // ── 1: สร้างวันที่ YYMMDD ใช้ UTC ────────────────────────────────────
+    // เพื่อให้ตรงกับ database timestamp ที่เก็บเป็น UTC
+    const today = new Date();
+    const utcYear = String(today.getUTCFullYear()).slice(-2); // YY
+    const utcMonth = String(today.getUTCMonth() + 1).padStart(2, '0'); // MM
+    const utcDate = String(today.getUTCDate()).padStart(2, '0'); // DD
+    const yymmdd = `${utcYear}${utcMonth}${utcDate}`;
+
+    // ── 2: นับจำนวน caregiver ที่สร้างในวันนี้ (UTC) ──────────────────────
+    // เราสร้าง start/end of day ใน UTC เพื่อให้ตรงกับ database timestamps
+    const startOfDayUTC = new Date(Date.UTC(
+      today.getUTCFullYear(),
+      today.getUTCMonth(),
+      today.getUTCDate(),
+      0, 0, 0, 0
+    ));
+
+    const endOfDayUTC = new Date(Date.UTC(
+      today.getUTCFullYear(),
+      today.getUTCMonth(),
+      today.getUTCDate(),
+      23, 59, 59, 999
+    ));
+
+    this.logger.debug(
+      `[generateCaregiverNumber] Counting caregivers between ${startOfDayUTC.toISOString()} and ${endOfDayUTC.toISOString()}`,
+    );
+
+    const countToday = await client.caregiver.count({
+      where: {
+        createdAt: {
+          gte: startOfDayUTC,
+          lte: endOfDayUTC,
+        },
+      },
+    });
+
+    this.logger.debug(`[generateCaregiverNumber] Found ${countToday} caregivers today`);
+
+    // ── 3: สร้าง running number (XXXX) ──────────────────────────
+    const xxxx = String(countToday + 1).padStart(4, '0');
+
+    // ── 4: รวม format ────────────────────────────────────────────
+    const result = `CG-${yymmdd}-${xxxx}`;
+    this.logger.debug(`[generateCaregiverNumber] Generated: ${result}`);
+
+    return result;
   }
 
   /**
