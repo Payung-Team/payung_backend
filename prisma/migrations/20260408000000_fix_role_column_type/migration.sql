@@ -1,0 +1,2 @@
+-- This migration was applied manually to the database
+-- Role column type fix (role: TEXT -> INTEGER)

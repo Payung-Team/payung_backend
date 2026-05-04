@@ -4,6 +4,11 @@ import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ConfigModule } from '@nestjs/config';
 import { join } from 'path';
 import { AppResolver } from './app.resolver';
+import { CommonModule } from './common/common.module';
+import { AuthModule } from './identity/auth/auth.module';
+import { IdentityModule } from './identity/identity.module';
+import { NotificationModule } from './notification/notification.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
@@ -30,6 +35,15 @@ import { AppResolver } from './app.resolver';
       // (จำเป็นตอนทำ Auth Guard ในอนาคต)
       context: ({ req, res }) => ({ req, res }),
     }),
+
+    // ─── 3. Common Module (Supabase + Prisma services) ───────────────────
+    CommonModule,
+
+    // ─── 4. Feature Modules ──────────────────────────────────────────────
+    AuthModule,
+    IdentityModule,
+    NotificationModule,  // PYG-95: in-app notifications
+    EmailModule,         // PYG-96: Resend email service
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
