@@ -14,19 +14,28 @@
  *   4. ส่ง { accessToken, refreshToken, user } กลับไปให้ client
  */
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
+  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
+import { RegisterInput } from './dto/register.input';
+import { CaregiverService } from '../kyc/caregiver.service';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private supabaseService: SupabaseService,
-    private prismaService: PrismaService,
+    private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
+    private readonly configService: ConfigService,
+    private readonly caregiverService: CaregiverService,
   ) {}
 
   /**
@@ -80,12 +89,196 @@ export class AuthService {
         id: user.id,
         email: user.email,
         displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
-        avatarUrl: user.avatarUrl ?? undefined,     // เช่นเดียวกัน — แปลง null → undefined
+        avatarUrl: user.avatarUrl ?? undefined, // เช่นเดียวกัน — แปลง null → undefined
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
+        emailPreferences: user.emailPreferences,  // PYG-97
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
     };
+  }
+
+  /**
+   * Register ด้วย email + password + role
+   *
+   * Flow:
+   *   1. สร้าง user ใน Supabase Auth (จัดการ password ให้)
+   *   2. INSERT row ลง users table ของเรา (เก็บ role, displayName ฯลฯ)
+   *   3. คืน { accessToken, refreshToken, user } เหมือน login
+   *
+   * ทำไมต้อง 2 ขั้น?
+   *   Supabase Auth รู้แค่ email+password
+   *   users table ของเราเก็บข้อมูล business เช่น role, displayName
+   *   ต้องสร้างทั้งสองพร้อมกันเสมอ ถ้าขาดอันใดอันหนึ่ง → ระบบพัง
+   */
+  async register(input: RegisterInput): Promise<AuthPayload> {
+    const supabase = this.supabaseService.getClient();
+
+    // ── ขั้นตอนที่ 1: สร้าง user ใน Supabase Auth ──────────────────────
+    // signUp จะ hash password ให้อัตโนมัติ (ไม่เก็บ plain text)
+    // ถ้า email ซ้ำ Supabase จะ return error
+    const { data, error } = await supabase.auth.signUp({
+      email: input.email,
+      password: input.password,
+    });
+
+    // ── ขั้นตอนที่ 2: handle errors จาก Supabase ───────────────────────
+    if (error) {
+      // email ซ้ำ — Supabase ส่ง message นี้มา
+      if (error.message.toLowerCase().includes('already registered')) {
+        throw new ConflictException('Email is already in use');
+      }
+
+      // password อ่อนเกินไป (Supabase ตรวจสอบ policy)
+      if (error.message.toLowerCase().includes('password')) {
+        throw new BadRequestException(error.message);
+      }
+
+      // error อื่นๆ ที่ไม่คาดคิด
+      throw new InternalServerErrorException('Registration failed');
+    }
+
+    // ตรวจว่าได้ user กลับมาจริงๆ (กรณี edge case)
+    if (!data.user || !data.session) {
+      throw new InternalServerErrorException(
+        'Registration failed: no user returned',
+      );
+    }
+
+    // ── ขั้นตอนที่ 3: สร้าง row ใน users table ของเรา ─────────────────
+    // ทำหลังจาก Supabase สำเร็จเท่านั้น
+    // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
+    let user;
+    try {
+      // Generate caregiverNumber ก่อน ถ้า role เป็น caregiver
+      let caregiverNumber: string | undefined;
+      if (input.role === 2) {
+        caregiverNumber = await this.caregiverService.generateCaregiverNumber();
+        console.log('[AuthService.register] Generated caregiverNumber:', caregiverNumber);
+      }
+
+      const createData = {
+        supabaseUid: data.user.id, // UUID จาก Supabase
+        email: input.email,
+        role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
+        displayName: input.email.split('@')[0], // default จาก email prefix
+        isActive: true,
+        // หากเป็น caregiver (role=2) ให้สร้าง row ในตาราง caregiver ด้วย
+        ...(input.role === 2 ? {
+          caregiver: {
+            create: {
+              caregiverNumber, // เพิ่ม caregiverNumber ตั้งแต่แรก
+              kycStatus: 'none',
+            }
+          }
+        } : {})
+      };
+
+      console.log('[AuthService.register] Creating user with data:', JSON.stringify(createData, null, 2));
+
+      user = await this.prismaService.user.create({
+        data: createData,
+      });
+
+      console.log('[AuthService.register] User created successfully:', user.id);
+    } catch (err: any) {
+      // ถ้า user สร้างล้มเหลว ให้ลบ user จาก Supabase ด้วย
+      console.error('[AuthService.register] Failed to create user in database:', err);
+      
+      // ลองลบ Supabase user
+      try {
+        const adminAuthClient = createClient(
+          this.configService.getOrThrow<string>('SUPABASE_URL'),
+          this.configService.getOrThrow<string>('SUPABASE_SERVICE_ROLE_KEY'),
+        );
+        await adminAuthClient.auth.admin.deleteUser(data.user.id);
+      } catch (deleteErr) {
+        console.error('[AuthService.register] Failed to rollback Supabase user:', deleteErr);
+      }
+      
+      if (err.code === 'P2002') {
+        throw new ConflictException('Email is already in use');
+      }
+      throw new InternalServerErrorException('Failed to create user account in database: ' + err.message);
+    }
+
+    // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
+    // client จะได้ token ทันที ไม่ต้อง login ซ้ำหลัง register
+    return {
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName ?? undefined,
+        avatarUrl: user.avatarUrl ?? undefined,
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
+        role: user.role,
+        isActive: user.isActive,
+        emailPreferences: user.emailPreferences,  // PYG-97
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+    };
+  }
+
+  /**
+   * Logout session
+   * 
+   * กระบวนการ:
+   * 1. สร้าง temp client ชั่วคราวที่มี Auth Header เป็น token ปัจจุบัน
+   * 2. เรียก signOut() เพื่อทำลาย session ของ token นั้นๆ บน Supabase
+   * 3. บันทึก logout event ในฐานข้อมูล
+   * 
+   * ทำไมต้องบันทึก logout?
+   * - ติดตามเมื่อ user ออกระบบ
+   * - ใช้สำหรับการ audit trail
+   * - หากต้องการ invalidate refresh token ด้วย
+   */
+  async logout(accessToken: string): Promise<boolean> {
+    const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
+    const supabaseKey = this.configService.getOrThrow<string>('SUPABASE_ANON_KEY');
+
+    const tempClient = createClient(supabaseUrl, supabaseKey, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    });
+
+    // ขั้นตอนที่ 1: ทำลาย session บน Supabase
+    const { error } = await tempClient.auth.signOut();
+
+    if (error) {
+      throw new InternalServerErrorException('Logout failed: ' + error.message);
+    }
+
+    // ขั้นตอนที่ 2: หา user และบันทึก logout event (optional)
+    // ได้ session data จาก accessToken เพื่อหา user
+    try {
+      const { data } = await tempClient.auth.getUser();
+      
+      if (data.user) {
+        // เราสามารถบันทึก logout event ที่นี่
+        // เช่น update lastLogout timestamp, log activity, หรือสิ่งอื่นๆ
+        // ตัวอย่าง:
+        // await this.prismaService.user.update({
+        //   where: { supabaseUid: data.user.id },
+        //   data: { lastLogoutAt: new Date() },
+        // });
+      }
+    } catch {
+      // ถ้ามี error ตอน get user ไม่ต้องไป throw
+      // เพราะ signOut() สำเร็จแล้ว ส่วน logging เป็น optional
+    }
+
+    return true;
   }
 }

@@ -2,13 +2,351 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+type AuthPayload {
+  """JWT access token for API requests"""
+  accessToken: String!
+
+  """Refresh token for renewing the session"""
+  refreshToken: String!
+
+  """The authenticated user"""
+  user: User!
+}
+
+type Caregiver {
+  address: String
+  bio: String
+
+  """System-generated caregiver number e.g. CG-0001"""
+  caregiverNumber: String
+  createdAt: DateTime!
+  dateOfBirth: DateTime
+  experienceYears: Int!
+  fullName: String!
+  gender: String
+  hourlyRate: Float!
+  id: ID!
+  idCardNumber: String!
+
+  """Whether caregiver appears in search results"""
+  isSearchable: Boolean!
+
+  """KYC status: none | pending | verified | rejected"""
+  kycStatus: String!
+
+  """When KYC was submitted"""
+  kycSubmittedAt: DateTime
+
+  """When KYC was verified by admin"""
+  kycVerifiedAt: DateTime
+  phone: String!
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
+  skills: [String!]!
+  updatedAt: DateTime!
+
+  """Internal user ID linked to this caregiver"""
+  userId: String!
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
 type HealthStatus {
   status: String!
   supabaseConnected: Boolean!
   timestamp: String!
 }
 
+type KycDocument {
+  """Caregiver ID (null before KYC submit)"""
+  caregiverId: String
+
+  """Document type: id_card | certificate | license | photo"""
+  docType: String!
+
+  """Original file name"""
+  fileName: String!
+
+  """File size in bytes"""
+  fileSize: Int!
+
+  """File URL in storage"""
+  fileUrl: String!
+  id: ID!
+
+  """MIME type (e.g. image/jpeg, application/pdf)"""
+  mimeType: String!
+
+  """Temporary signed URL (1hr expiry)"""
+  signedUrl: String
+
+  """Upload timestamp"""
+  uploadedAt: DateTime!
+
+  """User who uploaded this document"""
+  userId: String!
+}
+
+input KycInput {
+  """Short bio / introduction"""
+  bio: String
+
+  """Date of birth"""
+  dateOfBirth: DateTime
+
+  """IDs of previously uploaded KYC documents"""
+  documentIds: [String!]!
+
+  """Years of caregiving experience"""
+  experienceYears: Int!
+
+  """Full legal name (must match ID card)"""
+  fullName: String!
+
+  """Gender: male | female | other"""
+  gender: String
+
+  """Hourly rate in THB"""
+  hourlyRate: Float!
+
+  """Thai national ID card number (13 digits)"""
+  idCardNumber: String!
+
+  """Contact phone number (Thai format)"""
+  phone: String!
+
+  """List of caregiver skills"""
+  skills: [String!]!
+}
+
+type KycStatusPayload {
+  """Caregiver profile (null if never submitted)"""
+  caregiver: Caregiver
+
+  """KYC documents with temporary signed URLs (1hr expiry)"""
+  documents: [KycDocument!]!
+
+  """When KYC was rejected by admin"""
+  rejectedAt: DateTime
+
+  """Reason for rejection (if rejected)"""
+  rejectedReason: String
+
+  """KYC status: none | pending | verified | rejected"""
+  status: String!
+
+  """When KYC was submitted"""
+  submittedAt: DateTime
+
+  """When KYC was verified by admin"""
+  verifiedAt: DateTime
+}
+
+input LoginInput {
+  """Email address of the user"""
+  email: String!
+
+  """Password of the user"""
+  password: String!
+}
+
+type Mutation {
+  """Delete a KYC document (allowed only when status is rejected or none)"""
+  deleteKycDocument(documentId: String!): Boolean!
+
+  """Login user with email and password"""
+  login(input: LoginInput!): AuthPayload!
+
+  """Logout user"""
+  logout: Boolean!
+
+  """Mark all notifications of current user as read"""
+  markAllAsRead: Boolean!
+
+  """Mark a single notification as read"""
+  markAsRead(id: String!): Notification!
+
+  """Register a new user"""
+  register(input: RegisterInput!): AuthPayload!
+
+  """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
+  resubmitKyc(input: KycInput!): Caregiver!
+
+  """Toggle caregiver availability in search results (verified only)"""
+  setSearchable(isSearchable: Boolean!): Caregiver!
+
+  """Submit KYC information (caregiver only)"""
+  submitKyc(input: KycInput!): Caregiver!
+
+  """Update caregiver profile (verified caregiver only)"""
+  updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
+
+  """Toggle email notification preference"""
+  updateEmailPreference(enabled: Boolean!): User!
+
+  """Update current user profile"""
+  updateProfile(input: UpdateProfileInput!): User!
+
+  """Register a KYC document record after uploading to storage"""
+  uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+}
+
+type Notification {
+  """Body / detail of the notification"""
+  body: String!
+
+  """When the notification was created"""
+  createdAt: DateTime!
+
+  """Optional JSON-stringified payload"""
+  data: String
+  id: ID!
+
+  """Whether the notification has been read"""
+  isRead: Boolean!
+
+  """When the notification was read (null if unread)"""
+  readAt: DateTime
+
+  """Short title shown in notification list"""
+  title: String!
+
+  """Notification category"""
+  type: NotificationType!
+
+  """Recipient user ID"""
+  userId: String!
+}
+
+"""Type of in-app notification"""
+enum NotificationType {
+  kyc_rejected
+  kyc_resubmitted
+  kyc_submitted
+  kyc_verified
+}
+
 type Query {
   """Health check - API & DB Status"""
   health: HealthStatus!
+
+  """Get KYC status with full details for the Status Page"""
+  kycStatus: KycStatusPayload!
+
+  """Get current logged-in user"""
+  me: User!
+
+  """Get current caregiver profile"""
+  myCaregiverProfile: Caregiver!
+
+  """List notifications of current user (newest first)"""
+  notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
+
+  """Count of unread notifications for current user"""
+  unreadCount: Int!
+}
+
+input RegisterInput {
+  email: String!
+  password: String!
+  role: Int!
+}
+
+input UpdateCaregiverInput {
+  """Address"""
+  address: String
+
+  """Short bio / introduction"""
+  bio: String
+
+  """Years of caregiving experience"""
+  experienceYears: Int
+
+  """Hourly rate in THB"""
+  hourlyRate: Float
+
+  """Contact phone number (Thai format)"""
+  phone: String
+
+  """List of caregiver skills"""
+  skills: [String!]
+}
+
+input UpdateProfileInput {
+  """User address"""
+  address: String
+
+  """Avatar image URL"""
+  avatarUrl: String
+
+  """Bio or personal description"""
+  bio: String
+
+  """Display name of the user"""
+  displayName: String
+
+  """Phone number"""
+  phone: String
+}
+
+input UploadDocumentInput {
+  """Document type: id_card_front | id_card_selfie | certificate"""
+  docType: String!
+
+  """Original file name"""
+  fileName: String!
+
+  """File size in bytes"""
+  fileSize: Int!
+
+  """File URL in Supabase Storage"""
+  fileUrl: String!
+
+  """MIME type: image/jpeg | image/png | application/pdf"""
+  mimeType: String!
+}
+
+type User {
+  """User address"""
+  address: String
+
+  """Avatar image URL"""
+  avatarUrl: String
+
+  """Bio or personal description"""
+  bio: String
+
+  """Caregiver profile (null if user is not a caregiver)"""
+  caregiver: Caregiver
+
+  """Account creation timestamp"""
+  createdAt: DateTime!
+
+  """Display name of the user"""
+  displayName: String
+
+  """Email address of the user"""
+  email: String!
+
+  """Whether the user receives email notifications"""
+  emailPreferences: Boolean!
+
+  """Unique identifier of the user"""
+  id: ID!
+
+  """Whether the user account is active"""
+  isActive: Boolean!
+
+  """Phone number"""
+  phone: String
+
+  """User role ID: 1=patient, 2=caregiver, 3=admin"""
+  role: Int!
+
+  """Last profile update timestamp"""
+  updatedAt: DateTime!
 }

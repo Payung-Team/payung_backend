@@ -13,9 +13,28 @@
  */
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
+  constructor() {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL environment variable is not set');
+    }
+
+    // Create a PostgreSQL connection pool
+    const pool = new Pool({
+      connectionString: databaseUrl,
+    });
+
+    // Initialize PrismaClient with the PostgreSQL adapter for Prisma 7
+    super({
+      adapter: new PrismaPg(pool),
+    });
+  }
+
   /**
    * OnModuleInit = NestJS จะเรียก method นี้อัตโนมัติตอน module เริ่มทำงาน
    * $connect() = เปิดการเชื่อมต่อกับ database
