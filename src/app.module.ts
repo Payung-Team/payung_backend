@@ -9,6 +9,7 @@ import { AuthModule } from './identity/auth/auth.module';
 import { IdentityModule } from './identity/identity.module';
 import { NotificationModule } from './notification/notification.module';
 import { EmailModule } from './email/email.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { EmailModule } from './email/email.module';
     IdentityModule,
     NotificationModule,  // PYG-95: in-app notifications
     EmailModule,         // PYG-96: Resend email service
+    AdminModule,         // Admin dashboard operations (KYC review, etc.)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
