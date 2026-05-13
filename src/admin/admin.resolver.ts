@@ -7,20 +7,29 @@
  * - adminKycDetail(caregiverId: ID!): AdminKycDetailPayload
  *   → ดูรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน พร้อม documents + review history
  *
+ * Mutations:
+ * - approveKyc(caregiverId: ID!): Caregiver
+ *   → อนุมัติ KYC: set verified + INSERT audit + notify
+ * - rejectKyc(input: RejectKycInput!): Caregiver
+ *   → ปฏิเสธ KYC: set rejected + INSERT audit (พร้อม reason) + notify
+ *
  * Guards (ทำงานตามลำดับ):
  * 1. SupabaseAuthGuard — ตรวจ JWT + inject req.user
  * 2. RolesGuard        — ตรวจว่า user.role === 3 (ADMIN)
  */
-import { Resolver, Query, Args, ID } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Args, ID } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminKycListInput } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload } from './dto/admin-kyc-list.payload';
 import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
+import { RejectKycInput } from './dto/reject-kyc.input';
+import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
+import { CurrentUser, AuthUser } from '../common/decorators/current-user.decorator';
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard, RolesGuard)
@@ -80,5 +89,72 @@ export class AdminResolver {
     @Args('caregiverId', { type: () => ID }) caregiverId: string,
   ): Promise<AdminKycDetailPayload> {
     return this.adminService.adminKycDetail(caregiverId);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // KYC MUTATIONS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * approveKyc — admin อนุมัติ KYC submission
+   *
+   * Guard: kycStatus ต้องเป็น 'pending'
+   * - 'none'     → 400 BadRequest
+   * - 'verified' → 409 Conflict
+   * - 'rejected' → 409 Conflict
+   *
+   * @example
+   * mutation {
+   *   approveKyc(caregiverId: "uuid-here") {
+   *     id fullName kycStatus kycVerifiedAt
+   *   }
+   * }
+   *
+   * @param caregiverId - UUID ของ caregiver ที่ต้องการ approve
+   * @param admin       - admin user ที่ทำการ approve (จาก JWT)
+   */
+  @Mutation(() => Caregiver, {
+    description:
+      'Admin only: Approve a caregiver KYC submission. ' +
+      'Sets kycStatus = "verified", records audit log, sends notification + email. ' +
+      'Requires kycStatus = "pending".',
+  })
+  async approveKyc(
+    @Args('caregiverId', { type: () => ID, description: 'UUID of the caregiver to approve' })
+    caregiverId: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<Caregiver> {
+    return this.adminService.approveKyc(caregiverId, admin);
+  }
+
+  /**
+   * rejectKyc — admin ปฏิเสธ KYC submission
+   *
+   * Guard: kycStatus ต้องเป็น 'pending'
+   * - 'none'     → 400 BadRequest
+   * - 'verified' → 409 Conflict
+   * - 'rejected' → 409 Conflict
+   *
+   * @example
+   * mutation {
+   *   rejectKyc(input: { caregiverId: "uuid-here", reason: "เอกสารไม่ครบถ้วน กรุณาอัปโหลดใหม่" }) {
+   *     id fullName kycStatus
+   *   }
+   * }
+   *
+   * @param input - RejectKycInput (caregiverId + reason min 10 chars)
+   * @param admin - admin user ที่ทำการ reject (จาก JWT)
+   */
+  @Mutation(() => Caregiver, {
+    description:
+      'Admin only: Reject a caregiver KYC submission with a reason. ' +
+      'Sets kycStatus = "rejected", records audit log with reason, sends notification + email. ' +
+      'Requires kycStatus = "pending". Reason must be at least 10 characters.',
+  })
+  async rejectKyc(
+    @Args('input') input: RejectKycInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<Caregiver> {
+    return this.adminService.rejectKyc(input, admin);
   }
 }
