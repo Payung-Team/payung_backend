@@ -7,6 +7,10 @@ export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
     path: 'prisma/migrations',
+    // PYG-132: admin seed — รันด้วย `npx prisma db seed`
+    // ts-node = run TypeScript file ตรงๆ ไม่ต้อง compile ก่อน
+    // --transpile-only = ข้าม type-check (เร็วขึ้น, ใช้ tsc check ใน build แทน)
+    seed: 'ts-node --transpile-only -r tsconfig-paths/register prisma/seed.ts',
   },
   datasource: {
     url: env('DATABASE_URL'),

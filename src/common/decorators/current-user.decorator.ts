@@ -14,7 +14,8 @@ export class AuthUser {
   id!: string; // users.id (internal UUID)
   supabaseUid!: string; // Supabase Auth UID
   email!: string;
-  role!: number; // role id (1=patient, 2=caregiver) — เก็บเป็น number ในฐานข้อมูล
+  role!: number; // role id (1=patient, 2=caregiver, 3=admin) — เก็บเป็น number ในฐานข้อมูล
+  isSuspended!: boolean; // PYG-132 — true = admin ระงับบัญชี (Guard จะ throw 403 ก่อนถึง resolver)
 }
 
 export const CurrentUser = createParamDecorator(

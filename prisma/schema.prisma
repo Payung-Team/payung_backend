@@ -32,8 +32,13 @@ model User {
   phone       String?  @map("phone")              // เบอร์โทรศัพท์
   address     String?  @map("address")            // ที่อยู่
   bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
-  role        Int      @default(1)                // 1 = patient, 2 = caregiver
-  isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
+  role        Int      @default(1)                // 1 = patient, 2 = caregiver, 3 = admin
+  isActive    Boolean  @default(true) @map("is_active")   // สถานะ active (account ใช้งานได้)
+  // is_suspended: ใช้เมื่อ admin "ระงับบัญชี" (ban) — แยกจาก is_active เพราะ:
+  //   is_active     = account ปกติ/ไม่ปกติ (เช่น ยังไม่ confirm email, deleted)
+  //   is_suspended  = admin สั่งระงับ (PYG-132)
+  // SupabaseAuthGuard จะ throw 403 ถ้า isSuspended = true
+  isSuspended Boolean  @default(false) @map("is_suspended") // PYG-132
   emailPreferences Boolean @default(true) @map("email_preferences") // รับอีเมลแจ้งเตือนมั้ย (PYG-95)
   createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
   updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
