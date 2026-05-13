@@ -15,8 +15,10 @@ import { AdminResolver } from './admin.resolver';
 import { AdminService } from './admin.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { KycModule } from 'src/identity/kyc/kyc.module';
 
 @Module({
+  imports: [KycModule],
   providers: [
     AdminResolver,
     AdminService,
@@ -24,4 +26,4 @@ import { RolesGuard } from '../common/guards/roles.guard';
     RolesGuard,
   ],
 })
-export class AdminModule {}
+export class AdminModule { }

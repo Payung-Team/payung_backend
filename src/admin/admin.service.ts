@@ -2,7 +2,8 @@
  * AdminService — Business logic สำหรับ admin operations
  *
  * Methods:
- * - adminKycList() — ดึงรายการ KYC submissions พร้อม filter/search/pagination
+ * - adminKycList()   — ดึงรายการ KYC submissions พร้อม filter/search/pagination
+ * - adminKycDetail() — ดึงรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน
  *
  * Query strategy:
  * - ใช้ Prisma raw query สำหรับ search (ILIKE) เนื่องจาก Prisma ไม่มี built-in ILIKE
@@ -10,10 +11,14 @@
  *   (Prisma จะแปลงเป็น ILIKE ให้อัตโนมัติบน PostgreSQL)
  * - Order: pending ก่อน (CASE WHEN), แล้วตาม kycSubmittedAt DESC
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { AdminKycListInput, KycStatusFilter } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload, CaregiverKycSummary } from './dto/admin-kyc-list.payload';
+import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
+import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
+import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -23,7 +28,10 @@ const DEFAULT_LIMIT = 20;
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly caregiverService: CaregiverService,
+  ) { }
 
   /**
    * adminKycList — ดึงรายการ KYC submissions สำหรับ admin
@@ -143,5 +151,83 @@ export class AdminService {
     });
 
     return { items, total, page, totalPages };
+  }
+
+  /**
+   * adminKycDetail — ดึงรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน
+   *
+   * Logic:
+   * 1. Query caregiver → NotFoundException ถ้าไม่พบ
+   * 2. ดึง KYC documents พร้อม signed URLs (via CaregiverService)
+   * 3. ดึง review history จาก kyc_reviews table เรียงล่าสุดก่อน
+   * 4. Return AdminKycDetailPayload
+   *
+   * @param caregiverId - UUID ของ caregiver
+   * @returns AdminKycDetailPayload
+   * @throws NotFoundException ถ้าไม่พบ caregiver
+   */
+  async adminKycDetail(caregiverId: string): Promise<AdminKycDetailPayload> {
+    // ─── 1. Fetch caregiver ───────────────────────────────────────────────
+    const raw = await this.prismaService.caregiver.findUnique({
+      where: { id: caregiverId },
+    });
+
+    if (!raw) {
+      throw new NotFoundException(`Caregiver ${caregiverId} not found`);
+    }
+
+    const caregiver: Caregiver = {
+      id: raw.id,
+      userId: raw.userId,
+      caregiverNumber: raw.caregiverNumber ?? undefined,
+      fullName: raw.fullName ?? '',
+      idCardNumber: raw.idCardNumber ?? '',
+      gender: raw.gender ?? undefined,
+      dateOfBirth: raw.dateOfBirth ?? undefined,
+      address: raw.address ?? undefined,
+      phone: raw.phone ?? '',
+      skills: raw.skills,
+      experienceYears: raw.experienceYears ?? 0,
+      hourlyRate: raw.hourlyRate ?? 0,
+      bio: raw.bio ?? undefined,
+      kycStatus: raw.kycStatus,
+      kycSubmittedAt: raw.kycSubmittedAt ?? undefined,
+      kycVerifiedAt: raw.kycVerifiedAt ?? undefined,
+      isSearchable: raw.isSearchable,
+      resubmitCount: raw.resubmitCount,
+      createdAt: raw.createdAt,
+      updatedAt: raw.updatedAt,
+    };
+
+    // ─── 2. Fetch documents with signed URLs ─────────────────────────────
+    const documents = await this.caregiverService.getDocumentsWithSignedUrls(caregiverId);
+
+    // ─── 3. Fetch review history (newest first) ──────────────────────────
+    const rawReviews = await this.prismaService.kycReview.findMany({
+      where: { caregiverId },
+      orderBy: { reviewedAt: 'desc' },
+    });
+
+    const reviews: KycReview[] = rawReviews.map((r) => ({
+      id: r.id,
+      action: r.action,
+      reason: r.reason ?? undefined,
+      reviewedBy: r.reviewerId,
+      reviewedAt: r.reviewedAt,
+    }));
+
+    this.logger.log({
+      event: 'admin.kyc_detail.queried',
+      caregiverId,
+      documentCount: documents.length,
+      reviewCount: reviews.length,
+    });
+
+    return {
+      caregiver,
+      documents,
+      reviews,
+      resubmitCount: raw.resubmitCount,
+    };
   }
 }
