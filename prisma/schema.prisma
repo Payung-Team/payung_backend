@@ -32,7 +32,7 @@ model User {
   phone       String?  @map("phone")              // เบอร์โทรศัพท์
   address     String?  @map("address")            // ที่อยู่
   bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
-  role        Int      @default(1)                // 1 = patient, 2 = caregiver, 3 = admin
+  role        Int      @default(1)                // 1 = patient, 2 = caregiver, 3 = admin, 4 = super_admin (PYG-152)
   isActive    Boolean  @default(true) @map("is_active")   // สถานะ active (account ใช้งานได้)
   // is_suspended: ใช้เมื่อ admin "ระงับบัญชี" (ban) — แยกจาก is_active เพราะ:
   //   is_active     = account ปกติ/ไม่ปกติ (เช่น ยังไม่ confirm email, deleted)
@@ -69,8 +69,10 @@ model Caregiver {
   bio             String?
   kycStatus       String    @default("none") @map("kyc_status")
   // "none" | "pending" | "verified" | "rejected"
-  kycSubmittedAt  DateTime? @map("kyc_submitted_at")
-  kycVerifiedAt   DateTime? @map("kyc_verified_at")
+  kycSubmittedAt     DateTime? @map("kyc_submitted_at")
+  kycVerifiedAt      DateTime? @map("kyc_verified_at")
+  kycRejectedAt      DateTime? @map("kyc_rejected_at")       // วันเวลาที่ admin reject ล่าสุด
+  kycRejectionReason String?   @map("kyc_rejection_reason")  // เหตุผลที่ reject ล่าสุด (FE แสดงในหน้า status)
   resubmitCount   Int       @default(0) @map("resubmit_count")
   isSearchable    Boolean   @default(false) @map("is_searchable")
   createdAt       DateTime  @default(now()) @map("created_at")
