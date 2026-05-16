@@ -18,9 +18,17 @@ export class CaregiverKycSummary {
   @Field(() => ID, { description: 'Caregiver UUID' })
   id!: string;
 
+  /** รหัสประจำตัว Caregiver */
+  @Field({ nullable: true, description: 'Caregiver Number (e.g. CG-12345)' })
+  caregiverNumber?: string;
+
   /** ชื่อ-นามสกุลเต็ม */
   @Field({ description: 'Caregiver full name' })
   fullName!: string;
+
+  /** อีเมล */
+  @Field({ description: 'Caregiver email' })
+  email!: string;
 
   /**
    * สถานะ KYC ปัจจุบัน
