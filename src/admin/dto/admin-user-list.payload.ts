@@ -1,0 +1,53 @@
+/**
+ * AdminUserListPayload — Output types สำหรับ query adminUserList
+ *
+ * UserSummary: ข้อมูลสรุปของ user แต่ละคนสำหรับแสดงในตาราง (ไม่ expose sensitive fields)
+ * AdminUserListPayload: paginated response
+ */
+import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
+
+/**
+ * UserSummary — ข้อมูลสรุปของ user 1 คน สำหรับ admin user list
+ */
+@ObjectType({ description: 'Summary of a user for admin user management list' })
+export class UserSummary {
+  @Field(() => ID, { description: 'User UUID' })
+  id!: string;
+
+  @Field({ description: 'User email' })
+  email!: string;
+
+  @Field({ nullable: true, description: 'Display name' })
+  displayName?: string;
+
+  @Field(() => Int, { description: 'Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin' })
+  role!: number;
+
+  @Field({ description: 'Whether the account is active (not suspended)' })
+  isActive!: boolean;
+
+  /** true ถ้า user ถูกระงับ (isSuspended = !isActive || is_deleted) */
+  @Field({ description: 'Whether the user is suspended' })
+  isSuspended!: boolean;
+
+  @Field({ description: 'Account creation date' })
+  createdAt!: Date;
+}
+
+/**
+ * AdminUserListPayload — Paginated response
+ */
+@ObjectType({ description: 'Paginated user list for admin' })
+export class AdminUserListPayload {
+  @Field(() => [UserSummary], { description: 'Users for the current page' })
+  items!: UserSummary[];
+
+  @Field(() => Int, { description: 'Total number of matching users' })
+  total!: number;
+
+  @Field(() => Int, { description: 'Current page number (1-based)' })
+  page!: number;
+
+  @Field(() => Int, { description: 'Total number of pages' })
+  totalPages!: number;
+}

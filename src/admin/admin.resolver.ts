@@ -29,7 +29,12 @@ import { AdminDashboardPayload } from './dto/admin-dashboard.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
+import { AdminUserListInput } from './dto/admin-user-list.input';
+import { AdminUserListPayload } from './dto/admin-user-list.payload';
+import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
+import { ChangeUserRoleInput } from './dto/change-user-role.input';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
+import { User } from '../identity/auth/entities/user.entity';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -38,7 +43,7 @@ import { CurrentUser, AuthUser } from '../common/decorators/current-user.decorat
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard, RolesGuard)
-@Roles(ROLE_ID.ADMIN)
+@Roles(ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN)
 export class AdminResolver {
   constructor(private readonly adminService: AdminService) { }
 
@@ -213,5 +218,138 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<InviteAdminPayload> {
     return this.adminService.inviteAdmin(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // USER MANAGEMENT QUERIES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminUserList — ดึงรายการ users พร้อม filter/search/pagination
+   *
+   * @example
+   * query {
+   *   adminUserList(input: { role: caregiver, search: "สมชาย", page: 1, limit: 20 }) {
+   *     items { id email displayName role isActive isSuspended createdAt }
+   *     total
+   *     page
+   *     totalPages
+   *   }
+   * }
+   */
+  @Query(() => AdminUserListPayload, {
+    description:
+      'Admin only: Get paginated list of users. ' +
+      'Filter by role, search by name/email. Newest users first.',
+  })
+  async adminUserList(
+    @Args('input') input: AdminUserListInput,
+  ): Promise<AdminUserListPayload> {
+    return this.adminService.adminUserList(input);
+  }
+
+  /**
+   * adminUserDetail — ดึงรายละเอียด user ครบถ้วน
+   *
+   * @example
+   * query {
+   *   adminUserDetail(userId: "uuid-here") {
+   *     user { id email displayName role isActive }
+   *     caregiver { fullName kycStatus }
+   *     kycStatus
+   *     isSuspended
+   *     auditLogCount
+   *   }
+   * }
+   */
+  @Query(() => AdminUserDetailPayload, {
+    description:
+      'Admin only: Get full user detail including caregiver info, KYC status, ' +
+      'suspension state, and audit log count.',
+  })
+  async adminUserDetail(
+    @Args('userId', { type: () => ID, description: 'UUID of the user' })
+    userId: string,
+  ): Promise<AdminUserDetailPayload> {
+    return this.adminService.adminUserDetail(userId);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // USER MANAGEMENT MUTATIONS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * suspendUser — ระงับ user
+   *
+   * Guard: admin ลบตัวเองไม่ได้
+   *
+   * @example
+   * mutation {
+   *   suspendUser(userId: "uuid-here") {
+   *     id email isActive
+   *   }
+   * }
+   */
+  @Mutation(() => User, {
+    description:
+      'Admin only: Suspend a user (set isActive = false). ' +
+      'Cannot suspend yourself. Records audit log.',
+  })
+  async suspendUser(
+    @Args('userId', { type: () => ID, description: 'UUID of the user to suspend' })
+    userId: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<User> {
+    return this.adminService.suspendUser(userId, admin);
+  }
+
+  /**
+   * activateUser — ปลดระงับ user
+   *
+   * @example
+   * mutation {
+   *   activateUser(userId: "uuid-here") {
+   *     id email isActive
+   *   }
+   * }
+   */
+  @Mutation(() => User, {
+    description:
+      'Admin only: Activate a suspended user (set isActive = true, is_deleted = false). ' +
+      'Records audit log.',
+  })
+  async activateUser(
+    @Args('userId', { type: () => ID, description: 'UUID of the user to activate' })
+    userId: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<User> {
+    return this.adminService.activateUser(userId, admin);
+  }
+
+  /**
+   * changeUserRole — เปลี่ยน role ของ user
+   *
+   * Guards:
+   * - ห้ามเปลี่ยน role ตัวเอง
+   * - ห้ามเปลี่ยนเป็น admin/super_admin (privilege escalation)
+   * - อนุญาตเฉพาะ patient (1) ↔ caregiver (2)
+   *
+   * @example
+   * mutation {
+   *   changeUserRole(input: { userId: "uuid-here", newRole: 2 }) {
+   *     id email role
+   *   }
+   * }
+   */
+  @Mutation(() => User, {
+    description:
+      'Admin only: Change a user role. Only patient (1) ↔ caregiver (2) allowed. ' +
+      'Cannot change own role or escalate to admin/super_admin. Records audit log.',
+  })
+  async changeUserRole(
+    @Args('input') input: ChangeUserRoleInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<User> {
+    return this.adminService.changeUserRole(input, admin);
   }
 }

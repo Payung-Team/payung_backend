@@ -46,6 +46,10 @@ import {
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
+import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
+import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
+import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
+import { ChangeUserRoleInput } from './dto/change-user-role.input';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
@@ -681,6 +685,352 @@ export class AdminService {
 
     // ─── 8. Return ────────────────────────────────────────────────────────
     return { user: this.mapToUser(created), tempPasswordSent: true };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // USER MANAGEMENT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminUserList — ดึงรายการ users สำหรับ admin
+   *
+   * Logic:
+   * 1. สร้าง where clause จาก role filter + search (OR on displayName/email, mode:'insensitive')
+   * 2. Count total → findMany with pagination
+   * 3. Map ไป UserSummary[] (isSuspended มาจาก DB โดยตรง)
+   *
+   * @param input - AdminUserListInput (role?, search?, page?, limit?)
+   * @returns AdminUserListPayload
+   */
+  async adminUserList(input: AdminUserListInput): Promise<AdminUserListPayload> {
+    const page = input.page ?? DEFAULT_PAGE;
+    const limit = input.limit ?? DEFAULT_LIMIT;
+    const offset = (page - 1) * limit;
+
+    // ─── 1. Build where clause ────────────────────────────────────────────
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: any = {};
+
+    // Filter by role (ถ้าไม่ส่ง หรือส่ง "all" → ไม่กรอง)
+    if (input.role && input.role !== 'all') {
+      const roleId = ROLE_FILTER_MAP[input.role];
+      if (roleId !== undefined) {
+        where.role = roleId;
+      }
+    }
+
+    // Search by displayName OR email (case-insensitive partial match)
+    if (input.search && input.search.trim() !== '') {
+      const term = input.search.trim();
+      where.OR = [
+        { displayName: { contains: term, mode: 'insensitive' } },
+        { email: { contains: term, mode: 'insensitive' } },
+      ];
+    }
+
+    // ─── 2. Count + query ─────────────────────────────────────────────────
+    const [total, users] = await Promise.all([
+      this.prismaService.user.count({ where }),
+      this.prismaService.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          role: true,
+          isActive: true,
+          isSuspended: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+    ]);
+
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
+
+    // ─── 3. Map to UserSummary ─────────────────────────────────────────────
+    const items: UserSummary[] = users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      displayName: u.displayName ?? undefined,
+      role: u.role,
+      isActive: u.isActive,
+      isSuspended: u.isSuspended,
+      createdAt: u.createdAt,
+    }));
+
+    this.logger.log({
+      event: 'admin.user_list.queried',
+      filter: { role: input.role, search: !!input.search },
+      total,
+      page,
+      limit,
+      returned: items.length,
+    });
+
+    return { items, total, page, totalPages };
+  }
+
+  /**
+   * adminUserDetail — ดึงรายละเอียด user ครบถ้วนสำหรับ admin
+   *
+   * Logic:
+   * 1. Fetch user → NotFoundException ถ้าไม่พบ
+   * 2. ถ้า role=2 (caregiver) → fetch caregiver record + kycStatus
+   * 3. Compute isSuspended, auditLogCount
+   * 4. Return AdminUserDetailPayload
+   *
+   * @param userId - UUID ของ user
+   * @returns AdminUserDetailPayload
+   * @throws NotFoundException ถ้าไม่พบ user
+   */
+  async adminUserDetail(userId: string): Promise<AdminUserDetailPayload> {
+    // ─── 1. Fetch user ────────────────────────────────────────────────────
+    const raw = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!raw) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    const user = this.mapToUser(raw);
+
+    // ─── 2. Fetch caregiver + kycStatus ──────────────────────────────────
+    let caregiver: Caregiver | undefined;
+    let kycStatus = 'n/a';
+
+    if (raw.role === ROLE_ID.CAREGIVER) {
+      const rawCg = await this.prismaService.caregiver.findUnique({
+        where: { userId },
+      });
+      if (rawCg) {
+        caregiver = this.mapToCaregiver(rawCg);
+        kycStatus = rawCg.kycStatus; // none | pending | verified | rejected
+      } else {
+        kycStatus = 'none'; // role=caregiver แต่ยังไม่มี caregiver record
+      }
+    }
+
+    // ─── 3. Count audit logs ($queryRaw — client ยังไม่ regenerate) ─────
+    const auditCountResult = await this.prismaService.$queryRaw<
+      Array<{ count: bigint }>
+    >`SELECT COUNT(*)::bigint AS count FROM admin_audit_logs WHERE target_user_id = ${userId}`;
+    const auditLogCount = Number(auditCountResult[0]?.count ?? 0);
+
+    // ─── 4. Compute isSuspended ──────────────────────────────────────────
+    const isSuspended = raw.isSuspended;
+
+    this.logger.log({
+      event: 'admin.user_detail.queried',
+      userId,
+      role: raw.role,
+      kycStatus,
+      isSuspended,
+      auditLogCount,
+    });
+
+    return { user, caregiver, kycStatus, isSuspended, auditLogCount };
+  }
+
+  /**
+   * suspendUser — ระงับ user (set isActive = false)
+   *
+   * Guards:
+   * - admin ลบตัวเองไม่ได้ (self-action guard)
+   *
+   * Side-effects:
+   * - INSERT admin_audit_logs: action = 'suspend_user'
+   *
+   * @param userId - UUID ของ user ที่จะ suspend
+   * @param admin  - admin ที่ทำ action (จาก JWT)
+   * @returns User - user ที่ถูก update
+   * @throws NotFoundException ถ้าไม่พบ user
+   * @throws BadRequestException ถ้า admin พยายาม suspend ตัวเอง
+   */
+  async suspendUser(userId: string, admin: AuthUser): Promise<User> {
+    // ─── Guard: self-action ───────────────────────────────────────────────
+    if (userId === admin.id) {
+      throw new BadRequestException('ไม่สามารถระงับตัวเองได้');
+    }
+
+    // ─── Fetch + validate ────────────────────────────────────────────────
+    const existing = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    if (existing.isSuspended) {
+      throw new ConflictException('User is already suspended');
+    }
+
+    // ─── Transaction: update + audit log ─────────────────────────────────
+    const updated = await this.prismaService.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: { isSuspended: true, isActive: false },
+      });
+
+      // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
+      const details = JSON.stringify({ reason: 'Admin suspended user' });
+      await tx.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${admin.id}, 'suspend_user', ${userId}, ${details}::jsonb, NOW())
+      `;
+
+      return user;
+    });
+
+    this.logger.log({
+      event: 'admin.user.suspended',
+      userId,
+      adminId: admin.id,
+    });
+
+    return this.mapToUser(updated);
+  }
+
+  /**
+   * activateUser — ปลดระงับ user (set isActive = true, is_deleted = false)
+   *
+   * Side-effects:
+   * - INSERT admin_audit_logs: action = 'activate_user'
+   *
+   * @param userId - UUID ของ user ที่จะ activate
+   * @param admin  - admin ที่ทำ action (จาก JWT)
+   * @returns User - user ที่ถูก update
+   * @throws NotFoundException ถ้าไม่พบ user
+   */
+  async activateUser(userId: string, admin: AuthUser): Promise<User> {
+    // ─── Fetch + validate ────────────────────────────────────────────────
+    const existing = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    if (!existing.isSuspended && existing.isActive) {
+      throw new ConflictException('User is already active');
+    }
+
+    // ─── Transaction: update + audit log ─────────────────────────────────
+    const updated = await this.prismaService.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: {
+          isActive: true,
+          isSuspended: false,
+        },
+      });
+
+      // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
+      const details = JSON.stringify({
+        previousState: { isActive: existing.isActive, isSuspended: existing.isSuspended },
+      });
+      await tx.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${admin.id}, 'activate_user', ${userId}, ${details}::jsonb, NOW())
+      `;
+
+      return user;
+    });
+
+    this.logger.log({
+      event: 'admin.user.activated',
+      userId,
+      adminId: admin.id,
+    });
+
+    return this.mapToUser(updated);
+  }
+
+  /**
+   * changeUserRole — เปลี่ยน role ของ user
+   *
+   * Guards:
+   * - ห้าม admin เปลี่ยน role ตัวเอง
+   * - ห้ามเปลี่ยนเป็น admin/super_admin (privilege escalation)
+   *   อนุญาตเฉพาะ: patient (1) ↔ caregiver (2)
+   *
+   * Side-effects:
+   * - INSERT admin_audit_logs: action = 'change_role', details = { previousRole, newRole }
+   *
+   * @param input  - ChangeUserRoleInput (userId, newRole)
+   * @param admin  - admin ที่ทำ action (จาก JWT)
+   * @returns User - user ที่ถูก update
+   * @throws BadRequestException ถ้า admin เปลี่ยน role ตัวเอง หรือ newRole >= 3
+   * @throws NotFoundException ถ้าไม่พบ user
+   * @throws ConflictException ถ้า role เดิมเท่ากับ newRole
+   */
+  async changeUserRole(input: ChangeUserRoleInput, admin: AuthUser): Promise<User> {
+    const { userId, newRole } = input;
+
+    // ─── Guard: self-action ───────────────────────────────────────────────
+    if (userId === admin.id) {
+      throw new BadRequestException('ไม่สามารถเปลี่ยน role ตัวเองได้');
+    }
+
+    // ─── Guard: privilege escalation ─────────────────────────────────────
+    if (newRole >= ROLE_ID.ADMIN) {
+      throw new BadRequestException(
+        'ไม่สามารถเปลี่ยนเป็น admin หรือ super_admin ได้ (ป้องกัน privilege escalation)',
+      );
+    }
+
+    // ─── Fetch + validate ────────────────────────────────────────────────
+    const existing = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    if (existing.role === newRole) {
+      throw new ConflictException(`User already has role ${newRole}`);
+    }
+
+    // ─── Guard: ห้ามเปลี่ยน role ของ admin/super_admin ──────────────────
+    if (existing.role >= ROLE_ID.ADMIN) {
+      throw new BadRequestException(
+        'ไม่สามารถเปลี่ยน role ของ admin หรือ super_admin ได้',
+      );
+    }
+
+    // ─── Transaction: update + audit log ─────────────────────────────────
+    const previousRole = existing.role;
+    const updated = await this.prismaService.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: { role: newRole },
+      });
+
+      // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
+      const details = JSON.stringify({ previousRole, newRole });
+      await tx.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${admin.id}, 'change_role', ${userId}, ${details}::jsonb, NOW())
+      `;
+
+      return user;
+    });
+
+    this.logger.log({
+      event: 'admin.user.role_changed',
+      userId,
+      adminId: admin.id,
+      previousRole,
+      newRole,
+    });
+
+    return this.mapToUser(updated);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
