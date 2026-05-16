@@ -85,9 +85,12 @@ export class AdminService {
     // ─── 1. Build where clause ────────────────────────────────────────────
     const where: Prisma.CaregiverWhereInput = {};
 
-    // Filter by status (ถ้าไม่ส่ง หรือส่ง "all" → ไม่กรอง)
+    // Filter by status
     if (input.status && input.status !== KycStatusFilter.all) {
       where.kycStatus = input.status;
+    } else {
+      // สำหรับ "all" (หรือไม่ได้ระบุ status) ให้โชว์แค่คนที่กำลังอยู่หรือผ่านขั้นตอน KYC แล้ว (ไม่เอา none)
+      where.kycStatus = { in: ['pending', 'verified', 'rejected'] };
     }
 
     // Search by fullName (ILIKE — Prisma mode: 'insensitive' → PostgreSQL ILIKE)
