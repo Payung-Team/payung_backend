@@ -30,6 +30,7 @@ import {
   kycResubmittedTemplate,
   type EmailTemplate,
 } from './templates/kyc.templates';
+import { adminInviteTemplate } from './templates/admin.templates';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
 type EmailUser = {
@@ -99,6 +100,22 @@ export class EmailService {
 
     const tpl = kycResubmittedTemplate(user.displayName, this.frontendUrl);
     await this.send(user.email, tpl);
+  }
+
+  /**
+   * Admin invite — ส่ง email พร้อม temp password ให้ admin ใหม่
+   *
+   * ต่างจาก KYC emails ตรงที่รับ email โดยตรง (ไม่ผ่าน userId)
+   * เพราะต้องส่งก่อนที่ admin จะ login ครั้งแรก และไม่เช็ค emailPreferences
+   * (admin invite เป็น transactional email ที่ต้องส่งเสมอ)
+   */
+  async sendAdminInvite(
+    email: string,
+    displayName: string | null,
+    tempPassword: string,
+  ): Promise<void> {
+    const tpl = adminInviteTemplate(displayName, email, tempPassword, this.frontendUrl);
+    await this.send(email, tpl);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────

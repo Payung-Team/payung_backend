@@ -23,10 +23,13 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+import { SupabaseService } from '../common/supabase.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { EmailService } from '../email/email.service';
@@ -34,10 +37,14 @@ import { AdminKycListInput, KycStatusFilter } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload, CaregiverKycSummary } from './dto/admin-kyc-list.payload';
 import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
+import { InviteAdminInput } from './dto/invite-admin.input';
+import { InviteAdminPayload } from './dto/invite-admin.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
+import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
+import { ROLE_ID } from '../common/constants/roles.constant';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -49,6 +56,7 @@ export class AdminService {
 
   constructor(
     private readonly prismaService: PrismaService,
+    private readonly supabaseService: SupabaseService,
     private readonly caregiverService: CaregiverService,
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
@@ -381,6 +389,89 @@ export class AdminService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // INVITE ADMIN
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * inviteAdmin — Super Admin เชิญ Admin หรือ Super Admin ใหม่
+   *
+   * Flow:
+   * 1. Validate email uniqueness — ConflictException ถ้าซ้ำ
+   * 2. Validate role — BadRequestException ถ้าไม่ใช่ 3 หรือ 4
+   * 3. Generate temp password (12-char base64)
+   * 4. Create Supabase Auth user (email_confirm: true — skip verification)
+   * 5. Create user record ใน DB (must_change_password: true)
+   * 6. Send invitation email พร้อม temp password (fire-and-forget)
+   * 7. Audit log (console placeholder — admin_audit_logs ยังไม่มี table)
+   * 8. Return { user, tempPasswordSent: true }
+   *
+   * @param input       - InviteAdminInput (email, firstName, lastName, role)
+   * @param currentUser - Super Admin ที่กำลัง invite (จาก JWT)
+   */
+  async inviteAdmin(input: InviteAdminInput, currentUser: AuthUser): Promise<InviteAdminPayload> {
+    // ─── 1. Validate email uniqueness ─────────────────────────────────────
+    const existing = await this.prismaService.user.findUnique({
+      where: { email: input.email },
+    });
+    if (existing) {
+      throw new ConflictException('Email already registered');
+    }
+
+    // ─── 2. Validate role ─────────────────────────────────────────────────
+    if (input.role !== ROLE_ID.ADMIN && input.role !== ROLE_ID.SUPER_ADMIN) {
+      throw new BadRequestException('Invalid role. Must be 3 (ADMIN) or 4 (SUPER_ADMIN)');
+    }
+
+    // ─── 3. Generate temp password ────────────────────────────────────────
+    const tempPassword = crypto.randomBytes(9).toString('base64'); // 12 chars
+
+    // ─── 4. Create Supabase Auth user ─────────────────────────────────────
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: input.email,
+      password: tempPassword,
+      email_confirm: true,
+    });
+
+    if (authError || !authData.user) {
+      this.logger.error(`Supabase admin.createUser failed for ${input.email}: ${authError?.message ?? 'no user returned'}`);
+      throw new InternalServerErrorException('Failed to create auth user');
+    }
+
+    // ─── 5. Create user record in DB ──────────────────────────────────────
+    const displayName = `${input.firstName} ${input.lastName}`;
+    const created = await this.prismaService.user.create({
+      data: {
+        supabaseUid: authData.user.id,
+        email: input.email,
+        displayName,
+        role: input.role,
+        isActive: true,
+        must_change_password: true,
+        invited_by: currentUser.id,
+      },
+    });
+
+    // ─── 6. Send invitation email (fire-and-forget) ───────────────────────
+    void this.emailService.sendAdminInvite(created.email, created.displayName, tempPassword).catch((err: unknown) => {
+      this.logSideEffectError('email admin_invite', created.id, err);
+    });
+
+    // ─── 7. Audit log placeholder ─────────────────────────────────────────
+    // TODO: replace with admin_audit_logs table insert when table is created (PYG-127)
+    this.logger.log({
+      event: 'admin.invited',
+      invitedBy: currentUser.id,
+      targetEmail: input.email,
+      targetUserId: created.id,
+      role: input.role,
+    });
+
+    // ─── 8. Return ────────────────────────────────────────────────────────
+    return { user: this.mapToUser(created), tempPasswordSent: true };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -473,6 +564,37 @@ export class AdminService {
       `[AdminService] Failed side-effect "${action}" for user ${userId}: ${msg}`,
       stack,
     );
+  }
+
+  /** mapToUser — แปลง Prisma user record → GraphQL User entity */
+  private mapToUser(u: {
+    id: string;
+    email: string;
+    displayName: string | null;
+    avatarUrl: string | null;
+    phone: string | null;
+    address: string | null;
+    bio: string | null;
+    role: number;
+    isActive: boolean;
+    emailPreferences: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }): User {
+    return {
+      id: u.id,
+      email: u.email,
+      displayName: u.displayName ?? undefined,
+      avatarUrl: u.avatarUrl ?? undefined,
+      phone: u.phone ?? undefined,
+      address: u.address ?? undefined,
+      bio: u.bio ?? undefined,
+      role: u.role,
+      isActive: u.isActive,
+      emailPreferences: u.emailPreferences,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    };
   }
 
   /**

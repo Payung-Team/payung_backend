@@ -64,8 +64,9 @@ export class SupabaseAuthGuard implements CanActivate {
 
     // ── PYG-132: เช็ค suspended ก่อนปล่อยผ่าน ──
     // ถ้า admin "ระงับ" บัญชี → ห้ามใช้ API ทุก endpoint ที่ผ่าน Guard นี้
-    // ส่งข้อความภาษาไทยกลับให้ FE แสดงให้ user เห็นได้ทันที
-    if (user.isSuspended) {
+    // isSuspended = !isActive หรือ is_deleted (computed จาก 2 fields หลัง db pull)
+    const isSuspended = !user.isActive || user.is_deleted;
+    if (isSuspended) {
       throw new ForbiddenException('บัญชีถูกระงับ');
     }
 
@@ -75,7 +76,7 @@ export class SupabaseAuthGuard implements CanActivate {
       supabaseUid: user.supabaseUid,
       email: user.email,
       role: user.role,
-      isSuspended: user.isSuspended, // PYG-132 — pass through ให้ guard อื่น/resolver อ่านได้
+      isSuspended,
     };
 
     return true;

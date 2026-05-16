@@ -2,6 +2,50 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+"""Full KYC detail for a single caregiver (admin only)"""
+type AdminKycDetailPayload {
+  """Caregiver profile"""
+  caregiver: Caregiver!
+
+  """KYC documents with signed URLs (1hr expiry)"""
+  documents: [KycDocument!]!
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
+
+  """Review history, newest first"""
+  reviews: [KycReview!]!
+}
+
+input AdminKycListInput {
+  """Items per page (default: 20, max: 100)."""
+  limit: Int
+
+  """Page number (1-based). Defaults to 1."""
+  page: Int
+
+  """Search by caregiver full name (case-insensitive partial match)"""
+  search: String
+
+  """Filter by KYC status. Omit or use "all" to return every status."""
+  status: KycStatusFilter
+}
+
+"""Paginated KYC submission list for admin"""
+type AdminKycListPayload {
+  """Caregiver KYC summaries for the current page"""
+  items: [CaregiverKycSummary!]!
+
+  """Current page number (1-based)"""
+  page: Int!
+
+  """Total number of matching caregivers"""
+  total: Int!
+
+  """Total number of pages"""
+  totalPages: Int!
+}
+
 type AuthPayload {
   """JWT access token for API requests"""
   accessToken: String!
@@ -50,6 +94,24 @@ type Caregiver {
   userId: String!
 }
 
+"""Summary of a caregiver KYC submission for admin review"""
+type CaregiverKycSummary {
+  """Number of KYC documents uploaded"""
+  documentCount: Int!
+
+  """Caregiver full name"""
+  fullName: String!
+
+  """Caregiver UUID"""
+  id: ID!
+
+  """Current KYC status: none | pending | verified | rejected"""
+  kycStatus: String!
+
+  """When KYC was last submitted"""
+  submittedAt: DateTime
+}
+
 """
 A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
 """
@@ -59,6 +121,26 @@ type HealthStatus {
   status: String!
   supabaseConnected: Boolean!
   timestamp: String!
+}
+
+input InviteAdminInput {
+  """Email address of the new admin"""
+  email: String!
+
+  """First name"""
+  firstName: String!
+
+  """Last name"""
+  lastName: String!
+
+  """3 = ADMIN, 4 = SUPER_ADMIN"""
+  role: Int!
+}
+
+type InviteAdminPayload {
+  """Whether the invitation email with temp password was sent"""
+  tempPasswordSent: Boolean!
+  user: User!
 }
 
 type KycDocument {
@@ -123,6 +205,37 @@ input KycInput {
   skills: [String!]!
 }
 
+"""A single KYC review action by an admin"""
+type KycReview {
+  """Review action: approved | rejected"""
+  action: String!
+  id: ID!
+
+  """Rejection reason (null if approved)"""
+  reason: String
+
+  """When this review was performed"""
+  reviewedAt: DateTime!
+
+  """ID of the admin who performed this review"""
+  reviewedBy: String!
+}
+
+"""Filter KYC list by status. Use "all" to return every status."""
+enum KycStatusFilter {
+  """Return all statuses"""
+  all
+
+  """Awaiting admin review"""
+  pending
+
+  """KYC rejected, caregiver can resubmit"""
+  rejected
+
+  """KYC approved"""
+  verified
+}
+
 type KycStatusPayload {
   """Caregiver profile (null if never submitted)"""
   caregiver: Caregiver
@@ -155,8 +268,21 @@ input LoginInput {
 }
 
 type Mutation {
+  """
+  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
+  """
+  approveKyc(
+    """UUID of the caregiver to approve"""
+    caregiverId: ID!
+  ): Caregiver!
+
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
+
+  """
+  Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
+  """
+  inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
 
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
@@ -172,6 +298,11 @@ type Mutation {
 
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
+
+  """
+  Admin only: Reject a caregiver KYC submission with a reason. Sets kycStatus = "rejected", records audit log with reason, sends notification + email. Requires kycStatus = "pending". Reason must be at least 10 characters.
+  """
+  rejectKyc(input: RejectKycInput!): Caregiver!
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
@@ -231,6 +362,16 @@ enum NotificationType {
 }
 
 type Query {
+  """
+  Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
+  """
+  adminKycDetail(caregiverId: ID!): AdminKycDetailPayload!
+
+  """
+  Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
+  """
+  adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
 
@@ -254,6 +395,16 @@ input RegisterInput {
   email: String!
   password: String!
   role: Int!
+}
+
+input RejectKycInput {
+  """UUID of the caregiver to reject"""
+  caregiverId: ID!
+
+  """
+  Reason for rejection (min 10 chars). Will be sent to caregiver via notification and email.
+  """
+  reason: String!
 }
 
 input UpdateCaregiverInput {

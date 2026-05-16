@@ -24,6 +24,8 @@ import { AdminKycListInput } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload } from './dto/admin-kyc-list.payload';
 import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
+import { InviteAdminInput } from './dto/invite-admin.input';
+import { InviteAdminPayload } from './dto/invite-admin.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -156,5 +158,35 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<Caregiver> {
     return this.adminService.rejectKyc(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // INVITE ADMIN
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * inviteAdmin — Super Admin เชิญ Admin/Super Admin ใหม่
+   *
+   * Guard: SUPER_ADMIN (role=4) เท่านั้น — @Roles ที่ method level override class level
+   *
+   * @example
+   * mutation {
+   *   inviteAdmin(input: { email: "new@payung.app", firstName: "สมชาย", lastName: "ใจดี", role: 3 }) {
+   *     user { id email displayName role }
+   *     tempPasswordSent
+   *   }
+   * }
+   */
+  @Mutation(() => InviteAdminPayload, {
+    description:
+      'Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). ' +
+      'Creates Supabase auth user + DB record, sends invitation email with temp password.',
+  })
+  @Roles(ROLE_ID.SUPER_ADMIN)
+  async inviteAdmin(
+    @Args('input') input: InviteAdminInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<InviteAdminPayload> {
+    return this.adminService.inviteAdmin(input, admin);
   }
 }

@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,144 +7,140 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── User Model ──────────────────────────────────────────────────────────────
-// ตาราง users เก็บข้อมูลผู้ใช้ในระบบของเรา
-//
-// ทำไมต้องมีตาราง users ของเราเอง ทั้งที่ Supabase Auth ก็เก็บ user อยู่แล้ว?
-// → เพราะ Supabase Auth เก็บแค่ email + password (สำหรับ login)
-//   แต่เราต้องการเก็บข้อมูลเพิ่ม เช่น role, displayName, isActive
-//   ดังนั้นเราจึงใช้ supabaseUid เชื่อมโยงข้อมูลทั้ง 2 ฝั่งเข้าด้วยกัน
-//
-// @map("snake_case") = ใน TypeScript ใช้ camelCase แต่ใน database ใช้ snake_case
-// @@map("users")     = ตั้งชื่อ table ใน database เป็น "users" (ไม่ใช่ "User")
 model User {
-  id          String   @id @default(uuid())       // Primary key, สร้าง UUID ให้อัตโนมัติ
-  supabaseUid String   @unique @map("supabase_uid") // เชื่อมกับ Supabase Auth user
-  email       String   @unique                    // Email ห้ามซ้ำ
-  displayName String?  @map("display_name")       // ชื่อแสดงผล (อาจเป็น null ถ้ายังไม่ตั้ง)
-  avatarUrl   String?  @map("avatar_url")         // URL รูปโปรไฟล์ (อาจเป็น null ถ้ายังไม่อัปโหลด)
-  phone       String?  @map("phone")              // เบอร์โทรศัพท์
-  address     String?  @map("address")            // ที่อยู่
-  bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
-  role        Int      @default(1)                // 1 = patient, 2 = caregiver, 3 = admin, 4 = super_admin (PYG-152)
-  isActive    Boolean  @default(true) @map("is_active")   // สถานะ active (account ใช้งานได้)
-  // is_suspended: ใช้เมื่อ admin "ระงับบัญชี" (ban) — แยกจาก is_active เพราะ:
-  //   is_active     = account ปกติ/ไม่ปกติ (เช่น ยังไม่ confirm email, deleted)
-  //   is_suspended  = admin สั่งระงับ (PYG-132)
-  // SupabaseAuthGuard จะ throw 403 ถ้า isSuspended = true
-  isSuspended Boolean  @default(false) @map("is_suspended") // PYG-132
-  emailPreferences Boolean @default(true) @map("email_preferences") // รับอีเมลแจ้งเตือนมั้ย (PYG-95)
-  createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
-  updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
+  id                                             String         @id @default(uuid())
+  supabaseUid                                    String         @unique @map("supabase_uid")
+  email                                          String         @unique
+  displayName                                    String?        @map("display_name")
+  avatarUrl                                      String?        @map("avatar_url")
+  isActive                                       Boolean        @default(true) @map("is_active")
+  createdAt                                      DateTime       @default(now()) @map("created_at")
+  updatedAt                                      DateTime       @updatedAt @map("updated_at")
+  address                                        String?        @map("address")
+  bio                                            String?        @map("bio")
+  phone                                          String?        @map("phone")
+  role                                           Int            @default(1)
+  emailPreferences                               Boolean        @default(true) @map("email_preferences")
+  invited_by                                     String?
+  must_change_password                           Boolean        @default(false)
+  last_login_at                                  DateTime?      @db.Timestamptz(6)
+  scheduled_delete_at                            DateTime?      @db.Timestamptz(6)
+  deletion_scheduled_by                          String?
+  is_deleted                                     Boolean        @default(false)
+  deleted_at                                     DateTime?      @db.Timestamptz(6)
+  caregiver                                      Caregiver?
+  field_locks_field_locks_locked_byTousers       field_locks[]  @relation("field_locks_locked_byTousers")
+  field_locks_field_locks_unlocked_byTousers     field_locks[]  @relation("field_locks_unlocked_byTousers")
+  documents                                      KycDocument[]
+  reviews                                        KycReview[]
+  notifications                                  Notification[]
+  users_users_deletion_scheduled_byTousers       User?          @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_deletion_scheduled_byTousers User[]         @relation("users_deletion_scheduled_byTousers")
+  users_users_invited_byTousers                  User?          @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_invited_byTousers            User[]         @relation("users_invited_byTousers")
 
-  // Relations — ตาราง Caregiver, KycDocument, KycReview, Notification reference กลับมาหา User
-  caregiver     Caregiver?
-  documents     KycDocument[]
-  reviews       KycReview[]    // admin reviews
-  notifications Notification[] // in-app notifications (PYG-95)
-
+  @@index([is_deleted], map: "idx_users_is_deleted")
+  @@index([role], map: "idx_users_role")
   @@map("users")
 }
 
-
 model Caregiver {
-  id              String    @id @default(uuid())
-  userId          String    @unique @map("user_id")
-  caregiverNumber String?   @unique @map("caregiver_number") // CG-0001, system-generated
-  fullName        String?   @map("full_name")
-  idCardNumber    String?   @map("id_card_number")
-  gender          String?   // "male" | "female" | "other"
-  dateOfBirth     DateTime? @map("date_of_birth")
-  address         String?
-  phone           String?
-  skills          String[]  // array of strings
-  experienceYears Int?      @map("experience_years")
-  hourlyRate      Float?    @map("hourly_rate")
-  bio             String?
-  kycStatus       String    @default("none") @map("kyc_status")
-  // "none" | "pending" | "verified" | "rejected"
-  kycSubmittedAt     DateTime? @map("kyc_submitted_at")
-  kycVerifiedAt      DateTime? @map("kyc_verified_at")
-  kycRejectedAt      DateTime? @map("kyc_rejected_at")       // วันเวลาที่ admin reject ล่าสุด
-  kycRejectionReason String?   @map("kyc_rejection_reason")  // เหตุผลที่ reject ล่าสุด (FE แสดงในหน้า status)
-  resubmitCount   Int       @default(0) @map("resubmit_count")
-  isSearchable    Boolean   @default(false) @map("is_searchable")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-
-  // Relations
-  user            User          @relation(fields: [userId], references: [id])
-  documents       KycDocument[]
-  reviews         KycReview[]   // เพิ่ม Relation มายัง KycReview
+  id                 String        @id @default(uuid())
+  userId             String        @unique @map("user_id")
+  fullName           String?       @map("full_name")
+  idCardNumber       String?       @map("id_card_number")
+  phone              String?
+  skills             String[]
+  experienceYears    Int?          @map("experience_years")
+  hourlyRate         Float?        @map("hourly_rate")
+  bio                String?
+  kycStatus          String        @default("none") @map("kyc_status")
+  kycSubmittedAt     DateTime?     @map("kyc_submitted_at")
+  isSearchable       Boolean       @default(false) @map("is_searchable")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  kycVerifiedAt      DateTime?     @map("kyc_verified_at")
+  resubmitCount      Int           @default(0) @map("resubmit_count")
+  caregiverNumber    String?       @unique @map("caregiver_number")
+  gender             String?
+  dateOfBirth        DateTime?     @map("date_of_birth")
+  address            String?
+  kycRejectedAt      DateTime?     @map("kyc_rejected_at")
+  kycRejectionReason String?       @map("kyc_rejection_reason")
+  user               User          @relation(fields: [userId], references: [id])
+  documents          KycDocument[]
+  reviews            KycReview[]
 
   @@map("caregivers")
 }
 
 model KycDocument {
-  id            String    @id @default(uuid())
-  caregiverId   String?   @map("caregiver_id")   // nullable ก่อน submit
-  userId        String    @map("user_id")              // ← เพิ่ม: เชื่อมกับ user ที่อัปโหลด
-  documentType  String    @map("doc_type")  // "id_card" | "certificate" | "license" | "photo"
-  fileUrl       String    @map("file_url")
-  fileName      String    @map("file_name")      // เพิ่มตาม Data Dictionary
-  fileSize      Int       @map("file_size")      // เพิ่มตาม Data Dictionary (Bytes)
-  mimeType      String    @map("mime_type")      // เพิ่มตาม Data Dictionary
-  uploadedAt    DateTime  @default(now()) @map("uploaded_at")
+  id           String     @id @default(uuid())
+  caregiverId  String?    @map("caregiver_id")
+  documentType String     @map("doc_type")
+  fileUrl      String     @map("file_url")
+  fileName     String     @map("file_name")
+  fileSize     Int        @map("file_size")
+  mimeType     String     @map("mime_type")
+  uploadedAt   DateTime   @default(now()) @map("uploaded_at")
+  userId       String     @map("user_id")
+  caregiver    Caregiver? @relation(fields: [caregiverId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
 
-  // Relations
-  caregiver     Caregiver? @relation(fields: [caregiverId], references: [id])
-  user          User       @relation(fields: [userId], references: [id])
   @@map("kyc_documents")
 }
 
 model KycReview {
-  id            String    @id @default(uuid())
-  caregiverId   String    @map("caregiver_id")
-  reviewerId    String    @map("reviewer_id")
-  action        String    // "approved" | "rejected"
-  reason        String?
-  reviewedAt    DateTime  @default(now()) @map("reviewed_at")
-
-  // Relations
-  caregiver     Caregiver @relation(fields: [caregiverId], references: [id])
-  reviewer      User      @relation(fields: [reviewerId], references: [id]) // Assuming User model handles Admin
+  id          String    @id @default(uuid())
+  caregiverId String    @map("caregiver_id")
+  reviewerId  String    @map("reviewer_id")
+  action      String
+  reason      String?
+  reviewedAt  DateTime  @default(now()) @map("reviewed_at")
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id])
+  reviewer    User      @relation(fields: [reviewerId], references: [id])
 
   @@map("kyc_reviews")
 }
 
-// ─── Notification Feature (PYG-95) ───────────────────────────────────────────
-// In-app notifications สำหรับแจ้งเตือน user เช่น KYC status, booking update
-//
-// ทำไมต้องเป็น enum?
-// - เพื่อจำกัด type ให้เป็นค่าที่กำหนด ป้องกัน typo (เช่น "kyc_submited")
-// - Prisma enum จะ generate TypeScript type + Postgres enum type ให้อัตโนมัติ
-//
-// เวลาเพิ่ม type ใหม่ → เพิ่มที่นี่ + rerun migration
-enum NotificationType {
-  kyc_submitted    // caregiver ส่ง KYC เข้ามา (แจ้ง admin)
-  kyc_verified     // KYC ผ่าน (แจ้ง caregiver)
-  kyc_rejected     // KYC ไม่ผ่าน (แจ้ง caregiver)
-  kyc_resubmitted  // caregiver ส่ง KYC ใหม่หลังถูก reject
-}
-
 model Notification {
   id        String           @id @default(uuid())
-  userId    String           @map("user_id")      // คนที่ได้รับ notification
-  type      NotificationType                       // ประเภทแจ้งเตือน (enum)
-  title     String                                 // หัวข้อสั้นๆ แสดงใน list
-  body      String                                 // เนื้อหารายละเอียด
-  data      Json?                                  // metadata เพิ่มเติม เช่น { caregiverId, bookingId }
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
   isRead    Boolean          @default(false) @map("is_read")
-  readAt    DateTime?        @map("read_at")       // เวลาที่ user อ่าน (null = ยังไม่อ่าน)
+  readAt    DateTime?        @map("read_at")
   createdAt DateTime         @default(now()) @map("created_at")
-
-  // Relations
   user      User             @relation(fields: [userId], references: [id])
 
-  // Index สำหรับ query ยอดนิยม:
-  // - ดู notification ของ user ตัวเอง เรียงจากใหม่ไปเก่า
-  // - filter unreadOnly ได้เร็ว
   @@index([userId, isRead, createdAt(sort: Desc)])
-
   @@map("notifications")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model field_locks {
+  id                                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entity_type                          String
+  entity_id                            String
+  field_name                           String
+  locked_by                            String
+  locked_at                            DateTime  @default(now()) @db.Timestamptz(6)
+  unlocked_at                          DateTime? @db.Timestamptz(6)
+  unlocked_by                          String?
+  users_field_locks_locked_byTousers   User      @relation("field_locks_locked_byTousers", fields: [locked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_field_locks_unlocked_byTousers User?     @relation("field_locks_unlocked_byTousers", fields: [unlocked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([entity_type, entity_id, field_name], map: "unique_active_lock")
+  @@index([locked_by], map: "idx_field_locks_locked_by")
+}
+
+enum NotificationType {
+  kyc_submitted
+  kyc_verified
+  kyc_rejected
+  kyc_resubmitted
 }

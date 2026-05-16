@@ -157,7 +157,6 @@ async function main() {
       displayName: 'Admin',
       role: ADMIN_ROLE,
       isActive: true,
-      isSuspended: false, // PYG-132 — admin ไม่ควรโดน suspend ตัวเอง
     },
   });
 
