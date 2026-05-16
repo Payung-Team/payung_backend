@@ -6,6 +6,8 @@
  *   → ดูรายการ KYC submissions ทั้งหมด (เฉพาะ admin เท่านั้น)
  * - adminKycDetail(caregiverId: ID!): AdminKycDetailPayload
  *   → ดูรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน พร้อม documents + review history
+ * - adminDashboard: AdminDashboardPayload
+ *   → สรุปภาพรวม: stats, weekly submissions, avg review time, recent activity
  *
  * Mutations:
  * - approveKyc(caregiverId: ID!): Caregiver
@@ -23,6 +25,7 @@ import { AdminService } from './admin.service';
 import { AdminKycListInput } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload } from './dto/admin-kyc-list.payload';
 import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
+import { AdminDashboardPayload } from './dto/admin-dashboard.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
@@ -91,6 +94,28 @@ export class AdminResolver {
     @Args('caregiverId', { type: () => ID }) caregiverId: string,
   ): Promise<AdminKycDetailPayload> {
     return this.adminService.adminKycDetail(caregiverId);
+  }
+
+  /**
+   * adminDashboard — ดึงข้อมูลสรุปภาพรวมระบบ KYC สำหรับ admin dashboard
+   *
+   * @example
+   * query {
+   *   adminDashboard {
+   *     summary { totalUsers totalCaregivers pendingKyc verifiedKyc rejectedKyc }
+   *     weeklySubmissions { week count }
+   *     avgReviewTimeHours
+   *     recentActivity { type caregiverName action timestamp }
+   *   }
+   * }
+   */
+  @Query(() => AdminDashboardPayload, {
+    description:
+      'Admin only: Dashboard overview with KYC stats, weekly submission trends, ' +
+      'average review time, and recent admin activity.',
+  })
+  async adminDashboard(): Promise<AdminDashboardPayload> {
+    return this.adminService.adminDashboard();
   }
 
   // ─────────────────────────────────────────────────────────────────────────

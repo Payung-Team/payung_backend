@@ -4,6 +4,7 @@
  * Methods:
  * - adminKycList()   — ดึงรายการ KYC submissions พร้อม filter/search/pagination
  * - adminKycDetail() — ดึงรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน
+ * - adminDashboard() — สรุปภาพรวม: stats, weekly submissions, avg review time, activity
  * - approveKyc()     — admin อนุมัติ KYC: verify caregiver + บันทึก audit + notify
  * - rejectKyc()      — admin ปฏิเสธ KYC: reject caregiver + บันทึก audit + notify
  *
@@ -36,6 +37,12 @@ import { EmailService } from '../email/email.service';
 import { AdminKycListInput, KycStatusFilter } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload, CaregiverKycSummary } from './dto/admin-kyc-list.payload';
 import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
+import {
+  AdminDashboardPayload,
+  DashboardSummary,
+  WeeklySubmission,
+  RecentActivity,
+} from './dto/admin-dashboard.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
@@ -258,6 +265,211 @@ export class AdminService {
       reviews,
       resubmitCount: raw.resubmitCount,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DASHBOARD
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminDashboard — ดึงข้อมูลสรุปภาพรวมระบบ KYC สำหรับ admin dashboard
+   *
+   * ประกอบด้วย 4 sections (ยิงทุก query แบบ parallel เพื่อ performance):
+   *
+   * 1. Summary — COUNT users + caregivers + GROUP BY kyc_status
+   *    SQL: COUNT(*) on users (is_deleted=false) + caregivers + grouped by kyc_status
+   *
+   * 2. Weekly submissions — DATE_TRUNC('week', kyc_submitted_at) last 8 weeks
+   *    SQL: GROUP BY week, fill gaps with 0
+   *
+   * 3. Avg review time — AVG(kyc_verified_at - kyc_submitted_at) WHERE kyc_status = 'verified'
+   *    SQL: EXTRACT(EPOCH FROM avg diff) / 3600 → hours
+   *
+   * 4. Recent activity — JOIN kyc_reviews + caregivers ORDER BY reviewed_at DESC LIMIT 10
+   *
+   * @returns AdminDashboardPayload
+   */
+  async adminDashboard(): Promise<AdminDashboardPayload> {
+    // ── ยิงทุก query พร้อมกัน (independent — ไม่มี dependency ระหว่างกัน) ──
+    const [summary, weeklySubmissions, avgReviewTimeHours, recentActivity] =
+      await Promise.all([
+        this.getDashboardSummary(),
+        this.getWeeklySubmissions(),
+        this.getAvgReviewTimeHours(),
+        this.getRecentActivity(),
+      ]);
+
+    this.logger.log({
+      event: 'admin.dashboard.queried',
+      totalUsers: summary.totalUsers,
+      totalCaregivers: summary.totalCaregivers,
+      pendingKyc: summary.pendingKyc,
+    });
+
+    return {
+      summary,
+      weeklySubmissions,
+      avgReviewTimeHours: avgReviewTimeHours ?? undefined,
+      recentActivity,
+    };
+  }
+
+  // ─── Dashboard sub-queries ────────────────────────────────────────────
+
+  /**
+   * getDashboardSummary — ตัวเลขสรุปภาพรวม
+   *
+   * DB columns used:
+   * - users.is_deleted (filter out soft-deleted)
+   * - caregivers.kyc_status (group by)
+   */
+  private async getDashboardSummary(): Promise<DashboardSummary> {
+    // Query 1: total active users
+    const totalUsers = await this.prismaService.user.count({
+      where: { is_deleted: false },
+    });
+
+    // Query 2: caregiver counts grouped by kyc_status
+    // Prisma groupBy จะ return array of { kycStatus, _count }
+    const statusGroups = await this.prismaService.caregiver.groupBy({
+      by: ['kycStatus'],
+      _count: { _all: true },
+    });
+
+    // Map results → lookup
+    const statusMap = new Map<string, number>();
+    let totalCaregivers = 0;
+    for (const group of statusGroups) {
+      statusMap.set(group.kycStatus, group._count._all);
+      totalCaregivers += group._count._all;
+    }
+
+    return {
+      totalUsers,
+      totalCaregivers,
+      pendingKyc: statusMap.get('pending') ?? 0,
+      verifiedKyc: statusMap.get('verified') ?? 0,
+      rejectedKyc: statusMap.get('rejected') ?? 0,
+    };
+  }
+
+  /**
+   * getWeeklySubmissions — จำนวน KYC submissions 8 สัปดาห์ล่าสุด
+   *
+   * Strategy:
+   * - $queryRaw เพราะ Prisma ไม่มี DATE_TRUNC groupBy
+   * - DB column: caregivers.kyc_submitted_at
+   * - Fill missing weeks with 0 count (frontend ต้องการ array ครบทุกสัปดาห์เพื่อวาด chart)
+   */
+  private async getWeeklySubmissions(): Promise<WeeklySubmission[]> {
+    // 8 weeks ago = จุดเริ่มต้น (Monday ต้นสัปดาห์)
+    const eightWeeksAgo = new Date();
+    eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 8 * 7);
+    // Align to Monday (JS: getDay() 0=Sun, 1=Mon, ...)
+    const day = eightWeeksAgo.getDay();
+    const diff = day === 0 ? -6 : 1 - day; // ถ้า Sunday (-6), อื่นๆ (1 - day)
+    eightWeeksAgo.setDate(eightWeeksAgo.getDate() + diff);
+    eightWeeksAgo.setHours(0, 0, 0, 0);
+
+    // Raw SQL: DATE_TRUNC('week', kyc_submitted_at) grouped + counted
+    // PostgreSQL DATE_TRUNC('week', ...) returns Monday 00:00:00 of each week
+    const rows = await this.prismaService.$queryRaw<
+      Array<{ week: Date; count: bigint }>
+    >`
+      SELECT
+        DATE_TRUNC('week', kyc_submitted_at) AS week,
+        COUNT(*)::bigint AS count
+      FROM caregivers
+      WHERE kyc_submitted_at IS NOT NULL
+        AND kyc_submitted_at >= ${eightWeeksAgo}
+      GROUP BY week
+      ORDER BY week ASC
+    `;
+
+    // Build lookup from DB results
+    const dbMap = new Map<string, number>();
+    for (const row of rows) {
+      const key = row.week.toISOString().slice(0, 10); // YYYY-MM-DD
+      dbMap.set(key, Number(row.count));
+    }
+
+    // Generate all 8 weeks (fill gaps with 0)
+    const result: WeeklySubmission[] = [];
+    const cursor = new Date(eightWeeksAgo);
+    for (let i = 0; i < 8; i++) {
+      const key = cursor.toISOString().slice(0, 10);
+      result.push({
+        week: key,
+        count: dbMap.get(key) ?? 0,
+      });
+      cursor.setDate(cursor.getDate() + 7);
+    }
+
+    return result;
+  }
+
+  /**
+   * getAvgReviewTimeHours — เวลาเฉลี่ยระหว่าง submit → verified (ชั่วโมง)
+   *
+   * Strategy:
+   * - $queryRaw เพราะ Prisma ไม่มี AVG ของ date diff
+   * - DB columns: kyc_verified_at, kyc_submitted_at → diff in seconds → / 3600
+   * - เฉพาะ caregivers ที่ kyc_status = 'verified' + มีทั้งสอง timestamps
+   * - Return null ถ้าไม่มี data
+   */
+  private async getAvgReviewTimeHours(): Promise<number | null> {
+    const rows = await this.prismaService.$queryRaw<
+      Array<{ avg_hours: number | null }>
+    >`
+      SELECT
+        EXTRACT(EPOCH FROM AVG(kyc_verified_at - kyc_submitted_at)) / 3600.0
+          AS avg_hours
+      FROM caregivers
+      WHERE kyc_status = 'verified'
+        AND kyc_verified_at IS NOT NULL
+        AND kyc_submitted_at IS NOT NULL
+    `;
+
+    const avgHours = rows[0]?.avg_hours;
+    if (avgHours == null) return null;
+
+    // Round to 1 decimal place (เช่น 4.3 hours)
+    return Math.round(avgHours * 10) / 10;
+  }
+
+  /**
+   * getRecentActivity — 10 กิจกรรม admin review ล่าสุด
+   *
+   * Strategy:
+   * - $queryRaw เพราะต้อง JOIN kyc_reviews + caregivers → full_name
+   * - ORDER BY reviewed_at DESC LIMIT 10
+   * - DB columns: kyc_reviews.caregiver_id, reviewed_at, action
+   *               caregivers.full_name
+   */
+  private async getRecentActivity(): Promise<RecentActivity[]> {
+    const rows = await this.prismaService.$queryRaw<
+      Array<{
+        full_name: string | null;
+        action: string;
+        reviewed_at: Date;
+      }>
+    >`
+      SELECT
+        c.full_name,
+        r.action,
+        r.reviewed_at
+      FROM kyc_reviews r
+      INNER JOIN caregivers c ON c.id = r.caregiver_id
+      ORDER BY r.reviewed_at DESC
+      LIMIT 10
+    `;
+
+    return rows.map((row) => ({
+      type: 'kyc_review',
+      caregiverName: row.full_name ?? 'Unknown',
+      action: row.action,
+      timestamp: row.reviewed_at,
+    }));
   }
 
   // ─────────────────────────────────────────────────────────────────────────
