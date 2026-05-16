@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, Scope } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { REQUEST } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 
@@ -26,18 +26,26 @@ export class Supabase {
 
     this.logger.log('initialising new supabase client for new Scope.REQUEST');
 
+    const token = ExtractJwt.fromAuthHeaderAsBearerToken()(this.request as any);
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     this.clientInstance = createClient(
-      this.configService.get('SUPABASE_URL'),
-      this.configService.get('SUPABASE_KEY'),
+      this.configService.get<string>('SUPABASE_URL')!,
+      this.configService.get<string>('SUPABASE_KEY')!,
       {
-        autoRefreshToken: true,
-        detectSessionInUrl: false,
+        auth: {
+          autoRefreshToken: true,
+          detectSessionInUrl: false,
+        },
+        global: {
+          headers,
+        },
       },
     );
 
-    this.clientInstance.auth.setAuth(
-      ExtractJwt.fromAuthHeaderAsBearerToken()(this.request),
-    );
     this.logger.log('auth has been set!');
 
     return this.clientInstance;
