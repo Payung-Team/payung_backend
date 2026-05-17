@@ -69,6 +69,7 @@ model Caregiver {
   address            String?
   kycRejectedAt      DateTime?     @map("kyc_rejected_at")
   kycRejectionReason String?       @map("kyc_rejection_reason")
+  rejection_reasons  Json?
   user               User          @relation(fields: [userId], references: [id])
   documents          KycDocument[]
   reviews            KycReview[]
