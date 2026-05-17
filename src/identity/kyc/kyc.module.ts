@@ -20,6 +20,7 @@ import { CaregiverService } from './caregiver.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { NotificationModule } from '../../notification/notification.module';
 import { EmailModule } from '../../email/email.module';
 
@@ -35,6 +36,7 @@ import { EmailModule } from '../../email/email.module';
     KycDocumentService, // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,
     RolesGuard,
+    FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile
   ],
   // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
   // me { caregiver { ... } } (PYG-90)

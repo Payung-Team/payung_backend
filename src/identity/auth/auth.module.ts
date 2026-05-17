@@ -19,6 +19,7 @@ import { UserResolver } from './user.resolver';
 import { AuthService } from './auth.service';
 import { UserService } from './user.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
+import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { KycModule } from '../kyc/kyc.module';
 
 @Module({
@@ -29,6 +30,7 @@ import { KycModule } from '../kyc/kyc.module';
     AuthService,
     UserService,
     SupabaseAuthGuard,
+    FieldLockGuard, // PYG-146: ใช้กับ updateProfile
   ],
 })
 export class AuthModule {}

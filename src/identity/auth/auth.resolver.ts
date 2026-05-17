@@ -19,6 +19,8 @@ import { AuthService } from './auth.service';
 import { UserService } from './user.service';
 import { User } from './entities/user.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
+import { FieldLockGuard } from '../../common/guards/field-lock.guard';
+import { FieldLock } from '../../common/decorators/field-lock.decorator';
 import {
   CurrentUser,
   AuthUser,
@@ -57,8 +59,12 @@ export class AuthResolver {
     return this.userService.findById(user.id);
   }
 
+  // PYG-146: FieldLockGuard เช็คก่อนว่า field ที่จะแก้ถูก admin lock ไว้ไหม
+  // ลำดับ guard: SupabaseAuthGuard (inject user) → FieldLockGuard (ใช้ user)
+  // @FieldLock('USER') บอก guard ว่า mutation นี้แก้ข้อมูลในตาราง users
   @Mutation(() => User, { description: 'Update current user profile' })
-  @UseGuards(SupabaseAuthGuard)
+  @UseGuards(SupabaseAuthGuard, FieldLockGuard)
+  @FieldLock('USER')
   async updateProfile(
     @CurrentUser() user: AuthUser,
     @Args('input') input: UpdateProfileInput,

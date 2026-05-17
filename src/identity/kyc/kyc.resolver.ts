@@ -29,7 +29,9 @@ import { Caregiver } from './entities/caregiver.entity';
 import { KycDocument } from './entities/kyc-document.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { FieldLock } from '../../common/decorators/field-lock.decorator';
 import {
   CurrentUser,
   AuthUser,
@@ -107,10 +109,16 @@ export class KycResolver {
     return this.caregiverService.findByUserId(user.id);
   }
 
+  // PYG-146: FieldLockGuard เช็คก่อนว่า field ที่จะแก้ถูก admin lock ไว้ไหม
+  // class มี @UseGuards(SupabaseAuthGuard, RolesGuard) อยู่แล้ว → Nest รัน class guard
+  // ก่อน method guard เสมอ ดังนั้น req.user พร้อมใช้ตอน FieldLockGuard รัน
+  // @FieldLock('CAREGIVER_PROFILE') บอก guard ว่า mutation นี้แก้ตาราง caregivers
   @Mutation(() => Caregiver, {
     description: 'Update caregiver profile (verified caregiver only)',
   })
   @Roles(2)
+  @UseGuards(FieldLockGuard)
+  @FieldLock('CAREGIVER_PROFILE')
   async updateCaregiverProfile(
     @CurrentUser() user: AuthUser,
     @Args('input') input: UpdateCaregiverInput,
