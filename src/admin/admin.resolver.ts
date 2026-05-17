@@ -31,6 +31,10 @@ import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
 import { ToggleAdminStatusInput } from './dto/toggle-admin-status.input';
 import { ToggleAdminStatusPayload } from './dto/toggle-admin-status.payload';
+import { ScheduleDeleteAdminInput } from './dto/schedule-delete-admin.input';
+import { ScheduleDeleteAdminPayload } from './dto/schedule-delete-admin.payload';
+import { CancelScheduledDeleteInput } from './dto/cancel-scheduled-delete.input';
+import { CancelScheduledDeletePayload } from './dto/cancel-scheduled-delete.payload';
 import { AdminUserListInput } from './dto/admin-user-list.input';
 import { AdminUserListPayload } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -374,6 +378,60 @@ export class AdminResolver {
    *   }
    * }
    */
+  // ─────────────────────────────────────────────────────────────────────────
+  // SCHEDULE DELETE + CANCEL
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * scheduleDeleteAdmin — กำหนดวันลบบัญชี admin ถาวรพร้อม grace period
+   *
+   * @example
+   * mutation {
+   *   scheduleDeleteAdmin(input: { adminId: "uuid", gracePeriodDays: 30 }) {
+   *     user { id email isActive }
+   *     scheduledDeleteAt
+   *     gracePeriodDays
+   *   }
+   * }
+   */
+  @Mutation(() => ScheduleDeleteAdminPayload, {
+    description:
+      'Super Admin only: Schedule permanent deletion of an admin account after a grace period. ' +
+      'Immediately deactivates the account and bans Supabase Auth. ' +
+      'Grace period: 7, 14, 30, or 60 days.',
+  })
+  @Roles(ROLE_ID.SUPER_ADMIN)
+  async scheduleDeleteAdmin(
+    @Args('input') input: ScheduleDeleteAdminInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<ScheduleDeleteAdminPayload> {
+    return this.adminService.scheduleDeleteAdmin(input, admin);
+  }
+
+  /**
+   * cancelScheduledDelete — ยกเลิกการกำหนดลบบัญชี admin + reactivate
+   *
+   * @example
+   * mutation {
+   *   cancelScheduledDelete(input: { adminId: "uuid" }) {
+   *     user { id email isActive }
+   *     reactivated
+   *   }
+   * }
+   */
+  @Mutation(() => CancelScheduledDeletePayload, {
+    description:
+      'Super Admin only: Cancel a scheduled deletion for an admin account. ' +
+      'Reactivates the account and unbans Supabase Auth.',
+  })
+  @Roles(ROLE_ID.SUPER_ADMIN)
+  async cancelScheduledDelete(
+    @Args('input') input: CancelScheduledDeleteInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<CancelScheduledDeletePayload> {
+    return this.adminService.cancelScheduledDelete(input, admin);
+  }
+
   @Mutation(() => ToggleAdminStatusPayload, {
     description:
       'Super Admin only: Activate or deactivate an admin account. ' +

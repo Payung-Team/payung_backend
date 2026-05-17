@@ -78,6 +78,76 @@ export function adminDeactivatedTemplate(
   };
 }
 
+export function adminScheduleDeleteTemplate(
+  displayName: string | null,
+  scheduledDeleteAt: Date,
+  gracePeriodDays: number,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = `บัญชี Admin ของคุณถูกกำหนดให้ลบใน ${gracePeriodDays} วัน — Payung`;
+  const deleteDate = scheduledDeleteAt.toLocaleDateString('th-TH', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  const bodyHtml = `
+    <p>${adminGreeting(displayName)},</p>
+    <p>บัญชีผู้ดูแลระบบของคุณถูก<strong>กำหนดให้ลบถาวร</strong>ในอีก <strong>${gracePeriodDays} วัน</strong></p>
+    <div style="background:#fff5f5; border-left:4px solid #e53935; padding:12px 16px; margin:16px 0;">
+      <p style="margin:0; font-weight:600; color:#c62828;">วันที่จะถูกลบถาวร:</p>
+      <p style="margin:8px 0 0; font-size:18px;">${deleteDate}</p>
+    </div>
+    <p>หากคุณต้องการยกเลิกการลบบัญชี กรุณาติดต่อ Super Admin ของทีมก่อนวันดังกล่าว</p>
+    <p>หากไม่มีการดำเนินการใดๆ บัญชีของคุณจะถูกลบถาวรโดยอัตโนมัติ</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ดูแลระบบ'},
+
+บัญชีผู้ดูแลระบบของคุณถูกกำหนดให้ลบถาวรในอีก ${gracePeriodDays} วัน
+วันที่จะถูกลบถาวร: ${deleteDate}
+
+หากต้องการยกเลิก กรุณาติดต่อ Super Admin ของทีม${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({ bodyHtml, frontendUrl }),
+    text,
+  };
+}
+
+export function adminCancelDeleteTemplate(
+  displayName: string | null,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = 'การลบบัญชี Admin ของคุณถูกยกเลิก — Payung';
+  const loginUrl = `${frontendUrl}/admin/login`;
+
+  const bodyHtml = `
+    <p>${adminGreeting(displayName)},</p>
+    <p>เราขอแจ้งให้ทราบว่า <strong>การกำหนดลบบัญชี</strong>ผู้ดูแลระบบของคุณ<strong>ถูกยกเลิกแล้ว</strong></p>
+    <p>บัญชีของคุณได้รับการเปิดใช้งานอีกครั้ง สามารถเข้าสู่ระบบได้ตามปกติ</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ดูแลระบบ'},
+
+การกำหนดลบบัญชีผู้ดูแลระบบของคุณถูกยกเลิกแล้ว
+บัญชีของคุณได้รับการเปิดใช้งานอีกครั้ง สามารถเข้าสู่ระบบได้ตามปกติ
+
+เข้าสู่ระบบ: ${loginUrl}${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({
+      bodyHtml,
+      ctaUrl: loginUrl,
+      ctaLabel: 'เข้าสู่ระบบ Admin',
+      frontendUrl,
+    }),
+    text,
+  };
+}
+
 export function adminActivatedTemplate(
   displayName: string | null,
   frontendUrl: string,

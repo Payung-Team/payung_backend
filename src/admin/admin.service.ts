@@ -49,6 +49,10 @@ import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
 import { ToggleAdminStatusInput } from './dto/toggle-admin-status.input';
 import { ToggleAdminStatusPayload } from './dto/toggle-admin-status.payload';
+import { ScheduleDeleteAdminInput } from './dto/schedule-delete-admin.input';
+import { ScheduleDeleteAdminPayload } from './dto/schedule-delete-admin.payload';
+import { CancelScheduledDeleteInput } from './dto/cancel-scheduled-delete.input';
+import { CancelScheduledDeletePayload } from './dto/cancel-scheduled-delete.payload';
 import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -1140,6 +1144,173 @@ export class AdminService {
     // ─── 8. Return ────────────────────────────────────────────────────────
     const action = input.isActive ? 'ADMIN_ACTIVATED' : 'ADMIN_DEACTIVATED';
     return { user: this.mapToUser(updated), action };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SCHEDULE DELETE + CANCEL
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * scheduleDeleteAdmin — Super Admin กำหนดวันลบบัญชี admin ถาวร (พร้อม grace period)
+   *
+   * Flow:
+   * 1. ห้ามลบตัวเอง
+   * 2. หา target (role ≥ 3, ยังไม่ถูกลบ)
+   * 3. ปกป้อง Super Admin คนสุดท้าย
+   * 4. Validate gracePeriodDays (7/14/30/60)
+   * 5. Update DB: isActive=false + scheduled_delete_at + deletion_scheduled_by
+   * 6. Ban Supabase Auth (same pattern as toggleAdminStatus)
+   * 7. KYC reviews reassign — ข้าม: KycReview.reviewerId เป็น NOT NULL
+   *    TODO: migrate reviewer_id เป็น nullable ก่อน implement ส่วนนี้
+   * 8. ส่ง email แจ้งวันที่จะถูกลบ (fire-and-forget)
+   * 9. Audit log placeholder
+   */
+  async scheduleDeleteAdmin(
+    input: ScheduleDeleteAdminInput,
+    currentUser: AuthUser,
+  ): Promise<ScheduleDeleteAdminPayload> {
+    const gracePeriodDays = input.gracePeriodDays ?? 30;
+
+    // ─── 1. ห้ามลบตัวเอง ──────────────────────────────────────────────────
+    if (input.adminId === currentUser.id) {
+      throw new BadRequestException('ไม่สามารถกำหนดลบตัวเองได้');
+    }
+
+    // ─── 2. หา target + validate ──────────────────────────────────────────
+    const target = await this.prismaService.user.findUnique({
+      where: { id: input.adminId },
+    });
+    if (!target || target.role < ROLE_ID.ADMIN) {
+      throw new NotFoundException('Admin not found');
+    }
+    if (target.is_deleted) {
+      throw new ConflictException('Admin already deleted');
+    }
+
+    // ─── 3. ปกป้อง Super Admin คนสุดท้าย ─────────────────────────────────
+    if (target.role === ROLE_ID.SUPER_ADMIN) {
+      const activeSuperAdminCount = await this.prismaService.user.count({
+        where: { role: ROLE_ID.SUPER_ADMIN, isActive: true, is_deleted: false },
+      });
+      if (activeSuperAdminCount <= 1) {
+        throw new BadRequestException('ไม่สามารถกำหนดลบ Super Admin คนสุดท้ายได้');
+      }
+    }
+
+    // ─── 4. Validate grace period ─────────────────────────────────────────
+    const ALLOWED_PERIODS = [7, 14, 30, 60];
+    if (!ALLOWED_PERIODS.includes(gracePeriodDays)) {
+      throw new BadRequestException('Grace period must be 7, 14, 30, or 60 days');
+    }
+
+    // ─── 5. Compute scheduled date + update DB ────────────────────────────
+    const scheduledDeleteAt = new Date();
+    scheduledDeleteAt.setDate(scheduledDeleteAt.getDate() + gracePeriodDays);
+
+    const updated = await this.prismaService.user.update({
+      where: { id: input.adminId },
+      data: {
+        isActive: false,
+        scheduled_delete_at: scheduledDeleteAt,
+        deletion_scheduled_by: currentUser.id,
+      },
+    });
+
+    // ─── 6. Supabase ban ──────────────────────────────────────────────────
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { error: supabaseError } = await supabaseAdmin.auth.admin.updateUserById(
+      target.supabaseUid,
+      { ban_duration: '876000h' },
+    );
+    if (supabaseError) {
+      this.logger.error(
+        `Supabase ban failed for ${target.supabaseUid}: ${supabaseError.message}`,
+      );
+    }
+
+    // ─── 8. Email (fire-and-forget) ───────────────────────────────────────
+    void this.emailService
+      .sendAdminScheduleDelete(updated.email, updated.displayName, scheduledDeleteAt, gracePeriodDays)
+      .catch((err: unknown) => this.logSideEffectError('email schedule_delete', updated.id, err));
+
+    // ─── 9. Audit log placeholder ─────────────────────────────────────────
+    // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
+    this.logger.log({
+      event: 'admin.delete_scheduled',
+      scheduledBy: currentUser.id,
+      targetUserId: input.adminId,
+      gracePeriodDays,
+      scheduledDeleteAt: scheduledDeleteAt.toISOString(),
+    });
+
+    return { user: this.mapToUser(updated), scheduledDeleteAt, gracePeriodDays };
+  }
+
+  /**
+   * cancelScheduledDelete — ยกเลิกการกำหนดลบบัญชี + reactivate
+   *
+   * Flow:
+   * 1. หา target (role ≥ 3, มี scheduled_delete_at, ยังไม่ถูกลบ)
+   * 2. Reactivate + clear scheduled_delete_at + deletion_scheduled_by
+   * 3. Unban Supabase Auth
+   * 4. ส่ง email แจ้ง cancel (fire-and-forget)
+   * 5. Audit log placeholder
+   */
+  async cancelScheduledDelete(
+    input: CancelScheduledDeleteInput,
+    currentUser: AuthUser,
+  ): Promise<CancelScheduledDeletePayload> {
+    // ─── 1. หา target + validate ──────────────────────────────────────────
+    const target = await this.prismaService.user.findUnique({
+      where: { id: input.adminId },
+    });
+    if (!target || target.role < ROLE_ID.ADMIN) {
+      throw new NotFoundException('Admin not found');
+    }
+    if (!target.scheduled_delete_at) {
+      throw new BadRequestException('Admin does not have a scheduled deletion');
+    }
+    if (target.is_deleted) {
+      throw new ConflictException('Admin already deleted, cannot cancel');
+    }
+
+    // ─── 2. Reactivate + clear schedule ──────────────────────────────────
+    const updated = await this.prismaService.user.update({
+      where: { id: input.adminId },
+      data: {
+        isActive: true,
+        scheduled_delete_at: null,
+        deletion_scheduled_by: null,
+      },
+    });
+
+    // ─── 3. Supabase unban ────────────────────────────────────────────────
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { error: supabaseError } = await supabaseAdmin.auth.admin.updateUserById(
+      target.supabaseUid,
+      { ban_duration: 'none' },
+    );
+    if (supabaseError) {
+      this.logger.error(
+        `Supabase unban failed for ${target.supabaseUid}: ${supabaseError.message}`,
+      );
+    }
+
+    // ─── 4. Email (fire-and-forget) ───────────────────────────────────────
+    void this.emailService
+      .sendAdminCancelDelete(updated.email, updated.displayName)
+      .catch((err: unknown) => this.logSideEffectError('email cancel_delete', updated.id, err));
+
+    // ─── 5. Audit log placeholder ─────────────────────────────────────────
+    // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
+    this.logger.log({
+      event: 'admin.delete_cancelled',
+      cancelledBy: currentUser.id,
+      targetUserId: input.adminId,
+      previousScheduledDeleteAt: target.scheduled_delete_at,
+    });
+
+    return { user: this.mapToUser(updated), reactivated: true };
   }
 
   // Private helpers

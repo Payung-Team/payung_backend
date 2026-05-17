@@ -34,6 +34,8 @@ import {
   adminInviteTemplate,
   adminDeactivatedTemplate,
   adminActivatedTemplate,
+  adminScheduleDeleteTemplate,
+  adminCancelDeleteTemplate,
 } from './templates/admin.templates';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
@@ -131,6 +133,23 @@ export class EmailService {
   /** แจ้ง admin ว่าบัญชีถูกเปิดใช้งานอีกครั้ง */
   async sendAdminActivated(email: string, displayName: string | null): Promise<void> {
     const tpl = adminActivatedTemplate(displayName, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง admin ว่าบัญชีถูกกำหนดให้ลบถาวรพร้อมวันที่ */
+  async sendAdminScheduleDelete(
+    email: string,
+    displayName: string | null,
+    scheduledDeleteAt: Date,
+    gracePeriodDays: number,
+  ): Promise<void> {
+    const tpl = adminScheduleDeleteTemplate(displayName, scheduledDeleteAt, gracePeriodDays, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง admin ว่าการกำหนดลบบัญชีถูกยกเลิก */
+  async sendAdminCancelDelete(email: string, displayName: string | null): Promise<void> {
+    const tpl = adminCancelDeleteTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 

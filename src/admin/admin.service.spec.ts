@@ -11,6 +11,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import { ScheduleDeleteAdminInput } from './dto/schedule-delete-admin.input';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
@@ -59,6 +60,8 @@ const mockEmailService = {
   sendAdminInvite: jest.fn().mockResolvedValue(undefined),
   sendAdminDeactivated: jest.fn().mockResolvedValue(undefined),
   sendAdminActivated: jest.fn().mockResolvedValue(undefined),
+  sendAdminScheduleDelete: jest.fn().mockResolvedValue(undefined),
+  sendAdminCancelDelete: jest.fn().mockResolvedValue(undefined),
 };
 
 const mockCaregiverService = {
@@ -383,5 +386,259 @@ describe('AdminService — toggleAdminStatus', () => {
         superAdmin,
       ),
     ).rejects.toThrow(NotFoundException);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// scheduleDeleteAdmin — PYG-158
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('AdminService — scheduleDeleteAdmin', () => {
+  let service: AdminService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockSupabaseAdminClient.auth.admin.updateUserById.mockResolvedValue({ error: null });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  const scheduledTarget = { ...targetAdminBase, isActive: true, is_deleted: false };
+  const scheduledResult = { ...targetAdminBase, isActive: false };
+
+  // ─── Case 1: Schedule delete → is_active=false + ban + email ─────────────
+  it('schedules deletion: sets isActive=false, scheduled_delete_at, bans Supabase', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(scheduledTarget);
+    mockPrisma.user.count.mockResolvedValue(3);
+    mockPrisma.user.update.mockResolvedValue(scheduledResult);
+
+    const result = await service.scheduleDeleteAdmin(
+      { adminId: 'target-admin-uuid', gracePeriodDays: 30 },
+      superAdmin,
+    );
+
+    expect(result.gracePeriodDays).toBe(30);
+    expect(result.scheduledDeleteAt).toBeInstanceOf(Date);
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isActive: false,
+          deletion_scheduled_by: superAdmin.id,
+        }),
+      }),
+    );
+    expect(mockSupabaseAdminClient.auth.admin.updateUserById).toHaveBeenCalledWith(
+      'supabase-target-uid',
+      { ban_duration: '876000h' },
+    );
+  });
+
+  // ─── Case 2: Grace period 7 days → scheduledDeleteAt = NOW + 7 ───────────
+  it('sets scheduledDeleteAt to NOW + 7 days when gracePeriodDays=7', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(scheduledTarget);
+    mockPrisma.user.count.mockResolvedValue(3);
+    mockPrisma.user.update.mockResolvedValue(scheduledResult);
+
+    const before = new Date();
+    const result = await service.scheduleDeleteAdmin(
+      { adminId: 'target-admin-uuid', gracePeriodDays: 7 },
+      superAdmin,
+    );
+    const after = new Date();
+
+    const minExpected = new Date(before);
+    minExpected.setDate(minExpected.getDate() + 7);
+    const maxExpected = new Date(after);
+    maxExpected.setDate(maxExpected.getDate() + 7);
+
+    expect(result.scheduledDeleteAt.getTime()).toBeGreaterThanOrEqual(minExpected.getTime());
+    expect(result.scheduledDeleteAt.getTime()).toBeLessThanOrEqual(maxExpected.getTime());
+  });
+
+  // ─── Case 3: Grace period 60 days ────────────────────────────────────────
+  it('sets scheduledDeleteAt to NOW + 60 days when gracePeriodDays=60', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(scheduledTarget);
+    mockPrisma.user.count.mockResolvedValue(3);
+    mockPrisma.user.update.mockResolvedValue(scheduledResult);
+
+    const result = await service.scheduleDeleteAdmin(
+      { adminId: 'target-admin-uuid', gracePeriodDays: 60 },
+      superAdmin,
+    );
+
+    expect(result.gracePeriodDays).toBe(60);
+    const diffDays = Math.round(
+      (result.scheduledDeleteAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    );
+    expect(diffDays).toBeGreaterThanOrEqual(59);
+    expect(diffDays).toBeLessThanOrEqual(60);
+  });
+
+  // ─── Case 4: KYC reviews reassign — skipped (NOT NULL constraint) ─────────
+  // KycReview.reviewerId is NOT NULL in schema → cannot set to null without migration
+  // This test documents the known skip
+  it('does NOT attempt to reassign KYC reviews (reviewerId is NOT NULL)', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(scheduledTarget);
+    mockPrisma.user.count.mockResolvedValue(3);
+    mockPrisma.user.update.mockResolvedValue(scheduledResult);
+
+    await service.scheduleDeleteAdmin(
+      { adminId: 'target-admin-uuid', gracePeriodDays: 30 },
+      superAdmin,
+    );
+
+    // kycReview.updateMany should NOT be called (reviewerId NOT NULL)
+    expect(mockPrisma.kycReview.create).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 5: Self-deletion → BadRequestException ──────────────────────────
+  it('throws BadRequestException when trying to schedule delete self', async () => {
+    await expect(
+      service.scheduleDeleteAdmin(
+        { adminId: superAdmin.id, gracePeriodDays: 30 },
+        superAdmin,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 6: Last Super Admin → BadRequestException ──────────────────────
+  it('throws BadRequestException when scheduling delete for last active Super Admin', async () => {
+    const superAdminTarget = { ...scheduledTarget, role: ROLE_ID.SUPER_ADMIN };
+    mockPrisma.user.findUnique.mockResolvedValue(superAdminTarget);
+    mockPrisma.user.count.mockResolvedValue(1);
+
+    await expect(
+      service.scheduleDeleteAdmin(
+        { adminId: 'target-admin-uuid', gracePeriodDays: 30 },
+        superAdmin,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 7: Already deleted → ConflictException ─────────────────────────
+  it('throws ConflictException when target admin is already deleted', async () => {
+    const deletedTarget = { ...scheduledTarget, is_deleted: true };
+    mockPrisma.user.findUnique.mockResolvedValue(deletedTarget);
+
+    await expect(
+      service.scheduleDeleteAdmin(
+        { adminId: 'target-admin-uuid', gracePeriodDays: 30 },
+        superAdmin,
+      ),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  // ─── Case 8: Invalid grace period (e.g., 15) → BadRequestException ───────
+  it('throws BadRequestException for invalid grace period (e.g., 15)', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(scheduledTarget);
+    mockPrisma.user.count.mockResolvedValue(3);
+
+    await expect(
+      service.scheduleDeleteAdmin(
+        { adminId: 'target-admin-uuid', gracePeriodDays: 15 },
+        superAdmin,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cancelScheduledDelete — PYG-158
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('AdminService — cancelScheduledDelete', () => {
+  let service: AdminService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockSupabaseAdminClient.auth.admin.updateUserById.mockResolvedValue({ error: null });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  const pendingDeleteTarget = {
+    ...targetAdminBase,
+    isActive: false,
+    is_deleted: false,
+    scheduled_delete_at: new Date('2026-06-17'),
+    deletion_scheduled_by: superAdmin.id,
+  };
+
+  // ─── Case 9: Cancel → reactivate + clear + unban ─────────────────────────
+  it('cancels deletion: reactivates, clears scheduled_delete_at, unbans Supabase', async () => {
+    const reactivatedUser = { ...targetAdminBase, isActive: true };
+    mockPrisma.user.findUnique.mockResolvedValue(pendingDeleteTarget);
+    mockPrisma.user.update.mockResolvedValue(reactivatedUser);
+
+    const result = await service.cancelScheduledDelete(
+      { adminId: 'target-admin-uuid' },
+      superAdmin,
+    );
+
+    expect(result.reactivated).toBe(true);
+    expect(result.user.isActive).toBe(true);
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isActive: true,
+          scheduled_delete_at: null,
+          deletion_scheduled_by: null,
+        }),
+      }),
+    );
+    expect(mockSupabaseAdminClient.auth.admin.updateUserById).toHaveBeenCalledWith(
+      'supabase-target-uid',
+      { ban_duration: 'none' },
+    );
+  });
+
+  // ─── Case 10: No scheduled deletion → BadRequestException ────────────────
+  it('throws BadRequestException when target has no scheduled deletion', async () => {
+    const noSchedule = { ...targetAdminBase, scheduled_delete_at: null };
+    mockPrisma.user.findUnique.mockResolvedValue(noSchedule);
+
+    await expect(
+      service.cancelScheduledDelete({ adminId: 'target-admin-uuid' }, superAdmin),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 11: Already deleted → ConflictException ────────────────────────
+  it('throws ConflictException when target is already permanently deleted', async () => {
+    const alreadyDeleted = {
+      ...pendingDeleteTarget,
+      is_deleted: true,
+      deleted_at: new Date('2026-06-01'),
+    };
+    mockPrisma.user.findUnique.mockResolvedValue(alreadyDeleted);
+
+    await expect(
+      service.cancelScheduledDelete({ adminId: 'target-admin-uuid' }, superAdmin),
+    ).rejects.toThrow(ConflictException);
   });
 });
