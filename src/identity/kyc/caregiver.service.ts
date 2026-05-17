@@ -416,7 +416,7 @@ export class CaregiverService {
 
     if (docs.length === 0) return [];
 
-    const supabase = this.supabaseService.getClient();
+    const supabase = this.supabaseService.getAdminClient();
 
     const enriched = await Promise.all(
       docs.map(async (doc) => {

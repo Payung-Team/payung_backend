@@ -226,6 +226,7 @@ export class AdminService {
     // ─── 1. Fetch caregiver ───────────────────────────────────────────────
     const raw = await this.prismaService.caregiver.findUnique({
       where: { id: caregiverId },
+      include: { user: true },
     });
 
     if (!raw) {
@@ -235,6 +236,7 @@ export class AdminService {
     const caregiver: Caregiver = {
       id: raw.id,
       userId: raw.userId,
+      email: raw.user?.email,
       caregiverNumber: raw.caregiverNumber ?? undefined,
       fullName: raw.fullName ?? '',
       idCardNumber: raw.idCardNumber ?? '',

@@ -32,6 +32,10 @@ export class Caregiver {
   @Field()
   fullName!: string;
 
+  /** Email ของ caregiver (ดึงจาก user) */
+  @Field({ nullable: true, description: 'Email address of the caregiver linked user' })
+  email?: string;
+
   /** เลขบัตรประชาชน 13 หลัก */
   @Field()
   idCardNumber!: string;
