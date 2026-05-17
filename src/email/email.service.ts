@@ -30,7 +30,11 @@ import {
   kycResubmittedTemplate,
   type EmailTemplate,
 } from './templates/kyc.templates';
-import { adminInviteTemplate } from './templates/admin.templates';
+import {
+  adminInviteTemplate,
+  adminDeactivatedTemplate,
+  adminActivatedTemplate,
+} from './templates/admin.templates';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
 type EmailUser = {
@@ -115,6 +119,18 @@ export class EmailService {
     tempPassword: string,
   ): Promise<void> {
     const tpl = adminInviteTemplate(displayName, email, tempPassword, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง admin ว่าบัญชีถูกระงับ */
+  async sendAdminDeactivated(email: string, displayName: string | null): Promise<void> {
+    const tpl = adminDeactivatedTemplate(displayName, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง admin ว่าบัญชีถูกเปิดใช้งานอีกครั้ง */
+  async sendAdminActivated(email: string, displayName: string | null): Promise<void> {
+    const tpl = adminActivatedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 

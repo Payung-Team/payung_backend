@@ -46,6 +46,8 @@ import {
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
+import { ToggleAdminStatusInput } from './dto/toggle-admin-status.input';
+import { ToggleAdminStatusPayload } from './dto/toggle-admin-status.payload';
 import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -739,7 +741,7 @@ export class AdminService {
           displayName: true,
           role: true,
           isActive: true,
-          isSuspended: true,
+          is_deleted: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'desc' },
@@ -757,7 +759,7 @@ export class AdminService {
       displayName: u.displayName ?? undefined,
       role: u.role,
       isActive: u.isActive,
-      isSuspended: u.isSuspended,
+      isSuspended: !u.isActive || u.is_deleted,
       createdAt: u.createdAt,
     }));
 
@@ -821,7 +823,7 @@ export class AdminService {
     const auditLogCount = Number(auditCountResult[0]?.count ?? 0);
 
     // ─── 4. Compute isSuspended ──────────────────────────────────────────
-    const isSuspended = raw.isSuspended;
+    const isSuspended = !raw.isActive || raw.is_deleted;
 
     this.logger.log({
       event: 'admin.user_detail.queried',
@@ -865,7 +867,7 @@ export class AdminService {
       throw new NotFoundException(`User "${userId}" not found`);
     }
 
-    if (existing.isSuspended) {
+    if (!existing.isActive) {
       throw new ConflictException('User is already suspended');
     }
 
@@ -873,7 +875,7 @@ export class AdminService {
     const updated = await this.prismaService.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: userId },
-        data: { isSuspended: true, isActive: false },
+        data: { isActive: false },
       });
 
       // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
@@ -916,7 +918,7 @@ export class AdminService {
       throw new NotFoundException(`User "${userId}" not found`);
     }
 
-    if (!existing.isSuspended && existing.isActive) {
+    if (existing.isActive && !existing.is_deleted) {
       throw new ConflictException('User is already active');
     }
 
@@ -924,15 +926,12 @@ export class AdminService {
     const updated = await this.prismaService.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: userId },
-        data: {
-          isActive: true,
-          isSuspended: false,
-        },
+        data: { isActive: true },
       });
 
       // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
       const details = JSON.stringify({
-        previousState: { isActive: existing.isActive, isSuspended: existing.isSuspended },
+        previousState: { isActive: existing.isActive },
       });
       await tx.$executeRaw`
         INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
@@ -1034,6 +1033,105 @@ export class AdminService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // TOGGLE ADMIN STATUS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * toggleAdminStatus — Super Admin เปิด/ปิดสถานะ admin account
+   *
+   * Flow:
+   * 1. ห้าม toggle ตัวเอง
+   * 2. หา target user — ต้องเป็น admin (role ≥ 3)
+   * 3. ปกป้อง Super Admin คนสุดท้าย (ห้าม deactivate ถ้าเหลือคนเดียว)
+   * 4. Update is_active ใน DB (activate → clear scheduled_delete_at ด้วย)
+   * 5. Supabase Auth ban/unban (two-layer protection กับ DB guard)
+   * 6. ส่ง email แจ้ง admin (fire-and-forget)
+   * 7. Audit log placeholder
+   * 8. Return { user, action }
+   *
+   * หมายเหตุ Supabase signOut:
+   *   auth.admin.signOut() รับ JWT ไม่ใช่ UID → ใช้ updateUserById + ban_duration แทน
+   *   ซึ่ง revoke ใหม่ทุก session โดย block ที่ Supabase Auth layer
+   *   ร่วมกับ SupabaseAuthGuard ที่เช็ค isActive ทุก request = two-layer protection
+   */
+  async toggleAdminStatus(
+    input: ToggleAdminStatusInput,
+    currentUser: AuthUser,
+  ): Promise<ToggleAdminStatusPayload> {
+    // ─── 1. ห้าม toggle ตัวเอง ────────────────────────────────────────────
+    if (input.adminId === currentUser.id) {
+      throw new BadRequestException('ไม่สามารถเปลี่ยนสถานะตัวเองได้');
+    }
+
+    // ─── 2. หา target user ────────────────────────────────────────────────
+    const target = await this.prismaService.user.findUnique({
+      where: { id: input.adminId },
+    });
+    if (!target || target.role < ROLE_ID.ADMIN) {
+      throw new NotFoundException('Admin not found');
+    }
+
+    // ─── 3. ปกป้อง Super Admin คนสุดท้าย ─────────────────────────────────
+    if (!input.isActive && target.role === ROLE_ID.SUPER_ADMIN) {
+      const activeSuperAdminCount = await this.prismaService.user.count({
+        where: { role: ROLE_ID.SUPER_ADMIN, isActive: true, is_deleted: false },
+      });
+      if (activeSuperAdminCount <= 1) {
+        throw new BadRequestException('ไม่สามารถระงับ Super Admin คนสุดท้ายได้');
+      }
+    }
+
+    // ─── 4. Update is_active (+ clear scheduled delete เมื่อ activate) ───
+    const updated = await this.prismaService.user.update({
+      where: { id: input.adminId },
+      data: {
+        isActive: input.isActive,
+        ...(input.isActive && {
+          scheduled_delete_at: null,
+          deletion_scheduled_by: null,
+        }),
+      },
+    });
+
+    // ─── 5. Supabase Auth ban / unban ─────────────────────────────────────
+    // ban_duration: '876000h' ≈ 100 ปี = effectively permanent ban
+    // ban_duration: 'none'   = ยกเลิก ban
+    const banDuration = input.isActive ? 'none' : '876000h';
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { error: supabaseError } = await supabaseAdmin.auth.admin.updateUserById(
+      target.supabaseUid,
+      { ban_duration: banDuration },
+    );
+    if (supabaseError) {
+      // ไม่ throw — DB guard ยังทำงานได้แม้ Supabase ล้มเหลว
+      this.logger.error(
+        `Supabase ban/unban failed for ${target.supabaseUid}: ${supabaseError.message}`,
+      );
+    }
+
+    // ─── 6. Send email (fire-and-forget) ──────────────────────────────────
+    const emailMethod = input.isActive
+      ? this.emailService.sendAdminActivated(updated.email, updated.displayName)
+      : this.emailService.sendAdminDeactivated(updated.email, updated.displayName);
+    void emailMethod.catch((err: unknown) =>
+      this.logSideEffectError('email toggle_admin_status', updated.id, err),
+    );
+
+    // ─── 7. Audit log placeholder ─────────────────────────────────────────
+    // TODO: replace with admin_audit_logs table insert when table is created (PYG-127)
+    this.logger.log({
+      event: input.isActive ? 'admin.activated' : 'admin.deactivated',
+      changedBy: currentUser.id,
+      targetUserId: input.adminId,
+      previousStatus: target.isActive,
+    });
+
+    // ─── 8. Return ────────────────────────────────────────────────────────
+    const action = input.isActive ? 'ADMIN_ACTIVATED' : 'ADMIN_DEACTIVATED';
+    return { user: this.mapToUser(updated), action };
+  }
+
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 

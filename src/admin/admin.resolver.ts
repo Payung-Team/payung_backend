@@ -29,6 +29,8 @@ import { AdminDashboardPayload } from './dto/admin-dashboard.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
+import { ToggleAdminStatusInput } from './dto/toggle-admin-status.input';
+import { ToggleAdminStatusPayload } from './dto/toggle-admin-status.payload';
 import { AdminUserListInput } from './dto/admin-user-list.input';
 import { AdminUserListPayload } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -351,5 +353,38 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<User> {
     return this.adminService.changeUserRole(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // TOGGLE ADMIN STATUS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * toggleAdminStatus — Super Admin เปิด/ปิดสถานะ admin account
+   *
+   * Guard: SUPER_ADMIN (role=4) เท่านั้น — override class-level @Roles
+   * - Deactivate → sets is_active=false + ban Supabase Auth + ส่ง email
+   * - Activate   → sets is_active=true + clears scheduled_delete_at + unban + ส่ง email
+   *
+   * @example
+   * mutation {
+   *   toggleAdminStatus(input: { adminId: "uuid", isActive: false }) {
+   *     user { id email isActive }
+   *     action
+   *   }
+   * }
+   */
+  @Mutation(() => ToggleAdminStatusPayload, {
+    description:
+      'Super Admin only: Activate or deactivate an admin account. ' +
+      'Deactivate revokes Supabase Auth sessions (ban). ' +
+      'Activate clears any scheduled deletion. Sends notification email.',
+  })
+  @Roles(ROLE_ID.SUPER_ADMIN)
+  async toggleAdminStatus(
+    @Args('input') input: ToggleAdminStatusInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<ToggleAdminStatusPayload> {
+    return this.adminService.toggleAdminStatus(input, admin);
   }
 }

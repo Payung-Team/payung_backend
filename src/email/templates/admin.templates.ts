@@ -1,6 +1,10 @@
 import { wrapHtml, plainTextFooter, escapeHtml } from './layout';
 import { type EmailTemplate } from './kyc.templates';
 
+function adminGreeting(displayName: string | null): string {
+  return displayName ? `สวัสดีคุณ ${escapeHtml(displayName)}` : 'สวัสดีผู้ดูแลระบบ';
+}
+
 export function adminInviteTemplate(
   displayName: string | null,
   email: string,
@@ -32,6 +36,65 @@ Email: ${email}
 รหัสผ่านชั่วคราว: ${tempPassword}
 
 กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก
+
+เข้าสู่ระบบ: ${loginUrl}${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({
+      bodyHtml,
+      ctaUrl: loginUrl,
+      ctaLabel: 'เข้าสู่ระบบ Admin',
+      frontendUrl,
+    }),
+    text,
+  };
+}
+
+export function adminDeactivatedTemplate(
+  displayName: string | null,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = 'บัญชี Admin ของคุณถูกระงับ — Payung';
+
+  const bodyHtml = `
+    <p>${adminGreeting(displayName)},</p>
+    <p>เราขอแจ้งให้ทราบว่าบัญชีผู้ดูแลระบบของคุณ <strong>ถูกระงับการใช้งาน</strong> เรียบร้อยแล้ว</p>
+    <p>คุณจะไม่สามารถเข้าสู่ระบบได้จนกว่าบัญชีจะได้รับการเปิดใช้งานอีกครั้ง</p>
+    <p>หากคุณเชื่อว่านี่เป็นข้อผิดพลาด กรุณาติดต่อ Super Admin ของทีม</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ดูแลระบบ'},
+
+บัญชีผู้ดูแลระบบของคุณถูกระงับการใช้งาน
+คุณจะไม่สามารถเข้าสู่ระบบได้จนกว่าบัญชีจะได้รับการเปิดใช้งานอีกครั้ง
+
+หากคุณเชื่อว่านี่เป็นข้อผิดพลาด กรุณาติดต่อ Super Admin ของทีม${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({ bodyHtml, frontendUrl }),
+    text,
+  };
+}
+
+export function adminActivatedTemplate(
+  displayName: string | null,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = 'บัญชี Admin ของคุณถูกเปิดใช้งานอีกครั้ง — Payung';
+  const loginUrl = `${frontendUrl}/admin/login`;
+
+  const bodyHtml = `
+    <p>${adminGreeting(displayName)},</p>
+    <p>บัญชีผู้ดูแลระบบของคุณ <strong>ได้รับการเปิดใช้งานอีกครั้ง</strong> เรียบร้อยแล้ว</p>
+    <p>คุณสามารถเข้าสู่ระบบและดำเนินการต่างๆ ได้ตามปกติ</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ดูแลระบบ'},
+
+บัญชีผู้ดูแลระบบของคุณได้รับการเปิดใช้งานอีกครั้งเรียบร้อยแล้ว
+คุณสามารถเข้าสู่ระบบได้ตามปกติ
 
 เข้าสู่ระบบ: ${loginUrl}${plainTextFooter(frontendUrl)}`;
 
