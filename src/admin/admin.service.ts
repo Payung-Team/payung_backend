@@ -30,6 +30,7 @@ import {
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+import { Prisma } from '@prisma/client';
 import { SupabaseService } from '../common/supabase.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
@@ -95,11 +96,14 @@ export class AdminService {
     const offset = (page - 1) * limit;
 
     // ─── 1. Build where clause ────────────────────────────────────────────
-    const where: Parameters<typeof this.prismaService.caregiver.findMany>[0]['where'] = {};
+    const where: Prisma.CaregiverWhereInput = {};
 
-    // Filter by status (ถ้าไม่ส่ง หรือส่ง "all" → ไม่กรอง)
+    // Filter by status
     if (input.status && input.status !== KycStatusFilter.all) {
       where.kycStatus = input.status;
+    } else {
+      // สำหรับ "all" (หรือไม่ได้ระบุ status) ให้โชว์แค่คนที่กำลังอยู่หรือผ่านขั้นตอน KYC แล้ว (ไม่เอา none)
+      where.kycStatus = { in: ['pending', 'verified', 'rejected'] };
     }
 
     // Search by fullName (ILIKE — Prisma mode: 'insensitive' → PostgreSQL ILIKE)
@@ -130,10 +134,14 @@ export class AdminService {
       where,
       select: {
         id: true,
+        caregiverNumber: true,
         fullName: true,
         kycStatus: true,
         kycSubmittedAt: true,
         createdAt: true,
+        user: {
+          select: { email: true },
+        },
         _count: {
           select: { documents: true },
         },
@@ -177,7 +185,9 @@ export class AdminService {
     // ─── 6. Map to CaregiverKycSummary ───────────────────────────────────
     const items: CaregiverKycSummary[] = sorted.map((c) => ({
       id: c.id,
+      caregiverNumber: c.caregiverNumber ?? undefined,
       fullName: c.fullName ?? '',
+      email: c.user?.email ?? '',
       kycStatus: c.kycStatus,
       submittedAt: c.kycSubmittedAt ?? undefined,
       documentCount: c._count.documents,
