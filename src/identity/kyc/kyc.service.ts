@@ -28,6 +28,7 @@ import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
 import { EmailService } from '../../email/email.service';
 import { NotificationType } from '../../notification/entities/notification-type.enum';
+import { Prisma } from '@prisma/client';
 
 /** สถานะที่อนุญาตให้ยื่น KYC ได้ (first time หรือ resubmit) */
 const SUBMITTABLE_STATUSES = new Set(['none', 'rejected']);
@@ -133,6 +134,7 @@ export class KycService {
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
           kycVerifiedAt: null,
+          rejection_reasons: Prisma.DbNull,
           resubmitCount: isResubmit ? (existing?.resubmitCount ?? 0) + 1 : 0,
         },
       });
@@ -388,6 +390,9 @@ export class KycService {
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      rejectionReasons: Array.isArray(caregiver.rejection_reasons)
+        ? caregiver.rejection_reasons
+        : undefined,
     };
   }
 }

@@ -13,6 +13,7 @@
  * @Field()      = บอก GraphQL ว่า property นี้เป็น field ที่ client ขอได้
  */
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
+import { RejectionReason } from './rejection-reason.entity';
 
 @ObjectType()
 export class Caregiver {
@@ -108,4 +109,8 @@ export class Caregiver {
   /** วันเวลาที่อัปเดตข้อมูลล่าสุด */
   @Field()
   updatedAt!: Date;
+
+  /** เหตุผลที่ reject KYC (JSONB) — null ถ้ายังไม่เคย reject หรือหลัง resubmit */
+  @Field(() => [RejectionReason], { nullable: true })
+  rejectionReasons?: RejectionReason[];
 }

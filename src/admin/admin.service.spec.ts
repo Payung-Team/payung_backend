@@ -1,5 +1,6 @@
 /**
- * AdminService — Unit tests for inviteAdmin (PYG-156) and toggleAdminStatus (PYG-157)
+ * AdminService — Unit tests for inviteAdmin (PYG-156), toggleAdminStatus (PYG-157),
+ * scheduleDeleteAdmin / cancelScheduledDelete (PYG-158), and rejectKyc (JSONB reasons)
  *
  * ForbiddenException cases (non-super-admin / inactive admin) are enforced
  * by RolesGuard + SupabaseAuthGuard at the resolver layer, not by AdminService.
@@ -62,6 +63,7 @@ const mockEmailService = {
   sendAdminActivated: jest.fn().mockResolvedValue(undefined),
   sendAdminScheduleDelete: jest.fn().mockResolvedValue(undefined),
   sendAdminCancelDelete: jest.fn().mockResolvedValue(undefined),
+  sendKycRejected: jest.fn().mockResolvedValue(undefined),
 };
 
 const mockCaregiverService = {
@@ -640,5 +642,170 @@ describe('AdminService — cancelScheduledDelete', () => {
     await expect(
       service.cancelScheduledDelete({ adminId: 'target-admin-uuid' }, superAdmin),
     ).rejects.toThrow(ConflictException);
+  });
+});
+
+// ─── rejectKyc — JSONB multiple reasons ──────────────────────────────────────
+
+describe('AdminService — rejectKyc', () => {
+  let service: AdminService;
+
+  const adminUser: AuthUser = {
+    id: 'admin-uuid',
+    supabaseUid: 'supabase-admin-uid',
+    email: 'admin@payung.app',
+    role: ROLE_ID.ADMIN,
+    isSuspended: false,
+  };
+
+  const pendingCaregiver = {
+    id: 'cg-uuid',
+    userId: 'user-uuid',
+    caregiverNumber: 'CG-001',
+    fullName: 'สมหญิง รักดี',
+    idCardNumber: '1234567890123',
+    gender: 'female',
+    dateOfBirth: new Date('1990-01-01'),
+    address: 'Bangkok',
+    phone: '0812345678',
+    skills: ['elder_care'],
+    experienceYears: 3,
+    hourlyRate: 150,
+    bio: null,
+    kycStatus: 'pending',
+    kycSubmittedAt: new Date('2026-05-01'),
+    kycVerifiedAt: null,
+    isSearchable: false,
+    resubmitCount: 0,
+    rejection_reasons: null,
+    createdAt: new Date('2026-04-01'),
+    updatedAt: new Date('2026-05-01'),
+  };
+
+  const reasons = [
+    { title: 'เอกสารไม่ชัดเจน', detail: 'กรุณาถ่ายรูปให้ชัดขึ้น', documentType: 'id_card_photo' },
+    { title: 'ข้อมูลไม่ตรงกัน' },
+  ];
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  // ─── Case 1: Success — stores JSONB reasons and returns updated caregiver ──
+  it('rejects KYC, stores rejection_reasons as JSONB, returns caregiver', async () => {
+    const updatedCg = { ...pendingCaregiver, kycStatus: 'rejected', rejection_reasons: reasons };
+    mockPrisma.caregiver.findUnique.mockResolvedValue(pendingCaregiver);
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma));
+    mockPrisma.caregiver.update.mockResolvedValue(updatedCg);
+    mockPrisma.kycReview.create.mockResolvedValue({});
+    mockNotificationService.create.mockResolvedValue(undefined);
+
+    const result = await service.rejectKyc({ caregiverId: 'cg-uuid', reasons }, adminUser);
+
+    expect(result.kycStatus).toBe('rejected');
+    expect(result.rejectionReasons).toEqual(reasons);
+    expect(mockPrisma.caregiver.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          kycStatus: 'rejected',
+          rejection_reasons: reasons,
+        }),
+      }),
+    );
+  });
+
+  // ─── Case 2: KycReview.reason is joined titles ────────────────────────────
+  it('writes joined titles as KycReview.reason', async () => {
+    const updatedCg = { ...pendingCaregiver, kycStatus: 'rejected', rejection_reasons: reasons };
+    mockPrisma.caregiver.findUnique.mockResolvedValue(pendingCaregiver);
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma));
+    mockPrisma.caregiver.update.mockResolvedValue(updatedCg);
+    mockPrisma.kycReview.create.mockResolvedValue({});
+
+    await service.rejectKyc({ caregiverId: 'cg-uuid', reasons }, adminUser);
+
+    expect(mockPrisma.kycReview.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          reason: 'เอกสารไม่ชัดเจน; ข้อมูลไม่ตรงกัน',
+        }),
+      }),
+    );
+  });
+
+  // ─── Case 3: Empty reasons array → BadRequestException ───────────────────
+  it('throws BadRequestException when reasons array is empty', async () => {
+    await expect(
+      service.rejectKyc({ caregiverId: 'cg-uuid', reasons: [] }, adminUser),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.caregiver.findUnique).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 4: Caregiver not found → NotFoundException ─────────────────────
+  it('throws NotFoundException when caregiver does not exist', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.rejectKyc({ caregiverId: 'ghost-uuid', reasons }, adminUser),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  // ─── Case 5: kycStatus = 'none' → BadRequestException ────────────────────
+  it('throws BadRequestException when kycStatus is "none"', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue({ ...pendingCaregiver, kycStatus: 'none' });
+
+    await expect(
+      service.rejectKyc({ caregiverId: 'cg-uuid', reasons }, adminUser),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  // ─── Case 6: kycStatus = 'verified' → ConflictException ──────────────────
+  it('throws ConflictException when kycStatus is already "verified"', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue({ ...pendingCaregiver, kycStatus: 'verified' });
+
+    await expect(
+      service.rejectKyc({ caregiverId: 'cg-uuid', reasons }, adminUser),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  // ─── Case 7: kycStatus = 'rejected' → ConflictException ──────────────────
+  it('throws ConflictException when kycStatus is already "rejected"', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue({ ...pendingCaregiver, kycStatus: 'rejected' });
+
+    await expect(
+      service.rejectKyc({ caregiverId: 'cg-uuid', reasons }, adminUser),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  // ─── Case 8: Single reason (no detail/documentType) ──────────────────────
+  it('handles single reason with title only', async () => {
+    const singleReason = [{ title: 'รูปไม่ชัด' }];
+    const updatedCg = { ...pendingCaregiver, kycStatus: 'rejected', rejection_reasons: singleReason };
+    mockPrisma.caregiver.findUnique.mockResolvedValue(pendingCaregiver);
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma));
+    mockPrisma.caregiver.update.mockResolvedValue(updatedCg);
+    mockPrisma.kycReview.create.mockResolvedValue({});
+
+    const result = await service.rejectKyc({ caregiverId: 'cg-uuid', reasons: singleReason }, adminUser);
+
+    expect(result.rejectionReasons).toEqual(singleReason);
+    expect(mockPrisma.kycReview.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'รูปไม่ชัด' }),
+      }),
+    );
   });
 });

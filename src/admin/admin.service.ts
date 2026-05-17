@@ -45,6 +45,7 @@ import {
   RecentActivity,
 } from './dto/admin-dashboard.payload';
 import { RejectKycInput } from './dto/reject-kyc.input';
+import { RejectionReasonItem } from './dto/rejection-reason.input';
 import { InviteAdminInput } from './dto/invite-admin.input';
 import { InviteAdminPayload } from './dto/invite-admin.payload';
 import { ToggleAdminStatusInput } from './dto/toggle-admin-status.input';
@@ -233,29 +234,7 @@ export class AdminService {
       throw new NotFoundException(`Caregiver ${caregiverId} not found`);
     }
 
-    const caregiver: Caregiver = {
-      id: raw.id,
-      userId: raw.userId,
-      email: raw.user?.email,
-      caregiverNumber: raw.caregiverNumber ?? undefined,
-      fullName: raw.fullName ?? '',
-      idCardNumber: raw.idCardNumber ?? '',
-      gender: raw.gender ?? undefined,
-      dateOfBirth: raw.dateOfBirth ?? undefined,
-      address: raw.address ?? undefined,
-      phone: raw.phone ?? '',
-      skills: raw.skills,
-      experienceYears: raw.experienceYears ?? 0,
-      hourlyRate: raw.hourlyRate ?? 0,
-      bio: raw.bio ?? undefined,
-      kycStatus: raw.kycStatus,
-      kycSubmittedAt: raw.kycSubmittedAt ?? undefined,
-      kycVerifiedAt: raw.kycVerifiedAt ?? undefined,
-      isSearchable: raw.isSearchable,
-      resubmitCount: raw.resubmitCount,
-      createdAt: raw.createdAt,
-      updatedAt: raw.updatedAt,
-    };
+    const caregiver = this.mapToCaregiver(raw);
 
     // ─── 2. Fetch documents with signed URLs ─────────────────────────────
     const documents = await this.caregiverService.getDocumentsWithSignedUrls(caregiverId);
@@ -575,7 +554,12 @@ export class AdminService {
    * @param admin - admin user ที่กำลัง reject (สำหรับ audit trail)
    */
   async rejectKyc(input: RejectKycInput, admin: AuthUser): Promise<Caregiver> {
-    // ─── 1. Fetch + guard ─────────────────────────────────────────────────
+    // ─── 1. Validate reasons array ────────────────────────────────────────
+    if (!input.reasons || input.reasons.length === 0) {
+      throw new BadRequestException('ต้องระบุเหตุผลอย่างน้อย 1 ข้อ');
+    }
+
+    // ─── 2. Fetch + guard ─────────────────────────────────────────────────
     const existing = await this.prismaService.caregiver.findUnique({
       where: { id: input.caregiverId },
     });
@@ -586,14 +570,16 @@ export class AdminService {
 
     this.assertReviewable(existing.kycStatus, 'reject');
 
-    // ─── 2. Transaction: update status + INSERT audit record ──────────────
+    // ─── 3. Transaction: update status + INSERT audit record ──────────────
+    const reviewReason = input.reasons.map((r) => r.title).join('; ');
+
     const updated = await this.prismaService.$transaction(async (tx) => {
       const caregiver = await tx.caregiver.update({
         where: { id: input.caregiverId },
         data: {
           kycStatus: 'rejected',
-          // kycVerifiedAt ไม่ set (เคย set ไว้ก็ clear ออก เพื่อความถูกต้อง)
           kycVerifiedAt: null,
+          rejection_reasons: input.reasons as unknown as Prisma.InputJsonValue,
         },
       });
 
@@ -602,7 +588,7 @@ export class AdminService {
           caregiverId: input.caregiverId,
           reviewerId: admin.id,
           action: 'rejected',
-          reason: input.reason,
+          reason: reviewReason,
         },
       });
 
@@ -613,11 +599,11 @@ export class AdminService {
       event: 'admin.kyc.rejected',
       caregiverId: input.caregiverId,
       adminId: admin.id,
-      reasonLength: input.reason.length,
+      reasonCount: input.reasons.length,
     });
 
-    // ─── 3. Side-effects (fire-and-forget) ───────────────────────────────
-    void this.triggerRejectNotify(updated.userId, input.caregiverId, input.reason);
+    // ─── 4. Side-effects (fire-and-forget) ───────────────────────────────
+    void this.triggerRejectNotify(updated.userId, input.caregiverId, input.reasons);
 
     return this.mapToCaregiver(updated);
   }
@@ -1378,14 +1364,16 @@ export class AdminService {
   private async triggerRejectNotify(
     userId: string,
     caregiverId: string,
-    reason: string,
+    reasons: RejectionReasonItem[],
   ): Promise<void> {
+    const reasonSummary = reasons.map((r) => r.title).join(', ');
+
     try {
       await this.notificationService.create(
         userId,
         NotificationType.kyc_rejected,
         'การยืนยันตัวตนไม่ผ่าน',
-        `เหตุผล: ${reason}`,
+        `เหตุผล: ${reasonSummary}`,
         { caregiverId, linkPath: '/kyc/resubmit' },
       );
     } catch (err) {
@@ -1393,7 +1381,7 @@ export class AdminService {
     }
 
     try {
-      await this.emailService.sendKycRejected(userId, reason);
+      await this.emailService.sendKycRejected(userId, reasonSummary);
     } catch (err) {
       this.logSideEffectError('email kyc_rejected', userId, err);
     }
@@ -1465,10 +1453,14 @@ export class AdminService {
     resubmitCount: number;
     createdAt: Date;
     updatedAt: Date;
+    user?: { email: string } | null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rejection_reasons?: any;
   }): Caregiver {
     return {
       id: c.id,
       userId: c.userId,
+      email: c.user?.email ?? undefined,
       caregiverNumber: c.caregiverNumber ?? undefined,
       fullName: c.fullName ?? '',
       idCardNumber: c.idCardNumber ?? '',
@@ -1487,6 +1479,9 @@ export class AdminService {
       resubmitCount: c.resubmitCount,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
+      rejectionReasons: Array.isArray(c.rejection_reasons)
+        ? c.rejection_reasons
+        : undefined,
     };
   }
 }
