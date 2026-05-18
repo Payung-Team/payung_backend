@@ -175,19 +175,26 @@ export class AdminResolver {
    *
    * @example
    * mutation {
-   *   rejectKyc(input: { caregiverId: "uuid-here", reason: "เอกสารไม่ครบถ้วน กรุณาอัปโหลดใหม่" }) {
+   *   rejectKyc(input: {
+   *     caregiverId: "uuid-here"
+   *     reasons: [
+   *       { title: "เอกสารไม่ชัดเจน", detail: "กรุณาถ่ายรูปให้ชัดขึ้น", documentType: "id_card_photo" }
+   *       { title: "ข้อมูลไม่ตรงกัน" }
+   *     ]
+   *   }) {
    *     id fullName kycStatus
+   *     rejectionReasons { title detail documentType }
    *   }
    * }
    *
-   * @param input - RejectKycInput (caregiverId + reason min 10 chars)
+   * @param input - RejectKycInput (caregiverId + reasons[])
    * @param admin - admin user ที่ทำการ reject (จาก JWT)
    */
   @Mutation(() => Caregiver, {
     description:
-      'Admin only: Reject a caregiver KYC submission with a reason. ' +
-      'Sets kycStatus = "rejected", records audit log with reason, sends notification + email. ' +
-      'Requires kycStatus = "pending". Reason must be at least 10 characters.',
+      'Admin only: Reject a caregiver KYC submission with one or more structured reasons. ' +
+      'Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. ' +
+      'Requires kycStatus = "pending". At least one reason with a title is required.',
   })
   async rejectKyc(
     @Args('input') input: RejectKycInput,
