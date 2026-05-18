@@ -78,24 +78,28 @@ export class AuthService {
       throw new UnauthorizedException('User account not found');
     }
 
-    // ขั้นตอนที่ 5: ส่งผลลัพธ์กลับให้ client
-    // - accessToken: ใช้แนบไปกับทุก request เพื่อยืนยันตัวตน (มีอายุสั้น ~1 ชม.)
-    // - refreshToken: ใช้ขอ accessToken ใหม่เมื่อหมดอายุ (มีอายุยาวกว่า)
-    // - user: ข้อมูล user สำหรับแสดงใน frontend
+    // ขั้นตอนที่ 5: บันทึก last_login_at (fire-and-forget)
+    void this.prismaService.user.update({
+      where: { id: user.id },
+      data: { last_login_at: new Date() },
+    }).catch(() => {/* non-critical */});
+
+    // ขั้นตอนที่ 6: ส่งผลลัพธ์กลับให้ client
     return {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
       user: {
         id: user.id,
         email: user.email,
-        displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
-        avatarUrl: user.avatarUrl ?? undefined, // เช่นเดียวกัน — แปลง null → undefined
+        displayName: user.displayName ?? undefined,
+        avatarUrl: user.avatarUrl ?? undefined,
         phone: user.phone ?? undefined,
         address: user.address ?? undefined,
         bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
-        emailPreferences: user.emailPreferences,  // PYG-97
+        mustChangePassword: user.must_change_password,
+        emailPreferences: user.emailPreferences,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -207,7 +211,6 @@ export class AuthService {
     }
 
     // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
-    // client จะได้ token ทันที ไม่ต้อง login ซ้ำหลัง register
     return {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
@@ -221,7 +224,8 @@ export class AuthService {
         bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
-        emailPreferences: user.emailPreferences,  // PYG-97
+        mustChangePassword: user.must_change_password,
+        emailPreferences: user.emailPreferences,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },

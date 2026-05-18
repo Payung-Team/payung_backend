@@ -73,6 +73,27 @@ export class AuthResolver {
   }
 
   /**
+   * completePasswordChange — ล้าง mustChangePassword flag หลัง admin-invited user เปลี่ยน password
+   *
+   * Flow (FE side):
+   *   1. FE เรียก supabase.auth.updateUser({ password: newPassword }) — เปลี่ยน password จริง
+   *   2. FE เรียก mutation นี้ — ล้าง flag ใน DB
+   *   3. FE redirect ไป dashboard
+   *
+   * ไม่รับ input — ทำงานบน currentUser ที่ authenticated อยู่เสมอ
+   *
+   * @throws BadRequestException ถ้า mustChangePassword เป็น false อยู่แล้ว
+   */
+  @Mutation(() => User, {
+    description: 'Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. ' +
+      'Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async completePasswordChange(@CurrentUser() user: AuthUser): Promise<User> {
+    return this.userService.completePasswordChange(user.id);
+  }
+
+  /**
    * updateEmailPreference (PYG-97) — เปิด/ปิดรับอีเมลแจ้งเตือน
    *
    * mutation {

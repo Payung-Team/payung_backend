@@ -78,6 +78,10 @@ export class User {
   @Field({ description: 'Whether the user account is active' })
   isActive!: boolean;
 
+  /** ต้องเปลี่ยนรหัสผ่านก่อนใช้งาน (admin invite flow) */
+  @Field({ description: 'Whether the user must change their password before using the app' })
+  mustChangePassword!: boolean;
+
   /** PYG-97: รับอีเมลแจ้งเตือนหรือไม่ (default: true) */
   @Field({ description: 'Whether the user receives email notifications' })
   emailPreferences!: boolean;
