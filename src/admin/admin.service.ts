@@ -1409,6 +1409,7 @@ export class AdminService {
     role: number;
     isActive: boolean;
     emailPreferences: boolean;
+    must_change_password: boolean;
     createdAt: Date;
     updatedAt: Date;
   }): User {
@@ -1423,6 +1424,7 @@ export class AdminService {
       role: u.role,
       isActive: u.isActive,
       emailPreferences: u.emailPreferences,
+      mustChangePassword: u.must_change_password,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
