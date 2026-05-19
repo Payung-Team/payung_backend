@@ -39,6 +39,8 @@ import { AdminUserListInput } from './dto/admin-user-list.input';
 import { AdminUserListPayload } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
 import { ChangeUserRoleInput } from './dto/change-user-role.input';
+import { EditAdminInfoInput } from './dto/edit-admin-info.input';
+import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
@@ -451,5 +453,40 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<ToggleAdminStatusPayload> {
     return this.adminService.toggleAdminStatus(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // EDIT ADMIN INFO
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * editAdminInfo — Super Admin แก้ไขข้อมูล admin (ชื่อ, email, role)
+   *
+   * Guard: SUPER_ADMIN (role=4) เท่านั้น — override class-level @Roles
+   *
+   * @example
+   * mutation {
+   *   editAdminInfo(input: {
+   *     adminId: "uuid-here"
+   *     firstName: "สมชาย"
+   *     email: "new@payung.app"
+   *     role: 4
+   *   }) {
+   *     user { id email displayName role }
+   *   }
+   * }
+   */
+  @Mutation(() => EditAdminInfoPayload, {
+    description:
+      'Super Admin only: Edit an admin account (name, email, role). ' +
+      'Syncs email to Supabase Auth. Protects the last active Super Admin from demotion. ' +
+      'Records audit log.',
+  })
+  @Roles(ROLE_ID.SUPER_ADMIN)
+  async editAdminInfo(
+    @Args('input') input: EditAdminInfoInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<EditAdminInfoPayload> {
+    return this.adminService.editAdminInfo(input, admin);
   }
 }

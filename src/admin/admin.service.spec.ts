@@ -42,6 +42,7 @@ const mockPrisma = {
     create: jest.fn(),
   },
   $transaction: jest.fn(),
+  $executeRaw: jest.fn().mockResolvedValue(1),
 };
 
 const mockSupabaseAdminClient = {
@@ -807,5 +808,230 @@ describe('AdminService — rejectKyc', () => {
         data: expect.objectContaining({ reason: 'รูปไม่ชัด' }),
       }),
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// editAdminInfo — PYG-160
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('AdminService — editAdminInfo', () => {
+  let service: AdminService;
+
+  const editTarget = { ...targetAdminBase }; // role=3, is_deleted=false, displayName='สมหญิง รักดี'
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockSupabaseAdminClient.auth.admin.updateUserById.mockResolvedValue({ error: null });
+    mockPrisma.$executeRaw.mockResolvedValue(1);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  // ─── Case 1: Edit name only → displayName updated, Supabase NOT called ───
+  it('updates displayName when firstName/lastName provided, does not call Supabase', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(editTarget);
+    const updated = { ...editTarget, displayName: 'สมชาย ใจดี' };
+    mockPrisma.user.update.mockResolvedValue(updated);
+
+    const result = await service.editAdminInfo(
+      { adminId: 'target-admin-uuid', firstName: 'สมชาย', lastName: 'ใจดี' },
+      superAdmin,
+    );
+
+    expect(result.user.displayName).toBe('สมชาย ใจดี');
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ displayName: 'สมชาย ใจดี' }),
+      }),
+    );
+    expect(mockSupabaseAdminClient.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 2: Edit email → DB + Supabase Auth updated ─────────────────────
+  it('updates email in DB and syncs Supabase Auth when email changes', async () => {
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce(editTarget)       // find target
+      .mockResolvedValueOnce(null);            // email uniqueness check → available
+    const updated = { ...editTarget, email: 'newemail@payung.app' };
+    mockPrisma.user.update.mockResolvedValue(updated);
+
+    const result = await service.editAdminInfo(
+      { adminId: 'target-admin-uuid', email: 'newemail@payung.app' },
+      superAdmin,
+    );
+
+    expect(result.user.email).toBe('newemail@payung.app');
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ email: 'newemail@payung.app' }),
+      }),
+    );
+    expect(mockSupabaseAdminClient.auth.admin.updateUserById).toHaveBeenCalledWith(
+      'supabase-target-uid',
+      { email: 'newemail@payung.app' },
+    );
+  });
+
+  // ─── Case 3: Edit role 3→4 → role updated ────────────────────────────────
+  it('promotes admin from ADMIN(3) to SUPER_ADMIN(4)', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(editTarget);
+    const updated = { ...editTarget, role: ROLE_ID.SUPER_ADMIN };
+    mockPrisma.user.update.mockResolvedValue(updated);
+
+    const result = await service.editAdminInfo(
+      { adminId: 'target-admin-uuid', role: ROLE_ID.SUPER_ADMIN },
+      superAdmin,
+    );
+
+    expect(result.user.role).toBe(ROLE_ID.SUPER_ADMIN);
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: ROLE_ID.SUPER_ADMIN }),
+      }),
+    );
+  });
+
+  // ─── Case 4: Edit multiple fields at once ────────────────────────────────
+  it('updates name, email, and role together in a single call', async () => {
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce(editTarget)
+      .mockResolvedValueOnce(null); // email uniqueness
+    const updated = {
+      ...editTarget,
+      displayName: 'ใหม่ มาก',
+      email: 'multi@payung.app',
+      role: ROLE_ID.SUPER_ADMIN,
+    };
+    mockPrisma.user.update.mockResolvedValue(updated);
+
+    const result = await service.editAdminInfo(
+      {
+        adminId: 'target-admin-uuid',
+        firstName: 'ใหม่',
+        lastName: 'มาก',
+        email: 'multi@payung.app',
+        role: ROLE_ID.SUPER_ADMIN,
+      },
+      superAdmin,
+    );
+
+    expect(result.user.displayName).toBe('ใหม่ มาก');
+    expect(result.user.email).toBe('multi@payung.app');
+    expect(result.user.role).toBe(ROLE_ID.SUPER_ADMIN);
+  });
+
+  // ─── Case 5: Duplicate email → ConflictException ─────────────────────────
+  it('throws ConflictException when the new email is already taken', async () => {
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce(editTarget)
+      .mockResolvedValueOnce({ id: 'other-user-uuid' }); // email already taken
+
+    await expect(
+      service.editAdminInfo(
+        { adminId: 'target-admin-uuid', email: 'taken@payung.app' },
+        superAdmin,
+      ),
+    ).rejects.toThrow(ConflictException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 6: Demote last Super Admin (4→3) → BadRequestException ─────────
+  it('throws BadRequestException when demoting the last active Super Admin', async () => {
+    const superAdminTarget = { ...editTarget, role: ROLE_ID.SUPER_ADMIN };
+    mockPrisma.user.findUnique.mockResolvedValue(superAdminTarget);
+    mockPrisma.user.count.mockResolvedValue(1); // only 1 active super admin
+
+    await expect(
+      service.editAdminInfo(
+        { adminId: 'target-admin-uuid', role: ROLE_ID.ADMIN },
+        superAdmin,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 7: Invalid role → BadRequestException ───────────────────────────
+  it.each([
+    [1, 'patient'],
+    [2, 'caregiver'],
+  ])('throws BadRequestException for invalid role=%i (%s)', async (invalidRole, _label) => {
+    mockPrisma.user.findUnique.mockResolvedValue(editTarget);
+
+    await expect(
+      service.editAdminInfo(
+        { adminId: 'target-admin-uuid', role: invalidRole },
+        superAdmin,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 8: Target not found → NotFoundException ────────────────────────
+  it('throws NotFoundException when target admin does not exist', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.editAdminInfo({ adminId: 'nonexistent-uuid', firstName: 'Test' }, superAdmin),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('throws NotFoundException when target user is not an admin (role < 3)', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ ...editTarget, role: ROLE_ID.PATIENT });
+
+    await expect(
+      service.editAdminInfo({ adminId: 'target-admin-uuid', firstName: 'Test' }, superAdmin),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  // ─── Case 9: Target is deleted → ConflictException ───────────────────────
+  it('throws ConflictException when target admin is already soft-deleted', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ ...editTarget, is_deleted: true });
+
+    await expect(
+      service.editAdminInfo({ adminId: 'target-admin-uuid', firstName: 'Test' }, superAdmin),
+    ).rejects.toThrow(ConflictException);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 10: Audit log — $executeRaw called after update ────────────────
+  it('fires $executeRaw for audit log after a successful update', async () => {
+    mockPrisma.user.findUnique
+      .mockResolvedValueOnce(editTarget)
+      .mockResolvedValueOnce(null);
+    mockPrisma.user.update.mockResolvedValue({ ...editTarget, email: 'audit@payung.app' });
+
+    await service.editAdminInfo(
+      { adminId: 'target-admin-uuid', email: 'audit@payung.app' },
+      superAdmin,
+    );
+
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
+  });
+
+  // ─── Case 11: No fields provided → no-op, still succeeds ─────────────────
+  it('succeeds without changing anything when no fields are provided', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(editTarget);
+    mockPrisma.user.update.mockResolvedValue(editTarget);
+
+    const result = await service.editAdminInfo(
+      { adminId: 'target-admin-uuid' },
+      superAdmin,
+    );
+
+    expect(result.user.id).toBe('target-admin-uuid');
+    expect(mockPrisma.user.update).toHaveBeenCalled();
+    expect(mockSupabaseAdminClient.auth.admin.updateUserById).not.toHaveBeenCalled();
   });
 });

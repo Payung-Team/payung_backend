@@ -54,6 +54,8 @@ import { ScheduleDeleteAdminInput } from './dto/schedule-delete-admin.input';
 import { ScheduleDeleteAdminPayload } from './dto/schedule-delete-admin.payload';
 import { CancelScheduledDeleteInput } from './dto/cancel-scheduled-delete.input';
 import { CancelScheduledDeletePayload } from './dto/cancel-scheduled-delete.payload';
+import { EditAdminInfoInput } from './dto/edit-admin-info.input';
+import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
 import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -239,15 +241,10 @@ export class AdminService {
     // ─── 2. Fetch documents with signed URLs ─────────────────────────────
     const documents = await this.caregiverService.getDocumentsWithSignedUrls(caregiverId);
 
-    // ─── 3. Fetch review history + reviewer name (newest first) ────────
+    // ─── 3. Fetch review history (newest first) ──────────────────────────
     const rawReviews = await this.prismaService.kycReview.findMany({
       where: { caregiverId },
       orderBy: { reviewedAt: 'desc' },
-      include: {
-        reviewer: {
-          select: { displayName: true },
-        },
-      },
     });
 
     const reviews: KycReview[] = rawReviews.map((r) => ({
@@ -255,45 +252,7 @@ export class AdminService {
       action: r.action,
       reason: r.reason ?? undefined,
       reviewedBy: r.reviewerId,
-      reviewerName: r.reviewer.displayName ?? undefined,
       reviewedAt: r.reviewedAt,
-    }));
-
-    // ─── 4. Fetch edit history ($queryRaw — client ยังไม่ regenerate) ──
-    const rawEditLogs = await this.prismaService.$queryRaw<
-      Array<{
-        id: string;
-        caregiver_id: string;
-        edited_by: string;
-        editor_name: string | null;
-        action: string;
-        field_changes: unknown;
-        created_at: Date;
-      }>
-    >`
-      SELECT
-        el.id,
-        el.caregiver_id,
-        el.edited_by,
-        u.display_name AS editor_name,
-        el.action,
-        el.field_changes,
-        el.created_at
-      FROM caregiver_edit_logs el
-      INNER JOIN users u ON u.id = el.edited_by
-      WHERE el.caregiver_id = ${caregiverId}
-      ORDER BY el.created_at DESC
-      LIMIT 50
-    `;
-
-    const editHistory = rawEditLogs.map((el) => ({
-      id: el.id,
-      caregiverId: el.caregiver_id,
-      editedBy: el.edited_by,
-      editorName: el.editor_name ?? undefined,
-      action: el.action,
-      fieldChanges: Array.isArray(el.field_changes) ? el.field_changes : undefined,
-      createdAt: el.created_at,
     }));
 
     this.logger.log({
@@ -301,7 +260,6 @@ export class AdminService {
       caregiverId,
       documentCount: documents.length,
       reviewCount: reviews.length,
-      editLogCount: editHistory.length,
     });
 
     return {
@@ -309,7 +267,6 @@ export class AdminService {
       documents,
       reviews,
       resubmitCount: raw.resubmitCount,
-      editHistory,
     };
   }
 
@@ -1346,6 +1303,124 @@ export class AdminService {
     return { user: this.mapToUser(updated), reactivated: true };
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // EDIT ADMIN INFO (PYG-160)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * editAdminInfo — Super Admin แก้ไขข้อมูล admin (ชื่อ, email, role)
+   *
+   * Flow:
+   * 1. หา target (role ≥ 3, ยังไม่ถูกลบ)
+   * 2. Validate role value ถ้าส่งมา (ต้องเป็น 3 หรือ 4)
+   * 3. ปกป้อง Super Admin คนสุดท้าย (ถ้าลด 4→3)
+   * 4. ตรวจ email uniqueness ถ้า email เปลี่ยน
+   * 5. Build displayName จาก firstName + lastName
+   * 6. Update DB
+   * 7. Sync Supabase Auth email (ถ้า email เปลี่ยน)
+   * 8. Audit log พร้อม changed fields (from/to)
+   * 9. Return { user }
+   */
+  async editAdminInfo(
+    input: EditAdminInfoInput,
+    currentUser: AuthUser,
+  ): Promise<EditAdminInfoPayload> {
+    // ─── 1. หา target ─────────────────────────────────────────────────────
+    const target = await this.prismaService.user.findUnique({
+      where: { id: input.adminId },
+    });
+    if (!target || target.role < ROLE_ID.ADMIN) {
+      throw new NotFoundException('Admin not found');
+    }
+    if (target.is_deleted) {
+      throw new ConflictException('Cannot edit deleted admin');
+    }
+
+    // ─── 2. Validate role value ───────────────────────────────────────────
+    if (input.role !== undefined && input.role !== ROLE_ID.ADMIN && input.role !== ROLE_ID.SUPER_ADMIN) {
+      throw new BadRequestException('Role must be 3 (admin) or 4 (super_admin)');
+    }
+
+    // ─── 3. ปกป้อง Super Admin คนสุดท้าย ─────────────────────────────────
+    if (input.role === ROLE_ID.ADMIN && target.role === ROLE_ID.SUPER_ADMIN) {
+      const activeSuperAdminCount = await this.prismaService.user.count({
+        where: { role: ROLE_ID.SUPER_ADMIN, isActive: true, is_deleted: false },
+      });
+      if (activeSuperAdminCount <= 1) {
+        throw new BadRequestException('ไม่สามารถลดสิทธิ์ Super Admin คนสุดท้ายได้');
+      }
+    }
+
+    // ─── 4. Validate email uniqueness ─────────────────────────────────────
+    if (input.email && input.email !== target.email) {
+      const existing = await this.prismaService.user.findUnique({
+        where: { email: input.email },
+      });
+      if (existing) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    // ─── 5. Build displayName ─────────────────────────────────────────────
+    let newDisplayName: string | undefined;
+    if (input.firstName !== undefined || input.lastName !== undefined) {
+      const currentFirst = target.displayName?.split(' ')[0] ?? '';
+      const currentLast = target.displayName?.split(' ').slice(1).join(' ') ?? '';
+      newDisplayName = `${input.firstName ?? currentFirst} ${input.lastName ?? currentLast}`.trim();
+    }
+
+    // ─── 6. Update DB ─────────────────────────────────────────────────────
+    const updated = await this.prismaService.user.update({
+      where: { id: input.adminId },
+      data: {
+        ...(newDisplayName !== undefined && { displayName: newDisplayName }),
+        ...(input.email && { email: input.email }),
+        ...(input.role !== undefined && { role: input.role }),
+      },
+    });
+
+    // ─── 7. Sync Supabase Auth email ──────────────────────────────────────
+    if (input.email && input.email !== target.email) {
+      const supabaseAdmin = this.supabaseService.getAdminClient();
+      try {
+        await supabaseAdmin.auth.admin.updateUserById(target.supabaseUid, {
+          email: input.email,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to update Supabase Auth email for ${target.id}: ${msg}`);
+      }
+    }
+
+    // ─── 8. Audit log — record which fields changed ───────────────────────
+    const changedFields: Record<string, { from: unknown; to: unknown }> = {};
+    if (newDisplayName !== undefined && newDisplayName !== target.displayName) {
+      changedFields.displayName = { from: target.displayName, to: newDisplayName };
+    }
+    if (input.email && input.email !== target.email) {
+      changedFields.email = { from: target.email, to: input.email };
+    }
+    if (input.role !== undefined && input.role !== target.role) {
+      changedFields.role = { from: target.role, to: input.role };
+    }
+
+    const changedFieldsJson = JSON.stringify(changedFields);
+    void this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${currentUser.id}, 'ADMIN_INFO_UPDATED', ${input.adminId}, ${changedFieldsJson}::jsonb, NOW())
+    `.catch((err: unknown) => this.logSideEffectError('audit ADMIN_INFO_UPDATED', input.adminId, err));
+
+    this.logger.log({
+      event: 'admin.info_updated',
+      changedBy: currentUser.id,
+      targetUserId: input.adminId,
+      changedFields: Object.keys(changedFields),
+    });
+
+    // ─── 9. Return ────────────────────────────────────────────────────────
+    return { user: this.mapToUser(updated) };
+  }
+
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -1443,8 +1518,21 @@ export class AdminService {
   }
 
   /** mapToUser — แปลง Prisma user record → GraphQL User entity */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private mapToUser(u: any): User {
+  private mapToUser(u: {
+    id: string;
+    email: string;
+    displayName: string | null;
+    avatarUrl: string | null;
+    phone: string | null;
+    address: string | null;
+    bio: string | null;
+    role: number;
+    isActive: boolean;
+    emailPreferences: boolean;
+    must_change_password: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }): User {
     return {
       id: u.id,
       email: u.email,
@@ -1455,8 +1543,8 @@ export class AdminService {
       bio: u.bio ?? undefined,
       role: u.role,
       isActive: u.isActive,
-      mustChangePassword: u.must_change_password ?? u.mustChangePassword ?? false,
       emailPreferences: u.emailPreferences,
+      mustChangePassword: u.must_change_password,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
