@@ -1443,20 +1443,8 @@ export class AdminService {
   }
 
   /** mapToUser — แปลง Prisma user record → GraphQL User entity */
-  private mapToUser(u: {
-    id: string;
-    email: string;
-    displayName: string | null;
-    avatarUrl: string | null;
-    phone: string | null;
-    address: string | null;
-    bio: string | null;
-    role: number;
-    isActive: boolean;
-    emailPreferences: boolean;
-    createdAt: Date;
-    updatedAt: Date;
-  }): User {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private mapToUser(u: any): User {
     return {
       id: u.id,
       email: u.email,
@@ -1467,6 +1455,7 @@ export class AdminService {
       bio: u.bio ?? undefined,
       role: u.role,
       isActive: u.isActive,
+      mustChangePassword: u.must_change_password ?? u.mustChangePassword ?? false,
       emailPreferences: u.emailPreferences,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
