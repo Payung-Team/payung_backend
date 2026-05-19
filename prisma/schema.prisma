@@ -38,8 +38,6 @@ model User {
   other_users_users_deletion_scheduled_byTousers User[]         @relation("users_deletion_scheduled_byTousers")
   users_users_invited_byTousers                  User?          @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_users_users_invited_byTousers            User[]         @relation("users_invited_byTousers")
-  auditLogsAsAdmin                               AdminAuditLog[] @relation("audit_admin")
-  auditLogsAsTarget                              AdminAuditLog[] @relation("audit_target")
 
   @@index([is_deleted], map: "idx_users_is_deleted")
   @@index([role], map: "idx_users_role")
@@ -139,27 +137,6 @@ model field_locks {
 
   @@unique([entity_type, entity_id, field_name], map: "unique_active_lock")
   @@index([locked_by], map: "idx_field_locks_locked_by")
-}
-
-// ─── Admin Audit Log ──────────────────────────────────────────────────────────
-// บันทึกทุก action ที่ admin ทำกับ user เพื่อ audit trail
-// action examples: suspend_user, activate_user, change_role, etc.
-model AdminAuditLog {
-  id           String   @id @default(uuid())
-  adminId      String   @map("admin_id")
-  action       String                         // e.g. "suspend_user", "activate_user", "change_role"
-  targetUserId String   @map("target_user_id")
-  details      Json?                          // Additional context, e.g. { previousRole: 1, newRole: 2 }
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  // Relations
-  admin      User @relation("audit_admin", fields: [adminId], references: [id])
-  targetUser User @relation("audit_target", fields: [targetUserId], references: [id])
-
-  @@index([adminId], map: "idx_audit_admin_id")
-  @@index([targetUserId], map: "idx_audit_target_user_id")
-  @@index([createdAt(sort: Desc)], map: "idx_audit_created_at")
-  @@map("admin_audit_logs")
 }
 
 enum NotificationType {
