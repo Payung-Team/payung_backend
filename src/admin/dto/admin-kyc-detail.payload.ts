@@ -11,6 +11,7 @@ import { ObjectType, Field, Int } from '@nestjs/graphql';
 import { Caregiver } from '../../identity/kyc/entities/caregiver.entity';
 import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
+import { CaregiverEditLog } from '../../identity/kyc/entities/caregiver-edit-log.entity';
 
 @ObjectType({ description: 'Full KYC detail for a single caregiver (admin only)' })
 export class AdminKycDetailPayload {
@@ -29,4 +30,8 @@ export class AdminKycDetailPayload {
     /** จำนวนครั้งที่ resubmit KYC หลังถูก reject */
     @Field(() => Int, { description: 'Number of times KYC was resubmitted after rejection' })
     resubmitCount!: number;
+
+    /** ประวัติการแก้ไขข้อมูล/เอกสารของ caregiver — admin เห็นว่าแก้อะไรบ้าง เรียงล่าสุดก่อน */
+    @Field(() => [CaregiverEditLog], { description: 'Edit history showing field changes, newest first' })
+    editHistory!: CaregiverEditLog[];
 }

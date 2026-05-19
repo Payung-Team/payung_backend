@@ -239,10 +239,15 @@ export class AdminService {
     // ─── 2. Fetch documents with signed URLs ─────────────────────────────
     const documents = await this.caregiverService.getDocumentsWithSignedUrls(caregiverId);
 
-    // ─── 3. Fetch review history (newest first) ──────────────────────────
+    // ─── 3. Fetch review history + reviewer name (newest first) ────────
     const rawReviews = await this.prismaService.kycReview.findMany({
       where: { caregiverId },
       orderBy: { reviewedAt: 'desc' },
+      include: {
+        reviewer: {
+          select: { displayName: true },
+        },
+      },
     });
 
     const reviews: KycReview[] = rawReviews.map((r) => ({
@@ -250,7 +255,45 @@ export class AdminService {
       action: r.action,
       reason: r.reason ?? undefined,
       reviewedBy: r.reviewerId,
+      reviewerName: r.reviewer.displayName ?? undefined,
       reviewedAt: r.reviewedAt,
+    }));
+
+    // ─── 4. Fetch edit history ($queryRaw — client ยังไม่ regenerate) ──
+    const rawEditLogs = await this.prismaService.$queryRaw<
+      Array<{
+        id: string;
+        caregiver_id: string;
+        edited_by: string;
+        editor_name: string | null;
+        action: string;
+        field_changes: unknown;
+        created_at: Date;
+      }>
+    >`
+      SELECT
+        el.id,
+        el.caregiver_id,
+        el.edited_by,
+        u.display_name AS editor_name,
+        el.action,
+        el.field_changes,
+        el.created_at
+      FROM caregiver_edit_logs el
+      INNER JOIN users u ON u.id = el.edited_by
+      WHERE el.caregiver_id = ${caregiverId}
+      ORDER BY el.created_at DESC
+      LIMIT 50
+    `;
+
+    const editHistory = rawEditLogs.map((el) => ({
+      id: el.id,
+      caregiverId: el.caregiver_id,
+      editedBy: el.edited_by,
+      editorName: el.editor_name ?? undefined,
+      action: el.action,
+      fieldChanges: Array.isArray(el.field_changes) ? el.field_changes : undefined,
+      createdAt: el.created_at,
     }));
 
     this.logger.log({
@@ -258,6 +301,7 @@ export class AdminService {
       caregiverId,
       documentCount: documents.length,
       reviewCount: reviews.length,
+      editLogCount: editHistory.length,
     });
 
     return {
@@ -265,6 +309,7 @@ export class AdminService {
       documents,
       reviews,
       resubmitCount: raw.resubmitCount,
+      editHistory,
     };
   }
 

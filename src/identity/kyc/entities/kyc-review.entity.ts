@@ -28,6 +28,10 @@ export class KycReview {
     @Field({ description: 'ID of the admin who performed this review' })
     reviewedBy!: string;
 
+    /** ชื่อ admin ที่ทำ review (JOIN จาก users.display_name) */
+    @Field({ nullable: true, description: 'Display name of the admin reviewer' })
+    reviewerName?: string;
+
     /** วันเวลาที่ทำ review */
     @Field({ description: 'When this review was performed' })
     reviewedAt!: Date;

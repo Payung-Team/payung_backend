@@ -40,6 +40,7 @@ model User {
   other_users_users_invited_byTousers            User[]         @relation("users_invited_byTousers")
   auditLogsAsAdmin                               AdminAuditLog[] @relation("audit_admin")
   auditLogsAsTarget                              AdminAuditLog[] @relation("audit_target")
+  caregiverEditLogs                              CaregiverEditLog[] @relation("edit_log_editor")
 
   @@index([is_deleted], map: "idx_users_is_deleted")
   @@index([role], map: "idx_users_role")
@@ -73,6 +74,7 @@ model Caregiver {
   user               User          @relation(fields: [userId], references: [id])
   documents          KycDocument[]
   reviews            KycReview[]
+  editLogs           CaregiverEditLog[]
 
   @@map("caregivers")
 }
@@ -160,6 +162,26 @@ model AdminAuditLog {
   @@index([targetUserId], map: "idx_audit_target_user_id")
   @@index([createdAt(sort: Desc)], map: "idx_audit_created_at")
   @@map("admin_audit_logs")
+}
+
+// ─── Caregiver Edit Log ────────────────────────────────────────────────────────
+// บันทึกทุกครั้งที่ caregiver แก้ไขข้อมูลหรือเอกสาร (resubmit / profile edit)
+// admin ใช้ดูประวัติการแก้ไขใน adminKycDetail
+model CaregiverEditLog {
+  id           String    @id @default(uuid())
+  caregiverId  String    @map("caregiver_id")
+  editedBy     String    @map("edited_by")            // userId ของคนที่แก้ (caregiver เอง)
+  action       String                                  // "resubmit" | "profile_edit" | "document_upload" | "document_delete"
+  fieldChanges Json?     @map("field_changes")         // Array<{ field, oldValue, newValue }>
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  caregiver  Caregiver @relation(fields: [caregiverId], references: [id])
+  editor     User      @relation("edit_log_editor", fields: [editedBy], references: [id])
+
+  @@index([caregiverId, createdAt(sort: Desc)], map: "idx_edit_log_caregiver")
+  @@index([editedBy], map: "idx_edit_log_editor")
+  @@map("caregiver_edit_logs")
 }
 
 enum NotificationType {
