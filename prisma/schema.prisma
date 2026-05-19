@@ -34,6 +34,9 @@ model User {
   documents                                      KycDocument[]
   reviews                                        KycReview[]
   notifications                                  Notification[]
+  auditLogsAsAdmin                               AdminAuditLog[]    @relation("audit_admin")
+  auditLogsAsTarget                              AdminAuditLog[]    @relation("audit_target")
+  caregiverEditLogs                              CaregiverEditLog[] @relation("edit_log_editor")
   users_users_deletion_scheduled_byTousers       User?          @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_users_users_deletion_scheduled_byTousers User[]         @relation("users_deletion_scheduled_byTousers")
   users_users_invited_byTousers                  User?          @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -71,6 +74,7 @@ model Caregiver {
   user               User          @relation(fields: [userId], references: [id])
   documents          KycDocument[]
   reviews            KycReview[]
+  editLogs           CaregiverEditLog[]
 
   @@map("caregivers")
 }
@@ -144,4 +148,37 @@ enum NotificationType {
   kyc_verified
   kyc_rejected
   kyc_resubmitted
+}
+
+model AdminAuditLog {
+  id           String   @id @default(uuid())
+  adminId      String   @map("admin_id")
+  action       String
+  targetUserId String   @map("target_user_id")
+  details      Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  admin      User @relation("audit_admin", fields: [adminId], references: [id])
+  targetUser User @relation("audit_target", fields: [targetUserId], references: [id])
+
+  @@index([adminId], map: "idx_audit_admin_id")
+  @@index([targetUserId], map: "idx_audit_target_user_id")
+  @@index([createdAt(sort: Desc)], map: "idx_audit_created_at")
+  @@map("admin_audit_logs")
+}
+
+model CaregiverEditLog {
+  id           String   @id @default(uuid())
+  caregiverId  String   @map("caregiver_id")
+  editedBy     String   @map("edited_by")
+  action       String
+  fieldChanges Json?    @map("field_changes")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id])
+  editor    User      @relation("edit_log_editor", fields: [editedBy], references: [id])
+
+  @@index([caregiverId, createdAt(sort: Desc)], map: "idx_edit_log_caregiver")
+  @@index([editedBy], map: "idx_edit_log_editor")
+  @@map("caregiver_edit_logs")
 }
