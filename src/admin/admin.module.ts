@@ -18,6 +18,7 @@
 import { Module } from '@nestjs/common';
 import { AdminResolver } from './admin.resolver';
 import { AdminService } from './admin.service';
+import { AdminCleanupService } from './admin-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { KycModule } from '../identity/kyc/kyc.module';
@@ -33,6 +34,7 @@ import { EmailModule } from '../email/email.module';
   providers: [
     AdminResolver,
     AdminService,
+    AdminCleanupService,
     SupabaseAuthGuard,
     RolesGuard,
   ],

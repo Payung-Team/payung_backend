@@ -148,6 +148,33 @@ export function adminCancelDeleteTemplate(
   };
 }
 
+export function adminAutoDeletedTemplate(
+  displayName: string | null,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = 'บัญชี Admin ของคุณถูกลบเรียบร้อยแล้ว — Payung';
+
+  const bodyHtml = `
+    <p>${adminGreeting(displayName)},</p>
+    <p>บัญชีผู้ดูแลระบบของคุณใน <strong>Payung</strong> ถูก<strong>ลบถาวร</strong>ตามกำหนดเรียบร้อยแล้ว</p>
+    <p>ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว</p>
+    <p>หากคุณมีข้อสงสัย กรุณาติดต่อ Super Admin ของทีม</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ดูแลระบบ'},
+
+บัญชีผู้ดูแลระบบของคุณในระบบ Payung ถูกลบถาวรตามกำหนดเรียบร้อยแล้ว
+ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว
+
+หากมีข้อสงสัย กรุณาติดต่อ Super Admin ของทีม${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({ bodyHtml, frontendUrl }),
+    text,
+  };
+}
+
 export function adminActivatedTemplate(
   displayName: string | null,
   frontendUrl: string,

@@ -34,6 +34,7 @@ import {
   adminInviteTemplate,
   adminDeactivatedTemplate,
   adminActivatedTemplate,
+  adminAutoDeletedTemplate,
   adminScheduleDeleteTemplate,
   adminCancelDeleteTemplate,
 } from './templates/admin.templates';
@@ -150,6 +151,12 @@ export class EmailService {
   /** แจ้ง admin ว่าการกำหนดลบบัญชีถูกยกเลิก */
   async sendAdminCancelDelete(email: string, displayName: string | null): Promise<void> {
     const tpl = adminCancelDeleteTemplate(displayName, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง admin ว่าบัญชีถูกลบถาวรแล้วโดย cron job (PYG-159) */
+  async sendAdminAutoDeleted(email: string, displayName: string | null): Promise<void> {
+    const tpl = adminAutoDeletedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 
