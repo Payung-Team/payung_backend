@@ -42,6 +42,8 @@ import { ChangeUserRoleInput } from './dto/change-user-role.input';
 import { EditAdminInfoInput } from './dto/edit-admin-info.input';
 import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
 import { AdminEditUserInput } from './dto/admin-edit-user.input';
+import { AdminUpdateCaregiverInfoInput } from './dto/admin-update-caregiver-info.input';
+import { AdminUpdateCaregiverInfoPayload } from './dto/admin-update-caregiver-info.payload';
 import { ToggleFieldLockInput, EntityTypeEnum } from './dto/toggle-field-lock.input';
 import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
@@ -491,6 +493,39 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<EditAdminInfoPayload> {
     return this.adminService.editAdminInfo(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADMIN UPDATE CAREGIVER INFO
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email ของ caregiver
+   *
+   * @example
+   * mutation {
+   *   adminUpdateCaregiverInfo(input: {
+   *     caregiverId: "uuid-here"
+   *     firstName: "สมชาย"
+   *     lastName: "ใจดี"
+   *     idCardNumber: "1234567890123"
+   *     email: "new@example.com"
+   *   }) {
+   *     id firstName lastName idCardNumber email
+   *   }
+   * }
+   */
+  @Mutation(() => AdminUpdateCaregiverInfoPayload, {
+    description:
+      'Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). ' +
+      'Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. ' +
+      'Records audit log.',
+  })
+  async adminUpdateCaregiverInfo(
+    @Args('input') input: AdminUpdateCaregiverInfoInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<AdminUpdateCaregiverInfoPayload> {
+    return this.adminService.adminUpdateCaregiverInfo(input, admin);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

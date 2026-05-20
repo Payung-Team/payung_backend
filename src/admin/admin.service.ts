@@ -57,6 +57,8 @@ import { CancelScheduledDeletePayload } from './dto/cancel-scheduled-delete.payl
 import { EditAdminInfoInput } from './dto/edit-admin-info.input';
 import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
 import { AdminEditUserInput } from './dto/admin-edit-user.input';
+import { AdminUpdateCaregiverInfoInput } from './dto/admin-update-caregiver-info.input';
+import { AdminUpdateCaregiverInfoPayload } from './dto/admin-update-caregiver-info.payload';
 import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -1102,6 +1104,128 @@ export class AdminService {
     });
 
     return this.mapToUser(updated);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADMIN UPDATE CAREGIVER INFO (KYC detail page)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email ของ caregiver
+   *
+   * Flow:
+   * 1. หา caregiver → NotFoundException ถ้าไม่พบ
+   * 2. หา linked user (สำหรับ email)
+   * 3. Validate email uniqueness ถ้า email เปลี่ยน
+   * 4. Build fullName จาก firstName + lastName (split จาก fullName เดิมถ้าส่งมาแค่ฝั่งเดียว)
+   * 5. Update caregivers (fullName, idCardNumber)
+   * 6. Update users.email + Supabase Auth (ถ้า email เปลี่ยน)
+   * 7. Audit log (fire-and-forget)
+   * 8. Return AdminUpdateCaregiverInfoPayload { id, firstName, lastName, idCardNumber, email }
+   */
+  async adminUpdateCaregiverInfo(
+    input: AdminUpdateCaregiverInfoInput,
+    admin: AuthUser,
+  ): Promise<AdminUpdateCaregiverInfoPayload> {
+    // ─── 1. หา caregiver ──────────────────────────────────────────────────
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { id: input.caregiverId },
+      include: { user: { select: { id: true, email: true, supabaseUid: true } } },
+    });
+    if (!caregiver) {
+      throw new NotFoundException(`Caregiver "${input.caregiverId}" not found`);
+    }
+
+    const linkedUser = caregiver.user;
+
+    // ─── 2. Validate email uniqueness ─────────────────────────────────────
+    if (input.email && input.email !== linkedUser.email) {
+      const existing = await this.prismaService.user.findUnique({
+        where: { email: input.email },
+      });
+      if (existing) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    // ─── 3. Build fullName ────────────────────────────────────────────────
+    let newFullName: string | undefined;
+    if (input.firstName !== undefined || input.lastName !== undefined) {
+      const parts = (caregiver.fullName ?? '').split(' ');
+      const currentFirst = parts[0] ?? '';
+      const currentLast = parts.slice(1).join(' ');
+      newFullName = `${input.firstName ?? currentFirst} ${input.lastName ?? currentLast}`.trim();
+    }
+
+    // ─── 4. Update caregivers ─────────────────────────────────────────────
+    const caregiverData: Prisma.CaregiverUpdateInput = {};
+    if (newFullName !== undefined)          caregiverData.fullName = newFullName;
+    if (input.idCardNumber !== undefined)   caregiverData.idCardNumber = input.idCardNumber;
+
+    const updatedCaregiver = await this.prismaService.caregiver.update({
+      where: { id: input.caregiverId },
+      data: caregiverData,
+    });
+
+    // ─── 5. Update user email + Supabase Auth ─────────────────────────────
+    let finalEmail = linkedUser.email;
+    if (input.email && input.email !== linkedUser.email) {
+      await this.prismaService.user.update({
+        where: { id: linkedUser.id },
+        data: { email: input.email },
+      });
+      finalEmail = input.email;
+
+      const supabaseAdmin = this.supabaseService.getAdminClient();
+      try {
+        await supabaseAdmin.auth.admin.updateUserById(linkedUser.supabaseUid, {
+          email: input.email,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Failed to update Supabase Auth email for user ${linkedUser.id}: ${msg}`,
+        );
+      }
+    }
+
+    // ─── 6. Audit log (fire-and-forget) ──────────────────────────────────
+    const changedFields: Record<string, { from: unknown; to: unknown }> = {};
+    if (newFullName !== undefined && newFullName !== caregiver.fullName) {
+      changedFields.fullName = { from: caregiver.fullName, to: newFullName };
+    }
+    if (input.idCardNumber !== undefined && input.idCardNumber !== caregiver.idCardNumber) {
+      changedFields.idCardNumber = { from: caregiver.idCardNumber, to: input.idCardNumber };
+    }
+    if (input.email !== undefined && input.email !== linkedUser.email) {
+      changedFields.email = { from: linkedUser.email, to: input.email };
+    }
+
+    const changedFieldsJson = JSON.stringify(changedFields);
+    void this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${admin.id}, 'CAREGIVER_INFO_UPDATED', ${linkedUser.id}, ${changedFieldsJson}::jsonb, NOW())
+    `.catch((err: unknown) =>
+      this.logSideEffectError('audit CAREGIVER_INFO_UPDATED', input.caregiverId, err),
+    );
+
+    this.logger.log({
+      event: 'admin.caregiver_info_updated',
+      adminId: admin.id,
+      caregiverId: input.caregiverId,
+      changedFields: Object.keys(changedFields),
+    });
+
+    // ─── 7. Build return payload ──────────────────────────────────────────
+    const finalFullName = updatedCaregiver.fullName ?? '';
+    const nameParts = finalFullName.split(' ');
+    return {
+      id: updatedCaregiver.id,
+      firstName: nameParts[0] ?? '',
+      lastName: nameParts.slice(1).join(' '),
+      idCardNumber: updatedCaregiver.idCardNumber ?? '',
+      email: finalEmail,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
