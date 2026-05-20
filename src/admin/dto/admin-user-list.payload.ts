@@ -32,6 +32,9 @@ export class UserSummary {
 
   @Field({ description: 'Account creation date' })
   createdAt!: Date;
+
+  @Field({ nullable: true, description: 'When this account is scheduled to be permanently deleted' })
+  scheduledDeleteAt?: Date;
 }
 
 /**
