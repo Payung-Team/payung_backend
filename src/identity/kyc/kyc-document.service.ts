@@ -87,8 +87,27 @@ export class KycDocumentService {
       },
     });
 
+    // ── บันทึก document_upload log (fire-and-forget — ไม่ให้ error ทำให้ upload fail) ──
+    // เก็บ Log เมื่อ caregiver record มีอยู่แล้ว (ทุก status ที่อนุญาตให้ upload ได้)
+    void this.prismaService.caregiver
+      .findUnique({ where: { userId: data.userId } })
+      .then(async (caregiver) => {
+        if (!caregiver) return;
+        const uploadLogChanges = JSON.stringify([
+          { field: 'document', oldValue: null, newValue: data.documentType },
+        ]);
+        await this.prismaService.$executeRaw`
+          INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+          VALUES (gen_random_uuid(), ${caregiver.id}, ${data.userId}, 'document_upload', ${uploadLogChanges}::jsonb, NOW())
+        `;
+      })
+      .catch(() => {
+        // Log failure ไม่ส่งผลต่อการ upload เอกสาร
+      });
+
     return this.mapToEntity(doc);
   }
+
 
   /**
    * ดึงเอกสาร KYC ทั้งหมดของ caregiver
