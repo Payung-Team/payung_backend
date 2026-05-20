@@ -37,19 +37,23 @@ export class DashboardSummary {
 }
 
 /**
- * WeeklySubmission — จำนวน KYC submissions ในแต่ละสัปดาห์
+ * WeeklySubmission — จำนวน KYC submissions และ approvals ในแต่ละสัปดาห์
  *
  * week format: ISO 8601 (YYYY-MM-DD) ของวันจันทร์ต้นสัปดาห์
  */
-@ObjectType({ description: 'KYC submission count for a single week' })
+@ObjectType({ description: 'KYC submission and approval counts for a single week' })
 export class WeeklySubmission {
   /** วันจันทร์ต้นสัปดาห์ในรูปแบบ YYYY-MM-DD */
   @Field({ description: 'Monday of the week (YYYY-MM-DD format)' })
   week!: string;
 
-  /** จำนวน KYC submissions ในสัปดาห์นั้น */
+  /** จำนวน KYC submissions ในสัปดาห์นั้น (by kyc_submitted_at) */
   @Field(() => Int, { description: 'Number of KYC submissions in this week' })
   count!: number;
+
+  /** จำนวน KYC ที่ approved ในสัปดาห์นั้น (by kyc_verified_at) */
+  @Field(() => Int, { description: 'Number of KYC approvals in this week' })
+  approved!: number;
 }
 
 /**

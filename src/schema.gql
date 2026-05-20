@@ -2,6 +2,25 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+"""
+Admin dashboard data: summary stats, trends, review time, and recent activity
+"""
+type AdminDashboardPayload {
+  """
+  Average hours between KYC submission and approval (null if no verified caregivers)
+  """
+  avgReviewTimeHours: Float
+
+  """Last 10 admin KYC review actions"""
+  recentActivity: [RecentActivity!]!
+
+  """High-level KYC statistics"""
+  summary: DashboardSummary!
+
+  """KYC submissions per week for the last 8 weeks (oldest first)"""
+  weeklySubmissions: [WeeklySubmission!]!
+}
+
 """Full KYC detail for a single caregiver (admin only)"""
 type AdminKycDetailPayload {
   """Caregiver profile"""
@@ -46,6 +65,53 @@ type AdminKycListPayload {
   totalPages: Int!
 }
 
+"""Full user detail for admin management"""
+type AdminUserDetailPayload {
+  """Number of admin actions taken on this user"""
+  auditLogCount: Int!
+
+  """Caregiver profile (null if not a caregiver)"""
+  caregiver: Caregiver
+
+  """Whether the user is currently suspended"""
+  isSuspended: Boolean!
+
+  """Current KYC status: none | pending | verified | rejected | n/a"""
+  kycStatus: String!
+
+  """User profile"""
+  user: User!
+}
+
+input AdminUserListInput {
+  """Items per page (default: 20, max: 100)."""
+  limit: Int
+
+  """Page number (1-based). Defaults to 1."""
+  page: Int
+
+  """Filter by user role. Omit or "all" for every role."""
+  role: RoleFilter
+
+  """Search by display name or email (case-insensitive)"""
+  search: String
+}
+
+"""Paginated user list for admin"""
+type AdminUserListPayload {
+  """Users for the current page"""
+  items: [UserSummary!]!
+
+  """Current page number (1-based)"""
+  page: Int!
+
+  """Total number of matching users"""
+  total: Int!
+
+  """Total number of pages"""
+  totalPages: Int!
+}
+
 type AuthPayload {
   """JWT access token for API requests"""
   accessToken: String!
@@ -57,6 +123,17 @@ type AuthPayload {
   user: User!
 }
 
+input CancelScheduledDeleteInput {
+  """ID of the target admin user whose scheduled deletion to cancel"""
+  adminId: String!
+}
+
+type CancelScheduledDeletePayload {
+  """Whether the account was reactivated as part of the cancellation"""
+  reactivated: Boolean!
+  user: User!
+}
+
 type Caregiver {
   address: String
   bio: String
@@ -65,6 +142,9 @@ type Caregiver {
   caregiverNumber: String
   createdAt: DateTime!
   dateOfBirth: DateTime
+
+  """Email address of the caregiver linked user"""
+  email: String
   experienceYears: Int!
   fullName: String!
   gender: String
@@ -84,6 +164,7 @@ type Caregiver {
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
   phone: String!
+  rejectionReasons: [RejectionReason!]
 
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
@@ -96,8 +177,14 @@ type Caregiver {
 
 """Summary of a caregiver KYC submission for admin review"""
 type CaregiverKycSummary {
+  """Caregiver Number (e.g. CG-12345)"""
+  caregiverNumber: String
+
   """Number of KYC documents uploaded"""
   documentCount: Int!
+
+  """Caregiver email"""
+  email: String!
 
   """Caregiver full name"""
   fullName: String!
@@ -110,6 +197,32 @@ type CaregiverKycSummary {
 
   """When KYC was last submitted"""
   submittedAt: DateTime
+}
+
+input ChangeUserRoleInput {
+  """New role ID (1=patient, 2=caregiver). Cannot be 3 or 4."""
+  newRole: Int!
+
+  """UUID of the user to change role"""
+  userId: ID!
+}
+
+"""High-level KYC statistics for the admin dashboard"""
+type DashboardSummary {
+  """Caregivers awaiting KYC review"""
+  pendingKyc: Int!
+
+  """Caregivers with rejected KYC"""
+  rejectedKyc: Int!
+
+  """Total caregiver profiles created"""
+  totalCaregivers: Int!
+
+  """Total active users across all roles"""
+  totalUsers: Int!
+
+  """Caregivers with verified KYC"""
+  verifiedKyc: Int!
 }
 
 """
@@ -269,12 +382,35 @@ input LoginInput {
 
 type Mutation {
   """
+  Admin only: Activate a suspended user (set isActive = true, is_deleted = false). Records audit log.
+  """
+  activateUser(
+    """UUID of the user to activate"""
+    userId: ID!
+  ): User!
+
+  """
   Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
   """
   approveKyc(
     """UUID of the caregiver to approve"""
     caregiverId: ID!
   ): Caregiver!
+
+  """
+  Super Admin only: Cancel a scheduled deletion for an admin account. Reactivates the account and unbans Supabase Auth.
+  """
+  cancelScheduledDelete(input: CancelScheduledDeleteInput!): CancelScheduledDeletePayload!
+
+  """
+  Admin only: Change a user role. Only patient (1) ↔ caregiver (2) allowed. Cannot change own role or escalate to admin/super_admin. Records audit log.
+  """
+  changeUserRole(input: ChangeUserRoleInput!): User!
+
+  """
+  Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.
+  """
+  completePasswordChange: User!
 
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
@@ -300,18 +436,36 @@ type Mutation {
   register(input: RegisterInput!): AuthPayload!
 
   """
-  Admin only: Reject a caregiver KYC submission with a reason. Sets kycStatus = "rejected", records audit log with reason, sends notification + email. Requires kycStatus = "pending". Reason must be at least 10 characters.
+  Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
 
+  """
+  Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
+  """
+  scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
+
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
+
+  """
+  Admin only: Suspend a user (set isActive = false). Cannot suspend yourself. Records audit log.
+  """
+  suspendUser(
+    """UUID of the user to suspend"""
+    userId: ID!
+  ): User!
+
+  """
+  Super Admin only: Activate or deactivate an admin account. Deactivate revokes Supabase Auth sessions (ban). Activate clears any scheduled deletion. Sends notification email.
+  """
+  toggleAdminStatus(input: ToggleAdminStatusInput!): ToggleAdminStatusPayload!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -363,6 +517,11 @@ enum NotificationType {
 
 type Query {
   """
+  Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
+  """
+  adminDashboard: AdminDashboardPayload!
+
+  """
   Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
   """
   adminKycDetail(caregiverId: ID!): AdminKycDetailPayload!
@@ -371,6 +530,19 @@ type Query {
   Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
   """
   adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: Get full user detail including caregiver info, KYC status, suspension state, and audit log count.
+  """
+  adminUserDetail(
+    """UUID of the user"""
+    userId: ID!
+  ): AdminUserDetailPayload!
+
+  """
+  Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
+  """
+  adminUserList(input: AdminUserListInput!): AdminUserListPayload!
 
   """Health check - API & DB Status"""
   health: HealthStatus!
@@ -391,6 +563,23 @@ type Query {
   unreadCount: Int!
 }
 
+"""A recent admin KYC review action"""
+type RecentActivity {
+  """
+  What the admin did: "approved" or "rejected"
+  """
+  action: String!
+
+  """Name of the caregiver involved"""
+  caregiverName: String!
+
+  """When this activity occurred"""
+  timestamp: DateTime!
+
+  """Activity type (e.g. "kyc_review")"""
+  type: String!
+}
+
 input RegisterInput {
   email: String!
   password: String!
@@ -401,10 +590,83 @@ input RejectKycInput {
   """UUID of the caregiver to reject"""
   caregiverId: ID!
 
+  """One or more rejection reasons"""
+  reasons: [RejectionReasonItem!]!
+}
+
+type RejectionReason {
+  """Detailed explanation for the caregiver"""
+  detail: String
+
+  """Which document this reason refers to"""
+  documentType: String
+
+  """Short title of the rejection reason"""
+  title: String!
+}
+
+input RejectionReasonItem {
+  """Free-text detail for the caregiver"""
+  detail: String
+
+  """Which document: id_card_photo, id_card_number, etc."""
+  documentType: String
+
   """
-  Reason for rejection (min 10 chars). Will be sent to caregiver via notification and email.
+  Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
   """
-  reason: String!
+  title: String!
+}
+
+"""Filter users by role. Use "all" to return every role."""
+enum RoleFilter {
+  """Role 3: Admin"""
+  admin
+
+  """Return all roles"""
+  all
+
+  """Role 2: Caregiver"""
+  caregiver
+
+  """Role 1: Patient"""
+  patient
+
+  """Role 4: Super Admin"""
+  super_admin
+}
+
+input ScheduleDeleteAdminInput {
+  """ID of the target admin user"""
+  adminId: String!
+
+  """Grace period in days before permanent deletion. Allowed: 7, 14, 30, 60"""
+  gracePeriodDays: Int! = 30
+}
+
+type ScheduleDeleteAdminPayload {
+  """Grace period in days that was set"""
+  gracePeriodDays: Int!
+
+  """Datetime when the account will be permanently deleted"""
+  scheduledDeleteAt: DateTime!
+  user: User!
+}
+
+input ToggleAdminStatusInput {
+  """ID of the target admin user"""
+  adminId: String!
+
+  """true = activate, false = deactivate"""
+  isActive: Boolean!
+}
+
+type ToggleAdminStatusPayload {
+  """
+  "ADMIN_ACTIVATED" or "ADMIN_DEACTIVATED"
+  """
+  action: String!
+  user: User!
 }
 
 input UpdateCaregiverInput {
@@ -492,6 +754,9 @@ type User {
   """Whether the user account is active"""
   isActive: Boolean!
 
+  """Whether the user must change their password before using the app"""
+  mustChangePassword: Boolean!
+
   """Phone number"""
   phone: String
 
@@ -500,4 +765,43 @@ type User {
 
   """Last profile update timestamp"""
   updatedAt: DateTime!
+}
+
+"""Summary of a user for admin user management list"""
+type UserSummary {
+  """Account creation date"""
+  createdAt: DateTime!
+
+  """Display name"""
+  displayName: String
+
+  """User email"""
+  email: String!
+
+  """User UUID"""
+  id: ID!
+
+  """Whether the account is active (not suspended)"""
+  isActive: Boolean!
+
+  """Whether the user is suspended"""
+  isSuspended: Boolean!
+
+  """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
+  role: Int!
+
+  """When this account is scheduled to be permanently deleted"""
+  scheduledDeleteAt: DateTime
+}
+
+"""KYC submission and approval counts for a single week"""
+type WeeklySubmission {
+  """Number of KYC approvals in this week"""
+  approved: Int!
+
+  """Number of KYC submissions in this week"""
+  count: Int!
+
+  """Monday of the week (YYYY-MM-DD format)"""
+  week: String!
 }

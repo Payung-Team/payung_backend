@@ -363,47 +363,66 @@ export class AdminService {
    * - Fill missing weeks with 0 count (frontend ต้องการ array ครบทุกสัปดาห์เพื่อวาด chart)
    */
   private async getWeeklySubmissions(): Promise<WeeklySubmission[]> {
-    // 8 weeks ago = จุดเริ่มต้น (Monday ต้นสัปดาห์)
-    const eightWeeksAgo = new Date();
-    eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 8 * 7);
-    // Align to Monday (JS: getDay() 0=Sun, 1=Mon, ...)
-    const day = eightWeeksAgo.getDay();
-    const diff = day === 0 ? -6 : 1 - day; // ถ้า Sunday (-6), อื่นๆ (1 - day)
-    eightWeeksAgo.setDate(eightWeeksAgo.getDate() + diff);
-    eightWeeksAgo.setHours(0, 0, 0, 0);
+    // 8 weeks ago — aligned to Monday 00:00:00 UTC (matches PostgreSQL DATE_TRUNC('week',...))
+    // Using UTC methods throughout so cursor keys match DB-returned week keys regardless of server timezone
+    const now = new Date();
+    const eightWeeksAgo = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() - 8 * 7,
+    ));
+    const dayUTC = eightWeeksAgo.getUTCDay(); // 0=Sun, 1=Mon, …
+    const diff = dayUTC === 0 ? -6 : 1 - dayUTC;
+    eightWeeksAgo.setUTCDate(eightWeeksAgo.getUTCDate() + diff);
+    // eightWeeksAgo is now Monday 00:00:00 UTC
 
-    // Raw SQL: DATE_TRUNC('week', kyc_submitted_at) grouped + counted
-    // PostgreSQL DATE_TRUNC('week', ...) returns Monday 00:00:00 of each week
-    const rows = await this.prismaService.$queryRaw<
-      Array<{ week: Date; count: bigint }>
-    >`
-      SELECT
-        DATE_TRUNC('week', kyc_submitted_at) AS week,
-        COUNT(*)::bigint AS count
-      FROM caregivers
-      WHERE kyc_submitted_at IS NOT NULL
-        AND kyc_submitted_at >= ${eightWeeksAgo}
-      GROUP BY week
-      ORDER BY week ASC
-    `;
+    // Run both queries concurrently
+    const [submissionRows, approvalRows] = await Promise.all([
+      // Line 1: KYC submissions per week (by kyc_submitted_at)
+      this.prismaService.$queryRaw<Array<{ week: Date; count: bigint }>>`
+        SELECT
+          DATE_TRUNC('week', kyc_submitted_at) AS week,
+          COUNT(*)::bigint AS count
+        FROM caregivers
+        WHERE kyc_submitted_at IS NOT NULL
+          AND kyc_submitted_at >= ${eightWeeksAgo}
+        GROUP BY week
+        ORDER BY week ASC
+      `,
+      // Line 2: KYC approvals per week (by kyc_verified_at)
+      this.prismaService.$queryRaw<Array<{ week: Date; approved: bigint }>>`
+        SELECT
+          DATE_TRUNC('week', kyc_verified_at) AS week,
+          COUNT(*)::bigint AS approved
+        FROM caregivers
+        WHERE kyc_verified_at IS NOT NULL
+          AND kyc_verified_at >= ${eightWeeksAgo}
+        GROUP BY week
+        ORDER BY week ASC
+      `,
+    ]);
 
-    // Build lookup from DB results
-    const dbMap = new Map<string, number>();
-    for (const row of rows) {
-      const key = row.week.toISOString().slice(0, 10); // YYYY-MM-DD
-      dbMap.set(key, Number(row.count));
+    // Build lookups from DB results
+    const submissionMap = new Map<string, number>();
+    for (const row of submissionRows) {
+      submissionMap.set(row.week.toISOString().slice(0, 10), Number(row.count));
+    }
+    const approvalMap = new Map<string, number>();
+    for (const row of approvalRows) {
+      approvalMap.set(row.week.toISOString().slice(0, 10), Number(row.approved));
     }
 
-    // Generate all 8 weeks (fill gaps with 0)
+    // Generate all 8 weeks (fill gaps with 0 for both lines)
     const result: WeeklySubmission[] = [];
     const cursor = new Date(eightWeeksAgo);
     for (let i = 0; i < 8; i++) {
-      const key = cursor.toISOString().slice(0, 10);
+      const key = cursor.toISOString().slice(0, 10); // always UTC date string e.g. "2026-03-23"
       result.push({
         week: key,
-        count: dbMap.get(key) ?? 0,
+        count: submissionMap.get(key) ?? 0,
+        approved: approvalMap.get(key) ?? 0,
       });
-      cursor.setDate(cursor.getDate() + 7);
+      cursor.setUTCDate(cursor.getUTCDate() + 7); // advance by exactly 7 days in UTC
     }
 
     return result;
@@ -745,6 +764,7 @@ export class AdminService {
           isActive: true,
           is_deleted: true,
           createdAt: true,
+          scheduled_delete_at: true,
         },
         orderBy: { createdAt: 'desc' },
         skip: offset,
@@ -763,6 +783,7 @@ export class AdminService {
       isActive: u.isActive,
       isSuspended: !u.isActive || u.is_deleted,
       createdAt: u.createdAt,
+      scheduledDeleteAt: u.scheduled_delete_at ?? undefined,
     }));
 
     this.logger.log({
