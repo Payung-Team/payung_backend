@@ -29,6 +29,13 @@ import { NotificationService } from '../../notification/notification.service';
 import { EmailService } from '../../email/email.service';
 import { NotificationType } from '../../notification/entities/notification-type.enum';
 import { Prisma } from '@prisma/client';
+import { computeFieldChanges } from './utils/compute-field-changes';
+
+/** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
+const KYC_TRACKED_FIELDS = [
+  'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
+  'phone', 'skills', 'experienceYears', 'hourlyRate', 'bio',
+];
 
 /** สถานะที่อนุญาตให้ยื่น KYC ได้ (first time หรือ resubmit) */
 const SUBMITTABLE_STATUSES = new Set(['none', 'rejected']);
@@ -147,6 +154,25 @@ export class KycService {
           },
           data: { caregiverId: upserted.id },
         });
+      }
+
+      // ── บันทึก edit log (caregiver_edit_logs) ────────────────────
+      // ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
+      if (existing) {
+        // มี record เดิม → compute diff
+        const fieldChanges = computeFieldChanges(
+          existing as unknown as Record<string, unknown>,
+          input as unknown as Record<string, unknown>,
+          KYC_TRACKED_FIELDS,
+        );
+
+        if (fieldChanges.length > 0) {
+          const changesJson = JSON.stringify(fieldChanges);
+          await tx.$executeRaw`
+            INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+            VALUES (gen_random_uuid(), ${upserted.id}, ${user.id}, ${isResubmit ? 'resubmit' : 'first_submit'}, ${changesJson}::jsonb, NOW())
+          `;
+        }
       }
 
       return upserted;

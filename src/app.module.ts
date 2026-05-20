@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ConfigModule } from '@nestjs/config';
@@ -17,6 +18,9 @@ import { AdminModule } from './admin/admin.module';
     ConfigModule.forRoot({
       isGlobal: true, // ใช้ได้ทุก Module โดยไม่ต้อง import ซ้ำ
     }),
+
+    // ─── Scheduler (PYG-159) ──────────────────────────────────────────────
+    ScheduleModule.forRoot(),
 
     // ─── 2. GraphQL Module (Code-First approach) ──────────────────────────
     GraphQLModule.forRoot<ApolloDriverConfig>({

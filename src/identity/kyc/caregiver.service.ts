@@ -19,6 +19,10 @@ import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { KycDocument } from './entities/kyc-document.entity';
+import { computeFieldChanges } from './utils/compute-field-changes';
+
+/** Profile fields ที่ track ได้ใน updateProfile */
+const PROFILE_TRACKED_FIELDS = ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -251,16 +255,37 @@ export class CaregiverService {
       );
     }
 
-    const caregiver = await this.prismaService.caregiver.update({
-      where: { userId },
-      data: {
-        ...(input.bio !== undefined && { bio: input.bio }),
-        ...(input.hourlyRate !== undefined && { hourlyRate: input.hourlyRate }),
-        ...(input.skills !== undefined && { skills: input.skills }),
-        ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
-        ...(input.phone !== undefined && { phone: input.phone }),
-        ...(input.address !== undefined && { address: input.address }),
-      },
+    // ── Compute field changes ก่อน update ────────────────────────────
+    const fieldChanges = computeFieldChanges(
+      existing as unknown as Record<string, unknown>,
+      input as unknown as Record<string, unknown>,
+      PROFILE_TRACKED_FIELDS,
+    );
+
+    // ── Transaction: update + edit log ────────────────────────────────
+    const caregiver = await this.prismaService.$transaction(async (tx) => {
+      const updated = await tx.caregiver.update({
+        where: { userId },
+        data: {
+          ...(input.bio !== undefined && { bio: input.bio }),
+          ...(input.hourlyRate !== undefined && { hourlyRate: input.hourlyRate }),
+          ...(input.skills !== undefined && { skills: input.skills }),
+          ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
+          ...(input.phone !== undefined && { phone: input.phone }),
+          ...(input.address !== undefined && { address: input.address }),
+        },
+      });
+
+      // บันทึก edit log ถ้ามี field ที่เปลี่ยนจริง
+      if (fieldChanges.length > 0) {
+        const changesJson = JSON.stringify(fieldChanges);
+        await tx.$executeRaw`
+          INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+          VALUES (gen_random_uuid(), ${existing.id}, ${userId}, 'profile_edit', ${changesJson}::jsonb, NOW())
+        `;
+      }
+
+      return updated;
     });
 
     return this.mapToEntity(caregiver);
