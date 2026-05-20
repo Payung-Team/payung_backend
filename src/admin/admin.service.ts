@@ -1727,7 +1727,7 @@ export class AdminService {
    * ที่ FieldLockGuard จะเห็นใน Object.keys(input) ขณะ runtime
    */
   private readonly LOCKABLE_FIELDS: Readonly<Record<EntityTypeEnum, readonly string[]>> = {
-    [EntityTypeEnum.CAREGIVER_PROFILE]: ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'],
+    [EntityTypeEnum.CAREGIVER_PROFILE]: ['firstName', 'lastName', 'idCardNumber', 'email', 'bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'],
     [EntityTypeEnum.USER]: ['displayName', 'phone', 'email', 'bio', 'address'],
   };
 

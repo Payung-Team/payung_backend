@@ -1,5 +1,5 @@
 import { InputType, Field, registerEnumType, ID } from '@nestjs/graphql';
-import { IsBoolean, IsString, IsUUID, MinLength } from 'class-validator';
+import { IsBoolean, IsEnum, IsString, IsUUID, MinLength } from 'class-validator';
 
 export enum EntityTypeEnum {
   CAREGIVER_PROFILE = 'CAREGIVER_PROFILE',
@@ -14,6 +14,7 @@ registerEnumType(EntityTypeEnum, {
 @InputType()
 export class ToggleFieldLockInput {
   @Field(() => EntityTypeEnum, { description: 'Entity type: CAREGIVER_PROFILE or USER' })
+  @IsEnum(EntityTypeEnum)
   entityType: EntityTypeEnum;
 
   @Field(() => ID, { description: 'UUID of the caregiver or user' })

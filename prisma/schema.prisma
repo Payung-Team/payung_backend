@@ -8,37 +8,40 @@ datasource db {
 }
 
 model User {
-  id                                             String         @id @default(uuid())
-  supabaseUid                                    String         @unique @map("supabase_uid")
-  email                                          String         @unique
-  displayName                                    String?        @map("display_name")
-  avatarUrl                                      String?        @map("avatar_url")
-  isActive                                       Boolean        @default(true) @map("is_active")
-  createdAt                                      DateTime       @default(now()) @map("created_at")
-  updatedAt                                      DateTime       @updatedAt @map("updated_at")
-  address                                        String?        @map("address")
-  bio                                            String?        @map("bio")
-  phone                                          String?        @map("phone")
-  role                                           Int            @default(1)
-  emailPreferences                               Boolean        @default(true) @map("email_preferences")
-  invited_by                                     String?
-  must_change_password                           Boolean        @default(false)
-  last_login_at                                  DateTime?      @db.Timestamptz(6)
-  scheduled_delete_at                            DateTime?      @db.Timestamptz(6)
-  deletion_scheduled_by                          String?
-  is_deleted                                     Boolean        @default(false)
-  deleted_at                                     DateTime?      @db.Timestamptz(6)
-  is_suspended                                   Boolean        @default(false)
-  caregiver                                      Caregiver?
-  field_locks_field_locks_locked_byTousers       field_locks[]  @relation("field_locks_locked_byTousers")
-  field_locks_field_locks_unlocked_byTousers     field_locks[]  @relation("field_locks_unlocked_byTousers")
-  documents                                      KycDocument[]
-  reviews                                        KycReview[]
-  notifications                                  Notification[]
-  users_users_deletion_scheduled_byTousers       User?          @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  other_users_users_deletion_scheduled_byTousers User[]         @relation("users_deletion_scheduled_byTousers")
-  users_users_invited_byTousers                  User?          @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  other_users_users_invited_byTousers            User[]         @relation("users_invited_byTousers")
+  id                                                      String                @id @default(uuid())
+  supabaseUid                                             String                @unique @map("supabase_uid")
+  email                                                   String                @unique
+  displayName                                             String?               @map("display_name")
+  avatarUrl                                               String?               @map("avatar_url")
+  isActive                                                Boolean               @default(true) @map("is_active")
+  createdAt                                               DateTime              @default(now()) @map("created_at")
+  updatedAt                                               DateTime              @updatedAt @map("updated_at")
+  address                                                 String?               @map("address")
+  bio                                                     String?               @map("bio")
+  phone                                                   String?               @map("phone")
+  role                                                    Int                   @default(1)
+  emailPreferences                                        Boolean               @default(true) @map("email_preferences")
+  invited_by                                              String?
+  must_change_password                                    Boolean               @default(false)
+  last_login_at                                           DateTime?             @db.Timestamptz(6)
+  scheduled_delete_at                                     DateTime?             @db.Timestamptz(6)
+  deletion_scheduled_by                                   String?
+  is_deleted                                              Boolean               @default(false)
+  deleted_at                                              DateTime?             @db.Timestamptz(6)
+  is_suspended                                            Boolean               @default(false)
+  admin_audit_logs_admin_audit_logs_admin_idTousers       admin_audit_logs[]    @relation("admin_audit_logs_admin_idTousers")
+  admin_audit_logs_admin_audit_logs_target_user_idTousers admin_audit_logs[]    @relation("admin_audit_logs_target_user_idTousers")
+  caregiver_edit_logs                                     caregiver_edit_logs[]
+  caregiver                                               Caregiver?
+  field_locks_field_locks_locked_byTousers                field_locks[]         @relation("field_locks_locked_byTousers")
+  field_locks_field_locks_unlocked_byTousers              field_locks[]         @relation("field_locks_unlocked_byTousers")
+  documents                                               KycDocument[]
+  reviews                                                 KycReview[]
+  notifications                                           Notification[]
+  users_users_deletion_scheduled_byTousers                User?                 @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_deletion_scheduled_byTousers          User[]                @relation("users_deletion_scheduled_byTousers")
+  users_users_invited_byTousers                           User?                 @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_invited_byTousers                     User[]                @relation("users_invited_byTousers")
 
   @@index([is_deleted], map: "idx_users_is_deleted")
   @@index([role], map: "idx_users_role")
@@ -46,32 +49,33 @@ model User {
 }
 
 model Caregiver {
-  id                 String        @id @default(uuid())
-  userId             String        @unique @map("user_id")
-  fullName           String?       @map("full_name")
-  idCardNumber       String?       @map("id_card_number")
-  phone              String?
-  skills             String[]
-  experienceYears    Int?          @map("experience_years")
-  hourlyRate         Float?        @map("hourly_rate")
-  bio                String?
-  kycStatus          String        @default("none") @map("kyc_status")
-  kycSubmittedAt     DateTime?     @map("kyc_submitted_at")
-  isSearchable       Boolean       @default(false) @map("is_searchable")
-  createdAt          DateTime      @default(now()) @map("created_at")
-  updatedAt          DateTime      @updatedAt @map("updated_at")
-  kycVerifiedAt      DateTime?     @map("kyc_verified_at")
-  resubmitCount      Int           @default(0) @map("resubmit_count")
-  caregiverNumber    String?       @unique @map("caregiver_number")
-  gender             String?
-  dateOfBirth        DateTime?     @map("date_of_birth")
-  address            String?
-  kycRejectedAt      DateTime?     @map("kyc_rejected_at")
-  kycRejectionReason String?       @map("kyc_rejection_reason")
-  rejection_reasons  Json?
-  user               User          @relation(fields: [userId], references: [id])
-  documents          KycDocument[]
-  reviews            KycReview[]
+  id                  String                @id @default(uuid())
+  userId              String                @unique @map("user_id")
+  fullName            String?               @map("full_name")
+  idCardNumber        String?               @map("id_card_number")
+  phone               String?
+  skills              String[]
+  experienceYears     Int?                  @map("experience_years")
+  hourlyRate          Float?                @map("hourly_rate")
+  bio                 String?
+  kycStatus           String                @default("none") @map("kyc_status")
+  kycSubmittedAt      DateTime?             @map("kyc_submitted_at")
+  isSearchable        Boolean               @default(false) @map("is_searchable")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+  kycVerifiedAt       DateTime?             @map("kyc_verified_at")
+  resubmitCount       Int                   @default(0) @map("resubmit_count")
+  caregiverNumber     String?               @unique @map("caregiver_number")
+  gender              String?
+  dateOfBirth         DateTime?             @map("date_of_birth")
+  address             String?
+  kycRejectedAt       DateTime?             @map("kyc_rejected_at")
+  kycRejectionReason  String?               @map("kyc_rejection_reason")
+  rejection_reasons   Json?
+  caregiver_edit_logs caregiver_edit_logs[]
+  user                User                  @relation(fields: [userId], references: [id])
+  documents           KycDocument[]
+  reviews             KycReview[]
 
   @@map("caregivers")
 }
@@ -136,7 +140,30 @@ model field_locks {
   users_field_locks_locked_byTousers   User      @relation("field_locks_locked_byTousers", fields: [locked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   users_field_locks_unlocked_byTousers User?     @relation("field_locks_unlocked_byTousers", fields: [unlocked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([entity_type, entity_id, field_name])
   @@index([locked_by], map: "idx_field_locks_locked_by")
+}
+
+model admin_audit_logs {
+  id                                           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id                                     String
+  action                                       String
+  target_user_id                               String?
+  details                                      Json?
+  created_at                                   DateTime @default(now())
+  users_admin_audit_logs_admin_idTousers       User     @relation("admin_audit_logs_admin_idTousers", fields: [admin_id], references: [id])
+  users_admin_audit_logs_target_user_idTousers User?    @relation("admin_audit_logs_target_user_idTousers", fields: [target_user_id], references: [id])
+}
+
+model caregiver_edit_logs {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver_id  String
+  edited_by     String
+  action        String
+  field_changes Json?
+  created_at    DateTime  @default(now())
+  caregivers    Caregiver @relation(fields: [caregiver_id], references: [id])
+  users         User      @relation(fields: [edited_by], references: [id])
 }
 
 enum NotificationType {
