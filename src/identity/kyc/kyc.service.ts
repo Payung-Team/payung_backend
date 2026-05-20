@@ -166,7 +166,9 @@ export class KycService {
           KYC_TRACKED_FIELDS,
         );
 
-        if (fieldChanges.length > 0) {
+        // resubmit → บันทึก Log เสมอ (แม้ไม่มี field ตัวอักษรเปลี่ยน เช่น เปลี่ยนเฉพาะไฟล์เอกสาร)
+        // first_submit → บันทึก Log เฉพาะกรณีที่มี field เปลี่ยนแปลง
+        if (isResubmit || fieldChanges.length > 0) {
           const changesJson = JSON.stringify(fieldChanges);
           await tx.$executeRaw`
             INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
@@ -254,6 +256,19 @@ export class KycService {
     await this.prismaService.kycDocument.delete({
       where: { id: documentId },
     });
+
+    // ── บันทึก document_delete log (fire-and-forget — ไม่ให้ error ทำให้ delete fail) ──
+    if (caregiver) {
+      const deleteLogChanges = JSON.stringify([
+        { field: 'document', oldValue: doc.documentType, newValue: null },
+      ]);
+      void this.prismaService.$executeRaw`
+        INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+        VALUES (gen_random_uuid(), ${caregiver.id}, ${userId}, 'document_delete', ${deleteLogChanges}::jsonb, NOW())
+      `.catch((err: unknown) => {
+        this.logger.error(`Failed to log document_delete for caregiver ${caregiver.id}: ${String(err)}`);
+      });
+    }
 
     return true;
   }
