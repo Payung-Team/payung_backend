@@ -13,6 +13,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ScheduleDeleteAdminInput } from './dto/schedule-delete-admin.input';
+import { EntityTypeEnum } from './dto/toggle-field-lock.input';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
@@ -40,6 +41,12 @@ const mockPrisma = {
   kycReview: {
     findMany: jest.fn(),
     create: jest.fn(),
+  },
+  field_locks: {
+    findFirst: jest.fn(),
+    upsert: jest.fn(),
+    update: jest.fn(),
+    findMany: jest.fn(),
   },
   $transaction: jest.fn(),
   $executeRaw: jest.fn().mockResolvedValue(1),
@@ -1033,5 +1040,261 @@ describe('AdminService — editAdminInfo', () => {
     expect(result.user.id).toBe('target-admin-uuid');
     expect(mockPrisma.user.update).toHaveBeenCalled();
     expect(mockSupabaseAdminClient.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// toggleFieldLock / getLockedFields — PYG-145
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('AdminService — toggleFieldLock', () => {
+  let service: AdminService;
+
+  const adminUser: AuthUser = {
+    id: 'admin-uuid',
+    supabaseUid: 'supabase-admin-uid',
+    email: 'admin@payung.app',
+    role: ROLE_ID.ADMIN,
+    isSuspended: false,
+  };
+
+  const caregiverRecord = { id: 'cg-uuid' };
+  const userRecord = { id: 'user-uuid' };
+
+  const lockedRecord = {
+    id: 'lock-uuid',
+    entity_type: 'CAREGIVER_PROFILE',
+    entity_id: 'cg-uuid',
+    field_name: 'phone',
+    locked_by: 'admin-uuid',
+    locked_at: new Date('2026-05-20'),
+    unlocked_at: null,
+    unlocked_by: null,
+    users_field_locks_locked_byTousers: { displayName: 'Admin A' },
+    users_field_locks_unlocked_byTousers: null,
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockPrisma.$executeRaw.mockResolvedValue(1);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  // ─── Case 1: Lock CAREGIVER_PROFILE field successfully ───────────────────
+  it('locks a CAREGIVER_PROFILE field and returns success', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(null); // not currently locked
+    mockPrisma.field_locks.upsert.mockResolvedValue(lockedRecord);
+
+    const result = await service.toggleFieldLock(
+      { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: true },
+      adminUser,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.locked).toBe(true);
+    expect(result.fieldName).toBe('phone');
+    expect(result.lockedBy).toBe('Admin A');
+    expect(mockPrisma.field_locks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { entity_type_entity_id_field_name: { entity_type: 'CAREGIVER_PROFILE', entity_id: 'cg-uuid', field_name: 'phone' } },
+        create: expect.objectContaining({ locked_by: adminUser.id }),
+      }),
+    );
+  });
+
+  // ─── Case 2: Unlock a locked field ───────────────────────────────────────
+  it('unlocks an active lock and returns locked=false', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(lockedRecord); // active lock exists
+    mockPrisma.field_locks.update.mockResolvedValue({ ...lockedRecord, unlocked_at: new Date() });
+
+    const result = await service.toggleFieldLock(
+      { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: false },
+      adminUser,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.locked).toBe(false);
+    expect(mockPrisma.field_locks.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ unlocked_at: expect.any(Date), unlocked_by: adminUser.id }),
+      }),
+    );
+  });
+
+  // ─── Case 3: Duplicate lock → ConflictException ───────────────────────────
+  it('throws ConflictException when field is already locked', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(lockedRecord); // already locked
+
+    await expect(
+      service.toggleFieldLock(
+        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: true },
+        adminUser,
+      ),
+    ).rejects.toThrow(ConflictException);
+    expect(mockPrisma.field_locks.upsert).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 4: Unlock field that is not locked → BadRequestException ────────
+  it('throws BadRequestException when unlocking a field that is not locked', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(null); // no active lock
+
+    await expect(
+      service.toggleFieldLock(
+        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: false },
+        adminUser,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.field_locks.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 5: Invalid fieldName → BadRequestException ─────────────────────
+  it('throws BadRequestException for a field not in the whitelist', async () => {
+    await expect(
+      service.toggleFieldLock(
+        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'idCardNumber', lock: true },
+        adminUser,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockPrisma.caregiver.findUnique).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 6: Entity not found → NotFoundException ─────────────────────────
+  it('throws NotFoundException when caregiver entity does not exist', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.toggleFieldLock(
+        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'ghost-uuid', fieldName: 'phone', lock: true },
+        adminUser,
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(mockPrisma.field_locks.findFirst).not.toHaveBeenCalled();
+  });
+
+  // ─── Case 7: Lock USER field successfully ────────────────────────────────
+  it('locks a USER field (e.g. email)', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(userRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(null);
+    const userLockRecord = { ...lockedRecord, entity_type: 'USER', entity_id: 'user-uuid', field_name: 'email' };
+    mockPrisma.field_locks.upsert.mockResolvedValue(userLockRecord);
+
+    const result = await service.toggleFieldLock(
+      { entityType: EntityTypeEnum.USER, entityId: 'user-uuid', fieldName: 'email', lock: true },
+      adminUser,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.locked).toBe(true);
+    expect(result.fieldName).toBe('email');
+  });
+
+  // ─── Case 8: Audit log fired on lock ─────────────────────────────────────
+  it('fires $executeRaw for audit log on successful lock', async () => {
+    mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
+    mockPrisma.field_locks.findFirst.mockResolvedValue(null);
+    mockPrisma.field_locks.upsert.mockResolvedValue(lockedRecord);
+
+    await service.toggleFieldLock(
+      { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'bio', lock: true },
+      adminUser,
+    );
+
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
+  });
+});
+
+describe('AdminService — getLockedFields', () => {
+  let service: AdminService;
+
+  const adminUser: AuthUser = {
+    id: 'admin-uuid',
+    supabaseUid: 'supabase-admin-uid',
+    email: 'admin@payung.app',
+    role: ROLE_ID.ADMIN,
+    isSuspended: false,
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SupabaseService, useValue: mockSupabase },
+        { provide: EmailService, useValue: mockEmailService },
+        { provide: CaregiverService, useValue: mockCaregiverService },
+        { provide: NotificationService, useValue: mockNotificationService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  // ─── Case 1: Returns active locks for a caregiver ─────────────────────────
+  it('returns active locked fields with lockedBy display name', async () => {
+    mockPrisma.field_locks.findMany.mockResolvedValue([
+      {
+        field_name: 'phone',
+        locked_at: new Date('2026-05-20'),
+        users_field_locks_locked_byTousers: { displayName: 'Admin A' },
+      },
+      {
+        field_name: 'bio',
+        locked_at: new Date('2026-05-19'),
+        users_field_locks_locked_byTousers: { displayName: 'Admin B' },
+      },
+    ]);
+
+    const result = await service.getLockedFields('CAREGIVER_PROFILE', 'cg-uuid');
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ fieldName: 'phone', lockedBy: 'Admin A', lockedAt: expect.any(Date) });
+    expect(result[1]).toEqual({ fieldName: 'bio', lockedBy: 'Admin B', lockedAt: expect.any(Date) });
+    expect(mockPrisma.field_locks.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { entity_type: 'CAREGIVER_PROFILE', entity_id: 'cg-uuid', unlocked_at: null },
+      }),
+    );
+  });
+
+  // ─── Case 2: Returns empty array when no locks ────────────────────────────
+  it('returns empty array when entity has no active locks', async () => {
+    mockPrisma.field_locks.findMany.mockResolvedValue([]);
+
+    const result = await service.getLockedFields('CAREGIVER_PROFILE', 'cg-uuid');
+
+    expect(result).toEqual([]);
+  });
+
+  // ─── Case 3: Fallback display name when admin displayName is null ─────────
+  it('falls back to "ผู้ดูแลระบบ" when admin displayName is null', async () => {
+    mockPrisma.field_locks.findMany.mockResolvedValue([
+      {
+        field_name: 'phone',
+        locked_at: new Date('2026-05-20'),
+        users_field_locks_locked_byTousers: { displayName: null },
+      },
+    ]);
+
+    const result = await service.getLockedFields('CAREGIVER_PROFILE', 'cg-uuid');
+
+    expect(result[0].lockedBy).toBe('ผู้ดูแลระบบ');
   });
 });

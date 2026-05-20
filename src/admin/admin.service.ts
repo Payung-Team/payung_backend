@@ -60,6 +60,8 @@ import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
 import { ChangeUserRoleInput } from './dto/change-user-role.input';
+import { ToggleFieldLockInput, EntityTypeEnum } from './dto/toggle-field-lock.input';
+import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
@@ -1484,6 +1486,136 @@ export class AdminService {
 
     // ─── 9. Return ────────────────────────────────────────────────────────
     return { user: this.mapToUser(updated) };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIELD LOCK (PYG-145)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * camelCase field names ที่ lock ได้ — ต้องตรงกับ GraphQL input field names
+   * ที่ FieldLockGuard จะเห็นใน Object.keys(input) ขณะ runtime
+   */
+  private readonly LOCKABLE_FIELDS: Readonly<Record<EntityTypeEnum, readonly string[]>> = {
+    [EntityTypeEnum.CAREGIVER_PROFILE]: ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'],
+    [EntityTypeEnum.USER]: ['displayName', 'phone', 'email', 'bio', 'address'],
+  };
+
+  /**
+   * toggleFieldLock — lock หรือ unlock field ของ caregiver / user
+   *
+   * Flow (lock):
+   *   1. Validate fieldName อยู่ใน whitelist
+   *   2. Validate entity มีอยู่จริง
+   *   3. Check ว่าไม่ได้ lock ซ้ำ (active lock = unlocked_at IS NULL)
+   *   4. Upsert field_locks (รองรับ re-lock หลัง unlock)
+   *   5. Audit log (fire-and-forget)
+   *
+   * Flow (unlock):
+   *   1-2. เหมือนด้านบน
+   *   3. Check ว่ามี active lock อยู่จริง
+   *   4. Soft-unlock: UPDATE unlocked_at = now(), unlocked_by = admin
+   *   5. Audit log (fire-and-forget)
+   */
+  async toggleFieldLock(input: ToggleFieldLockInput, admin: AuthUser): Promise<FieldLockResult> {
+    const { entityType, entityId, fieldName, lock } = input;
+
+    // ─── 1. Validate fieldName ────────────────────────────────────────────
+    const allowed = this.LOCKABLE_FIELDS[entityType];
+    if (!allowed.includes(fieldName)) {
+      throw new BadRequestException(
+        `Field "${fieldName}" cannot be locked for ${entityType}. Allowed: ${allowed.join(', ')}`,
+      );
+    }
+
+    // ─── 2. Validate entity exists ────────────────────────────────────────
+    if (entityType === EntityTypeEnum.CAREGIVER_PROFILE) {
+      const caregiver = await this.prismaService.caregiver.findUnique({ where: { id: entityId } });
+      if (!caregiver) throw new NotFoundException(`Caregiver "${entityId}" not found`);
+    } else {
+      const user = await this.prismaService.user.findUnique({ where: { id: entityId } });
+      if (!user) throw new NotFoundException(`User "${entityId}" not found`);
+    }
+
+    if (lock) {
+      // ─── 3. Duplicate lock check ───────────────────────────────────────
+      const existing = await this.prismaService.field_locks.findFirst({
+        where: { entity_type: entityType, entity_id: entityId, field_name: fieldName, unlocked_at: null },
+      });
+      if (existing) throw new ConflictException(`Field "${fieldName}" is already locked`);
+
+      // ─── 4. Upsert (create or re-lock after previous unlock) ──────────
+      const result = await this.prismaService.field_locks.upsert({
+        where: {
+          entity_type_entity_id_field_name: { entity_type: entityType, entity_id: entityId, field_name: fieldName },
+        },
+        create: { entity_type: entityType, entity_id: entityId, field_name: fieldName, locked_by: admin.id },
+        update: { locked_by: admin.id, locked_at: new Date(), unlocked_at: null, unlocked_by: null },
+        include: { users_field_locks_locked_byTousers: { select: { displayName: true } } },
+      });
+
+      // ─── 5. Audit log (fire-and-forget) ───────────────────────────────
+      void this.auditFieldLock('FIELD_LOCK', admin.id, entityId, { entityType, entityId, fieldName })
+        .catch((err: unknown) => this.logSideEffectError('audit FIELD_LOCK', entityId, err));
+
+      return {
+        success: true,
+        fieldName,
+        locked: true,
+        lockedBy: result.users_field_locks_locked_byTousers?.displayName ?? undefined,
+        lockedAt: result.locked_at,
+      };
+    } else {
+      // ─── 3. Active lock must exist to unlock ──────────────────────────
+      const existing = await this.prismaService.field_locks.findFirst({
+        where: { entity_type: entityType, entity_id: entityId, field_name: fieldName, unlocked_at: null },
+      });
+      if (!existing) throw new BadRequestException(`Field "${fieldName}" is not currently locked`);
+
+      // ─── 4. Soft-unlock ────────────────────────────────────────────────
+      await this.prismaService.field_locks.update({
+        where: {
+          entity_type_entity_id_field_name: { entity_type: entityType, entity_id: entityId, field_name: fieldName },
+        },
+        data: { unlocked_at: new Date(), unlocked_by: admin.id },
+      });
+
+      // ─── 5. Audit log (fire-and-forget) ───────────────────────────────
+      void this.auditFieldLock('FIELD_UNLOCK', admin.id, entityId, { entityType, entityId, fieldName })
+        .catch((err: unknown) => this.logSideEffectError('audit FIELD_UNLOCK', entityId, err));
+
+      return { success: true, fieldName, locked: false };
+    }
+  }
+
+  /**
+   * getLockedFields — ดึง active locks ทั้งหมดของ entity
+   * (active = unlocked_at IS NULL)
+   */
+  async getLockedFields(entityType: string, entityId: string): Promise<LockedField[]> {
+    const locks = await this.prismaService.field_locks.findMany({
+      where: { entity_type: entityType, entity_id: entityId, unlocked_at: null },
+      include: { users_field_locks_locked_byTousers: { select: { displayName: true } } },
+    });
+
+    return locks.map((lock) => ({
+      fieldName: lock.field_name,
+      lockedBy: lock.users_field_locks_locked_byTousers?.displayName ?? 'ผู้ดูแลระบบ',
+      lockedAt: lock.locked_at,
+    }));
+  }
+
+  private auditFieldLock(
+    action: 'FIELD_LOCK' | 'FIELD_UNLOCK',
+    adminId: string,
+    targetEntityId: string,
+    details: object,
+  ): Promise<unknown> {
+    const detailsJson = JSON.stringify(details);
+    return this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${adminId}, ${action}, ${targetEntityId}, ${detailsJson}::jsonb, NOW())
+    `;
   }
 
   // Private helpers

@@ -41,6 +41,8 @@ import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
 import { ChangeUserRoleInput } from './dto/change-user-role.input';
 import { EditAdminInfoInput } from './dto/edit-admin-info.input';
 import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
+import { ToggleFieldLockInput, EntityTypeEnum } from './dto/toggle-field-lock.input';
+import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
@@ -488,5 +490,61 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<EditAdminInfoPayload> {
     return this.adminService.editAdminInfo(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIELD LOCK (PYG-145)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * toggleFieldLock — Admin lock/unlock field ของ caregiver หรือ user
+   *
+   * @example
+   * mutation {
+   *   toggleFieldLock(input: {
+   *     entityType: CAREGIVER_PROFILE
+   *     entityId: "uuid-here"
+   *     fieldName: "phone"
+   *     lock: true
+   *   }) {
+   *     success fieldName locked lockedBy lockedAt
+   *   }
+   * }
+   */
+  @Mutation(() => FieldLockResult, {
+    description:
+      'Admin only: Lock or unlock a specific field of a caregiver profile or user. ' +
+      'Locked fields cannot be edited by the user until unlocked. Records audit log.',
+  })
+  async toggleFieldLock(
+    @Args('input') input: ToggleFieldLockInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<FieldLockResult> {
+    return this.adminService.toggleFieldLock(input, admin);
+  }
+
+  /**
+   * lockedFields — ดู active locks ทั้งหมดของ entity
+   *
+   * เปิดให้ทุก role ที่ authenticate แล้วเรียกได้ (caregiver ต้องรู้ว่า field ไหนถูก lock)
+   *
+   * @example
+   * query {
+   *   lockedFields(entityType: CAREGIVER_PROFILE, entityId: "uuid-here") {
+   *     fieldName lockedBy lockedAt
+   *   }
+   * }
+   */
+  @Query(() => [LockedField], {
+    description:
+      'All authenticated users: Get all currently locked fields for an entity. ' +
+      'Caregivers need this to know which fields they cannot edit.',
+  })
+  @Roles(ROLE_ID.PATIENT, ROLE_ID.CAREGIVER, ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN)
+  async lockedFields(
+    @Args('entityType', { type: () => EntityTypeEnum }) entityType: EntityTypeEnum,
+    @Args('entityId') entityId: string,
+  ): Promise<LockedField[]> {
+    return this.adminService.getLockedFields(entityType, entityId);
   }
 }

@@ -48,6 +48,9 @@ type AdminKycDetailPayload {
   """KYC documents with signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
 
+  """Edit history showing field changes, newest first"""
+  editHistory: [CaregiverEditLog!]!
+
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
 
@@ -256,6 +259,30 @@ type Caregiver {
   userId: String!
 }
 
+"""Log entry for caregiver profile/document edits"""
+type CaregiverEditLog {
+  """
+  Edit action: resubmit | profile_edit | document_upload | document_delete
+  """
+  action: String!
+
+  """Caregiver ID"""
+  caregiverId: String!
+
+  """When this edit was made"""
+  createdAt: DateTime!
+
+  """User ID who made the edit"""
+  editedBy: String!
+
+  """Display name of the editor"""
+  editorName: String
+
+  """List of changed fields with old/new values"""
+  fieldChanges: [FieldChange!]
+  id: ID!
+}
+
 """Summary of a caregiver KYC submission for admin review"""
 type CaregiverKycSummary {
   """Caregiver Number (e.g. CG-12345)"""
@@ -364,6 +391,41 @@ type EditAdminInfoPayload {
   user: User!
 }
 
+"""Entity types that support field locking"""
+enum EntityTypeEnum {
+  CAREGIVER_PROFILE
+  USER
+}
+
+"""A single field change record"""
+type FieldChange {
+  """Field name that was changed"""
+  field: String!
+
+  """New value (JSON-stringified)"""
+  newValue: String
+
+  """Previous value (JSON-stringified)"""
+  oldValue: String
+}
+
+type FieldLockResult {
+  """The field that was locked or unlocked"""
+  fieldName: String!
+
+  """Lock state after the operation"""
+  locked: Boolean!
+
+  """When the field was locked"""
+  lockedAt: DateTime
+
+  """Display name of the admin who locked the field"""
+  lockedBy: String
+
+  """Whether the operation succeeded"""
+  success: Boolean!
+}
+
 type HealthStatus {
   status: String!
   supabaseConnected: Boolean!
@@ -466,6 +528,9 @@ type KycReview {
 
   """ID of the admin who performed this review"""
   reviewedBy: String!
+
+  """Display name of the admin reviewer"""
+  reviewerName: String
 }
 
 """Filter KYC list by status. Use "all" to return every status."""
@@ -504,6 +569,17 @@ type KycStatusPayload {
 
   """When KYC was verified by admin"""
   verifiedAt: DateTime
+}
+
+type LockedField {
+  """The locked field name (camelCase)"""
+  fieldName: String!
+
+  """When the lock was applied"""
+  lockedAt: DateTime!
+
+  """Display name of the admin who locked this field"""
+  lockedBy: String!
 }
 
 input LoginInput {
@@ -636,17 +712,9 @@ type Mutation {
   toggleAdminStatus(input: ToggleAdminStatusInput!): ToggleAdminStatusPayload!
 
   """
-  Admin only: Suspend a user (set isActive = false). Cannot suspend yourself. Records audit log.
+  Admin only: Lock or unlock a specific field of a caregiver profile or user. Locked fields cannot be edited by the user until unlocked. Records audit log.
   """
-  suspendUser(
-    """UUID of the user to suspend"""
-    userId: ID!
-  ): User!
-
-  """
-  Super Admin only: Activate or deactivate an admin account. Deactivate revokes Supabase Auth sessions (ban). Activate clears any scheduled deletion. Sends notification email.
-  """
-  toggleAdminStatus(input: ToggleAdminStatusInput!): ToggleAdminStatusPayload!
+  toggleFieldLock(input: ToggleFieldLockInput!): FieldLockResult!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -748,6 +816,11 @@ type Query {
 
   """Get KYC status with full details for the Status Page"""
   kycStatus: KycStatusPayload!
+
+  """
+  All authenticated users: Get all currently locked fields for an entity. Caregivers need this to know which fields they cannot edit.
+  """
+  lockedFields(entityId: String!, entityType: EntityTypeEnum!): [LockedField!]!
 
   """Get current logged-in user"""
   me: User!
@@ -960,6 +1033,20 @@ type ToggleAdminStatusPayload {
   """
   action: String!
   user: User!
+}
+
+input ToggleFieldLockInput {
+  """UUID of the caregiver or user"""
+  entityId: ID!
+
+  """Entity type: CAREGIVER_PROFILE or USER"""
+  entityType: EntityTypeEnum!
+
+  """Field name to lock/unlock (camelCase, e.g. "phone", "hourlyRate")"""
+  fieldName: String!
+
+  """true = lock, false = unlock"""
+  lock: Boolean!
 }
 
 input UpdateCaregiverInput {
