@@ -41,6 +41,7 @@ import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
 import { ChangeUserRoleInput } from './dto/change-user-role.input';
 import { EditAdminInfoInput } from './dto/edit-admin-info.input';
 import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
+import { AdminEditUserInput } from './dto/admin-edit-user.input';
 import { ToggleFieldLockInput, EntityTypeEnum } from './dto/toggle-field-lock.input';
 import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
@@ -490,6 +491,38 @@ export class AdminResolver {
     @CurrentUser() admin: AuthUser,
   ): Promise<EditAdminInfoPayload> {
     return this.adminService.editAdminInfo(input, admin);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADMIN EDIT USER
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminEditUser — Admin แก้ไขข้อมูล user ทั่วไป (patient/caregiver)
+   *
+   * @example
+   * mutation {
+   *   adminEditUser(input: {
+   *     userId: "uuid-here"
+   *     displayName: "สมชาย ใจดี"
+   *     phone: "0812345678"
+   *     bio: "ผู้ดูแลผู้สูงอายุมืออาชีพ"
+   *   }) {
+   *     id email displayName phone bio
+   *   }
+   * }
+   */
+  @Mutation(() => User, {
+    description:
+      'Admin only: Edit a regular user profile (displayName, email, phone, address, bio). ' +
+      'Cannot be used on admin/super_admin accounts — use editAdminInfo instead. ' +
+      'Syncs email to Supabase Auth if changed. Records audit log.',
+  })
+  async adminEditUser(
+    @Args('input') input: AdminEditUserInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<User> {
+    return this.adminService.adminEditUser(input, admin);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

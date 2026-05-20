@@ -56,6 +56,7 @@ import { CancelScheduledDeleteInput } from './dto/cancel-scheduled-delete.input'
 import { CancelScheduledDeletePayload } from './dto/cancel-scheduled-delete.payload';
 import { EditAdminInfoInput } from './dto/edit-admin-info.input';
 import { EditAdminInfoPayload } from './dto/edit-admin-info.payload';
+import { AdminEditUserInput } from './dto/admin-edit-user.input';
 import { AdminUserListInput, ROLE_FILTER_MAP } from './dto/admin-user-list.input';
 import { AdminUserListPayload, UserSummary } from './dto/admin-user-list.payload';
 import { AdminUserDetailPayload } from './dto/admin-user-detail.payload';
@@ -1100,6 +1101,111 @@ export class AdminService {
       newRole,
     });
 
+    return this.mapToUser(updated);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADMIN EDIT USER (user management)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * adminEditUser — Admin แก้ไขข้อมูล user ทั่วไป (patient/caregiver)
+   *
+   * Flow:
+   * 1. หา target user → NotFoundException ถ้าไม่พบ
+   * 2. Guard: ห้าม edit admin/super_admin ผ่าน mutation นี้ (ใช้ editAdminInfo แทน)
+   * 3. Validate email uniqueness ถ้า email เปลี่ยน
+   * 4. Build update data เฉพาะ field ที่ส่งมา
+   * 5. Update DB
+   * 6. Sync Supabase Auth email (ถ้า email เปลี่ยน)
+   * 7. Audit log (fire-and-forget)
+   * 8. Return updated User
+   */
+  async adminEditUser(input: AdminEditUserInput, admin: AuthUser): Promise<User> {
+    // ─── 1. หา target ─────────────────────────────────────────────────────
+    const target = await this.prismaService.user.findUnique({
+      where: { id: input.userId },
+    });
+    if (!target) {
+      throw new NotFoundException(`User "${input.userId}" not found`);
+    }
+
+    // ─── 2. Guard: ห้าม edit admin/super_admin ────────────────────────────
+    if (target.role >= ROLE_ID.ADMIN) {
+      throw new BadRequestException(
+        'ไม่สามารถแก้ไข admin/super_admin ผ่าน mutation นี้ — ใช้ editAdminInfo แทน',
+      );
+    }
+
+    // ─── 3. Validate email uniqueness ─────────────────────────────────────
+    if (input.email && input.email !== target.email) {
+      const existing = await this.prismaService.user.findUnique({
+        where: { email: input.email },
+      });
+      if (existing) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    // ─── 4. Build update data ─────────────────────────────────────────────
+    const data: Prisma.UserUpdateInput = {};
+    if (input.displayName !== undefined) data.displayName = input.displayName;
+    if (input.email !== undefined)       data.email = input.email;
+    if (input.phone !== undefined)       data.phone = input.phone;
+    if (input.address !== undefined)     data.address = input.address;
+    if (input.bio !== undefined)         data.bio = input.bio;
+
+    // ─── 5. Update DB ─────────────────────────────────────────────────────
+    const updated = await this.prismaService.user.update({
+      where: { id: input.userId },
+      data,
+    });
+
+    // ─── 6. Sync Supabase Auth email ──────────────────────────────────────
+    if (input.email && input.email !== target.email) {
+      const supabaseAdmin = this.supabaseService.getAdminClient();
+      try {
+        await supabaseAdmin.auth.admin.updateUserById(target.supabaseUid, {
+          email: input.email,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to update Supabase Auth email for ${target.id}: ${msg}`);
+      }
+    }
+
+    // ─── 7. Audit log (fire-and-forget) ──────────────────────────────────
+    const changedFields: Record<string, { from: unknown; to: unknown }> = {};
+    if (input.displayName !== undefined && input.displayName !== target.displayName) {
+      changedFields.displayName = { from: target.displayName, to: input.displayName };
+    }
+    if (input.email !== undefined && input.email !== target.email) {
+      changedFields.email = { from: target.email, to: input.email };
+    }
+    if (input.phone !== undefined && input.phone !== target.phone) {
+      changedFields.phone = { from: target.phone, to: input.phone };
+    }
+    if (input.address !== undefined && input.address !== target.address) {
+      changedFields.address = { from: target.address, to: input.address };
+    }
+    if (input.bio !== undefined && input.bio !== target.bio) {
+      changedFields.bio = { from: target.bio, to: input.bio };
+    }
+
+    const changedFieldsJson = JSON.stringify(changedFields);
+    void this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${admin.id}, 'USER_INFO_UPDATED', ${input.userId}, ${changedFieldsJson}::jsonb, NOW())
+    `.catch((err: unknown) => this.logSideEffectError('audit USER_INFO_UPDATED', input.userId, err));
+
+    this.logger.log({
+      event: 'admin.user_info_updated',
+      adminId: admin.id,
+      targetUserId: input.userId,
+      changedFields: Object.keys(changedFields),
+    });
+
+    // ─── 8. Return ────────────────────────────────────────────────────────
     return this.mapToUser(updated);
   }
 
