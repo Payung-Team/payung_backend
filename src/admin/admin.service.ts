@@ -900,14 +900,14 @@ export class AdminService {
       .filter((u) => u.role === ROLE_ID.CAREGIVER)
       .map((u) => u.id);
 
-    const caregiverMap = new Map<string, { caregiverNumber: string | null; kycStatus: string }>();
+    const caregiverMap = new Map<string, { caregiverNumber: string | null; kycStatus: string; fullName: string | null }>();
     if (caregiverUserIds.length > 0) {
       const caregivers = await this.prismaService.caregiver.findMany({
         where: { userId: { in: caregiverUserIds } },
-        select: { userId: true, caregiverNumber: true, kycStatus: true },
+        select: { userId: true, caregiverNumber: true, kycStatus: true, fullName: true },
       });
       for (const c of caregivers) {
-        caregiverMap.set(c.userId, { caregiverNumber: c.caregiverNumber, kycStatus: c.kycStatus });
+        caregiverMap.set(c.userId, { caregiverNumber: c.caregiverNumber, kycStatus: c.kycStatus, fullName: c.fullName });
       }
     }
 
@@ -917,7 +917,7 @@ export class AdminService {
       return {
         id: u.id,
         email: u.email,
-        displayName: u.displayName ?? undefined,
+        displayName: (u.role === ROLE_ID.CAREGIVER && cg?.fullName) ? cg.fullName : (u.displayName ?? undefined),
         role: u.role,
         isActive: u.isActive,
         isSuspended: !u.isActive || u.is_deleted,
