@@ -895,17 +895,38 @@ export class AdminService {
 
     const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
 
-    // ─── 3. Map to UserSummary ─────────────────────────────────────────────
-    const items: UserSummary[] = users.map((u) => ({
-      id: u.id,
-      email: u.email,
-      displayName: u.displayName ?? undefined,
-      role: u.role,
-      isActive: u.isActive,
-      isSuspended: !u.isActive || u.is_deleted,
-      createdAt: u.createdAt,
-      scheduledDeleteAt: u.scheduled_delete_at ?? undefined,
-    }));
+    // ─── 3. Batch-fetch caregiver data for role=2 users ───────────────────
+    const caregiverUserIds = users
+      .filter((u) => u.role === ROLE_ID.CAREGIVER)
+      .map((u) => u.id);
+
+    const caregiverMap = new Map<string, { caregiverNumber: string | null; kycStatus: string }>();
+    if (caregiverUserIds.length > 0) {
+      const caregivers = await this.prismaService.caregiver.findMany({
+        where: { userId: { in: caregiverUserIds } },
+        select: { userId: true, caregiverNumber: true, kycStatus: true },
+      });
+      for (const c of caregivers) {
+        caregiverMap.set(c.userId, { caregiverNumber: c.caregiverNumber, kycStatus: c.kycStatus });
+      }
+    }
+
+    // ─── 4. Map to UserSummary ─────────────────────────────────────────────
+    const items: UserSummary[] = users.map((u) => {
+      const cg = caregiverMap.get(u.id);
+      return {
+        id: u.id,
+        email: u.email,
+        displayName: u.displayName ?? undefined,
+        role: u.role,
+        isActive: u.isActive,
+        isSuspended: !u.isActive || u.is_deleted,
+        createdAt: u.createdAt,
+        scheduledDeleteAt: u.scheduled_delete_at ?? undefined,
+        caregiverNumber: cg?.caregiverNumber ?? undefined,
+        kycStatus: cg?.kycStatus ?? undefined,
+      };
+    });
 
     this.logger.log({
       event: 'admin.user_list.queried',

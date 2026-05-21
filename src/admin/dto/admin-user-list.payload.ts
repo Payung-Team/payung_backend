@@ -35,6 +35,12 @@ export class UserSummary {
 
   @Field({ nullable: true, description: 'When this account is scheduled to be permanently deleted' })
   scheduledDeleteAt?: Date;
+
+  @Field({ nullable: true, description: 'Caregiver number e.g. CG-00001 (role=2 only)' })
+  caregiverNumber?: string;
+
+  @Field({ nullable: true, description: 'KYC status: none | pending | verified | rejected (role=2 only)' })
+  kycStatus?: string;
 }
 
 /**
