@@ -302,12 +302,82 @@ export class AdminService {
       createdAt: log.created_at,
     }));
 
+    // ─── 5. Fetch admin audit logs (lock/unlock + caregiver info edits) ─────
+    const rawAuditLogs = await this.prismaService.$queryRaw<
+      Array<{
+        id: string;
+        action: string;
+        details: unknown;
+        created_at: Date;
+        editor_name: string | null;
+        admin_id: string;
+      }>
+    >`
+      SELECT
+        aal.id,
+        aal.action,
+        aal.details,
+        aal.created_at,
+        u.display_name AS editor_name,
+        aal.admin_id
+      FROM admin_audit_logs aal
+      LEFT JOIN users u ON u.id = aal.admin_id
+      WHERE (
+        (aal.action IN ('FIELD_LOCK', 'FIELD_UNLOCK') AND aal.target_user_id = ${caregiverId})
+        OR
+        (aal.action = 'CAREGIVER_INFO_UPDATED' AND aal.target_user_id = ${raw.userId})
+      )
+      ORDER BY aal.created_at DESC
+    `;
+
+    const adminAuditItems = rawAuditLogs.map((log) => {
+      const details = (log.details ?? {}) as Record<string, unknown>;
+
+      if (log.action === 'FIELD_LOCK' || log.action === 'FIELD_UNLOCK') {
+        const fieldName = (details.fieldName as string | undefined) ?? '';
+        return {
+          id: `audit-${log.id}`,
+          caregiverId,
+          editedBy: log.admin_id,
+          editorName: log.editor_name ?? undefined,
+          action: log.action === 'FIELD_LOCK' ? 'field_lock' : 'field_unlock',
+          fieldChanges: fieldName
+            ? [{ field: fieldName, oldValue: undefined, newValue: undefined }]
+            : undefined,
+          createdAt: log.created_at,
+        };
+      }
+
+      // CAREGIVER_INFO_UPDATED
+      const fieldChanges = Object.entries(details).map(([field, change]) => {
+        const c = change as { from?: unknown; to?: unknown } | undefined;
+        return {
+          field,
+          oldValue: c?.from != null ? String(c.from) : undefined,
+          newValue: c?.to != null ? String(c.to) : undefined,
+        };
+      });
+      return {
+        id: `audit-${log.id}`,
+        caregiverId,
+        editedBy: log.admin_id,
+        editorName: log.editor_name ?? undefined,
+        action: 'admin_edit',
+        fieldChanges: fieldChanges.length > 0 ? fieldChanges : undefined,
+        createdAt: log.created_at,
+      };
+    });
+
+    const mergedHistory = [...editHistory, ...adminAuditItems].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
     this.logger.log({
       event: 'admin.kyc_detail.queried',
       caregiverId,
       documentCount: documents.length,
       reviewCount: reviews.length,
-      editHistoryCount: editHistory.length,
+      editHistoryCount: mergedHistory.length,
     });
 
     return {
@@ -315,7 +385,7 @@ export class AdminService {
       documents,
       reviews,
       resubmitCount: raw.resubmitCount,
-      editHistory,
+      editHistory: mergedHistory,
     };
   }
 
@@ -1796,21 +1866,26 @@ export class AdminService {
         lockedAt: result.locked_at,
       };
     } else {
-      // ─── 3. Active lock must exist to unlock ──────────────────────────
-      const existing = await this.prismaService.field_locks.findFirst({
-        where: { entity_type: entityType, entity_id: entityId, field_name: fieldName, unlocked_at: null },
-      });
-      if (!existing) throw new BadRequestException(`Field "${fieldName}" is not currently locked`);
-
-      // ─── 4. Soft-unlock ────────────────────────────────────────────────
-      await this.prismaService.field_locks.update({
+      // ─── 3. Upsert unlock — handles no-record, active lock, and already-unlocked cases ─
+      // "No record" means the field is locked by default, so we create a record that is
+      // immediately unlocked (locked_at = unlocked_at = now) so the admin can edit it.
+      await this.prismaService.field_locks.upsert({
         where: {
           entity_type_entity_id_field_name: { entity_type: entityType, entity_id: entityId, field_name: fieldName },
         },
-        data: { unlocked_at: new Date(), unlocked_by: admin.id },
+        create: {
+          entity_type: entityType,
+          entity_id: entityId,
+          field_name: fieldName,
+          locked_by: admin.id,
+          locked_at: new Date(),
+          unlocked_at: new Date(),
+          unlocked_by: admin.id,
+        },
+        update: { unlocked_at: new Date(), unlocked_by: admin.id },
       });
 
-      // ─── 5. Audit log (fire-and-forget) ───────────────────────────────
+      // ─── 4. Audit log (fire-and-forget) ───────────────────────────────
       void this.auditFieldLock('FIELD_UNLOCK', admin.id, entityId, { entityType, entityId, fieldName })
         .catch((err: unknown) => this.logSideEffectError('audit FIELD_UNLOCK', entityId, err));
 
@@ -1830,6 +1905,7 @@ export class AdminService {
 
     return locks.map((lock) => ({
       fieldName: lock.field_name,
+      locked: true,
       lockedBy: lock.users_field_locks_locked_byTousers?.displayName ?? 'ผู้ดูแลระบบ',
       lockedAt: lock.locked_at,
     }));

@@ -23,6 +23,9 @@ export class LockedField {
   @Field({ description: 'The locked field name (camelCase)' })
   fieldName: string;
 
+  @Field({ description: 'Whether the field is currently locked' })
+  locked: boolean;
+
   @Field({ description: 'Display name of the admin who locked this field' })
   lockedBy: string;
 
