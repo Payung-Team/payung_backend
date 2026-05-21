@@ -146,6 +146,31 @@ export class KycService {
         },
       });
 
+      // Query old linked docs (id + type) BEFORE unlinking (for audit diff)
+      const oldLinkedDocs = isResubmit
+        ? await tx.kycDocument.findMany({
+            where: { caregiverId: upserted.id },
+            select: { id: true, documentType: true },
+          })
+        : [];
+
+      // On resubmit: unlink all old documents before linking new ones
+      // so queries on caregiverId only return the current submission's docs
+      if (isResubmit) {
+        await tx.kycDocument.updateMany({
+          where: { caregiverId: upserted.id },
+          data: { caregiverId: null },
+        });
+      }
+
+      // Query new doc ids + types from submitted documentIds (for audit diff)
+      const newSubmittedDocs = input.documentIds.length > 0
+        ? await tx.kycDocument.findMany({
+            where: { id: { in: input.documentIds }, userId: user.id },
+            select: { id: true, documentType: true },
+          })
+        : [];
+
       if (input.documentIds.length > 0) {
         await tx.kycDocument.updateMany({
           where: {
@@ -158,23 +183,35 @@ export class KycService {
 
       // ── บันทึก edit log (caregiver_edit_logs) ────────────────────
       // ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
-      if (existing) {
-        // มี record เดิม → compute diff
-        const fieldChanges = computeFieldChanges(
-          existing as unknown as Record<string, unknown>,
-          input as unknown as Record<string, unknown>,
-          KYC_TRACKED_FIELDS,
-        );
+      const fieldChanges = existing
+        ? computeFieldChanges(
+            existing as unknown as Record<string, unknown>,
+            input as unknown as Record<string, unknown>,
+            KYC_TRACKED_FIELDS,
+          )
+        : [];
 
-        // resubmit → บันทึก Log เสมอ (แม้ไม่มี field ตัวอักษรเปลี่ยน เช่น เปลี่ยนเฉพาะไฟล์เอกสาร)
-        // first_submit → บันทึก Log เฉพาะกรณีที่มี field เปลี่ยนแปลง
-        if (isResubmit || fieldChanges.length > 0) {
-          const changesJson = JSON.stringify(fieldChanges);
-          await tx.$executeRaw`
-            INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
-            VALUES (gen_random_uuid(), ${upserted.id}, ${user.id}, ${isResubmit ? 'resubmit' : 'first_submit'}, ${changesJson}::jsonb, NOW())
-          `;
+      // Compute document diff by ID:
+      // ถ้า document ID ใหม่ไม่มีใน old linked docs → ถือว่ามีการ upload/เปลี่ยน
+      // (ครอบคลุม re-upload same type เพราะจะได้ ID ใหม่เสมอ)
+      const oldDocIds = new Set(oldLinkedDocs.map((d) => d.id));
+      const docChanges: Array<{ field: string; oldValue: string | null; newValue: string | null }> = [];
+      for (const doc of newSubmittedDocs) {
+        if (!oldDocIds.has(doc.id)) {
+          docChanges.push({ field: 'document', oldValue: null, newValue: doc.documentType });
         }
+      }
+
+      const allChanges = [...fieldChanges, ...docChanges];
+      const action = isResubmit ? 'resubmit' : 'first_submit';
+
+      // resubmit → log เสมอ; first_submit → log ถ้ามี changes
+      if (isResubmit || allChanges.length > 0) {
+        const changesJson = JSON.stringify(allChanges);
+        await tx.$executeRaw`
+          INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+          VALUES (gen_random_uuid(), ${upserted.id}, ${user.id}, ${action}, ${changesJson}::jsonb, NOW())
+        `;
       }
 
       return upserted;
@@ -256,19 +293,6 @@ export class KycService {
     await this.prismaService.kycDocument.delete({
       where: { id: documentId },
     });
-
-    // ── บันทึก document_delete log (fire-and-forget — ไม่ให้ error ทำให้ delete fail) ──
-    if (caregiver) {
-      const deleteLogChanges = JSON.stringify([
-        { field: 'document', oldValue: doc.documentType, newValue: null },
-      ]);
-      void this.prismaService.$executeRaw`
-        INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
-        VALUES (gen_random_uuid(), ${caregiver.id}, ${userId}, 'document_delete', ${deleteLogChanges}::jsonb, NOW())
-      `.catch((err: unknown) => {
-        this.logger.error(`Failed to log document_delete for caregiver ${caregiver.id}: ${String(err)}`);
-      });
-    }
 
     return true;
   }
