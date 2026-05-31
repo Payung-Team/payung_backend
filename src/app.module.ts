@@ -11,6 +11,7 @@ import { IdentityModule } from './identity/identity.module';
 import { NotificationModule } from './notification/notification.module';
 import { EmailModule } from './email/email.module';
 import { AdminModule } from './admin/admin.module';
+import { SearchModule } from './search/search.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { AdminModule } from './admin/admin.module';
     NotificationModule,  // PYG-95: in-app notifications
     EmailModule,         // PYG-96: Resend email service
     AdminModule,         // Admin dashboard operations (KYC review, etc.)
+    SearchModule,        // PYG-192: caregiver search with filters + pagination
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

@@ -36,7 +36,8 @@ model User {
   field_locks_field_locks_locked_byTousers                field_locks[]         @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]         @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
-  reviews                                                 KycReview[]
+  kycReviews                                              KycReview[]
+  patientReviews                                          Review[]
   notifications                                           Notification[]
   users_users_deletion_scheduled_byTousers                User?                 @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_users_users_deletion_scheduled_byTousers          User[]                @relation("users_deletion_scheduled_byTousers")
@@ -69,15 +70,62 @@ model Caregiver {
   gender              String?
   dateOfBirth         DateTime?             @map("date_of_birth")
   address             String?
-  kycRejectedAt       DateTime?             @map("kyc_rejected_at")
-  kycRejectionReason  String?               @map("kyc_rejection_reason")
-  rejection_reasons   Json?
-  caregiver_edit_logs caregiver_edit_logs[]
-  user                User                  @relation(fields: [userId], references: [id])
-  documents           KycDocument[]
-  reviews             KycReview[]
+  kycRejectedAt         DateTime?               @map("kyc_rejected_at")
+  kycRejectionReason    String?                 @map("kyc_rejection_reason")
+  rejection_reasons     Json?
+  serviceAreaProvince   String?                 @map("service_area_province")
+  serviceAreaDistrict   String?                 @map("service_area_district")
+  languages             String[]                @default([])
+  caregiver_edit_logs   caregiver_edit_logs[]
+  user                  User                    @relation(fields: [userId], references: [id])
+  documents             KycDocument[]
+  kycReviews            KycReview[]
+  jobTypes              CaregiverJobType[]
+  availability          CaregiverAvailability[]
+  patientReviews        Review[]
 
+  @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
   @@map("caregivers")
+}
+
+model CaregiverJobType {
+  id          String    @id @default(uuid()) @db.Uuid
+  caregiverId String    @map("caregiver_id")
+  jobType     String    @map("job_type")
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+
+  @@unique([caregiverId, jobType])
+  @@index([jobType], map: "idx_caregiver_job_types_type")
+  @@index([caregiverId], map: "idx_caregiver_job_types_caregiver")
+  @@map("caregiver_job_types")
+}
+
+model CaregiverAvailability {
+  id          String    @id @default(uuid()) @db.Uuid
+  caregiverId String    @map("caregiver_id")
+  dayOfWeek   Int       @map("day_of_week") @db.SmallInt
+  timeSlot    String    @map("time_slot")
+  isActive    Boolean   @default(true) @map("is_active")
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+
+  @@unique([caregiverId, dayOfWeek, timeSlot])
+  @@map("caregiver_availability")
+}
+
+model Review {
+  id          String    @id @default(uuid()) @db.Uuid
+  caregiverId String    @map("caregiver_id")
+  patientId   String    @map("patient_id")
+  bookingId   String?   @map("booking_id")
+  rating      Int
+  comment     String?
+  isAnonymous Boolean   @default(false) @map("is_anonymous")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([caregiverId], map: "idx_reviews_caregiver")
+  @@map("reviews")
 }
 
 model KycDocument {
