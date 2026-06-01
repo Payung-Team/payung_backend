@@ -962,6 +962,9 @@ type User {
 
 """Summary of a user for admin user management list"""
 type UserSummary {
+  """Caregiver number e.g. CG-00001 (role=2 only)"""
+  caregiverNumber: String
+
   """Account creation date"""
   createdAt: DateTime!
 
@@ -979,6 +982,9 @@ type UserSummary {
 
   """Whether the user is suspended"""
   isSuspended: Boolean!
+
+  """KYC status: none | pending | verified | rejected (role=2 only)"""
+  kycStatus: String
 
   """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
   role: Int!
