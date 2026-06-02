@@ -17,6 +17,8 @@ import { RegisterInput } from './dto/register.input';
 import { UpdateProfileInput } from './dto/update-profile.input';
 import { RequestPasswordResetInput } from './dto/request-password-reset.input';
 import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
+import { UpdatePasswordInput } from './dto/update-password.input';
+import { UpdatePasswordResponse } from './dto/update-password.response';
 import { AuthService } from './auth.service';
 import { UserService } from './user.service';
 import { User } from './entities/user.entity';
@@ -111,6 +113,26 @@ export class AuthResolver {
     @Args('input') input: RequestPasswordResetInput,
   ): Promise<RequestPasswordResetResponse> {
     return this.authService.requestPasswordReset(input.email);
+  }
+
+  /**
+   * updatePassword (PYG-237) — ตั้งรหัสผ่านใหม่หลังจากคลิก reset link ในอีเมล
+   *
+   * Requires a valid Supabase session obtained from the password-reset magic
+   * link — the frontend sets the session from the URL hash before calling this.
+   */
+  @Mutation(() => UpdatePasswordResponse, {
+    description:
+      "Update the current user's password. " +
+      'Requires a valid session established via the password-reset magic link.',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async updatePassword(
+    @Args('input') input: UpdatePasswordInput,
+    @Context() ctx: GqlContext,
+  ): Promise<UpdatePasswordResponse> {
+    const token = ctx.req.headers.authorization!.split(' ')[1];
+    return this.authService.updatePassword(token, input.newPassword);
   }
 
   /**
