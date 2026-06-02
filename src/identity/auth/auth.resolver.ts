@@ -15,6 +15,8 @@ import { AuthPayload } from '../models/auth-payload.model';
 import { LoginInput } from './dto/login.input';
 import { RegisterInput } from './dto/register.input';
 import { UpdateProfileInput } from './dto/update-profile.input';
+import { RequestPasswordResetInput } from './dto/request-password-reset.input';
+import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
 import { AuthService } from './auth.service';
 import { UserService } from './user.service';
 import { User } from './entities/user.entity';
@@ -91,6 +93,24 @@ export class AuthResolver {
   @UseGuards(SupabaseAuthGuard)
   async completePasswordChange(@CurrentUser() user: AuthUser): Promise<User> {
     return this.userService.completePasswordChange(user.id);
+  }
+
+  // ─── Password reset (PYG-236) ───────────────────────────────────────────
+
+  /**
+   * requestPasswordReset — ส่งอีเมลรีเซ็ตรหัสผ่าน (public endpoint, no auth required)
+   *
+   * Always returns success=true to prevent user enumeration.
+   */
+  @Mutation(() => RequestPasswordResetResponse, {
+    description:
+      'Send a password reset link to the given email address. ' +
+      'Always returns success=true regardless of whether the email exists.',
+  })
+  async requestPasswordReset(
+    @Args('input') input: RequestPasswordResetInput,
+  ): Promise<RequestPasswordResetResponse> {
+    return this.authService.requestPasswordReset(input.email);
   }
 
   /**

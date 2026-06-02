@@ -18,6 +18,7 @@ import {
   ConflictException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -27,10 +28,13 @@ import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
+import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
 import { CaregiverService } from '../kyc/caregiver.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly prismaService: PrismaService,
@@ -284,5 +288,32 @@ export class AuthService {
     }
 
     return true;
+  }
+
+  /**
+   * Send a password reset email to the given address.
+   *
+   * Always returns success=true regardless of whether the email exists in the
+   * system, to prevent user enumeration attacks.  Supabase errors (e.g. rate
+   * limit) are logged internally but never surfaced to the caller.
+   *
+   * @param email - Target email address
+   */
+  async requestPasswordReset(email: string): Promise<RequestPasswordResetResponse> {
+    const supabase   = this.supabaseService.getClient();
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${frontendUrl}/reset-password`,
+    });
+
+    if (error) {
+      this.logger.error({ event: 'password_reset.request_failed', email, msg: error.message });
+    }
+
+    return {
+      success: true,
+      message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์รีเซ็ตรหัสผ่านจะถูกส่งไปยังอีเมลของคุณ',
+    };
   }
 }
