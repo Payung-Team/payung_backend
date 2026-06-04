@@ -280,6 +280,35 @@ type CaregiverKycSummary {
   submittedAt: DateTime
 }
 
+type CaregiverSummary {
+  """Avatar URL from user profile"""
+  avatarUrl: String
+
+  """Average rating (null if no reviews yet)"""
+  avgRating: Float
+
+  """Service area district"""
+  district: String
+
+  """Full name"""
+  fullName: String!
+
+  """Hourly rate in THB"""
+  hourlyRate: Float!
+
+  """Caregiver UUID"""
+  id: ID!
+
+  """Service area province"""
+  province: String
+
+  """Total number of patient reviews"""
+  reviewCount: Int!
+
+  """Skill tags"""
+  skills: [String!]!
+}
+
 input ChangeUserRoleInput {
   """New role ID (1=patient, 2=caregiver). Cannot be 3 or 4."""
   newRole: Int!
@@ -738,6 +767,11 @@ type Query {
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
 
+  """
+  Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
+  """
+  searchCaregivers(input: SearchCaregiverInput = {}): SearchCaregiverPayload!
+
   """Count of unread notifications for current user"""
   unreadCount: Int!
 }
@@ -830,6 +864,54 @@ type ScheduleDeleteAdminPayload {
   """Datetime when the account will be permanently deleted"""
   scheduledDeleteAt: DateTime!
   user: User!
+}
+
+input SearchCaregiverInput {
+  """Filter by service area district"""
+  district: String
+
+  """
+  Comma-separated job types e.g. "general_care,overnight"
+  """
+  jobType: String
+
+  """Results per page (max 50)"""
+  limit: Int = 10
+
+  """Maximum hourly rate"""
+  maxPrice: Float
+
+  """Minimum hourly rate"""
+  minPrice: Float
+
+  """Minimum average rating (0–5)"""
+  minRating: Float
+
+  """Page number (1-based)"""
+  page: Int = 1
+
+  """Filter by service area province"""
+  province: String
+  sortBy: SortByEnum = RATING_DESC
+}
+
+type SearchCaregiverPayload {
+  data: [CaregiverSummary!]!
+  pagination: SearchPagination!
+}
+
+type SearchPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+"""Caregiver search sort order"""
+enum SortByEnum {
+  PRICE_ASC
+  PRICE_DESC
+  RATING_DESC
 }
 
 input ToggleAdminStatusInput {
@@ -962,6 +1044,9 @@ type User {
 
 """Summary of a user for admin user management list"""
 type UserSummary {
+  """Caregiver number e.g. CG-00001 (role=2 only)"""
+  caregiverNumber: String
+
   """Account creation date"""
   createdAt: DateTime!
 
@@ -979,6 +1064,9 @@ type UserSummary {
 
   """Whether the user is suspended"""
   isSuspended: Boolean!
+
+  """KYC status: none | pending | verified | rejected (role=2 only)"""
+  kycStatus: String
 
   """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
   role: Int!

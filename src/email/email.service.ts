@@ -56,7 +56,10 @@ export class EmailService {
     private readonly prismaService: PrismaService,
   ) {
     this.fromAddress = this.configService.getOrThrow<string>('EMAIL_FROM');
-    this.frontendUrl = this.configService.get<string>('FRONTEND_URL', 'https://payung.app');
+    this.frontendUrl = this.configService.get<string>(
+      'FRONTEND_URL',
+      'https://payung.app',
+    );
 
     this.transporter = nodemailer.createTransport({
       host: this.configService.getOrThrow<string>('SMTP_HOST'),
@@ -112,18 +115,29 @@ export class EmailService {
     displayName: string | null,
     tempPassword: string,
   ): Promise<void> {
-    const tpl = adminInviteTemplate(displayName, email, tempPassword, this.frontendUrl);
+    const tpl = adminInviteTemplate(
+      displayName,
+      email,
+      tempPassword,
+      this.frontendUrl,
+    );
     await this.send(email, tpl);
   }
 
   /** แจ้ง admin ว่าบัญชีถูกระงับ */
-  async sendAdminDeactivated(email: string, displayName: string | null): Promise<void> {
+  async sendAdminDeactivated(
+    email: string,
+    displayName: string | null,
+  ): Promise<void> {
     const tpl = adminDeactivatedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 
   /** แจ้ง admin ว่าบัญชีถูกเปิดใช้งานอีกครั้ง */
-  async sendAdminActivated(email: string, displayName: string | null): Promise<void> {
+  async sendAdminActivated(
+    email: string,
+    displayName: string | null,
+  ): Promise<void> {
     const tpl = adminActivatedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
@@ -135,18 +149,29 @@ export class EmailService {
     scheduledDeleteAt: Date,
     gracePeriodDays: number,
   ): Promise<void> {
-    const tpl = adminScheduleDeleteTemplate(displayName, scheduledDeleteAt, gracePeriodDays, this.frontendUrl);
+    const tpl = adminScheduleDeleteTemplate(
+      displayName,
+      scheduledDeleteAt,
+      gracePeriodDays,
+      this.frontendUrl,
+    );
     await this.send(email, tpl);
   }
 
   /** แจ้ง admin ว่าการกำหนดลบบัญชีถูกยกเลิก */
-  async sendAdminCancelDelete(email: string, displayName: string | null): Promise<void> {
+  async sendAdminCancelDelete(
+    email: string,
+    displayName: string | null,
+  ): Promise<void> {
     const tpl = adminCancelDeleteTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 
   /** แจ้ง admin ว่าบัญชีถูกลบถาวรแล้วโดย cron job (PYG-159) */
-  async sendAdminAutoDeleted(email: string, displayName: string | null): Promise<void> {
+  async sendAdminAutoDeleted(
+    email: string,
+    displayName: string | null,
+  ): Promise<void> {
     const tpl = adminAutoDeletedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
@@ -179,7 +204,9 @@ export class EmailService {
         html: tpl.html,
         text: tpl.text,
       });
-      this.logger.log(`Email sent to ${to} (subject: "${tpl.subject}", messageId: ${info.messageId})`);
+      this.logger.log(
+        `Email sent to ${to} (subject: "${tpl.subject}", messageId: ${info.messageId})`,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to send email to ${to}: ${msg}`);
