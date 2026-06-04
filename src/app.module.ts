@@ -12,6 +12,7 @@ import { NotificationModule } from './notification/notification.module';
 import { EmailModule } from './email/email.module';
 import { AdminModule } from './admin/admin.module';
 import { SearchModule } from './search/search.module';
+import { CaregiverPublicModule } from './caregiver-public/caregiver-public.module';
 import { BookingModule } from './booking/booking.module';
 
 @Module({
@@ -53,6 +54,7 @@ import { BookingModule } from './booking/booking.module';
     EmailModule,         // PYG-96: Resend email service
     AdminModule,         // Admin dashboard operations (KYC review, etc.)
     SearchModule,        // PYG-192: caregiver search with filters + pagination
+    CaregiverPublicModule, // GET /api/v1/caregivers/:id/public
     BookingModule,       // PYG-210: patient booking confirmations + history
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
