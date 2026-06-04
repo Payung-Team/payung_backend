@@ -305,9 +305,15 @@ export class AuthService {
     const supabase   = this.supabaseService.getClient();
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    console.log('[DEBUG resetPasswordReset] email:', email);
+    console.log('[DEBUG resetPasswordReset] redirectTo:', `${frontendUrl}/reset-password`);
+
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${frontendUrl}/reset-password`,
     });
+
+    console.log('[DEBUG resetPasswordReset] data:', data);
+    console.log('[DEBUG resetPasswordReset] error:', error);
 
     if (error) {
       this.logger.error({ event: 'password_reset.request_failed', email, msg: error.message });
