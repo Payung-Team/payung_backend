@@ -12,6 +12,7 @@ import { NotificationModule } from './notification/notification.module';
 import { EmailModule } from './email/email.module';
 import { AdminModule } from './admin/admin.module';
 import { SearchModule } from './search/search.module';
+import { BookingModule } from './booking/booking.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { SearchModule } from './search/search.module';
     EmailModule,         // PYG-96: Resend email service
     AdminModule,         // Admin dashboard operations (KYC review, etc.)
     SearchModule,        // PYG-192: caregiver search with filters + pagination
+    BookingModule,       // PYG-210: patient booking confirmations + history
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
