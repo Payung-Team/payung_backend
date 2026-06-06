@@ -15,8 +15,10 @@
 import { Module } from '@nestjs/common';
 import { KycResolver } from './kyc.resolver';
 import { CaregiverResolver } from './caregiver.resolver';
+import { WorkConditionResolver } from './work-condition.resolver';
 import { KycService } from './kyc.service';
 import { CaregiverService } from './caregiver.service';
+import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -31,8 +33,10 @@ import { EmailModule } from '../../email/email.module';
   providers: [
     KycResolver,
     CaregiverResolver,
+    WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition
     KycService,
     CaregiverService, // CRUD สำหรับ caregivers table
+    WorkConditionService, // PYG-188: availability + jobTypes + serviceArea (3 tables)
     KycDocumentService, // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,
     RolesGuard,
