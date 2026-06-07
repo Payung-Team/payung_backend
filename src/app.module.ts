@@ -14,6 +14,7 @@ import { AdminModule } from './admin/admin.module';
 import { SearchModule } from './search/search.module';
 import { CaregiverPublicModule } from './caregiver-public/caregiver-public.module';
 import { BookingModule } from './booking/booking.module';
+import { PatientModule } from './patient/patient.module';
 
 @Module({
   imports: [
@@ -55,7 +56,8 @@ import { BookingModule } from './booking/booking.module';
     AdminModule,         // Admin dashboard operations (KYC review, etc.)
     SearchModule,        // PYG-192: caregiver search with filters + pagination
     CaregiverPublicModule, // GET /api/v1/caregivers/:id/public
-    BookingModule,       // PYG-210: patient booking confirmations + history
+    BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs
+    PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
