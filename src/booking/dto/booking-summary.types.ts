@@ -1,13 +1,16 @@
 import { Field, Float, ID, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
 
 export enum BookingStatusEnum {
-  PENDING   = 'pending',
+  UNMATCHED = 'unmatched', // booking created, no caregiver assigned yet
+  PENDING   = 'pending',   // caregiver assigned by matching engine, awaiting acceptance
   ACCEPTED  = 'accepted',
   CONFIRMED = 'confirmed',
   REJECTED  = 'rejected',
   COMPLETED = 'completed',
+  CANCELLED = 'cancelled', // patient cancelled
 }
 registerEnumType(BookingStatusEnum, { name: 'BookingStatus' });
+
 
 @ObjectType()
 export class CaregiverBriefDto {

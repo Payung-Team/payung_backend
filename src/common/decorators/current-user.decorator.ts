@@ -25,3 +25,16 @@ export const CurrentUser = createParamDecorator(
     return gqlCtx.getContext<{ req: { user: AuthUser } }>().req.user;
   },
 );
+
+/**
+ * CurrentHttpUser — ดึง user จาก HTTP (REST) request
+ * ถูก inject โดย SupabaseHttpAuthGuard หลังตรวจ JWT สำเร็จ
+ *
+ * @example
+ * async create(@CurrentHttpUser() user: AuthUser) { ... }
+ */
+export const CurrentHttpUser = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): AuthUser => {
+    return ctx.switchToHttp().getRequest<{ user: AuthUser }>().user;
+  },
+);

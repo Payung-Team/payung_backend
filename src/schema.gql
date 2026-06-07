@@ -180,6 +180,48 @@ type AuthPayload {
   user: User!
 }
 
+input BookingHistoryInput {
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus
+}
+
+type BookingListResponse {
+  data: [BookingSummary!]!
+  pagination: BookingPagination!
+}
+
+type BookingPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+enum BookingStatus {
+  ACCEPTED
+  CANCELLED
+  COMPLETED
+  CONFIRMED
+  PENDING
+  REJECTED
+  UNMATCHED
+}
+
+type BookingSummary {
+  bookingDate: String!
+  careRecipientName: String
+  caregiver: CaregiverBriefDto!
+  confirmedAt: DateTime
+  createdAt: DateTime!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  serviceType: String!
+  status: String!
+  timeSlot: String!
+}
+
 input CancelScheduledDeleteInput {
   """ID of the target admin user whose scheduled deletion to cancel"""
   adminId: String!
@@ -230,6 +272,13 @@ type Caregiver {
 
   """Internal user ID linked to this caregiver"""
   userId: String!
+}
+
+type CaregiverBriefDto {
+  avatarUrl: String
+  fullName: String
+  hourlyRate: Float
+  id: ID!
 }
 
 """Log entry for caregiver profile/document edits"""
@@ -605,6 +654,9 @@ type Mutation {
   """
   completePasswordChange: User!
 
+  """Patient confirms a booking that has been accepted by the caregiver."""
+  confirmBooking(bookingId: ID!): BookingSummary!
+
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
 
@@ -761,8 +813,18 @@ type Query {
   """Get current logged-in user"""
   me: User!
 
+  """
+  Returns the patient's full booking history, optionally filtered by status, newest first.
+  """
+  myBookingHistory(input: BookingHistoryInput = {}): BookingListResponse!
+
   """Get current caregiver profile"""
   myCaregiverProfile: Caregiver!
+
+  """
+  Returns accepted bookings awaiting patient confirmation, sorted by booking date ascending.
+  """
+  myPendingConfirmations(limit: Int = 10, page: Int = 1): BookingListResponse!
 
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
