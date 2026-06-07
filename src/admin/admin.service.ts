@@ -1034,7 +1034,7 @@ export class AdminService {
       throw new NotFoundException(`User "${userId}" not found`);
     }
 
-    if (!existing.isActive && existing.scheduled_delete_at) {
+    if (!existing.isActive) {
       throw new ConflictException('User is already suspended');
     }
 
@@ -1057,6 +1057,18 @@ export class AdminService {
 
       return user;
     });
+
+    // ─── Supabase Auth ban ────────────────────────────────────────────────
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { error: supabaseError } = await supabaseAdmin.auth.admin.updateUserById(
+      existing.supabaseUid,
+      { ban_duration: '876000h' },
+    );
+    if (supabaseError) {
+      this.logger.error(
+        `Supabase ban failed for ${existing.supabaseUid}: ${supabaseError.message}`,
+      );
+    }
 
     this.logger.log({
       event: 'admin.user.suspended',
@@ -1111,6 +1123,18 @@ export class AdminService {
 
       return user;
     });
+
+    // ─── Supabase Auth unban ──────────────────────────────────────────────
+    const supabaseAdmin = this.supabaseService.getAdminClient();
+    const { error: supabaseError } = await supabaseAdmin.auth.admin.updateUserById(
+      existing.supabaseUid,
+      { ban_duration: 'none' },
+    );
+    if (supabaseError) {
+      this.logger.error(
+        `Supabase unban failed for ${existing.supabaseUid}: ${supabaseError.message}`,
+      );
+    }
 
     this.logger.log({
       event: 'admin.user.activated',
@@ -1553,7 +1577,7 @@ export class AdminService {
     input: ScheduleDeleteAdminInput,
     currentUser: AuthUser,
   ): Promise<ScheduleDeleteAdminPayload> {
-    const gracePeriodDays = input.gracePeriodDays ?? 30;
+    const gracePeriodDays = input.gracePeriodDays ?? 7;
 
     // ─── 1. ห้ามลบตัวเอง ──────────────────────────────────────────────────
     if (input.adminId === currentUser.id) {

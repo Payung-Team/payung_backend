@@ -183,48 +183,6 @@ type AuthPayload {
   user: User!
 }
 
-input BookingHistoryInput {
-  limit: Int = 10
-  page: Int = 1
-  status: BookingStatus
-}
-
-type BookingListResponse {
-  data: [BookingSummary!]!
-  pagination: BookingPagination!
-}
-
-type BookingPagination {
-  limit: Int!
-  page: Int!
-  total: Int!
-  totalPages: Int!
-}
-
-enum BookingStatus {
-  ACCEPTED
-  CANCELLED
-  COMPLETED
-  CONFIRMED
-  PENDING
-  REJECTED
-  UNMATCHED
-}
-
-type BookingSummary {
-  bookingDate: String!
-  careRecipientName: String
-  caregiver: CaregiverBriefDto!
-  confirmedAt: DateTime
-  createdAt: DateTime!
-  estimatedCost: Float
-  id: ID!
-  locationAddress: String!
-  serviceType: String!
-  status: String!
-  timeSlot: String!
-}
-
 type AvailabilitySlot {
   """Day of week: 0=Sunday, 1=Monday … 6=Saturday"""
   dayOfWeek: Int!
@@ -267,10 +225,12 @@ type BookingPagination {
 
 enum BookingStatus {
   ACCEPTED
+  CANCELLED
   COMPLETED
   CONFIRMED
   PENDING
   REJECTED
+  UNMATCHED
 }
 
 type BookingSummary {
@@ -285,6 +245,11 @@ type BookingSummary {
   serviceType: String!
   status: String!
   timeSlot: String!
+}
+
+input CancelAcceptanceInput {
+  bookingId: ID!
+  reason: String!
 }
 
 input CancelScheduledDeleteInput {
@@ -337,6 +302,45 @@ type Caregiver {
 
   """Internal user ID linked to this caregiver"""
   userId: String!
+}
+
+input CaregiverBookingHistoryInput {
+  dateFrom: String
+  dateTo: String
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus
+}
+
+type CaregiverBookingListResponse {
+  data: [CaregiverBookingSummary!]!
+  pagination: BookingPagination!
+}
+
+type CaregiverBookingSummary {
+  acceptedAt: DateTime
+  bookingDate: String!
+  careRecipientName: String
+  confirmedAt: DateTime
+  createdAt: DateTime!
+  durationHours: Float!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String
+  patient: PatientBriefDto!
+  rejectionReason: String
+  serviceLocations: [String!]!
+  serviceType: String!
+  startTime: String!
+  status: String!
+  timeSlot: String!
+}
+
+input CaregiverBookingsInput {
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus!
+  upcoming: Boolean
 }
 
 type CaregiverBriefDto {
@@ -453,6 +457,11 @@ type DashboardSummary {
 A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
 """
 scalar DateTime
+
+input DeclineBookingInput {
+  bookingId: ID!
+  reason: String!
+}
 
 input EditAdminInfoInput {
   """UUID of the admin to edit"""
@@ -678,6 +687,9 @@ input LoginInput {
 }
 
 type Mutation {
+  """Caregiver accepts a pending booking request (pending → accepted)."""
+  acceptBooking(bookingId: ID!): CaregiverBookingSummary!
+
   """
   Admin only: Activate a suspended user (set isActive = true, is_deleted = false). Records audit log.
   """
@@ -705,6 +717,11 @@ type Mutation {
   ): Caregiver!
 
   """
+  Caregiver cancels a previously accepted booking before patient confirmation, with a required reason (accepted → rejected).
+  """
+  cancelAcceptance(input: CancelAcceptanceInput!): CaregiverBookingSummary!
+
+  """
   Super Admin only: Cancel a scheduled deletion for an admin account. Reactivates the account and unbans Supabase Auth.
   """
   cancelScheduledDelete(input: CancelScheduledDeleteInput!): CancelScheduledDeletePayload!
@@ -721,6 +738,11 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  Caregiver declines a pending booking request with a required reason (pending → rejected).
+  """
+  declineBooking(input: DeclineBookingInput!): CaregiverBookingSummary!
 
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
@@ -840,6 +862,12 @@ enum NotificationType {
   kyc_verified
 }
 
+type PatientBriefDto {
+  avatarUrl: String
+  displayName: String
+  id: ID!
+}
+
 type Query {
   """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
@@ -868,6 +896,21 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.
+  """
+  caregiverBookingHistory(input: CaregiverBookingHistoryInput = {}): CaregiverBookingListResponse!
+
+  """
+  Caregiver bookings filtered by status (pending=new requests, accepted=awaiting patient, confirmed+upcoming=active jobs).
+  """
+  caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
+
+  """
+  Patients who have completed 2 or more bookings with the current caregiver (repeat customers).
+  """
+  caregiverRepeatPatients(limit: Int = 10, page: Int = 1): RepeatPatientListResponse!
 
   """Health check - API & DB Status"""
   health: HealthStatus!
@@ -966,6 +1009,19 @@ input RejectionReasonItem {
   Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
   """
   title: String!
+}
+
+type RepeatPatientDto {
+  avatarUrl: String
+  completedCount: Int!
+  displayName: String
+  lastCompletedAt: DateTime
+  patientId: ID!
+}
+
+type RepeatPatientListResponse {
+  data: [RepeatPatientDto!]!
+  pagination: BookingPagination!
 }
 
 """Filter users by role. Use "all" to return every role."""

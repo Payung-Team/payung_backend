@@ -175,6 +175,34 @@ export function adminAutoDeletedTemplate(
   };
 }
 
+export function userAutoDeletedTemplate(
+  displayName: string | null,
+  frontendUrl: string,
+): EmailTemplate {
+  const subject = 'บัญชีของคุณถูกลบเรียบร้อยแล้ว — Payung';
+  const name = displayName ? `สวัสดีคุณ ${escapeHtml(displayName)}` : 'สวัสดี';
+
+  const bodyHtml = `
+    <p>${name},</p>
+    <p>บัญชีของคุณใน <strong>Payung</strong> ถูก<strong>ลบถาวร</strong>ตามกำหนดเรียบร้อยแล้ว</p>
+    <p>ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว</p>
+    <p>หากคุณมีข้อสงสัย กรุณาติดต่อทีมสนับสนุนของ Payung</p>
+  `;
+
+  const text = `${displayName ?? 'ผู้ใช้งาน'},
+
+บัญชีของคุณในระบบ Payung ถูกลบถาวรตามกำหนดเรียบร้อยแล้ว
+ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว
+
+หากมีข้อสงสัย กรุณาติดต่อทีมสนับสนุน${plainTextFooter(frontendUrl)}`;
+
+  return {
+    subject,
+    html: wrapHtml({ bodyHtml, frontendUrl }),
+    text,
+  };
+}
+
 export function adminActivatedTemplate(
   displayName: string | null,
   frontendUrl: string,

@@ -35,6 +35,7 @@ import {
   adminAutoDeletedTemplate,
   adminScheduleDeleteTemplate,
   adminCancelDeleteTemplate,
+  userAutoDeletedTemplate,
 } from './templates/admin.templates';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
@@ -173,6 +174,15 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = adminAutoDeletedTemplate(displayName, this.frontendUrl);
+    await this.send(email, tpl);
+  }
+
+  /** แจ้ง user/caregiver ว่าบัญชีถูกลบถาวรแล้วโดย cron job */
+  async sendUserAutoDeleted(
+    email: string,
+    displayName: string | null,
+  ): Promise<void> {
+    const tpl = userAutoDeletedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
   }
 
