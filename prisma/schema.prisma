@@ -162,6 +162,7 @@ model Booking {
   dayOfContactRelationship String?        @map("day_of_contact_relationship")
   createdAt                DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  acceptedAt               DateTime?      @map("accepted_at") @db.Timestamptz(6)
   confirmedAt              DateTime?      @map("confirmed_at") @db.Timestamptz(6)
   patient                  User           @relation(fields: [patientId], references: [id], onDelete: Cascade)
   // SetNull: if caregiver is deleted, booking becomes unmatched again
