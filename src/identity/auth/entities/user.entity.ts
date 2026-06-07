@@ -78,6 +78,10 @@ export class User {
   @Field({ description: 'Whether the user account is active' })
   isActive!: boolean;
 
+  /** ถูก suspend หรือถูกลบหรือไม่ */
+  @Field({ description: 'Whether the user is currently suspended' })
+  isSuspended!: boolean;
+
   /** ต้องเปลี่ยนรหัสผ่านก่อนใช้งาน (admin invite flow) */
   @Field({ description: 'Whether the user must change their password before using the app' })
   mustChangePassword!: boolean;

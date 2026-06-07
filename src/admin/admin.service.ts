@@ -999,7 +999,9 @@ export class AdminService {
       auditLogCount,
     });
 
-    return { user, caregiver, kycStatus, isSuspended, auditLogCount };
+    const scheduledDeleteAt = raw.scheduled_delete_at ?? undefined;
+
+    return { user, caregiver, kycStatus, isSuspended, scheduledDeleteAt, auditLogCount };
   }
 
   /**
@@ -1032,19 +1034,22 @@ export class AdminService {
       throw new NotFoundException(`User "${userId}" not found`);
     }
 
-    if (!existing.isActive) {
+    if (!existing.isActive && existing.scheduled_delete_at) {
       throw new ConflictException('User is already suspended');
     }
 
     // ─── Transaction: update + audit log ─────────────────────────────────
+    const scheduledDeleteAt = new Date();
+    scheduledDeleteAt.setDate(scheduledDeleteAt.getDate() + 7);
+
     const updated = await this.prismaService.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: userId },
-        data: { isActive: false },
+        data: { isActive: false, scheduled_delete_at: scheduledDeleteAt },
       });
 
       // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
-      const details = JSON.stringify({ reason: 'Admin suspended user' });
+      const details = JSON.stringify({ reason: 'Admin suspended user', scheduledDeleteAt });
       await tx.$executeRaw`
         INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
         VALUES (gen_random_uuid(), ${admin.id}, 'suspend_user', ${userId}, ${details}::jsonb, NOW())
@@ -1057,6 +1062,7 @@ export class AdminService {
       event: 'admin.user.suspended',
       userId,
       adminId: admin.id,
+      scheduledDeleteAt,
     });
 
     return this.mapToUser(updated);
@@ -1091,7 +1097,7 @@ export class AdminService {
     const updated = await this.prismaService.$transaction(async (tx) => {
       const user = await tx.user.update({
         where: { id: userId },
-        data: { isActive: true },
+        data: { isActive: true, scheduled_delete_at: null, deletion_scheduled_by: null },
       });
 
       // admin_audit_logs — ใช้ $executeRaw เพราะ Prisma client ยังไม่ regenerate
@@ -2052,6 +2058,7 @@ export class AdminService {
     bio: string | null;
     role: number;
     isActive: boolean;
+    is_deleted: boolean;
     emailPreferences: boolean;
     must_change_password: boolean;
     createdAt: Date;
@@ -2067,6 +2074,7 @@ export class AdminService {
       bio: u.bio ?? undefined,
       role: u.role,
       isActive: u.isActive,
+      isSuspended: !u.isActive || u.is_deleted,
       emailPreferences: u.emailPreferences,
       mustChangePassword: u.must_change_password,
       createdAt: u.createdAt,

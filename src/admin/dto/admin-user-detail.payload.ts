@@ -31,6 +31,10 @@ export class AdminUserDetailPayload {
   @Field({ description: 'Whether the user is currently suspended' })
   isSuspended!: boolean;
 
+  /** วันที่กำหนดลบบัญชี (null ถ้าไม่มี) */
+  @Field({ nullable: true, description: 'Scheduled permanent deletion date' })
+  scheduledDeleteAt?: Date;
+
   /** จำนวน audit log entries ที่เกี่ยวกับ user นี้ */
   @Field(() => Int, { description: 'Number of admin actions taken on this user' })
   auditLogCount!: number;

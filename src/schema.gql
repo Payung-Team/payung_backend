@@ -136,6 +136,9 @@ type AdminUserDetailPayload {
   """Current KYC status: none | pending | verified | rejected | n/a"""
   kycStatus: String!
 
+  """Scheduled permanent deletion date"""
+  scheduledDeleteAt: DateTime
+
   """User profile"""
   user: User!
 }
@@ -178,6 +181,68 @@ type AuthPayload {
 
   """The authenticated user"""
   user: User!
+}
+
+type AvailabilitySlot {
+  """Day of week: 0=Sunday, 1=Monday … 6=Saturday"""
+  dayOfWeek: Int!
+
+  """Whether caregiver is available in this slot"""
+  isActive: Boolean!
+
+  """Time slot label e.g. 'morning' | 'afternoon' | 'evening'"""
+  timeSlot: String!
+}
+
+input AvailabilitySlotInput {
+  """Day of week: 0=Sunday, 1=Monday … 6=Saturday"""
+  dayOfWeek: Int!
+
+  """Whether caregiver is available in this slot"""
+  isActive: Boolean! = true
+
+  """Time slot label e.g. 'morning' | 'afternoon' | 'evening'"""
+  timeSlot: String!
+}
+
+input BookingHistoryInput {
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus
+}
+
+type BookingListResponse {
+  data: [BookingSummary!]!
+  pagination: BookingPagination!
+}
+
+type BookingPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+enum BookingStatus {
+  ACCEPTED
+  COMPLETED
+  CONFIRMED
+  PENDING
+  REJECTED
+}
+
+type BookingSummary {
+  bookingDate: String!
+  careRecipientName: String
+  caregiver: CaregiverBriefDto!
+  confirmedAt: DateTime
+  createdAt: DateTime!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  serviceType: String!
+  status: String!
+  timeSlot: String!
 }
 
 input CancelScheduledDeleteInput {
@@ -230,6 +295,13 @@ type Caregiver {
 
   """Internal user ID linked to this caregiver"""
   userId: String!
+}
+
+type CaregiverBriefDto {
+  avatarUrl: String
+  fullName: String
+  hourlyRate: Float
+  id: ID!
 }
 
 """Log entry for caregiver profile/document edits"""
@@ -605,6 +677,9 @@ type Mutation {
   """
   completePasswordChange: User!
 
+  """Patient confirms a booking that has been accepted by the caregiver."""
+  confirmBooking(bookingId: ID!): BookingSummary!
+
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
 
@@ -678,6 +753,11 @@ type Mutation {
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
+
+  """
+  Upsert the caregiver work condition. Each section is optional (partial update): omit a section to keep it unchanged, or send [] to clear it. Verified caregivers only.
+  """
+  updateWorkCondition(input: UpdateWorkConditionInput!): WorkCondition!
 
   """Register a KYC document record after uploading to storage"""
   uploadKycDocument(input: UploadDocumentInput!): KycDocument!
@@ -761,8 +841,23 @@ type Query {
   """Get current logged-in user"""
   me: User!
 
+  """
+  Returns the patient's full booking history, optionally filtered by status, newest first.
+  """
+  myBookingHistory(input: BookingHistoryInput = {}): BookingListResponse!
+
   """Get current caregiver profile"""
   myCaregiverProfile: Caregiver!
+
+  """
+  Returns accepted bookings awaiting patient confirmation, sorted by booking date ascending.
+  """
+  myPendingConfirmations(limit: Int = 10, page: Int = 1): BookingListResponse!
+
+  """
+  Returns the current caregiver's work condition (availability + job types + service area). Verified caregivers only.
+  """
+  myWorkCondition: WorkCondition!
 
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
@@ -907,6 +1002,22 @@ type SearchPagination {
   totalPages: Int!
 }
 
+type ServiceArea {
+  """Service area district (อำเภอ/เขต)"""
+  district: String
+
+  """Service area province (จังหวัด)"""
+  province: String
+}
+
+input ServiceAreaInput {
+  """Service area district (อำเภอ/เขต)"""
+  district: String
+
+  """Service area province (จังหวัด)"""
+  province: String
+}
+
 """Caregiver search sort order"""
 enum SortByEnum {
   PRICE_ASC
@@ -981,6 +1092,19 @@ input UpdateProfileInput {
   phone: String
 }
 
+input UpdateWorkConditionInput {
+  """
+  Weekly availability grid. Send [] to clear all slots; omit to keep unchanged.
+  """
+  availability: [AvailabilitySlotInput!]
+
+  """Accepted job types. Send [] to clear all; omit to keep unchanged."""
+  jobTypes: [String!]
+
+  """Service area (province + district). Omit to keep unchanged."""
+  serviceArea: ServiceAreaInput
+}
+
 input UploadDocumentInput {
   """Document type: id_card_front | id_card_selfie | certificate"""
   docType: String!
@@ -1028,6 +1152,9 @@ type User {
 
   """Whether the user account is active"""
   isActive: Boolean!
+
+  """Whether the user is currently suspended"""
+  isSuspended: Boolean!
 
   """Whether the user must change their password before using the app"""
   mustChangePassword: Boolean!
@@ -1085,4 +1212,15 @@ type WeeklySubmission {
 
   """Monday of the week (YYYY-MM-DD format)"""
   week: String!
+}
+
+type WorkCondition {
+  """Weekly availability slots"""
+  availability: [AvailabilitySlot!]!
+
+  """Accepted job types"""
+  jobTypes: [String!]!
+
+  """Service area (province + district)"""
+  serviceArea: ServiceArea!
 }

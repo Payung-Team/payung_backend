@@ -31,6 +31,7 @@ type PrismaUser = {
   bio: string | null;
   role: number;
   isActive: boolean;
+  is_deleted: boolean;
   must_change_password: boolean;
   emailPreferences: boolean;
   createdAt: Date;
@@ -57,6 +58,7 @@ export class UserService {
       bio: user.bio ?? undefined,
       role: user.role,
       isActive: user.isActive,
+      isSuspended: !user.isActive || user.is_deleted,
       mustChangePassword: user.must_change_password,
       emailPreferences: user.emailPreferences,
       createdAt: user.createdAt,
