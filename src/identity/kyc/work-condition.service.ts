@@ -1,10 +1,11 @@
 /**
  * WorkConditionService — PYG-188
  *
- * จัดการ "เงื่อนไขการทำงาน" ของ caregiver 3 ส่วน ซึ่งกระจายอยู่ 3 ตาราง:
- *   1. availability → ตาราง caregiver_availability  (1 แถว = 1 วัน × 1 ช่วงเวลา)
- *   2. jobTypes     → ตาราง caregiver_job_types      (1 แถว = 1 ประเภทงาน)
- *   3. serviceArea  → คอลัมน์ service_area_* บนตาราง caregivers โดยตรง
+ * จัดการ "เงื่อนไขการทำงาน" ของ caregiver 4 ส่วน ซึ่งกระจายอยู่หลายตาราง:
+ *   1. availability     → ตาราง caregiver_availability       (1 แถว = 1 วัน × 1 ช่วงเวลา)
+ *   2. serviceLocations → ตาราง caregiver_service_locations  (1 แถว = 1 สถานที่) [PYG-259]
+ *   3. jobTypes         → ตาราง caregiver_job_types          (1 แถว = 1 ประเภทงาน)
+ *   4. serviceArea      → คอลัมน์ service_area_* บนตาราง caregivers โดยตรง
  *
  * ทำไมแยกเป็น service ใหม่ (ไม่รวมใน CaregiverService)?
  * - CaregiverService = CRUD ของตาราง caregivers อย่างเดียว
@@ -41,6 +42,7 @@ type CaregiverWithWorkCondition = {
   serviceAreaProvince: string | null;
   serviceAreaDistrict: string | null;
   availability: { dayOfWeek: number; timeSlot: string; isActive: boolean }[];
+  serviceLocations: { serviceLocation: string }[];
   jobTypes: { jobType: string }[];
 };
 
@@ -62,7 +64,8 @@ export class WorkConditionService {
   async getByUserId(userId: string): Promise<WorkCondition> {
     const caregiver = await this.prisma.caregiver.findUnique({
       where: { userId },
-      include: { availability: true, jobTypes: true },
+      // ดึง relation ครบทั้ง 3 ตาราง (availability + serviceLocations + jobTypes)
+      include: { availability: true, serviceLocations: true, jobTypes: true },
     });
 
     this.assertVerifiedCaregiver(caregiver);
@@ -122,7 +125,28 @@ export class WorkConditionService {
         }
       }
 
-      // ── 2) jobTypes: replace-all ──────────────────────────────────────────
+      // ── 2) serviceLocations: replace-all ──────────────────────────────────
+      // ล้อ logic เดียวกับ jobTypes เป๊ะ (replace-all + dedupe) แต่คนละตาราง
+      // ค่าถูก validate ด้วย @IsEnum ที่ DTO แล้ว แต่ trim/filter ไว้กันพลาด
+      if (input.serviceLocations !== undefined) {
+        await tx.caregiverServiceLocation.deleteMany({ where: { caregiverId } });
+
+        // dedupe + ตัดค่าว่าง → กันชน unique [caregiverId, serviceLocation]
+        const dedupedLocations = [
+          ...new Set(input.serviceLocations.map((l) => l.trim()).filter(Boolean)),
+        ];
+
+        if (dedupedLocations.length > 0) {
+          await tx.caregiverServiceLocation.createMany({
+            data: dedupedLocations.map((serviceLocation) => ({
+              caregiverId,
+              serviceLocation,
+            })),
+          });
+        }
+      }
+
+      // ── 3) jobTypes: replace-all ──────────────────────────────────────────
       if (input.jobTypes !== undefined) {
         await tx.caregiverJobType.deleteMany({ where: { caregiverId } });
 
@@ -138,7 +162,7 @@ export class WorkConditionService {
         }
       }
 
-      // ── 3) serviceArea: field-level partial update บน caregivers ───────────
+      // ── 4) serviceArea: field-level partial update บน caregivers ───────────
       if (input.serviceArea !== undefined) {
         const data: Prisma.CaregiverUpdateInput = {};
         // อัปเดตเฉพาะ sub-field ที่ส่งมาจริง (undefined = ไม่แตะ)
@@ -161,6 +185,7 @@ export class WorkConditionService {
       userId,
       updatedSections: {
         availability: input.availability !== undefined,
+        serviceLocations: input.serviceLocations !== undefined,
         jobTypes: input.jobTypes !== undefined,
         serviceArea: input.serviceArea !== undefined,
       },
@@ -222,6 +247,10 @@ export class WorkConditionService {
 
     return {
       availability,
+      // sort() ให้ output เสถียร เหมือน jobTypes
+      serviceLocations: caregiver.serviceLocations
+        .map((sl) => sl.serviceLocation)
+        .sort(),
       jobTypes: caregiver.jobTypes.map((jt) => jt.jobType).sort(),
       serviceArea: {
         province: caregiver.serviceAreaProvince ?? undefined,

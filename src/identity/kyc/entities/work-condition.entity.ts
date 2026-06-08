@@ -5,10 +5,11 @@
  * ไฟล์นี้คือ "พิมพ์เขียว" ของข้อมูลที่ส่งกลับให้ client เมื่อ query `myWorkCondition`
  * หรือเมื่อ mutation `updateWorkCondition` คืนผลลัพธ์
  *
- * ประกอบด้วย 3 ส่วน ตรงกับ design (CG-Work Conditon Setting):
- *   1. availability — ตารางว่างรายสัปดาห์
- *   2. jobTypes     — ประเภทงานที่รับ
- *   3. serviceArea  — พื้นที่ให้บริการ
+ * ประกอบด้วย 4 ส่วน ตรงกับ design (CG-Work Conditon Setting):
+ *   1. availability     — ตารางว่างรายสัปดาห์
+ *   2. serviceLocations — สถานที่รับงาน (at_home / accompany_outside) [PYG-259]
+ *   3. jobTypes         — ประเภทงานที่รับ
+ *   4. serviceArea      — พื้นที่ให้บริการ
  */
 import { ObjectType, Field, Int } from '@nestjs/graphql';
 
@@ -40,6 +41,10 @@ export class ServiceArea {
 export class WorkCondition {
   @Field(() => [AvailabilitySlot], { description: 'Weekly availability slots' })
   availability!: AvailabilitySlot[];
+
+  // สถานที่รับงาน (at_home / accompany_outside) — แยกจาก jobTypes (PYG-259)
+  @Field(() => [String], { description: 'Accepted service locations (at_home | accompany_outside)' })
+  serviceLocations!: string[];
 
   @Field(() => [String], { description: 'Accepted job types' })
   jobTypes!: string[];

@@ -20,7 +20,11 @@ function fakeCaregiver(overrides: Record<string, unknown> = {}) {
       { dayOfWeek: 1, timeSlot: 'morning', isActive: true },
       { dayOfWeek: 1, timeSlot: 'afternoon', isActive: false },
     ],
-    jobTypes: [{ jobType: 'general_care' }, { jobType: 'physical_therapy' }],
+    serviceLocations: [
+      { serviceLocation: 'at_home' },
+      { serviceLocation: 'accompany_outside' },
+    ],
+    jobTypes: [{ jobType: 'general_care' }, { jobType: 'physiotherapy' }],
     ...overrides,
   };
 }
@@ -32,6 +36,7 @@ describe('WorkConditionService', () => {
   let prisma: {
     caregiver: { findUnique: jest.Mock; update: jest.Mock };
     caregiverAvailability: { deleteMany: jest.Mock; createMany: jest.Mock };
+    caregiverServiceLocation: { deleteMany: jest.Mock; createMany: jest.Mock };
     caregiverJobType: { deleteMany: jest.Mock; createMany: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -40,6 +45,7 @@ describe('WorkConditionService', () => {
     prisma = {
       caregiver: { findUnique: jest.fn(), update: jest.fn() },
       caregiverAvailability: { deleteMany: jest.fn(), createMany: jest.fn() },
+      caregiverServiceLocation: { deleteMany: jest.fn(), createMany: jest.fn() },
       caregiverJobType: { deleteMany: jest.fn(), createMany: jest.fn() },
       // $transaction(cb) → เรียก cb โดยส่ง prisma ตัวเดิมเป็น tx
       // ทำให้ tx.caregiverAvailability.* เป็น mock เดียวกับ prisma.* → assert ได้
@@ -67,11 +73,17 @@ describe('WorkConditionService', () => {
       expect(prisma.caregiver.findUnique).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId: USER_ID },
-          include: { availability: true, jobTypes: true },
+          include: {
+            availability: true,
+            serviceLocations: true,
+            jobTypes: true,
+          },
         }),
       );
       expect(result.availability).toHaveLength(2);
-      expect(result.jobTypes).toEqual(['general_care', 'physical_therapy']);
+      // serviceLocations + jobTypes คืนแยกกัน + เรียงด้วย sort()
+      expect(result.serviceLocations).toEqual(['accompany_outside', 'at_home']);
+      expect(result.jobTypes).toEqual(['general_care', 'physiotherapy']);
       expect(result.serviceArea).toEqual({
         province: 'กรุงเทพมหานคร',
         district: 'บางรัก',
@@ -131,11 +143,12 @@ describe('WorkConditionService', () => {
   // ── updateByUserId ──────────────────────────────────────────────────────────
 
   describe('updateByUserId', () => {
-    it('replaces all three sections on happy path', async () => {
+    it('replaces all four sections on happy path', async () => {
       prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
 
       await service.updateByUserId(USER_ID, {
         availability: [{ dayOfWeek: 1, timeSlot: 'morning', isActive: true }],
+        serviceLocations: ['at_home'],
         jobTypes: ['general_care'],
         serviceArea: { province: 'เชียงใหม่', district: 'เมือง' },
       });
@@ -153,6 +166,13 @@ describe('WorkConditionService', () => {
             isActive: true,
           },
         ],
+      });
+      // serviceLocations: ลบเก่า + ใส่ใหม่ (คนละตารางกับ jobTypes)
+      expect(prisma.caregiverServiceLocation.deleteMany).toHaveBeenCalledWith({
+        where: { caregiverId: CAREGIVER_ID },
+      });
+      expect(prisma.caregiverServiceLocation.createMany).toHaveBeenCalledWith({
+        data: [{ caregiverId: CAREGIVER_ID, serviceLocation: 'at_home' }],
       });
       // jobTypes: ลบเก่า + ใส่ใหม่
       expect(prisma.caregiverJobType.deleteMany).toHaveBeenCalledWith({
@@ -196,12 +216,60 @@ describe('WorkConditionService', () => {
 
       await service.updateByUserId(USER_ID, {
         availability: [{ dayOfWeek: 0, timeSlot: 'evening', isActive: true }],
-        // jobTypes + serviceArea omitted → must not be touched
+        // serviceLocations + jobTypes + serviceArea omitted → must not be touched
       });
 
       expect(prisma.caregiverAvailability.deleteMany).toHaveBeenCalled();
+      expect(prisma.caregiverServiceLocation.deleteMany).not.toHaveBeenCalled();
       expect(prisma.caregiverJobType.deleteMany).not.toHaveBeenCalled();
       expect(prisma.caregiver.update).not.toHaveBeenCalled();
+    });
+
+    it('updates serviceLocations without touching jobTypes (sections independent)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+
+      await service.updateByUserId(USER_ID, {
+        serviceLocations: ['at_home', 'accompany_outside'],
+        // jobTypes omitted → must not be touched (the PYG-259 bug: they were coupled)
+      });
+
+      expect(prisma.caregiverServiceLocation.deleteMany).toHaveBeenCalledWith({
+        where: { caregiverId: CAREGIVER_ID },
+      });
+      expect(prisma.caregiverServiceLocation.createMany).toHaveBeenCalledWith({
+        data: [
+          { caregiverId: CAREGIVER_ID, serviceLocation: 'at_home' },
+          { caregiverId: CAREGIVER_ID, serviceLocation: 'accompany_outside' },
+        ],
+      });
+      expect(prisma.caregiverJobType.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('clears serviceLocations when an empty array is sent', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+
+      await service.updateByUserId(USER_ID, { serviceLocations: [] });
+
+      // ลบของเก่า แต่ไม่ insert ใหม่ (array ว่าง)
+      expect(prisma.caregiverServiceLocation.deleteMany).toHaveBeenCalledWith({
+        where: { caregiverId: CAREGIVER_ID },
+      });
+      expect(prisma.caregiverServiceLocation.createMany).not.toHaveBeenCalled();
+    });
+
+    it('dedupes serviceLocations (last duplicate dropped)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+
+      await service.updateByUserId(USER_ID, {
+        serviceLocations: ['at_home', 'at_home', 'accompany_outside'],
+      });
+
+      expect(prisma.caregiverServiceLocation.createMany).toHaveBeenCalledWith({
+        data: [
+          { caregiverId: CAREGIVER_ID, serviceLocation: 'at_home' },
+          { caregiverId: CAREGIVER_ID, serviceLocation: 'accompany_outside' },
+        ],
+      });
     });
 
     it('clears a section when an empty array is sent', async () => {
@@ -291,7 +359,7 @@ describe('WorkConditionService', () => {
 
       const result = await service.updateByUserId(USER_ID, { jobTypes: ['general_care'] });
 
-      expect(result.jobTypes).toEqual(['general_care', 'physical_therapy']);
+      expect(result.jobTypes).toEqual(['general_care', 'physiotherapy']);
       expect(result.serviceArea.province).toBe('กรุงเทพมหานคร');
     });
   });

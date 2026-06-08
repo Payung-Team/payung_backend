@@ -940,7 +940,7 @@ type Query {
   myPendingConfirmations(limit: Int = 10, page: Int = 1): BookingListResponse!
 
   """
-  Returns the current caregiver's work condition (availability + job types + service area). Verified caregivers only.
+  Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.
   """
   myWorkCondition: WorkCondition!
 
@@ -1196,7 +1196,14 @@ input UpdateWorkConditionInput {
   """
   availability: [AvailabilitySlotInput!]
 
-  """Accepted job types. Send [] to clear all; omit to keep unchanged."""
+  """
+  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
+  """
+  serviceLocations: [String!]
+
+  """
+  Accepted job types: "general_care" | "bedridden_care" | "physiotherapy" | "medication" | "companion". Send [] to clear all; omit to keep unchanged.
+  """
   jobTypes: [String!]
 
   """Service area (province + district). Omit to keep unchanged."""
@@ -1315,6 +1322,9 @@ type WeeklySubmission {
 type WorkCondition {
   """Weekly availability slots"""
   availability: [AvailabilitySlot!]!
+
+  """Accepted service locations (at_home | accompany_outside)"""
+  serviceLocations: [String!]!
 
   """Accepted job types"""
   jobTypes: [String!]!

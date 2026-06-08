@@ -84,6 +84,7 @@ model Caregiver {
   documents             KycDocument[]
   kycReviews            KycReview[]
   jobTypes              CaregiverJobType[]
+  serviceLocations      CaregiverServiceLocation[]
   availability          CaregiverAvailability[]
   patientReviews        Review[]
   bookings              Booking[]
@@ -103,6 +104,22 @@ model CaregiverJobType {
   @@index([jobType], map: "idx_caregiver_job_types_type")
   @@index([caregiverId], map: "idx_caregiver_job_types_caregiver")
   @@map("caregiver_job_types")
+}
+
+// 1 แถว = 1 "สถานที่ให้บริการ" ที่ caregiver รับ (เช่น at_home, accompany_outside)
+// แยกออกจาก CaregiverJobType (ประเภทงาน) เพราะ FE มี 2 section แยกกัน (PYG-259)
+// โครงสร้างล้อตาม CaregiverJobType ทุกอย่าง (unique + cascade + index)
+model CaregiverServiceLocation {
+  id              String    @id @default(uuid()) @db.Uuid
+  caregiverId     String    @map("caregiver_id")
+  serviceLocation String    @map("service_location")
+  caregiver       Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+
+  // กัน caregiver คนเดียวมี service location ซ้ำ → ใช้ replace-all ได้ปลอดภัย
+  @@unique([caregiverId, serviceLocation])
+  @@index([serviceLocation], map: "idx_caregiver_service_locations_type")
+  @@index([caregiverId], map: "idx_caregiver_service_locations_caregiver")
+  @@map("caregiver_service_locations")
 }
 
 model CaregiverAvailability {

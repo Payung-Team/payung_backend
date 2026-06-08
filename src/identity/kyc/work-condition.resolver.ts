@@ -39,6 +39,7 @@ export class WorkConditionResolver {
    * query {
    *   myWorkCondition {
    *     availability { dayOfWeek timeSlot isActive }
+   *     serviceLocations
    *     jobTypes
    *     serviceArea { province district }
    *   }
@@ -46,7 +47,7 @@ export class WorkConditionResolver {
    */
   @Query(() => WorkCondition, {
     description:
-      "Returns the current caregiver's work condition (availability + job types + service area). Verified caregivers only.",
+      "Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.",
   })
   async myWorkCondition(
     @CurrentUser() user: AuthUser,
@@ -60,10 +61,12 @@ export class WorkConditionResolver {
    * mutation {
    *   updateWorkCondition(input: {
    *     availability: [{ dayOfWeek: 1, timeSlot: "morning", isActive: true }]
-   *     jobTypes: ["general_care", "physical_therapy"]
+   *     serviceLocations: ["at_home", "accompany_outside"]
+   *     jobTypes: ["general_care", "physiotherapy"]
    *     serviceArea: { province: "กรุงเทพมหานคร", district: "บางรัก" }
    *   }) {
    *     availability { dayOfWeek timeSlot isActive }
+   *     serviceLocations
    *     jobTypes
    *     serviceArea { province district }
    *   }

@@ -3,10 +3,11 @@
  * Work Condition inputs — PYG-188
  *
  * Input types สำหรับ mutation `updateWorkCondition` ซึ่ง "upsert" เงื่อนไขการทำงาน
- * ของ caregiver 3 ส่วน:
- *   1. availability  — ตารางว่างรายสัปดาห์ (วัน + ช่วงเวลา + เปิด/ปิด)
- *   2. jobTypes      — ประเภทงานที่รับ (array ของ string)
- *   3. serviceArea   — พื้นที่ให้บริการ (จังหวัด + อำเภอ/เขต)
+ * ของ caregiver 4 ส่วน:
+ *   1. availability     — ตารางว่างรายสัปดาห์ (วัน + ช่วงเวลา + เปิด/ปิด)
+ *   2. serviceLocations — สถานที่รับงาน (at_home / accompany_outside) [PYG-259]
+ *   3. jobTypes         — ประเภทงานที่รับ (array ของ enum)
+ *   4. serviceArea      — พื้นที่ให้บริการ (จังหวัด + อำเภอ/เขต)
  *
  * Partial-update semantics:
  *   - ถ้า client "ไม่ส่ง" section ไหนมา (undefined) → ไม่แตะ section นั้น (คงค่าเดิม)
@@ -20,6 +21,7 @@ import { InputType, Field, Int } from '@nestjs/graphql';
 import {
   IsArray,
   IsBoolean,
+  IsEnum,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -30,6 +32,30 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+
+/**
+ * ServiceLocationEnum — "สถานที่" ที่ caregiver รับงาน (PYG-259)
+ *   at_home           = ดูแลที่บ้านผู้ป่วย
+ *   accompany_outside = พาออกไปข้างนอก (เช่น พาไปหาหมอ)
+ *
+ * ค่าต้องตรงกับที่ FE ส่งมา และตรงกับ Booking.serviceLocations ฝั่งคนจ้าง
+ */
+export enum ServiceLocationEnum {
+  at_home = 'at_home',
+  accompany_outside = 'accompany_outside',
+}
+
+/**
+ * JobTypeEnum — "ประเภทงาน" ที่ caregiver รับ (PYG-259)
+ * แยกคนละเรื่องกับ ServiceLocationEnum (สถานที่) — เดิมเคยปนกันใน jobTypes ก้อนเดียว
+ */
+export enum JobTypeEnum {
+  general_care = 'general_care', // ดูแลทั่วไป
+  bedridden_care = 'bedridden_care', // ดูแลผู้ป่วยติดเตียง
+  physiotherapy = 'physiotherapy', // กายภาพบำบัด
+  medication = 'medication', // ดูแลเรื่องยา
+  companion = 'companion', // เป็นเพื่อน/พูดคุย
+}
 
 /**
  * AvailabilitySlotInput — 1 ช่องในตารางว่าง (1 วัน × 1 ช่วงเวลา)
@@ -101,13 +127,37 @@ export class UpdateWorkConditionInput {
   @Type(() => AvailabilitySlotInput)
   availability?: AvailabilitySlotInput[];
 
+  // serviceLocations = "สถานที่" รับงาน (at_home / accompany_outside) — PYG-259
+  // แยกออกจาก jobTypes ชัดเจน เพื่อให้ตรงกับ 2 section บนหน้า FE
+  // GraphQL wire type ยังเป็น [String] (FE ส่ง string array เหมือนเดิม) แต่ตรวจ
+  // ค่าด้วย @IsEnum → ถ้าส่งค่าที่ไม่อยู่ใน enum จะได้ validation error (400)
   @Field(() => [String], {
     nullable: true,
-    description: 'Accepted job types. Send [] to clear all; omit to keep unchanged.',
+    description:
+      'Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.',
+  })
+  @IsOptional()
+  @IsArray({ message: 'serviceLocations ต้องเป็น array' })
+  @IsEnum(ServiceLocationEnum, {
+    each: true,
+    message: 'serviceLocations แต่ละรายการต้องเป็น at_home หรือ accompany_outside',
+  })
+  // static type เป็น string[] (ตรงกับ GraphQL [String]) — การจำกัดค่าทำผ่าน @IsEnum
+  // ตอน runtime ไม่ใช่ตอน compile เพื่อให้ service จัดการ trim/dedupe ได้ยืดหยุ่น
+  serviceLocations?: string[];
+
+  @Field(() => [String], {
+    nullable: true,
+    description:
+      'Accepted job types: "general_care" | "bedridden_care" | "physiotherapy" | "medication" | "companion". Send [] to clear all; omit to keep unchanged.',
   })
   @IsOptional()
   @IsArray({ message: 'jobTypes ต้องเป็น array' })
-  @IsString({ each: true, message: 'jobTypes แต่ละรายการต้องเป็นข้อความ' })
+  // เปลี่ยนจาก @IsString เป็น @IsEnum → จำกัดเฉพาะค่าที่ระบบรองรับ (PYG-259)
+  @IsEnum(JobTypeEnum, {
+    each: true,
+    message: 'jobTypes แต่ละรายการต้องเป็นค่าที่ระบบรองรับ',
+  })
   jobTypes?: string[];
 
   @Field(() => ServiceAreaInput, {
