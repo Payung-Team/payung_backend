@@ -57,7 +57,7 @@ export class SearchService {
       conditions.push(Prisma.sql`c.service_area_province = ${input.province}`);
     }
     if (input.district) {
-      conditions.push(Prisma.sql`c.service_area_district = ${input.district}`);
+      conditions.push(Prisma.sql`(${input.district} = ANY(string_to_array(c.service_area_district, ',')) OR c.service_area_district = ${input.district})`);
     }
     if (input.minPrice !== undefined) {
       conditions.push(Prisma.sql`c.hourly_rate >= ${input.minPrice}`);
@@ -69,7 +69,7 @@ export class SearchService {
       conditions.push(Prisma.sql`EXISTS (
         SELECT 1 FROM caregiver_job_types jt
         WHERE jt.caregiver_id = c.id
-          AND jt.job_type = ANY(${jobTypes}::text[])
+          AND jt.job_type::text = ANY(${jobTypes}::text[])
       )`);
     }
 
