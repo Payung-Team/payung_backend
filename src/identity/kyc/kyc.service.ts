@@ -452,6 +452,7 @@ export class KycService {
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       kycVerifiedAt: caregiver.kycVerifiedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      languages: caregiver.languages || [],
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,

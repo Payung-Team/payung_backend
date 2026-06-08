@@ -113,4 +113,8 @@ export class Caregiver {
   /** เหตุผลที่ reject KYC (JSONB) — null ถ้ายังไม่เคย reject หรือหลัง resubmit */
   @Field(() => [RejectionReason], { nullable: true })
   rejectionReasons?: RejectionReason[];
+
+  /** ภาษาที่สื่อสารได้ */
+  @Field(() => [String], { description: 'Languages spoken by caregiver' })
+  languages!: string[];
 }

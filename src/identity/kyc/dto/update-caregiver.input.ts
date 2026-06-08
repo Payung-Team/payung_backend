@@ -58,4 +58,10 @@ export class UpdateCaregiverInput {
   @IsOptional()
   @IsString({ message: 'ที่อยู่ต้องเป็นข้อความ' })
   address?: string;
+
+  @Field(() => [String], { nullable: true, description: 'Languages spoken by caregiver' })
+  @IsOptional()
+  @IsArray({ message: 'ภาษาต้องเป็น array' })
+  @IsString({ each: true, message: 'ภาษาแต่ละรายการต้องเป็นข้อความ' })
+  languages?: string[];
 }

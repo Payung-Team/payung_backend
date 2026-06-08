@@ -2128,6 +2128,7 @@ export class AdminService {
     kycSubmittedAt: Date | null;
     kycVerifiedAt: Date | null;
     isSearchable: boolean;
+    languages: string[];
     resubmitCount: number;
     createdAt: Date;
     updatedAt: Date;
@@ -2154,6 +2155,7 @@ export class AdminService {
       kycSubmittedAt: c.kycSubmittedAt ?? undefined,
       kycVerifiedAt: c.kycVerifiedAt ?? undefined,
       isSearchable: c.isSearchable,
+      languages: c.languages || [],
       resubmitCount: c.resubmitCount,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,

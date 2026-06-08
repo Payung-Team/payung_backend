@@ -22,7 +22,7 @@ import { KycDocument } from './entities/kyc-document.entity';
 import { computeFieldChanges } from './utils/compute-field-changes';
 
 /** Profile fields ที่ track ได้ใน updateProfile */
-const PROFILE_TRACKED_FIELDS = ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'];
+const PROFILE_TRACKED_FIELDS = ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -43,6 +43,7 @@ type PrismaCaregiver = {
   kycSubmittedAt: Date | null;
   kycVerifiedAt: Date | null;
   isSearchable: boolean;
+  languages: string[];
   resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
@@ -98,6 +99,7 @@ export class CaregiverService {
       kycSubmittedAt: caregiver.kycSubmittedAt ?? undefined,
       kycVerifiedAt: caregiver.kycVerifiedAt ?? undefined,
       isSearchable: caregiver.isSearchable,
+      languages: caregiver.languages || [],
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
@@ -273,6 +275,7 @@ export class CaregiverService {
           ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
           ...(input.phone !== undefined && { phone: input.phone }),
           ...(input.address !== undefined && { address: input.address }),
+          ...(input.languages !== undefined && { languages: input.languages }),
         },
       });
 
