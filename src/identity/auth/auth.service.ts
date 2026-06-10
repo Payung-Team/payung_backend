@@ -18,19 +18,25 @@ import {
   ConflictException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GraphQLError } from 'graphql';
 import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
+import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
+import { UpdatePasswordResponse } from './dto/update-password.response';
 import { CaregiverService } from '../kyc/caregiver.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly prismaService: PrismaService,
@@ -286,5 +292,67 @@ export class AuthService {
     }
 
     return true;
+  }
+
+  /**
+   * Send a password reset email to the given address.
+   *
+   * Always returns success=true regardless of whether the email exists in the
+   * system, to prevent user enumeration attacks.  Supabase errors (e.g. rate
+   * limit) are logged internally but never surfaced to the caller.
+   *
+   * @param email - Target email address
+   */
+  async requestPasswordReset(email: string): Promise<RequestPasswordResetResponse> {
+    const supabase   = this.supabaseService.getClient();
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${frontendUrl}/reset-password`,
+    });
+
+    if (error) {
+      this.logger.error({ event: 'password_reset.request_failed', email, msg: error.message });
+    }
+
+    return {
+      success: true,
+      message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์รีเซ็ตรหัสผ่านจะถูกส่งไปยังอีเมลของคุณ',
+    };
+  }
+
+  /**
+   * Update the password of the currently authenticated user.
+   *
+   * The caller must hold a valid Supabase session obtained from the
+   * password-reset magic link (passed as the Bearer token).  A scoped
+   * temporary client is created per-request so that updateUser() targets
+   * the correct account — the same pattern used by logout().
+   *
+   * @param accessToken - Bearer token extracted from the Authorization header
+   * @param newPassword - New password (min-length validated at DTO level)
+   * @throws GraphQLError if Supabase rejects the update (expired link, etc.)
+   */
+  async updatePassword(
+    accessToken: string,
+    newPassword: string,
+  ): Promise<UpdatePasswordResponse> {
+    const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
+    const supabaseKey = this.configService.getOrThrow<string>('SUPABASE_ANON_KEY');
+
+    const tempClient = createClient(supabaseUrl, supabaseKey, {
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
+
+    const { error } = await tempClient.auth.updateUser({ password: newPassword });
+
+    if (error) {
+      this.logger.error({ event: 'password_reset.update_failed', msg: error.message });
+      throw new GraphQLError(
+        'ไม่สามารถเปลี่ยนรหัสผ่านได้ ลิงก์อาจหมดอายุ กรุณาขอลิงก์ใหม่',
+      );
+    }
+
+    return { success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' };
   }
 }

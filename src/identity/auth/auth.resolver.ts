@@ -15,6 +15,10 @@ import { AuthPayload } from '../models/auth-payload.model';
 import { LoginInput } from './dto/login.input';
 import { RegisterInput } from './dto/register.input';
 import { UpdateProfileInput } from './dto/update-profile.input';
+import { RequestPasswordResetInput } from './dto/request-password-reset.input';
+import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
+import { UpdatePasswordInput } from './dto/update-password.input';
+import { UpdatePasswordResponse } from './dto/update-password.response';
 import { AuthService } from './auth.service';
 import { UserService } from './user.service';
 import { User } from './entities/user.entity';
@@ -91,6 +95,44 @@ export class AuthResolver {
   @UseGuards(SupabaseAuthGuard)
   async completePasswordChange(@CurrentUser() user: AuthUser): Promise<User> {
     return this.userService.completePasswordChange(user.id);
+  }
+
+  // ─── Password reset (PYG-236) ───────────────────────────────────────────
+
+  /**
+   * requestPasswordReset — ส่งอีเมลรีเซ็ตรหัสผ่าน (public endpoint, no auth required)
+   *
+   * Always returns success=true to prevent user enumeration.
+   */
+  @Mutation(() => RequestPasswordResetResponse, {
+    description:
+      'Send a password reset link to the given email address. ' +
+      'Always returns success=true regardless of whether the email exists.',
+  })
+  async requestPasswordReset(
+    @Args('input') input: RequestPasswordResetInput,
+  ): Promise<RequestPasswordResetResponse> {
+    return this.authService.requestPasswordReset(input.email);
+  }
+
+  /**
+   * updatePassword (PYG-237) — ตั้งรหัสผ่านใหม่หลังจากคลิก reset link ในอีเมล
+   *
+   * Requires a valid Supabase session obtained from the password-reset magic
+   * link — the frontend sets the session from the URL hash before calling this.
+   */
+  @Mutation(() => UpdatePasswordResponse, {
+    description:
+      "Update the current user's password. " +
+      'Requires a valid session established via the password-reset magic link.',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async updatePassword(
+    @Args('input') input: UpdatePasswordInput,
+    @Context() ctx: GqlContext,
+  ): Promise<UpdatePasswordResponse> {
+    const token = ctx.req.headers.authorization!.split(' ')[1];
+    return this.authService.updatePassword(token, input.newPassword);
   }
 
   /**
