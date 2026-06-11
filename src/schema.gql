@@ -292,6 +292,9 @@ type Caregiver {
 
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
+
+  """Languages spoken by caregiver"""
+  languages: [String!]!
   phone: String!
   rejectionReasons: [RejectionReason!]
 
@@ -777,6 +780,11 @@ type Mutation {
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
 
+  """
+  Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
+  """
+  requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
+
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
 
@@ -814,6 +822,11 @@ type Mutation {
 
   """Toggle email notification preference"""
   updateEmailPreference(enabled: Boolean!): User!
+
+  """
+  Update the current user's password. Requires a valid session established via the password-reset magic link.
+  """
+  updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
@@ -1024,6 +1037,18 @@ type RepeatPatientListResponse {
   pagination: BookingPagination!
 }
 
+input RequestPasswordResetInput {
+  """Email address to send the password reset link to"""
+  email: String!
+}
+
+type RequestPasswordResetResponse {
+  message: String
+
+  """Always true — does not reveal whether the email exists"""
+  success: Boolean!
+}
+
 """Filter users by role. Use "all" to return every role."""
 enum RoleFilter {
   """Role 3: Admin"""
@@ -1166,11 +1191,26 @@ input UpdateCaregiverInput {
   """Hourly rate in THB"""
   hourlyRate: Float
 
+  """Languages spoken by caregiver"""
+  languages: [String!]
+
   """Contact phone number (Thai format)"""
   phone: String
 
   """List of caregiver skills"""
   skills: [String!]
+}
+
+input UpdatePasswordInput {
+  """New password (minimum 8 characters)"""
+  newPassword: String!
+}
+
+type UpdatePasswordResponse {
+  message: String
+
+  """Whether the password was updated successfully"""
+  success: Boolean!
 }
 
 input UpdateProfileInput {
@@ -1186,8 +1226,20 @@ input UpdateProfileInput {
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Phone number"""
   phone: String
+
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
+
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
 }
 
 input UpdateWorkConditionInput {
@@ -1197,17 +1249,17 @@ input UpdateWorkConditionInput {
   availability: [AvailabilitySlotInput!]
 
   """
-  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
-  """
-  serviceLocations: [String!]
-
-  """
   Accepted job types: "general_care" | "bedridden_care" | "physiotherapy" | "medication" | "companion". Send [] to clear all; omit to keep unchanged.
   """
   jobTypes: [String!]
 
   """Service area (province + district). Omit to keep unchanged."""
   serviceArea: ServiceAreaInput
+
+  """
+  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
+  """
+  serviceLocations: [String!]
 }
 
 input UploadDocumentInput {
@@ -1246,6 +1298,9 @@ type User {
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Email address of the user"""
   email: String!
 
@@ -1267,8 +1322,17 @@ type User {
   """Phone number"""
   phone: String
 
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
+
   """User role ID: 1=patient, 2=caregiver, 3=admin"""
   role: Int!
+
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
 
   """Last profile update timestamp"""
   updatedAt: DateTime!
@@ -1323,12 +1387,12 @@ type WorkCondition {
   """Weekly availability slots"""
   availability: [AvailabilitySlot!]!
 
-  """Accepted service locations (at_home | accompany_outside)"""
-  serviceLocations: [String!]!
-
   """Accepted job types"""
   jobTypes: [String!]!
 
   """Service area (province + district)"""
   serviceArea: ServiceArea!
+
+  """Accepted service locations (at_home | accompany_outside)"""
+  serviceLocations: [String!]!
 }
