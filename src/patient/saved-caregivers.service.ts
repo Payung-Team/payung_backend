@@ -8,7 +8,6 @@ import {
 import { PrismaService } from '../common/prisma.service';
 
 export interface SavedCaregiverResponse {
-  id: string;
   caregiverId: string;
   savedAt: Date;
   caregiver: {
@@ -31,11 +30,10 @@ export class SavedCaregiversService {
   async list(patientId: string): Promise<SavedCaregiverResponse[]> {
     const saved = await this.prisma.savedCaregiver.findMany({
       where:   { patientId },
-      orderBy: { savedAt: 'desc' },
+      orderBy: { created_at: 'desc' },
       select: {
-        id:          true,
         caregiverId: true,
-        savedAt:     true,
+        created_at:  true,
         caregiver: {
           select: {
             fullName:            true,
@@ -50,9 +48,8 @@ export class SavedCaregiversService {
     });
 
     return saved.map((s) => ({
-      id:          s.id,
       caregiverId: s.caregiverId,
-      savedAt:     s.savedAt,
+      savedAt:     s.created_at,
       caregiver: {
         fullName:  s.caregiver.fullName            ?? undefined,
         avatarUrl: s.caregiver.user.avatarUrl      ?? undefined,
@@ -87,14 +84,13 @@ export class SavedCaregiversService {
     try {
       const saved = await this.prisma.savedCaregiver.create({
         data: { patientId, caregiverId },
-        select: { id: true, caregiverId: true, savedAt: true },
+        select: { caregiverId: true, created_at: true },
       });
 
       this.logger.log({ event: 'saved_caregiver.added', caregiverId, patientId });
       return {
-        id:          saved.id,
         caregiverId: saved.caregiverId,
-        savedAt:     saved.savedAt,
+        savedAt:     saved.created_at,
         caregiver: {
           fullName:  caregiver.fullName            ?? undefined,
           avatarUrl: caregiver.user.avatarUrl      ?? undefined,
@@ -118,7 +114,7 @@ export class SavedCaregiversService {
   async unsave(patientId: string, caregiverId: string): Promise<void> {
     const existing = await this.prisma.savedCaregiver.findUnique({
       where: { patientId_caregiverId: { patientId, caregiverId } },
-      select: { id: true },
+      select: { caregiverId: true },
     });
 
     if (!existing) throw new NotFoundException('Saved caregiver not found');

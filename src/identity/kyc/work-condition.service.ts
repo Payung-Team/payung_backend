@@ -24,7 +24,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, job_type, service_location, time_slot } from '@prisma/client';
 import { PrismaService } from '../../common/prisma.service';
 import { UpdateWorkConditionInput } from './dto/work-condition.input';
 import {
@@ -117,8 +117,7 @@ export class WorkConditionService {
             data: dedupedSlots.map((slot) => ({
               caregiverId,
               dayOfWeek: slot.dayOfWeek,
-              timeSlot: slot.timeSlot,
-              // isActive optional ใน input → default true (ตรงกับ Prisma schema)
+              timeSlot: slot.timeSlot as time_slot,
               isActive: slot.isActive ?? true,
             })),
           });
@@ -140,7 +139,7 @@ export class WorkConditionService {
           await tx.caregiverServiceLocation.createMany({
             data: dedupedLocations.map((serviceLocation) => ({
               caregiverId,
-              serviceLocation,
+              serviceLocation: serviceLocation as service_location,
             })),
           });
         }
@@ -157,7 +156,7 @@ export class WorkConditionService {
 
         if (dedupedJobTypes.length > 0) {
           await tx.caregiverJobType.createMany({
-            data: dedupedJobTypes.map((jobType) => ({ caregiverId, jobType })),
+            data: dedupedJobTypes.map((jobType) => ({ caregiverId, jobType: jobType as job_type })),
           });
         }
       }

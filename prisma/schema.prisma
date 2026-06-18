@@ -17,10 +17,6 @@ model User {
   createdAt                                               DateTime              @default(now()) @map("created_at")
   updatedAt                                               DateTime              @updatedAt @map("updated_at")
   address                                                 String?               @map("address")
-  subDistrict                                             String?               @map("sub_district")
-  district                                                String?               @map("district")
-  province                                                String?               @map("province")
-  postalCode                                              String?               @map("postal_code")
   bio                                                     String?               @map("bio")
   phone                                                   String?               @map("phone")
   role                                                    Int                   @default(1)
@@ -33,18 +29,24 @@ model User {
   is_deleted                                              Boolean               @default(false)
   deleted_at                                              DateTime?             @db.Timestamptz(6)
   is_suspended                                            Boolean               @default(false)
+  subDistrict                                             String?               @map("sub_district")
+  district                                                String?               @map("district")
+  province                                                String?               @map("province")
+  postalCode                                              String?               @map("postal_code")
   admin_audit_logs_admin_audit_logs_admin_idTousers       admin_audit_logs[]    @relation("admin_audit_logs_admin_idTousers")
   admin_audit_logs_admin_audit_logs_target_user_idTousers admin_audit_logs[]    @relation("admin_audit_logs_target_user_idTousers")
+  bookings                                                Booking[]
+  careRecipients                                          CareRecipient[]
   caregiver_edit_logs                                     caregiver_edit_logs[]
   caregiver                                               Caregiver?
   field_locks_field_locks_locked_byTousers                field_locks[]         @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]         @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
   kycReviews                                              KycReview[]
-  patientReviews                                          Review[]
   notifications                                           Notification[]
-  bookings                                                Booking[]
-  careRecipients                                          CareRecipient[]
+  caregiverPayments                                        Payment[]             @relation("CaregiverPayments")
+  patientPayments                                          Payment[]             @relation("PatientPayments")
+  patientReviews                                          Review[]
   savedCaregivers                                         SavedCaregiver[]
   users_users_deletion_scheduled_byTousers                User?                 @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_users_users_deletion_scheduled_byTousers          User[]                @relation("users_deletion_scheduled_byTousers")
@@ -57,52 +59,53 @@ model User {
 }
 
 model Caregiver {
-  id                  String                @id @default(uuid())
-  userId              String                @unique @map("user_id")
-  fullName            String?               @map("full_name")
-  idCardNumber        String?               @map("id_card_number")
+  id                  String                     @id @default(uuid())
+  userId              String                     @unique @map("user_id")
+  fullName            String?                    @map("full_name")
+  idCardNumber        String?                    @map("id_card_number")
   phone               String?
   skills              String[]
-  experienceYears     Int?                  @map("experience_years")
-  hourlyRate          Float?                @map("hourly_rate")
+  experienceYears     Int?                       @map("experience_years")
+  hourlyRate          Float?                     @map("hourly_rate")
   bio                 String?
-  kycStatus           String                @default("none") @map("kyc_status")
-  kycSubmittedAt      DateTime?             @map("kyc_submitted_at")
-  isSearchable        Boolean               @default(false) @map("is_searchable")
-  createdAt           DateTime              @default(now()) @map("created_at")
-  updatedAt           DateTime              @updatedAt @map("updated_at")
-  kycVerifiedAt       DateTime?             @map("kyc_verified_at")
-  resubmitCount       Int                   @default(0) @map("resubmit_count")
-  caregiverNumber     String?               @unique @map("caregiver_number")
+  kycStatus           String                     @default("none") @map("kyc_status")
+  kycSubmittedAt      DateTime?                  @map("kyc_submitted_at")
+  isSearchable        Boolean                    @default(false) @map("is_searchable")
+  createdAt           DateTime                   @default(now()) @map("created_at")
+  updatedAt           DateTime                   @updatedAt @map("updated_at")
+  kycVerifiedAt       DateTime?                  @map("kyc_verified_at")
+  resubmitCount       Int                        @default(0) @map("resubmit_count")
+  caregiverNumber     String?                    @unique @map("caregiver_number")
   gender              String?
-  dateOfBirth         DateTime?             @map("date_of_birth")
+  dateOfBirth         DateTime?                  @map("date_of_birth")
   address             String?
-  kycRejectedAt         DateTime?               @map("kyc_rejected_at")
-  kycRejectionReason    String?                 @map("kyc_rejection_reason")
-  rejection_reasons     Json?
-  serviceAreaProvince   String?                 @map("service_area_province")
-  serviceAreaDistrict   String?                 @map("service_area_district")
-  languages             String[]                @default([])
-  caregiver_edit_logs   caregiver_edit_logs[]
-  user                  User                    @relation(fields: [userId], references: [id])
-  documents             KycDocument[]
-  kycReviews            KycReview[]
-  jobTypes              CaregiverJobType[]
-  serviceLocations      CaregiverServiceLocation[]
-  availability          CaregiverAvailability[]
-  patientReviews        Review[]
-  bookings              Booking[]
-  savedByPatients       SavedCaregiver[]
+  kycRejectedAt       DateTime?                  @map("kyc_rejected_at")
+  kycRejectionReason  String?                    @map("kyc_rejection_reason")
+  rejection_reasons   Json?
+  serviceAreaProvince String?                    @map("service_area_province") @db.VarChar
+  serviceAreaDistrict String?                    @map("service_area_district") @db.VarChar
+  languages           String[]                   @default([])
+  bookings            Booking[]
+  availability        CaregiverAvailability[]
+  caregiver_edit_logs caregiver_edit_logs[]
+  jobTypes            CaregiverJobType[]
+  serviceLocations    CaregiverServiceLocation[]
+  user                User                       @relation(fields: [userId], references: [id])
+  documents           KycDocument[]
+  kycReviews          KycReview[]
+  patientReviews      Review[]
+  savedByPatients     SavedCaregiver[]
 
   @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
   @@map("caregivers")
 }
 
 model CaregiverJobType {
-  id          String    @id @default(uuid()) @db.Uuid
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   caregiverId String    @map("caregiver_id")
-  jobType     String    @map("job_type")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  jobType     job_type  @map("job_type")
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([caregiverId, jobType])
   @@index([jobType], map: "idx_caregiver_job_types_type")
@@ -110,85 +113,83 @@ model CaregiverJobType {
   @@map("caregiver_job_types")
 }
 
-// 1 แถว = 1 "สถานที่ให้บริการ" ที่ caregiver รับ (เช่น at_home, accompany_outside)
-// แยกออกจาก CaregiverJobType (ประเภทงาน) เพราะ FE มี 2 section แยกกัน (PYG-259)
-// โครงสร้างล้อตาม CaregiverJobType ทุกอย่าง (unique + cascade + index)
 model CaregiverServiceLocation {
-  id              String    @id @default(uuid()) @db.Uuid
-  caregiverId     String    @map("caregiver_id")
-  serviceLocation String    @map("service_location")
-  caregiver       Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiverId     String           @map("caregiver_id")
+  serviceLocation service_location @map("service_location")
+  caregiver       Caregiver        @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  // กัน caregiver คนเดียวมี service location ซ้ำ → ใช้ replace-all ได้ปลอดภัย
   @@unique([caregiverId, serviceLocation])
   @@index([serviceLocation], map: "idx_caregiver_service_locations_type")
   @@index([caregiverId], map: "idx_caregiver_service_locations_caregiver")
+  @@index([caregiverId], map: "idx_csl_caregiver_id")
   @@map("caregiver_service_locations")
 }
 
 model CaregiverAvailability {
-  id          String    @id @default(uuid()) @db.Uuid
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   caregiverId String    @map("caregiver_id")
   dayOfWeek   Int       @map("day_of_week") @db.SmallInt
-  timeSlot    String    @map("time_slot")
+  timeSlot    time_slot @map("time_slot")
   isActive    Boolean   @default(true) @map("is_active")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([caregiverId, dayOfWeek, timeSlot])
+  @@index([caregiverId], map: "idx_caregiver_availability_caregiver")
   @@map("caregiver_availability")
 }
 
 model Review {
-  id          String    @id @default(uuid()) @db.Uuid
-  caregiverId String    @map("caregiver_id")
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String    @unique @map("booking_id") @db.Uuid
   patientId   String    @map("patient_id")
-  bookingId   String?   @unique @map("booking_id") @db.Uuid
+  caregiverId String    @map("caregiver_id")
   rating      Int
   comment     String?
   isAnonymous Boolean   @default(false) @map("is_anonymous")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
-  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  booking     Booking?  @relation(fields: [bookingId], references: [id])
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([caregiverId], map: "idx_reviews_caregiver")
+  @@index([patientId], map: "idx_reviews_patient")
   @@map("reviews")
 }
 
 model Booking {
-  id                       String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  patientId                String         @map("patient_id")
-  // caregiverId is nullable — set to null until matched by the matching engine (Phase 3)
-  // status flow: unmatched → pending → accepted → confirmed / completed / cancelled / rejected
-  caregiverId              String?        @map("caregiver_id")
-  careRecipientId          String?        @map("care_recipient_id") @db.Uuid
-  serviceLocations         String[]       @map("service_locations")
-  // tasks = label strings (e.g. ["อาบน้ำ", "ป้อนอาหาร"]) — no structured attributes needed
-  tasks                    String[]       @default([]) @map("tasks")
-  serviceType              String         @map("service_type")
-  timeSlot                 String         @map("time_slot")
-  startTime                DateTime       @map("start_time") @db.Time(6)
-  durationHours            Decimal        @map("duration_hours") @db.Decimal
-  locationAddress          String         @map("location_address")
-  locationLat              Decimal?       @map("location_lat") @db.Decimal(10, 7)
-  locationLng              Decimal?       @map("location_lng") @db.Decimal(10, 7)
-  // unmatched = no caregiver yet; pending = caregiver assigned, awaiting acceptance
-  status                   String         @default("unmatched")
-  rejectionReason          String?        @map("rejection_reason")
-  estimatedCost            Decimal?       @map("estimated_cost") @db.Decimal(10, 2)
-  platformFee              Decimal?       @map("platform_fee") @db.Decimal(10, 2)
-  bookingDate              DateTime       @map("booking_date") @db.Date
-  dayOfContactName         String?        @map("day_of_contact_name")
-  dayOfContactPhone        String?        @map("day_of_contact_phone")
-  dayOfContactRelationship String?        @map("day_of_contact_relationship")
-  createdAt                DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
-  acceptedAt               DateTime?      @map("accepted_at") @db.Timestamptz(6)
-  confirmedAt              DateTime?      @map("confirmed_at") @db.Timestamptz(6)
-  patient                  User           @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  // SetNull: if caregiver is deleted, booking becomes unmatched again
-  caregiver                Caregiver?     @relation(fields: [caregiverId], references: [id], onDelete: SetNull)
-  careRecipient            CareRecipient? @relation(fields: [careRecipientId], references: [id])
+  id                       String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId                String               @map("patient_id")
+  caregiverId              String?              @map("caregiver_id")
+  careRecipientId          String?              @map("care_recipient_id") @db.Uuid
+  serviceLocations         String[]             @map("service_locations")
+  serviceType              booking_service_type @map("service_type")
+  timeSlot                 time_slot            @map("time_slot")
+  startTime                DateTime             @map("start_time") @db.Time(6)
+  durationHours            Decimal              @map("duration_hours") @db.Decimal
+  locationAddress          String               @map("location_address")
+  locationLat              Decimal?             @map("location_lat") @db.Decimal(10, 7)
+  locationLng              Decimal?             @map("location_lng") @db.Decimal(10, 7)
+  status                   booking_status       @default(unmatched)
+  rejectionReason          String?              @map("rejection_reason")
+  estimatedCost            Decimal?             @map("estimated_cost") @db.Decimal(10, 2)
+  platformFee              Decimal?             @map("platform_fee") @db.Decimal(10, 2)
+  bookingDate              DateTime             @map("booking_date") @db.Date
+  dayOfContactName         String?              @map("day_of_contact_name")
+  dayOfContactPhone        String?              @map("day_of_contact_phone")
+  dayOfContactRelationship String?              @map("day_of_contact_relationship")
+  createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime             @default(now()) @map("updated_at") @db.Timestamptz(6)
+  confirmedAt              DateTime?            @map("confirmed_at") @db.Timestamptz(6)
+  tasks                    String[]             @default([]) @map("tasks")
+  acceptedAt               DateTime?            @map("accepted_at") @db.Timestamptz(6)
+  booking_tasks            booking_tasks[]
+  careRecipient            CareRecipient?       @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
+  caregiver                Caregiver?           @relation(fields: [caregiverId], references: [id])
+  patient                  User                 @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payment                  Payment?
   review                   Review?
 
   @@index([caregiverId], map: "idx_bookings_caregiver")
@@ -199,26 +200,46 @@ model Booking {
 }
 
 model CareRecipient {
-  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  patientId String    @map("patient_id")
-  name      String    @db.VarChar(255)
-  nickname  String?   @db.VarChar(100)
-  patient   User      @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  bookings  Booking[]
+  id                      String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId               String          @map("patient_id")
+  name                    String          @db.VarChar(255)
+  nickname                String?         @db.VarChar(100)
+  date_of_birth           DateTime?       @db.Date
+  gender                  gender_enum?
+  weight_kg               Decimal?        @db.Decimal(5, 2)
+  height_cm               Decimal?        @db.Decimal(5, 2)
+  mobility_level          mobility_level?
+  medical_conditions      String[]
+  current_medications     String?
+  allergies               String?
+  blood_type              String?         @db.VarChar(5)
+  address_line            String?
+  province                String?         @db.VarChar(100)
+  district                String?         @db.VarChar(100)
+  lat                     Decimal?        @db.Decimal(10, 7)
+  lng                     Decimal?        @db.Decimal(10, 7)
+  emergency_contact_name  String?
+  emergency_contact_phone String?
+  emergency_contact_rel   String?
+  preferred_hospital      String?
+  is_self                 Boolean         @default(false)
+  created_at              DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime        @default(now()) @db.Timestamptz(6)
+  bookings                Booking[]
+  patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([patientId], map: "idx_care_recipients_patient")
   @@map("care_recipients")
 }
 
 model SavedCaregiver {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   patientId   String    @map("patient_id")
   caregiverId String    @map("caregiver_id")
-  savedAt     DateTime  @default(now()) @map("saved_at") @db.Timestamptz(6)
-  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([patientId, caregiverId])
+  @@id([patientId, caregiverId])
   @@index([patientId], map: "idx_saved_caregivers_patient")
   @@map("saved_caregivers")
 }
@@ -309,9 +330,112 @@ model caregiver_edit_logs {
   users         User      @relation(fields: [edited_by], references: [id])
 }
 
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model booking_tasks {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id   String   @db.Uuid
+  description  String
+  is_suggested Boolean  @default(false)
+  is_custom    Boolean  @default(false)
+  time_note    String?
+  sort_order   Int      @default(0)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  bookings     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_booking_tasks_booking")
+}
+
+model Payment {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId      String              @unique(map: "idx_payments_booking") @map("booking_id") @db.Uuid
+  patientId      String              @map("patient_id")
+  caregiverId    String              @map("caregiver_id")
+  amount         Decimal             @db.Decimal(10, 2)
+  currency       String              @default("THB") @db.VarChar(3)
+  omiseChargeId  String?             @map("omise_charge_id")
+  omiseToken     String?             @map("omise_token")
+  paymentMethod  String              @default("credit_card") @map("payment_method") @db.VarChar(20)
+  paymentStatus  PaymentStatus       @default(pending) @map("payment_status")
+  failureCode    String?             @map("failure_code")
+  failureMessage String?             @map("failure_message")
+  metadata       Json                @default("{}")
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime            @default(now()) @map("updated_at") @db.Timestamptz(6)
+  booking        Booking             @relation(fields: [bookingId], references: [id], onUpdate: NoAction, map: "fk_payments_booking")
+  caregiver      User                @relation("CaregiverPayments", fields: [caregiverId], references: [id], onUpdate: NoAction, map: "fk_payments_caregiver")
+  patient        User                @relation("PatientPayments", fields: [patientId], references: [id], onUpdate: NoAction, map: "fk_payments_patient")
+
+  @@index([patientId], map: "idx_payments_patient")
+  @@index([paymentStatus], map: "idx_payments_status")
+  @@map("payments")
+}
+
 enum NotificationType {
   kyc_submitted
   kyc_verified
   kyc_rejected
   kyc_resubmitted
+}
+
+enum booking_service_type {
+  general_care
+  bedridden_care
+  physiotherapy
+  medication
+  companion
+}
+
+enum booking_status {
+  pending
+  accepted
+  confirmed
+  rejected
+  completed
+  unmatched
+  cancelled
+}
+
+enum gender_enum {
+  male
+  female
+}
+
+enum job_type {
+  general_care
+  bedridden_care
+  physiotherapy
+  medication
+  companion
+}
+
+enum mobility_level {
+  independent
+  assisted
+  wheelchair
+  bedridden
+}
+
+enum PaymentStatus {
+  pending
+  held
+  captured
+  transferred
+  voided
+  refunded
+  partially_refunded
+  failed
+  expired
+
+  @@map("payment_status_enum")
+}
+
+enum service_location {
+  at_home
+  accompany_outside
+}
+
+enum time_slot {
+  morning
+  afternoon
+  evening
 }
