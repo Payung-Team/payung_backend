@@ -881,6 +881,43 @@ type PatientBriefDto {
   id: ID!
 }
 
+"""สถานะการชำระเงินของ booking (FSM)"""
+enum PaymentStatus {
+  captured
+  expired
+  failed
+  held
+  partially_refunded
+  pending
+  refunded
+  transferred
+  voided
+}
+
+type PaymentStatusHistory {
+  """User ID ผู้สั่งเปลี่ยน (null = ระบบ/cron)"""
+  changedBy: String
+
+  """เวลาที่เกิดการเปลี่ยนสถานะ"""
+  createdAt: DateTime!
+
+  """สถานะก่อนเปลี่ยน (null = แถวแรกตอนสร้าง payment)"""
+  fromStatus: PaymentStatus
+  id: ID!
+
+  """metadata แบบ JSON-stringified (optional)"""
+  metadata: String
+
+  """Payment ID ที่ประวัตินี้สังกัด"""
+  paymentId: String!
+
+  """เหตุผลของการเปลี่ยนสถานะ"""
+  reason: String
+
+  """สถานะหลังเปลี่ยน"""
+  toStatus: PaymentStatus!
+}
+
 type Query {
   """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
@@ -959,6 +996,9 @@ type Query {
 
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
+
+  """ประวัติการเปลี่ยนสถานะของ payment (เรียงเก่า → ใหม่)"""
+  paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
 
   """
   Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.

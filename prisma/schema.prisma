@@ -46,6 +46,7 @@ model User {
   notifications                                           Notification[]
   caregiverPayments                                        Payment[]             @relation("CaregiverPayments")
   patientPayments                                          Payment[]             @relation("PatientPayments")
+  paymentStatusChanges                                     PaymentStatusHistory[] @relation("PaymentStatusChanges")
   patientReviews                                          Review[]
   savedCaregivers                                         SavedCaregiver[]
   users_users_deletion_scheduled_byTousers                User?                 @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -364,10 +365,30 @@ model Payment {
   booking        Booking             @relation(fields: [bookingId], references: [id], onUpdate: NoAction, map: "fk_payments_booking")
   caregiver      User                @relation("CaregiverPayments", fields: [caregiverId], references: [id], onUpdate: NoAction, map: "fk_payments_caregiver")
   patient        User                @relation("PatientPayments", fields: [patientId], references: [id], onUpdate: NoAction, map: "fk_payments_patient")
+  statusHistory  PaymentStatusHistory[]   // PYG-277: บันทึกทุกครั้งที่ payment_status เปลี่ยน (audit trail)
 
   @@index([patientId], map: "idx_payments_patient")
   @@index([paymentStatus], map: "idx_payments_status")
   @@map("payments")
+}
+
+/// PYG-277 — Audit trail ของการเปลี่ยน payment status (FSM)
+/// ทุกครั้งที่ PaymentStateMachine.transition() ทำงาน → insert 1 แถวที่นี่
+/// ใช้ตอบคำถาม "ทำไม payment ถึงเป็นสถานะนี้ ใครเปลี่ยน เปลี่ยนเมื่อไหร่"
+model PaymentStatusHistory {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentId     String         @map("payment_id") @db.Uuid
+  fromStatus    PaymentStatus? @map("from_status")            // null = แถวแรกตอนสร้าง payment (ไม่มีสถานะก่อนหน้า)
+  toStatus      PaymentStatus  @map("to_status")              // สถานะปลายทาง (ต้องมีเสมอ)
+  changedBy     String?        @map("changed_by")             // user ที่สั่งเปลี่ยน — null = ระบบ/cron (เช่น hold หมดอายุ)
+  reason        String?                                        // เหตุผล (optional) เช่น "patient ยกเลิกก่อนวันบริการ"
+  metadata      Json?                                          // ข้อมูลเสริม เช่น { omiseChargeId, refundAmount }
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  payment       Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_psh_payment")
+  changedByUser User?          @relation("PaymentStatusChanges", fields: [changedBy], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_psh_changed_by")
+
+  @@index([paymentId], map: "idx_psh_payment")
+  @@map("payment_status_history")
 }
 
 enum NotificationType {
