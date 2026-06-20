@@ -15,6 +15,7 @@ import { SearchModule } from './search/search.module';
 import { CaregiverPublicModule } from './caregiver-public/caregiver-public.module';
 import { BookingModule } from './booking/booking.module';
 import { PatientModule } from './patient/patient.module';
+import { PaymentModule } from './payment/payment.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { PatientModule } from './patient/patient.module';
     CaregiverPublicModule, // GET /api/v1/caregivers/:id/public
     BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs
     PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
+    PaymentModule,       // PYG-277 FSM + PYG-282 admin transfer + Omise webhook
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

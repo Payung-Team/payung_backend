@@ -61,6 +61,22 @@ export class User {
   @Field({ nullable: true, description: 'User address' })
   address?: string;
 
+  /** ตำบล/แขวง — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Sub-district (ตำบล/แขวง)' })
+  subDistrict?: string;
+
+  /** อำเภอ/เขต — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'District (อำเภอ/เขต)' })
+  district?: string;
+
+  /** จังหวัด — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Province (จังหวัด)' })
+  province?: string;
+
+  /** รหัสไปรษณีย์ — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Postal code (รหัสไปรษณีย์)' })
+  postalCode?: string;
+
   /** เกี่ยวกับตัวเอง / บรรยายสั้น — อาจเป็น null ได้ */
   @Field({ nullable: true, description: 'Bio or personal description' })
   bio?: string;

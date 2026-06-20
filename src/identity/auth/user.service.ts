@@ -28,6 +28,10 @@ type PrismaUser = {
   avatarUrl: string | null;
   phone: string | null;
   address: string | null;
+  subDistrict: string | null;
+  district: string | null;
+  province: string | null;
+  postalCode: string | null;
   bio: string | null;
   role: number;
   isActive: boolean;
@@ -55,6 +59,10 @@ export class UserService {
       avatarUrl: user.avatarUrl ?? undefined,
       phone: user.phone ?? undefined,
       address: user.address ?? undefined,
+      subDistrict: user.subDistrict ?? undefined,
+      district: user.district ?? undefined,
+      province: user.province ?? undefined,
+      postalCode: user.postalCode ?? undefined,
       bio: user.bio ?? undefined,
       role: user.role,
       isActive: user.isActive,
@@ -168,6 +176,10 @@ export class UserService {
       address?: string;
       bio?: string;
       avatarUrl?: string;
+      subDistrict?: string;
+      district?: string;
+      province?: string;
+      postalCode?: string;
     },
   ): Promise<User> {
     // ตรวจสอบว่า user มีอยู่จริงก่อน
@@ -185,6 +197,18 @@ export class UserService {
         }),
         ...(updates.address !== undefined && {
           address: updates.address,
+        }),
+        ...(updates.subDistrict !== undefined && {
+          subDistrict: updates.subDistrict,
+        }),
+        ...(updates.district !== undefined && {
+          district: updates.district,
+        }),
+        ...(updates.province !== undefined && {
+          province: updates.province,
+        }),
+        ...(updates.postalCode !== undefined && {
+          postalCode: updates.postalCode,
         }),
         ...(updates.bio !== undefined && {
           bio: updates.bio,

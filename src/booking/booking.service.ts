@@ -22,6 +22,7 @@ import {
   MatchedCaregiverRest,
   TaskSuggestion,
 } from './dto/booking-rest.types';
+import { booking_service_type, booking_status, time_slot } from '@prisma/client';
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -171,8 +172,8 @@ export class BookingService {
         careRecipientId:  dto.careRecipientId ?? null,
         tasks:            dto.tasks,
         serviceLocations: dto.serviceLocations,
-        serviceType:      dto.serviceType,
-        timeSlot:         dto.timeSlot,
+        serviceType:      dto.serviceType as booking_service_type,
+        timeSlot:         dto.timeSlot as time_slot,
         startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
         durationHours:    dto.durationHours,
         locationAddress:  dto.locationAddress,
@@ -417,6 +418,31 @@ export class BookingService {
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
     return this.toSummary(booking as unknown as BookingWithIncludes);
+  async myPendingConfirmations(
+    userId: string,
+    page = 1,
+    limit = 10,
+  ): Promise<BookingListResponse> {
+    page  = Math.max(1, page);
+    limit = Math.min(50, Math.max(1, limit));
+    const offset = (page - 1) * limit;
+
+    const where = { patientId: userId, status: 'accepted' as booking_status };
+    const [items, total] = await Promise.all([
+      this.prisma.booking.findMany({
+        where,
+        include: {
+          caregiver: { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+        orderBy: { bookingDate: 'asc' },
+        skip: offset,
+        take: limit,
+      }),
+      this.prisma.booking.count({ where }),
+    ]);
+
+    return this.toListResponse(items as unknown as BookingWithIncludes[], { page, limit, total });
   }
 
   async myBookingHistory(

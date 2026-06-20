@@ -88,6 +88,12 @@ type AdminKycListPayload {
   totalPages: Int!
 }
 
+input AdminPaymentsInput {
+  limit: Int
+  page: Int
+  status: PaymentStatus
+}
+
 input AdminUpdateCaregiverInfoInput {
   """UUID of the caregiver to edit"""
   caregiverId: ID!
@@ -784,6 +790,11 @@ type Mutation {
   """Mark a single notification as read"""
   markAsRead(id: String!): Notification!
 
+  """
+  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
+  """
+  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
+
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
 
@@ -791,6 +802,11 @@ type Mutation {
   Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
+
+  """
+  Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
+  """
+  requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
@@ -829,6 +845,11 @@ type Mutation {
 
   """Toggle email notification preference"""
   updateEmailPreference(enabled: Boolean!): User!
+
+  """
+  Update the current user's password. Requires a valid session established via the password-reset magic link.
+  """
+  updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
@@ -883,6 +904,67 @@ type PatientBriefDto {
   id: ID!
 }
 
+type Payment {
+  amount: Float!
+  bookingId: String!
+  caregiverId: String!
+  createdAt: DateTime!
+  currency: String!
+  failureCode: String
+  failureMessage: String
+  id: ID!
+  omiseChargeId: String
+  patientId: String!
+  paymentMethod: String!
+  paymentStatus: PaymentStatus!
+  updatedAt: DateTime!
+}
+
+type PaymentConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [Payment!]!
+  page: Int!
+  totalCount: Int!
+}
+
+"""สถานะการชำระเงินของ booking (FSM)"""
+enum PaymentStatus {
+  captured
+  expired
+  failed
+  held
+  partially_refunded
+  pending
+  refunded
+  transferred
+  voided
+}
+
+type PaymentStatusHistory {
+  """User ID ผู้สั่งเปลี่ยน (null = ระบบ/cron)"""
+  changedBy: String
+
+  """เวลาที่เกิดการเปลี่ยนสถานะ"""
+  createdAt: DateTime!
+
+  """สถานะก่อนเปลี่ยน (null = แถวแรกตอนสร้าง payment)"""
+  fromStatus: PaymentStatus
+  id: ID!
+
+  """metadata แบบ JSON-stringified (optional)"""
+  metadata: String
+
+  """Payment ID ที่ประวัตินี้สังกัด"""
+  paymentId: String!
+
+  """เหตุผลของการเปลี่ยนสถานะ"""
+  reason: String
+
+  """สถานะหลังเปลี่ยน"""
+  toStatus: PaymentStatus!
+}
+
 type Query {
   """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
@@ -898,6 +980,11 @@ type Query {
   Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
   """
   adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
+  """
+  adminPayments(input: AdminPaymentsInput): PaymentConnection!
 
   """
   Admin only: Get full user detail including caregiver info, KYC status, suspension state, and audit log count.
@@ -954,6 +1041,9 @@ type Query {
 
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
+
+  """ประวัติการเปลี่ยนสถานะของ payment (เรียงเก่า → ใหม่)"""
+  paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
 
   """
   Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
@@ -1017,6 +1107,19 @@ input RejectionReasonItem {
   Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
   """
   title: String!
+}
+
+type RepeatPatientDto {
+  avatarUrl: String
+  completedCount: Int!
+  displayName: String
+  lastCompletedAt: DateTime
+  patientId: ID!
+}
+
+type RepeatPatientListResponse {
+  data: [RepeatPatientDto!]!
+  pagination: BookingPagination!
 }
 
 """Filter users by role. Use "all" to return every role."""
@@ -1171,6 +1274,18 @@ input UpdateCaregiverInput {
   skills: [String!]
 }
 
+input UpdatePasswordInput {
+  """New password (minimum 8 characters)"""
+  newPassword: String!
+}
+
+type UpdatePasswordResponse {
+  message: String
+
+  """Whether the password was updated successfully"""
+  success: Boolean!
+}
+
 input UpdateProfileInput {
   """User address"""
   address: String
@@ -1184,8 +1299,20 @@ input UpdateProfileInput {
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Phone number"""
   phone: String
+
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
+
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
 }
 
 input UpdateWorkConditionInput {
@@ -1244,6 +1371,9 @@ type User {
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Email address of the user"""
   email: String!
 
@@ -1265,8 +1395,17 @@ type User {
   """Phone number"""
   phone: String
 
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
+
   """User role ID: 1=patient, 2=caregiver, 3=admin"""
   role: Int!
+
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
 
   """Last profile update timestamp"""
   updatedAt: DateTime!
