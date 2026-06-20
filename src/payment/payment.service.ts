@@ -1,17 +1,9 @@
-/**
- * PaymentService — query ฝั่งอ่านสำหรับ payment (PYG-277)
- *
- * ตอนนี้มีเมธอดเดียว: getHistory() — ดึง audit trail ของ payment 1 ใบ
- * (การ "เปลี่ยนสถานะ" อยู่ที่ PaymentStateMachine แยกความรับผิดชอบกัน)
- *
- * Security (PDPA — กันคนแอบดู payment ของคนอื่น):
- * - เห็น history ได้เฉพาะ "คู่กรณีของ payment ใบนั้น" (patient หรือ caregiver)
- *   หรือ admin (role=3) เท่านั้น — คนอื่น → ForbiddenException
- */
 import {
-  Injectable,
-  NotFoundException,
+  BadRequestException,
   ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
@@ -19,8 +11,11 @@ import { ADMIN_ROLE } from '../common/guards/admin.guard';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { PaymentStatusHistory } from './entities/payment-status-history.entity';
+import { PaymentStateMachine } from './payment-state-machine';
+import { Payment, PaymentStatusEnum } from './dto/payment.type';
+import { PaymentConnection } from './dto/payment-connection.type';
+import { AdminPaymentsInput } from './dto/admin-payments.input';
 
-/** shape ของ history ที่ Prisma คืนมา (paymentStatus เป็น string-union) */
 type PrismaHistoryRow = {
   id: string;
   paymentId: string;
@@ -34,14 +29,118 @@ type PrismaHistoryRow = {
 
 @Injectable()
 export class PaymentService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(PaymentService.name);
 
-  /**
-   * แปลง Prisma row → GraphQL entity
-   * - metadata (jsonb) → JSON string (ตามแนว Notification.data — ยังไม่มี JSON scalar)
-   * - null → undefined ให้ตรงกับ field nullable ของ GraphQL
-   */
-  private mapToEntity(row: PrismaHistoryRow): PaymentStatusHistory {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fsm: PaymentStateMachine,
+  ) {}
+
+  // ── PYG-277: audit history query ─────────────────────────────────────────
+
+  async getHistory(
+    paymentId: string,
+    user: AuthUser,
+  ): Promise<PaymentStatusHistory[]> {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: { patientId: true, caregiverId: true },
+    });
+
+    if (!payment) throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
+
+    const isParty = payment.patientId === user.id || payment.caregiverId === user.id;
+    const isAdmin = user.role === ADMIN_ROLE;
+    if (!isParty && !isAdmin) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์ดูประวัติการชำระเงินนี้');
+    }
+
+    const rows = await this.prisma.paymentStatusHistory.findMany({
+      where: { paymentId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return rows.map((row) => this.mapHistoryRow(row as PrismaHistoryRow));
+  }
+
+  // ── PYG-282: admin transfer + payment list ───────────────────────────────
+
+  async markPaymentTransferred(
+    paymentId: string,
+    transferRef: string,
+    notes: string | undefined,
+    adminId: string,
+  ): Promise<Payment> {
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) throw new NotFoundException('Payment not found');
+
+    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.captured) {
+      throw new BadRequestException('payment not in captured state');
+    }
+
+    // Use FSM — atomic: updates status + inserts history in one transaction
+    const updated = await this.fsm.transition(paymentId, PaymentStatus.transferred, {
+      changedBy: adminId,
+      reason: notes,
+      metadata: { transferRef, transferredAt: new Date().toISOString() },
+    });
+
+    // Merge transferRef into payment.metadata for FE visibility
+    await this.prisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        metadata: {
+          ...(updated.metadata as object ?? {}),
+          transferRef,
+          adminId,
+        },
+      },
+    });
+
+    // TODO: PYG-268 — replace with EventEmitter2.emit('payment.transferred', payload)
+    this.logger.log(JSON.stringify({
+      event: 'payment.transferred',
+      payload: {
+        paymentId,
+        caregiverId: updated.caregiverId,
+        bookingId: updated.bookingId,
+        amount: Number(updated.amount),
+      },
+    }));
+
+    return this.toGql(updated);
+  }
+
+  async adminPayments(input: AdminPaymentsInput): Promise<PaymentConnection> {
+    const page  = Math.max(1, input.page  ?? 1);
+    const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+    const status = (input.status ?? PaymentStatusEnum.captured) as unknown as PaymentStatus;
+    const offset = (page - 1) * limit;
+
+    const where = { paymentStatus: status };
+
+    const [items, totalCount] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip: offset,
+        take: limit,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return {
+      nodes: items.map((p) => this.toGql(p)),
+      totalCount,
+      page,
+      limit,
+      hasNextPage: offset + limit < totalCount,
+    };
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  private mapHistoryRow(row: PrismaHistoryRow): PaymentStatusHistory {
     return {
       id: row.id,
       paymentId: row.paymentId,
@@ -54,44 +153,37 @@ export class PaymentService {
     };
   }
 
-  /**
-   * getHistory — ดึงประวัติการเปลี่ยนสถานะของ payment 1 ใบ (เรียงเก่า → ใหม่)
-   *
-   * เรียงจากเก่าไปใหม่ (createdAt ASC) เพื่ออ่านเป็น "ไทม์ไลน์" จากบนลงล่าง
-   *
-   * @param paymentId - UUID ของ payment
-   * @param user      - ผู้เรียก (จาก JWT) ใช้ตรวจสิทธิ์
-   * @throws NotFoundException   ถ้าไม่พบ payment
-   * @throws ForbiddenException  ถ้า user ไม่ใช่คู่กรณีและไม่ใช่ admin
-   */
-  async getHistory(
-    paymentId: string,
-    user: AuthUser,
-  ): Promise<PaymentStatusHistory[]> {
-    // โหลดเฉพาะ field ที่ใช้ตรวจสิทธิ์ (ไม่ต้องดึงทั้ง record)
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      select: { patientId: true, caregiverId: true },
-    });
-
-    if (!payment) {
-      throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
-    }
-
-    // เห็นได้เฉพาะคู่กรณี (patient/caregiver) หรือ admin
-    const isParty =
-      payment.patientId === user.id || payment.caregiverId === user.id;
-    const isAdmin = user.role === ADMIN_ROLE;
-
-    if (!isParty && !isAdmin) {
-      throw new ForbiddenException('คุณไม่มีสิทธิ์ดูประวัติการชำระเงินนี้');
-    }
-
-    const rows = await this.prisma.paymentStatusHistory.findMany({
-      where: { paymentId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return rows.map((row) => this.mapToEntity(row as PrismaHistoryRow));
+  private toGql(p: {
+    id: string;
+    bookingId: string;
+    patientId: string;
+    caregiverId: string;
+    amount: { toNumber(): number } | number | string;
+    currency: string;
+    omiseChargeId: string | null;
+    paymentMethod: string;
+    paymentStatus: string;
+    failureCode: string | null;
+    failureMessage: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): Payment {
+    return {
+      id:             p.id,
+      bookingId:      p.bookingId,
+      patientId:      p.patientId,
+      caregiverId:    p.caregiverId,
+      amount:         typeof p.amount === 'object' && 'toNumber' in p.amount
+                        ? p.amount.toNumber()
+                        : Number(p.amount),
+      currency:       p.currency,
+      omiseChargeId:  p.omiseChargeId  ?? undefined,
+      paymentMethod:  p.paymentMethod,
+      paymentStatus:  p.paymentStatus as PaymentStatusEnum,
+      failureCode:    p.failureCode    ?? undefined,
+      failureMessage: p.failureMessage ?? undefined,
+      createdAt:      p.createdAt,
+      updatedAt:      p.updatedAt,
+    };
   }
 }

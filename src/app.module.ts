@@ -59,7 +59,7 @@ import { PaymentModule } from './payment/payment.module';
     CaregiverPublicModule, // GET /api/v1/caregivers/:id/public
     BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs
     PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
-    PaymentModule,       // PYG-277: payment status FSM + audit history
+    PaymentModule,       // PYG-277 FSM + PYG-282 admin transfer + Omise webhook
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
