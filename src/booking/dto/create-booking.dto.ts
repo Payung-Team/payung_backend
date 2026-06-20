@@ -8,7 +8,6 @@ import {
   IsUUID,
   MaxLength,
   Min,
-  MinLength,
   ArrayMinSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -18,6 +17,11 @@ export class CreateBookingDto {
   @IsOptional()
   @IsUUID()
   careRecipientId?: string;
+
+  /** caregiver ที่ patient เลือก (optional — ถ้าส่งมา status จะเป็น pending ทันที) */
+  @IsOptional()
+  @IsUUID()
+  caregiverId?: string;
 
   /**
    * รายการงาน (label strings เช่น ["อาบน้ำ", "ป้อนอาหาร"])
@@ -88,4 +92,9 @@ export class CreateBookingDto {
   @IsString()
   @MaxLength(100)
   dayOfContactRelationship?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
 }

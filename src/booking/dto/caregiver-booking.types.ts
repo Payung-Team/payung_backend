@@ -1,4 +1,4 @@
-import { Field, Float, ID, Int, ObjectType } from '@nestjs/graphql';
+import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
 import { BookingPagination } from './booking-summary.types';
 
@@ -34,6 +34,7 @@ export class CaregiverBookingSummary {
 
   @Field() serviceType: string; // ประเภทบริการ เช่น "ดูแลผู้สูงอายุที่บ้านผู้ป่วย"
   @Field(() => [String]) serviceLocations: string[]; // รูปแบบ/สถานที่ให้บริการ
+  @Field(() => [String]) tasks: string[]; // รายการงานที่ต้องปฏิบัติ
   @Field() timeSlot: string; // ช่วงเวลา เช่น "morning"
 
   @Field() bookingDate: string; // วันที่นัด รูปแบบ YYYY-MM-DD (string เพื่อเลี่ยงปัญหา timezone)
@@ -42,11 +43,8 @@ export class CaregiverBookingSummary {
 
   @Field(() => Float, { nullable: true }) estimatedCost?: number; // ราคาประมาณการ (฿)
 
-  // ── ความเป็นส่วนตัว (PDPA) ─────────────────────────────────────────────
-  // ที่อยู่แบบละเอียดจะเปิดเผยให้ caregiver เห็น "เฉพาะเมื่องานถูกยืนยันแล้ว"
-  // (สถานะ confirmed/completed) — ก่อนหน้านั้น (pending/accepted) จะเป็น null
-  // ตรงกับ design ที่ระบุว่า "ที่อยู่เปิดเผยเมื่อผู้ดูแลเริ่มงานจริง"
   @Field({ nullable: true }) locationAddress?: string;
+  @Field({ nullable: true }) notes?: string; // บันทึกเพิ่มเติมจากผู้ป่วย
 
   @Field(() => PatientBriefDto) patient: PatientBriefDto; // ผู้จอง (ลูกค้า)
 
@@ -70,21 +68,3 @@ export class CaregiverBookingListResponse {
   @Field(() => BookingPagination) pagination: BookingPagination;
 }
 
-/**
- * RepeatPatientDto — ผู้ป่วยที่กลับมาใช้บริการซ้ำ (completed >= 2 ครั้ง) — ticket #6
- * ใช้แสดงรายการ "ลูกค้าประจำ" ของ caregiver
- */
-@ObjectType()
-export class RepeatPatientDto {
-  @Field(() => ID) patientId: string;
-  @Field({ nullable: true }) displayName?: string;
-  @Field({ nullable: true }) avatarUrl?: string;
-  @Field(() => Int) completedCount: number; // จำนวนงานที่เสร็จสิ้นกับ caregiver คนนี้
-  @Field({ nullable: true }) lastCompletedAt?: Date; // วันที่ของงานล่าสุดที่เสร็จสิ้น
-}
-
-@ObjectType()
-export class RepeatPatientListResponse {
-  @Field(() => [RepeatPatientDto]) data: RepeatPatientDto[];
-  @Field(() => BookingPagination) pagination: BookingPagination;
-}

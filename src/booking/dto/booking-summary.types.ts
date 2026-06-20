@@ -22,17 +22,22 @@ export class CaregiverBriefDto {
 
 @ObjectType()
 export class BookingSummary {
-  @Field(() => ID)                        id: string;
-  @Field()                                bookingDate: string;
-  @Field()                                status: string;
-  @Field()                                serviceType: string;
-  @Field()                                timeSlot: string;
-  @Field()                                locationAddress: string;
-  @Field(() => Float, { nullable: true }) estimatedCost?: number;
-  @Field(() => CaregiverBriefDto)         caregiver: CaregiverBriefDto;
-  @Field({ nullable: true })              careRecipientName?: string;
-  @Field({ nullable: true })              confirmedAt?: Date;
-  @Field()                                createdAt: Date;
+  @Field(() => ID)                                    id: string;
+  @Field()                                            bookingDate: string;
+  @Field()                                            status: string;
+  @Field()                                            serviceType: string;
+  @Field()                                            timeSlot: string;
+  @Field({ nullable: true })                          startTime?: string;
+  @Field(() => Float, { nullable: true })             durationHours?: number;
+  @Field(() => [String])                              tasks: string[];
+  @Field(() => [String])                              serviceLocations: string[];
+  @Field()                                            locationAddress: string;
+  @Field({ nullable: true })                          notes?: string;
+  @Field(() => Float, { nullable: true })             estimatedCost?: number;
+  @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
+  @Field({ nullable: true })                          careRecipientName?: string;
+  @Field({ nullable: true })                          confirmedAt?: Date;
+  @Field()                                            createdAt: Date;
 }
 
 @ObjectType()

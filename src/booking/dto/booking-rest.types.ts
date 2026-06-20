@@ -22,6 +22,7 @@ export interface BookingRest {
   tasks: string[];
   serviceLocations: string[];
   locationAddress: string;
+  notes?: string;
   estimatedCost?: number;
   caregiver?: CaregiverBriefRest; // undefined when booking is unmatched
   careRecipientName?: string;

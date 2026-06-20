@@ -106,6 +106,7 @@ describe('BookingService — new REST methods', () => {
     };
 
     it('creates a booking with status=unmatched and no caregiver', async () => {
+      prisma.booking.findMany.mockResolvedValue([]); // no time conflicts
       prisma.booking.create.mockResolvedValue(fakeBooking());
 
       const result = await service.createBooking(PATIENT_ID, dto);
@@ -141,6 +142,7 @@ describe('BookingService — new REST methods', () => {
     });
 
     it('maps careRecipientName when careRecipient is present', async () => {
+      prisma.booking.findMany.mockResolvedValue([]); // no time conflicts
       prisma.booking.create.mockResolvedValue(
         fakeBooking({ careRecipient: { name: 'คุณย่า' } }),
       );

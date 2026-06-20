@@ -134,68 +134,6 @@ describe('BookingService', () => {
     });
   });
 
-  // ── myPendingConfirmations ──────────────────────────────────────────────
-
-  describe('myPendingConfirmations', () => {
-    it('returns BookingListResponse with accepted bookings', async () => {
-      prisma.booking.findMany.mockResolvedValue([fakeBooking()]);
-      prisma.booking.count.mockResolvedValue(1);
-
-      const result = await service.myPendingConfirmations(PATIENT_ID);
-
-      expect(prisma.booking.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { patientId: PATIENT_ID, status: 'accepted' },
-          orderBy: { bookingDate: 'asc' },
-        }),
-      );
-      expect(result.data).toHaveLength(1);
-      expect(result.pagination).toMatchObject({ page: 1, limit: 10, total: 1, totalPages: 1 });
-    });
-
-    it('returns empty data when no pending bookings', async () => {
-      prisma.booking.findMany.mockResolvedValue([]);
-      prisma.booking.count.mockResolvedValue(0);
-
-      const result = await service.myPendingConfirmations(PATIENT_ID);
-
-      expect(result.data).toHaveLength(0);
-      expect(result.pagination).toMatchObject({ total: 0, totalPages: 1 });
-    });
-
-    it('computes totalPages correctly', async () => {
-      const rows = Array.from({ length: 5 }, (_, i) => fakeBooking({ id: `b-${i}` }));
-      prisma.booking.findMany.mockResolvedValue(rows);
-      prisma.booking.count.mockResolvedValue(23);
-
-      const result = await service.myPendingConfirmations(PATIENT_ID, 1, 5);
-
-      expect(result.pagination).toMatchObject({ page: 1, limit: 5, total: 23, totalPages: 5 });
-    });
-
-    it('clamps page to min 1', async () => {
-      prisma.booking.findMany.mockResolvedValue([]);
-      prisma.booking.count.mockResolvedValue(0);
-
-      await service.myPendingConfirmations(PATIENT_ID, -3, 10);
-
-      expect(prisma.booking.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ skip: 0 }),
-      );
-    });
-
-    it('clamps limit to max 50', async () => {
-      prisma.booking.findMany.mockResolvedValue([]);
-      prisma.booking.count.mockResolvedValue(0);
-
-      await service.myPendingConfirmations(PATIENT_ID, 1, 999);
-
-      expect(prisma.booking.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 50 }),
-      );
-    });
-  });
-
   // ── myBookingHistory ────────────────────────────────────────────────────
 
   describe('myBookingHistory', () => {

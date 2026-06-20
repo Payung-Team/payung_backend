@@ -1,10 +1,9 @@
-import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { CaregiverBookingService } from './caregiver-booking.service';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
-  RepeatPatientListResponse,
 } from './dto/caregiver-booking.types';
 import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
@@ -57,19 +56,17 @@ export class CaregiverBookingResolver {
     return this.service.caregiverBookingHistory(user.id, input);
   }
 
-  @Query(() => RepeatPatientListResponse, {
-    description:
-      'Patients who have completed 2 or more bookings with the current caregiver (repeat customers).',
-  })
-  async caregiverRepeatPatients(
-    @Args('page', { type: () => Int, nullable: true, defaultValue: 1 }) page: number,
-    @Args('limit', { type: () => Int, nullable: true, defaultValue: 10 }) limit: number,
-    @CurrentUser() user: AuthUser,
-  ): Promise<RepeatPatientListResponse> {
-    return this.service.caregiverRepeatPatients(user.id, page, limit);
-  }
-
   // ─── Mutations ──────────────────────────────────────────────────────────────
+
+  @Mutation(() => CaregiverBookingSummary, {
+    description: 'Caregiver marks a confirmed booking as completed (confirmed → completed).',
+  })
+  async completeBooking(
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<CaregiverBookingSummary> {
+    return this.service.completeBooking(user.id, bookingId);
+  }
 
   @Mutation(() => CaregiverBookingSummary, {
     description: 'Caregiver accepts a pending booking request (pending → accepted).',

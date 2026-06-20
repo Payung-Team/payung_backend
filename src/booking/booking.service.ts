@@ -77,10 +77,13 @@ type BookingWithIncludes = {
   status: string;
   serviceType: string;
   timeSlot: string;
+  startTime: Date | null;
+  durationHours: number | null;
   tasks: string[];
   serviceLocations: string[];
   locationAddress: string;
   bookingDate: Date;
+  notes: string | null;
   estimatedCost: { toNumber(): number } | null;
   confirmedAt: Date | null;
   createdAt: Date;
@@ -118,10 +121,53 @@ export class BookingService {
         throw new ForbiddenException('Care recipient does not belong to this patient');
     }
 
+    // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
+    let resolvedCaregiverId: string | null = null;
+    let estimatedCost: number | null = null;
+    if (dto.caregiverId) {
+      const caregiver = await this.prisma.caregiver.findUnique({
+        where: { id: dto.caregiverId },
+        select: { id: true, kycStatus: true, isSearchable: true, hourlyRate: true },
+      });
+      if (!caregiver || caregiver.kycStatus !== 'verified' || !caregiver.isSearchable) {
+        throw new NotFoundException('Caregiver not found or unavailable');
+      }
+      resolvedCaregiverId = caregiver.id;
+      if (caregiver.hourlyRate != null) {
+        estimatedCost = caregiver.hourlyRate * dto.durationHours;
+      }
+    }
+
+    // ตรวจสอบ time conflict กับนัดหมายที่ patient ยืนยันไปแล้ว
+    const [startH, startM] = dto.startTime.split(':').map(Number);
+    const newStart = startH * 60 + startM;
+    const newEnd = newStart + Math.round(dto.durationHours * 60);
+    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
+
+    const patientConflicts = await this.prisma.booking.findMany({
+      where: {
+        patientId,
+        bookingDate: bookingDateObj,
+        status: { in: ['pending', 'confirmed'] },
+      },
+      select: { startTime: true, durationHours: true },
+    });
+
+    for (const b of patientConflicts) {
+      const existStart = b.startTime.getUTCHours() * 60 + b.startTime.getUTCMinutes();
+      const existDur = typeof (b.durationHours as any).toNumber === 'function'
+        ? (b.durationHours as any).toNumber()
+        : Number(b.durationHours);
+      const existEnd = existStart + Math.round(existDur * 60);
+      if (newStart < existEnd && existStart < newEnd) {
+        throw new ConflictException('คุณมีนัดหมายในช่วงเวลาเดียวกันอยู่แล้ว กรุณาเลือกเวลาอื่น');
+      }
+    }
+
     const booking = await this.prisma.booking.create({
       data: {
         patientId,
-        caregiverId: null, // unmatched — assigned by matching engine later
+        caregiverId:      resolvedCaregiverId,
         careRecipientId:  dto.careRecipientId ?? null,
         tasks:            dto.tasks,
         serviceLocations: dto.serviceLocations,
@@ -131,10 +177,13 @@ export class BookingService {
         durationHours:    dto.durationHours,
         locationAddress:  dto.locationAddress,
         bookingDate:      new Date(dto.bookingDate),
+        notes:            dto.notes ?? null,
         dayOfContactName:         dto.dayOfContactName         ?? null,
         dayOfContactPhone:        dto.dayOfContactPhone        ?? null,
         dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
-        status: 'unmatched',
+        estimatedCost:    estimatedCost,
+        // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
+        status: resolvedCaregiverId ? 'pending' : 'unmatched',
       },
       include: {
         caregiver:     { include: { user: { select: { avatarUrl: true } } } },
@@ -142,7 +191,13 @@ export class BookingService {
       },
     });
 
-    this.logger.log({ event: 'booking.created', bookingId: booking.id, patientId });
+    this.logger.log({
+      event: 'booking.created',
+      bookingId: booking.id,
+      patientId,
+      caregiverId: resolvedCaregiverId,
+      status: booking.status,
+    });
     return this.toRestSummary(booking as unknown as BookingWithIncludes);
   }
 
@@ -351,31 +406,17 @@ export class BookingService {
     return this.toSummary(updated as unknown as BookingWithIncludes);
   }
 
-  async myPendingConfirmations(
-    userId: string,
-    page = 1,
-    limit = 10,
-  ): Promise<BookingListResponse> {
-    page  = Math.max(1, page);
-    limit = Math.min(50, Math.max(1, limit));
-    const offset = (page - 1) * limit;
-
-    const where = { patientId: userId, status: 'accepted' };
-    const [items, total] = await Promise.all([
-      this.prisma.booking.findMany({
-        where,
-        include: {
-          caregiver: { include: { user: { select: { avatarUrl: true } } } },
-          careRecipient: { select: { name: true } },
-        },
-        orderBy: { bookingDate: 'asc' },
-        skip: offset,
-        take: limit,
-      }),
-      this.prisma.booking.count({ where }),
-    ]);
-
-    return this.toListResponse(items as unknown as BookingWithIncludes[], { page, limit, total });
+  async myBookingById(bookingId: string, userId: string): Promise<BookingSummary> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+      },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
+    return this.toSummary(booking as unknown as BookingWithIncludes);
   }
 
   async myBookingHistory(
@@ -430,6 +471,7 @@ export class BookingService {
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,
       locationAddress:  booking.locationAddress,
+      notes:            booking.notes ?? undefined,
       estimatedCost:    booking.estimatedCost != null
                           ? booking.estimatedCost.toNumber()
                           : undefined,
@@ -440,17 +482,16 @@ export class BookingService {
     };
   }
 
-  /** GraphQL summary (legacy — requires caregiver to be non-null) */
+  /** GraphQL summary — caregiver may be null for unmatched bookings */
   private toSummary(booking: BookingWithIncludes): BookingSummary {
-    if (!booking.caregiver) {
-      throw new UnprocessableEntityException('Booking has no assigned caregiver');
-    }
-    const caregiver: CaregiverBriefDto = {
-      id:         booking.caregiver.id,
-      fullName:   booking.caregiver.fullName   ?? undefined,
-      avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
-      hourlyRate: booking.caregiver.hourlyRate ?? undefined,
-    };
+    const caregiver: CaregiverBriefDto | undefined = booking.caregiver
+      ? {
+          id:         booking.caregiver.id,
+          fullName:   booking.caregiver.fullName   ?? undefined,
+          avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
+          hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+        }
+      : undefined;
 
     return {
       id:               booking.id,
@@ -460,7 +501,14 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
+      startTime:        booking.startTime instanceof Date
+                          ? booking.startTime.toISOString().slice(11, 16)
+                          : undefined,
+      durationHours:    booking.durationHours ?? undefined,
+      tasks:            booking.tasks,
+      serviceLocations: booking.serviceLocations,
       locationAddress:  booking.locationAddress,
+      notes:            booking.notes ?? undefined,
       estimatedCost:    booking.estimatedCost != null
                           ? booking.estimatedCost.toNumber()
                           : undefined,

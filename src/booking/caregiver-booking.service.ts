@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -9,8 +10,6 @@ import { PrismaService } from '../common/prisma.service';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
-  RepeatPatientDto,
-  RepeatPatientListResponse,
 } from './dto/caregiver-booking.types';
 import { BookingPagination } from './dto/booking-summary.types';
 import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
@@ -28,11 +27,13 @@ type CaregiverBookingRow = {
   status: string;
   serviceType: string;
   serviceLocations: string[];
+  tasks: string[];
   timeSlot: string;
   bookingDate: Date;
   startTime: Date;
   durationHours: { toNumber(): number } | number;
   locationAddress: string;
+  notes: string | null;
   estimatedCost: { toNumber(): number } | number | null;
   acceptedAt: Date | null;
   confirmedAt: Date | null;
@@ -113,8 +114,13 @@ export class CaregiverBookingService {
     const caregiverId = await this.resolveCaregiverId(userId);
     const { page, limit, offset } = this.normalizePaging(input.page, input.limit);
 
+    const TERMINAL_STATUSES = ['completed', 'cancelled', 'rejected'];
     const where: Record<string, unknown> = { caregiverId };
-    if (input.status) where.status = input.status;
+    if (input.status) {
+      where.status = input.status;
+    } else {
+      where.status = { in: TERMINAL_STATUSES };
+    }
 
     // ช่วงวันที่: ประกอบ gte/lte เฉพาะตัวที่ส่งมา
     if (input.dateFrom || input.dateTo) {
@@ -142,69 +148,6 @@ export class CaregiverBookingService {
     });
   }
 
-  /**
-   * ลูกค้าประจำ — patient ที่มีงาน "เสร็จสิ้น" กับ caregiver คนนี้ >= 2 ครั้ง (ticket #6)
-   *
-   * วิธีคิด: groupBy patientId นับเฉพาะ status=completed แล้วกรอง having >= 2
-   * pagination ทำใน memory เพราะจำนวนลูกค้าประจำต่อ caregiver มักไม่เยอะ
-   * (ถ้าโตมากค่อยย้าย logic นี้ไปทำใน SQL ภายหลัง)
-   */
-  async caregiverRepeatPatients(
-    userId: string,
-    page = 1,
-    limit = 10,
-  ): Promise<RepeatPatientListResponse> {
-    const caregiverId = await this.resolveCaregiverId(userId);
-    const { page: p, limit: l, offset } = this.normalizePaging(page, limit);
-
-    const groups = await this.prisma.booking.groupBy({
-      by: ['patientId'],
-      where: { caregiverId, status: 'completed' },
-      _count: { id: true }, // นับจำนวน booking ต่อ patient
-      _max: { bookingDate: true }, // วันงานล่าสุด
-      having: { id: { _count: { gte: 2 } } }, // เอาเฉพาะที่ทำซ้ำ >= 2 ครั้ง
-    });
-
-    // groupBy ไม่การันตีลำดับ → เรียงเองตามวันล่าสุด (ใหม่→เก่า)
-    groups.sort((a, b) => {
-      const ta = a._max.bookingDate ? new Date(a._max.bookingDate).getTime() : 0;
-      const tb = b._max.bookingDate ? new Date(b._max.bookingDate).getTime() : 0;
-      return tb - ta;
-    });
-
-    const total = groups.length;
-    const pageGroups = groups.slice(offset, offset + l);
-
-    // ดึง user ของ patient เฉพาะหน้าปัจจุบัน (query เดียว) แล้วทำ map ไว้ lookup
-    const patientIds = pageGroups.map((g) => g.patientId);
-    const users = patientIds.length
-      ? await this.prisma.user.findMany({
-          where: { id: { in: patientIds } },
-          select: { id: true, displayName: true, avatarUrl: true },
-        })
-      : [];
-    const userMap = new Map(users.map((u) => [u.id, u]));
-
-    const data: RepeatPatientDto[] = pageGroups.map((g) => {
-      const u = userMap.get(g.patientId);
-      return {
-        patientId: g.patientId,
-        displayName: u?.displayName ?? undefined,
-        avatarUrl: u?.avatarUrl ?? undefined,
-        completedCount: g._count.id,
-        lastCompletedAt: g._max.bookingDate ?? undefined,
-      };
-    });
-
-    const pagination: BookingPagination = {
-      page: p,
-      limit: l,
-      total,
-      totalPages: total === 0 ? 1 : Math.ceil(total / l),
-    };
-    return { data, pagination };
-  }
-
   // ════════════════════════════════════════════════════════════════════════
   //  MUTATIONS (เปลี่ยนสถานะ)
   // ════════════════════════════════════════════════════════════════════════
@@ -226,9 +169,41 @@ export class CaregiverBookingService {
       );
     }
 
+    // ตรวจสอบ time conflict กับงานที่ caregiver ยืนยันไปแล้ว
+    const bookingDetail = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { bookingDate: true, startTime: true, durationHours: true },
+    });
+
+    if (bookingDetail) {
+      const newStart = this.timeToMinutes(bookingDetail.startTime);
+      const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
+
+      const conflicts = await this.prisma.booking.findMany({
+        where: {
+          caregiverId,
+          bookingDate: bookingDetail.bookingDate,
+          status: 'confirmed',
+          id: { not: bookingId },
+        },
+        select: { startTime: true, durationHours: true },
+      });
+
+      for (const b of conflicts) {
+        const existStart = this.timeToMinutes(b.startTime);
+        const existEnd = existStart + Math.round(this.toNumber(b.durationHours) * 60);
+        if (newStart < existEnd && existStart < newEnd) {
+          throw new ConflictException(
+            'ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณยืนยันไปแล้ว',
+          );
+        }
+      }
+    }
+
+    const now = new Date();
     const updated = await this.prisma.booking.update({
       where: { id: bookingId },
-      data: { status: 'accepted', acceptedAt: new Date() },
+      data: { status: 'confirmed', acceptedAt: now, confirmedAt: now },
       include: BOOKING_INCLUDE,
     });
 
@@ -267,6 +242,29 @@ export class CaregiverBookingService {
    * accepted → rejected (+ เหตุผลบังคับ)
    * เก็บ acceptedAt เดิมไว้เพื่อเป็น audit trail (ว่าเคยรับแล้วถอน)
    */
+  async completeBooking(
+    userId: string,
+    bookingId: string,
+  ): Promise<CaregiverBookingSummary> {
+    const caregiverId = await this.resolveCaregiverId(userId);
+    const existing = await this.loadOwnedBooking(caregiverId, bookingId);
+
+    if (existing.status !== 'confirmed') {
+      throw new UnprocessableEntityException(
+        'Only bookings with status "confirmed" can be completed',
+      );
+    }
+
+    const updated = await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: { status: 'completed' },
+      include: BOOKING_INCLUDE,
+    });
+
+    this.logger.log({ event: 'booking.completed', bookingId, userId });
+    return this.toSummary(updated as unknown as CaregiverBookingRow);
+  }
+
   async cancelAcceptance(
     userId: string,
     input: CancelAcceptanceInput,
@@ -367,22 +365,21 @@ export class CaregiverBookingService {
     return d;
   }
 
-  /** แปลง 1 row → CaregiverBookingSummary (ดูแลเรื่อง null / Decimal / privacy ที่นี่) */
+  /** แปลง 1 row → CaregiverBookingSummary (ดูแลเรื่อง null / Decimal ที่นี่) */
   private toSummary(b: CaregiverBookingRow): CaregiverBookingSummary {
-    // PDPA: เปิดเผยที่อยู่ละเอียดเฉพาะเมื่องานถูกยืนยันแล้ว (confirmed/completed)
-    const addressVisible = b.status === 'confirmed' || b.status === 'completed';
-
     return {
       id: b.id,
       status: b.status,
       serviceType: b.serviceType,
       serviceLocations: b.serviceLocations ?? [],
+      tasks: b.tasks ?? [],
       timeSlot: b.timeSlot,
       bookingDate: this.formatDateYmd(b.bookingDate),
       startTime: this.formatTimeHm(b.startTime),
       durationHours: this.toNumber(b.durationHours),
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
-      locationAddress: addressVisible ? b.locationAddress : undefined,
+      locationAddress: b.locationAddress ?? undefined,
+      notes: b.notes ?? undefined,
       patient: {
         id: b.patient.id,
         displayName: b.patient.displayName ?? undefined,
@@ -429,5 +426,10 @@ export class CaregiverBookingService {
   /** รองรับทั้ง Prisma Decimal (มี .toNumber()) และ number ปกติ */
   private toNumber(v: { toNumber(): number } | number): number {
     return typeof v === 'number' ? v : v.toNumber();
+  }
+
+  /** แปลง @db.Time Date (epoch-based UTC) → นาทีนับจากเที่ยงคืน */
+  private timeToMinutes(t: Date): number {
+    return t.getUTCHours() * 60 + t.getUTCMinutes();
   }
 }

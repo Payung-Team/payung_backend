@@ -1,4 +1,4 @@
-import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import { BookingHistoryInput } from './dto/booking-history.input';
@@ -25,15 +25,14 @@ export class BookingResolver {
     return this.bookingService.confirmBooking(bookingId, user.id);
   }
 
-  @Query(() => BookingListResponse, {
-    description: 'Returns accepted bookings awaiting patient confirmation, sorted by booking date ascending.',
+  @Query(() => BookingSummary, {
+    description: 'Returns a single booking by ID for the authenticated patient.',
   })
-  async myPendingConfirmations(
-    @Args('page',  { type: () => Int, nullable: true, defaultValue: 1  }) page:  number,
-    @Args('limit', { type: () => Int, nullable: true, defaultValue: 10 }) limit: number,
+  async myBooking(
+    @Args('id', { type: () => ID }) id: string,
     @CurrentUser() user: AuthUser,
-  ): Promise<BookingListResponse> {
-    return this.bookingService.myPendingConfirmations(user.id, page, limit);
+  ): Promise<BookingSummary> {
+    return this.bookingService.myBookingById(id, user.id);
   }
 
   @Query(() => BookingListResponse, {

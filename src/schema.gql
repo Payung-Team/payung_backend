@@ -236,14 +236,19 @@ enum BookingStatus {
 type BookingSummary {
   bookingDate: String!
   careRecipientName: String
-  caregiver: CaregiverBriefDto!
+  caregiver: CaregiverBriefDto
   confirmedAt: DateTime
   createdAt: DateTime!
+  durationHours: Float
   estimatedCost: Float
   id: ID!
   locationAddress: String!
+  notes: String
+  serviceLocations: [String!]!
   serviceType: String!
+  startTime: String
   status: String!
+  tasks: [String!]!
   timeSlot: String!
 }
 
@@ -292,6 +297,9 @@ type Caregiver {
 
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
+
+  """Languages spoken by caregiver"""
+  languages: [String!]!
   phone: String!
   rejectionReasons: [RejectionReason!]
 
@@ -327,12 +335,14 @@ type CaregiverBookingSummary {
   estimatedCost: Float
   id: ID!
   locationAddress: String
+  notes: String
   patient: PatientBriefDto!
   rejectionReason: String
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String!
   status: String!
+  tasks: [String!]!
   timeSlot: String!
 }
 
@@ -732,6 +742,11 @@ type Mutation {
   changeUserRole(input: ChangeUserRoleInput!): User!
 
   """
+  Caregiver marks a confirmed booking as completed (confirmed → completed).
+  """
+  completeBooking(bookingId: ID!): CaregiverBookingSummary!
+
+  """
   Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.
   """
   completePasswordChange: User!
@@ -907,11 +922,6 @@ type Query {
   """
   caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
 
-  """
-  Patients who have completed 2 or more bookings with the current caregiver (repeat customers).
-  """
-  caregiverRepeatPatients(limit: Int = 10, page: Int = 1): RepeatPatientListResponse!
-
   """Health check - API & DB Status"""
   health: HealthStatus!
 
@@ -926,6 +936,9 @@ type Query {
   """Get current logged-in user"""
   me: User!
 
+  """Returns a single booking by ID for the authenticated patient."""
+  myBooking(id: ID!): BookingSummary!
+
   """
   Returns the patient's full booking history, optionally filtered by status, newest first.
   """
@@ -933,11 +946,6 @@ type Query {
 
   """Get current caregiver profile"""
   myCaregiverProfile: Caregiver!
-
-  """
-  Returns accepted bookings awaiting patient confirmation, sorted by booking date ascending.
-  """
-  myPendingConfirmations(limit: Int = 10, page: Int = 1): BookingListResponse!
 
   """
   Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.
@@ -1009,19 +1017,6 @@ input RejectionReasonItem {
   Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
   """
   title: String!
-}
-
-type RepeatPatientDto {
-  avatarUrl: String
-  completedCount: Int!
-  displayName: String
-  lastCompletedAt: DateTime
-  patientId: ID!
-}
-
-type RepeatPatientListResponse {
-  data: [RepeatPatientDto!]!
-  pagination: BookingPagination!
 }
 
 """Filter users by role. Use "all" to return every role."""
@@ -1166,6 +1161,9 @@ input UpdateCaregiverInput {
   """Hourly rate in THB"""
   hourlyRate: Float
 
+  """Languages spoken by caregiver"""
+  languages: [String!]
+
   """Contact phone number (Thai format)"""
   phone: String
 
@@ -1197,17 +1195,17 @@ input UpdateWorkConditionInput {
   availability: [AvailabilitySlotInput!]
 
   """
-  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
-  """
-  serviceLocations: [String!]
-
-  """
   Accepted job types: "general_care" | "bedridden_care" | "physiotherapy" | "medication" | "companion". Send [] to clear all; omit to keep unchanged.
   """
   jobTypes: [String!]
 
   """Service area (province + district). Omit to keep unchanged."""
   serviceArea: ServiceAreaInput
+
+  """
+  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
+  """
+  serviceLocations: [String!]
 }
 
 input UploadDocumentInput {
@@ -1323,12 +1321,12 @@ type WorkCondition {
   """Weekly availability slots"""
   availability: [AvailabilitySlot!]!
 
-  """Accepted service locations (at_home | accompany_outside)"""
-  serviceLocations: [String!]!
-
   """Accepted job types"""
   jobTypes: [String!]!
 
   """Service area (province + district)"""
   serviceArea: ServiceArea!
+
+  """Accepted service locations (at_home | accompany_outside)"""
+  serviceLocations: [String!]!
 }

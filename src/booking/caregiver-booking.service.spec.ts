@@ -98,7 +98,16 @@ describe('CaregiverBookingService', () => {
 
   describe('acceptBooking', () => {
     it('moves pending → accepted and stamps acceptedAt', async () => {
-      prisma.booking.findUnique.mockResolvedValue(guardRow({ status: 'pending' }));
+      // First findUnique: loadOwnedBooking guard check
+      prisma.booking.findUnique.mockResolvedValueOnce(guardRow({ status: 'pending' }));
+      // Second findUnique: time-conflict detail check
+      prisma.booking.findUnique.mockResolvedValueOnce({
+        bookingDate: new Date('2026-07-01'),
+        startTime: new Date('1970-01-01T09:00:00.000Z'),
+        durationHours: { toNumber: () => 3 },
+      });
+      // findMany for conflict check: no conflicts
+      prisma.booking.findMany.mockResolvedValueOnce([]);
       prisma.booking.update.mockResolvedValue(
         fakeBooking({ status: 'accepted', acceptedAt: new Date() }),
       );
@@ -108,12 +117,12 @@ describe('CaregiverBookingService', () => {
       expect(prisma.booking.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: BOOKING_ID },
-          data: expect.objectContaining({ status: 'accepted' }),
+          data: expect.objectContaining({ status: 'confirmed' }),
         }),
       );
       // ตรวจว่ามีการ set acceptedAt เป็น Date
       expect(prisma.booking.update.mock.calls[0][0].data.acceptedAt).toBeInstanceOf(Date);
-      expect(result.status).toBe('accepted');
+      expect(result.status).toBe('accepted'); // mock returns fakeBooking with status='accepted'
       expect(result.acceptedAt).toBeDefined();
     });
 
@@ -266,17 +275,15 @@ describe('CaregiverBookingService', () => {
       );
     });
 
-    it('hides locationAddress until the booking is confirmed (PDPA)', async () => {
-      // pending → ที่อยู่ต้องเป็น undefined
+    it('exposes locationAddress for all statuses', async () => {
       prisma.booking.findMany.mockResolvedValue([fakeBooking({ status: 'pending' })]);
       prisma.booking.count.mockResolvedValue(1);
 
       const pending = await service.caregiverBookings(USER_ID, {
         status: BookingStatusEnum.PENDING,
       });
-      expect(pending.data[0].locationAddress).toBeUndefined();
+      expect(pending.data[0].locationAddress).toBe('123 Main St');
 
-      // confirmed → ที่อยู่ต้องเปิดเผย
       prisma.booking.findMany.mockResolvedValue([fakeBooking({ status: 'confirmed' })]);
       const confirmed = await service.caregiverBookings(USER_ID, {
         status: BookingStatusEnum.CONFIRMED,
@@ -309,14 +316,17 @@ describe('CaregiverBookingService', () => {
   // ── caregiverBookingHistory (#7) ────────────────────────────────────────
 
   describe('caregiverBookingHistory', () => {
-    it('queries all statuses (only caregiverId) when no filters set', async () => {
+    it('defaults to terminal statuses when no filter is set', async () => {
       prisma.booking.findMany.mockResolvedValue([]);
       prisma.booking.count.mockResolvedValue(0);
 
       await service.caregiverBookingHistory(USER_ID, {});
 
       const call = prisma.booking.findMany.mock.calls[0][0];
-      expect(call.where).toEqual({ caregiverId: CAREGIVER_ID });
+      expect(call.where).toEqual({
+        caregiverId: CAREGIVER_ID,
+        status: { in: ['completed', 'cancelled', 'rejected'] },
+      });
       expect(call.orderBy).toEqual({ createdAt: 'desc' });
     });
 
@@ -349,46 +359,4 @@ describe('CaregiverBookingService', () => {
     });
   });
 
-  // ── caregiverRepeatPatients (#6) ────────────────────────────────────────
-
-  describe('caregiverRepeatPatients', () => {
-    it('returns repeat patients (completed >= 2) sorted by most recent, with user info', async () => {
-      prisma.booking.groupBy.mockResolvedValue([
-        { patientId: 'p-old', _count: { id: 2 }, _max: { bookingDate: new Date('2026-01-01') } },
-        { patientId: 'p-new', _count: { id: 5 }, _max: { bookingDate: new Date('2026-05-01') } },
-      ]);
-      prisma.user.findMany.mockResolvedValue([
-        { id: 'p-new', displayName: 'New Patient', avatarUrl: null },
-        { id: 'p-old', displayName: 'Old Patient', avatarUrl: null },
-      ]);
-
-      const result = await service.caregiverRepeatPatients(USER_ID);
-
-      // groupBy where เจาะจง caregiver + completed + having >= 2
-      expect(prisma.booking.groupBy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          by: ['patientId'],
-          where: { caregiverId: CAREGIVER_ID, status: 'completed' },
-          having: { id: { _count: { gte: 2 } } },
-        }),
-      );
-      expect(result.pagination.total).toBe(2);
-      // เรียงใหม่→เก่า: p-new ต้องมาก่อน
-      expect(result.data[0].patientId).toBe('p-new');
-      expect(result.data[0].completedCount).toBe(5);
-      expect(result.data[0].displayName).toBe('New Patient');
-      expect(result.data[1].patientId).toBe('p-old');
-    });
-
-    it('returns empty list when caregiver has no repeat patients', async () => {
-      prisma.booking.groupBy.mockResolvedValue([]);
-
-      const result = await service.caregiverRepeatPatients(USER_ID);
-
-      expect(result.data).toHaveLength(0);
-      expect(result.pagination).toMatchObject({ total: 0, totalPages: 1 });
-      // ไม่มี patientId → ไม่ต้องไป query user
-      expect(prisma.user.findMany).not.toHaveBeenCalled();
-    });
-  });
 });
