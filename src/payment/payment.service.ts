@@ -50,7 +50,7 @@ export class PaymentService {
     if (!payment) throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
 
     const isParty = payment.patientId === user.id || payment.caregiverId === user.id;
-    const isAdmin = user.role === ADMIN_ROLE;
+    const isAdmin = user.role >= ADMIN_ROLE; // ADMIN(3) and SUPER_ADMIN(4)
     if (!isParty && !isAdmin) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูประวัติการชำระเงินนี้');
     }

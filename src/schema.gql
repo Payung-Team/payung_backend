@@ -88,6 +88,12 @@ type AdminKycListPayload {
   totalPages: Int!
 }
 
+input AdminPaymentsInput {
+  limit: Int
+  page: Int
+  status: PaymentStatus
+}
+
 input AdminUpdateCaregiverInfoInput {
   """UUID of the caregiver to edit"""
   caregiverId: ID!
@@ -772,6 +778,11 @@ type Mutation {
   """Mark a single notification as read"""
   markAsRead(id: String!): Notification!
 
+  """
+  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
+  """
+  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
+
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
 
@@ -881,6 +892,30 @@ type PatientBriefDto {
   id: ID!
 }
 
+type Payment {
+  amount: Float!
+  bookingId: String!
+  caregiverId: String!
+  createdAt: DateTime!
+  currency: String!
+  failureCode: String
+  failureMessage: String
+  id: ID!
+  omiseChargeId: String
+  patientId: String!
+  paymentMethod: String!
+  paymentStatus: PaymentStatus!
+  updatedAt: DateTime!
+}
+
+type PaymentConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [Payment!]!
+  page: Int!
+  totalCount: Int!
+}
+
 """สถานะการชำระเงินของ booking (FSM)"""
 enum PaymentStatus {
   captured
@@ -933,6 +968,11 @@ type Query {
   Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
   """
   adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
+  """
+  adminPayments(input: AdminPaymentsInput): PaymentConnection!
 
   """
   Admin only: Get full user detail including caregiver info, KYC status, suspension state, and audit log count.
