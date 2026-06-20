@@ -7,11 +7,6 @@
  * - อ่านโค้ดง่ายขึ้น: เห็น SuperAdminGuard ปุ๊บรู้ทันทีว่าเป็น endpoint super admin only
  * - ปลอดภัยกว่า: ไม่มีโอกาสลืมใส่ @Roles(ROLE_ID.SUPER_ADMIN) แล้วทำให้ admin/user ธรรมดาเข้าได้
  *
- * ความสัมพันธ์กับ AdminGuard (PYG-132):
- * - AdminGuard อนุญาตเฉพาะ role=3 (admin)
- * - SuperAdminGuard อนุญาตเฉพาะ role=4 (super_admin)
- * - หมายเหตุ: ปัจจุบัน AdminGuard ไม่ได้รวม super_admin เข้าไปด้วย (ตัดสินใจไว้ใน PYG-152 ว่า
- *   จะไม่เปลี่ยน behavior ของ AdminGuard ในตั๋วนี้ — ค่อยพิจารณาแยกเป็น ticket follow-up)
  *
  * Flow:
  *   1. ต้องรันหลัง SupabaseAuthGuard (เพราะต้องการ req.user)
@@ -29,7 +24,7 @@
  *   async createAdmin(...) { ... }
  *
  * ⚠️ ต้องลงทะเบียน SuperAdminGuard ใน providers ของ module ที่ใช้ด้วย!
- * (ตาม convention ของทีม — เหมือน SupabaseAuthGuard, RolesGuard, AdminGuard)
+ * (ตาม convention ของทีม — เหมือน SupabaseAuthGuard, RolesGuard)
  *
  * ตัวอย่าง:
  *   @Module({

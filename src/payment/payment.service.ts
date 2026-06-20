@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
-import { ADMIN_ROLE } from '../common/guards/admin.guard';
+import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { PaymentStatusHistory } from './entities/payment-status-history.entity';
@@ -50,7 +50,7 @@ export class PaymentService {
     if (!payment) throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
 
     const isParty = payment.patientId === user.id || payment.caregiverId === user.id;
-    const isAdmin = user.role >= ADMIN_ROLE; // ADMIN(3) and SUPER_ADMIN(4)
+    const isAdmin = user.role >= ROLE_ID.ADMIN; // ADMIN(3) and SUPER_ADMIN(4)
     if (!isParty && !isAdmin) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูประวัติการชำระเงินนี้');
     }
