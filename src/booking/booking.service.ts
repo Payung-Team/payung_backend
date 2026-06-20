@@ -418,6 +418,8 @@ export class BookingService {
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
     return this.toSummary(booking as unknown as BookingWithIncludes);
+  }
+
   async myPendingConfirmations(
     userId: string,
     page = 1,
