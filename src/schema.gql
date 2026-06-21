@@ -21,6 +21,12 @@ type AdminDashboardPayload {
   weeklySubmissions: [WeeklySubmission!]!
 }
 
+input AdminDisputesInput {
+  disputeStatus: DisputeStatus
+  limit: Int
+  page: Int
+}
+
 input AdminEditUserInput {
   """Address"""
   address: String
@@ -523,6 +529,59 @@ input DeclineBookingInput {
   reason: String!
 }
 
+type DisputeBooking {
+  bookingDate: String!
+  caregiver: DisputePartyBrief
+  createdAt: DateTime!
+  disputeReason: String
+  disputeResolvedAt: DateTime
+  disputeStatus: DisputeStatus!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  patient: DisputePartyBrief!
+  payment: DisputePaymentBrief
+  serviceType: String!
+  status: String!
+  timeSlot: String!
+  updatedAt: DateTime!
+}
+
+type DisputeConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [DisputeBooking!]!
+  page: Int!
+  totalCount: Int!
+}
+
+"""Admin decision when resolving a booking dispute (PYG-287)"""
+enum DisputeDecision {
+  no_refund
+  refund_full
+  refund_partial
+}
+
+type DisputePartyBrief {
+  displayName: String
+  email: String
+  id: ID!
+}
+
+type DisputePaymentBrief {
+  amount: Float!
+  currency: String!
+  id: ID!
+  paymentStatus: PaymentStatus!
+}
+
+"""Status of a booking dispute (PYG-287)"""
+enum DisputeStatus {
+  flagged
+  none
+  resolved
+}
+
 input EditAdminInfoInput {
   """UUID of the admin to edit"""
   adminId: ID!
@@ -577,6 +636,11 @@ type FieldLockResult {
 
   """Whether the operation succeeded"""
   success: Boolean!
+}
+
+input FlagDisputeInput {
+  bookingId: ID!
+  reason: String!
 }
 
 type HealthStatus {
@@ -825,6 +889,11 @@ type Mutation {
   hideReview(reviewId: ID!): ReviewItem!
 
   """
+  Patient flags a dispute on their completed booking. Requires booking.status="completed" and reason length ≥ 20.
+  """
+  flagBookingDispute(input: FlagDisputeInput!): DisputeBooking!
+
+  """
   Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
   """
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
@@ -863,6 +932,11 @@ type Mutation {
   Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
   """
   requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
+
+  """
+  Admin only: Resolve a flagged dispute (no_refund | refund_full | refund_partial). refund_partial requires refundAmount in (0, payment.amount]. refund_full / refund_partial call PaymentService.refundPayment (PYG-286).
+  """
+  resolveDispute(input: ResolveDisputeInput!): DisputeBooking!
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
@@ -1038,6 +1112,11 @@ type Query {
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
   """
   adminDashboard: AdminDashboardPayload!
+
+  """
+  Admin only: Paginated dispute queue. Defaults to disputeStatus="flagged" (review queue). FIFO order.
+  """
+  adminDisputes(input: AdminDisputesInput): DisputeConnection!
 
   """
   Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
@@ -1233,6 +1312,13 @@ type ReviewPagination {
   page: Int!
   total: Int!
   totalPages: Int!
+}
+
+input ResolveDisputeInput {
+  bookingId: ID!
+  decision: DisputeDecision!
+  notes: String!
+  refundAmount: Float
 }
 
 """Filter users by role. Use "all" to return every role."""
