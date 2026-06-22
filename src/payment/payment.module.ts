@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 import { PaymentStateMachine } from './payment-state-machine';
 import { PaymentService } from './payment.service';
 import { PaymentResolver } from './payment.resolver';
+import { OmiseService } from './omise/omise.service';
+import { CompleteBookingService } from './complete-booking.service';
+import { CompleteBookingResolver } from './complete-booking.resolver';
 import { OmiseController } from './webhook/omise.controller';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -12,9 +15,13 @@ import { RolesGuard } from '../common/guards/roles.guard';
     PaymentStateMachine,
     PaymentService,
     PaymentResolver,
+    // PYG-281: capture charge + completeBooking (patient/caregiver)
+    OmiseService,
+    CompleteBookingService,
+    CompleteBookingResolver,
     SupabaseAuthGuard,
     RolesGuard,
   ],
-  exports: [PaymentStateMachine],
+  exports: [PaymentStateMachine, OmiseService],
 })
 export class PaymentModule {}

@@ -57,16 +57,8 @@ export class CaregiverBookingResolver {
   }
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
-
-  @Mutation(() => CaregiverBookingSummary, {
-    description: 'Caregiver marks a confirmed booking as completed (confirmed → completed).',
-  })
-  async completeBooking(
-    @Args('bookingId', { type: () => ID }) bookingId: string,
-    @CurrentUser() user: AuthUser,
-  ): Promise<CaregiverBookingSummary> {
-    return this.service.completeBooking(user.id, bookingId);
-  }
+  // หมายเหตุ: `completeBooking` ย้ายไปอยู่ที่ payment module แล้ว (PYG-281)
+  // เพราะการจบงานต้อง capture เงินจริง และเปิดให้ทั้ง patient/caregiver เรียกได้
 
   @Mutation(() => CaregiverBookingSummary, {
     description: 'Caregiver accepts a pending booking request (pending → accepted).',

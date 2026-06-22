@@ -451,6 +451,15 @@ input ChangeUserRoleInput {
   userId: ID!
 }
 
+type CompleteBookingResult {
+  amount: Float!
+  bookingId: ID!
+  completedAt: DateTime!
+  omiseChargeId: String
+  paymentStatus: PaymentStatus!
+  status: String!
+}
+
 """High-level KYC statistics for the admin dashboard"""
 type DashboardSummary {
   """Caregivers awaiting KYC review"""
@@ -748,9 +757,9 @@ type Mutation {
   changeUserRole(input: ChangeUserRoleInput!): User!
 
   """
-  Caregiver marks a confirmed booking as completed (confirmed → completed).
+  Patient or caregiver completes a confirmed booking: captures the held charge (payment held → captured) and marks the booking completed (confirmed → completed).
   """
-  completeBooking(bookingId: ID!): CaregiverBookingSummary!
+  completeBooking(bookingId: ID!): CompleteBookingResult!
 
   """
   Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.

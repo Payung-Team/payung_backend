@@ -91,6 +91,10 @@ export class PaymentStateMachine {
    * @param paymentId - UUID ของ payment
    * @param target    - สถานะปลายทางที่ต้องการเปลี่ยนไป
    * @param options   - { changedBy?, reason?, metadata? } (ดู TransitionOptions)
+   * @param tx        - (optional) transaction client จากภายนอก — ส่งมาเมื่อต้องการให้
+   *                    การเปลี่ยนสถานะ payment เกิดใน "ก้อน transaction เดียวกัน" กับงานอื่น
+   *                    เช่น completeBooking (PYG-281) ที่อัปเดต booking + payment พร้อมกัน
+   *                    ถ้าไม่ส่ง → เมธอดนี้เปิด $transaction ของตัวเอง (พฤติกรรมเดิม)
    * @returns Payment ที่อัปเดตสถานะแล้ว
    * @throws NotFoundException              ถ้าไม่พบ payment
    * @throws InvalidPaymentTransitionError  ถ้าการเปลี่ยนสถานะผิดกฎ FSM
@@ -99,44 +103,63 @@ export class PaymentStateMachine {
     paymentId: string,
     target: PaymentStatus,
     options: TransitionOptions = {},
+    tx?: Prisma.TransactionClient,
   ): Promise<Payment> {
-    return this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+    // มี tx ภายนอก → ทำงานบน tx นั้น (ผู้เรียกคุม commit/rollback เอง)
+    // ไม่มี → เปิด transaction ใหม่เพื่อให้ update + history เป็น atomic
+    if (tx) {
+      return this.runTransition(tx, paymentId, target, options);
+    }
+    return this.prisma.$transaction((t) =>
+      this.runTransition(t, paymentId, target, options),
+    );
+  }
 
-      if (!payment) {
-        throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
-      }
+  /**
+   * runTransition — แกนกลางของ transition() ที่ทำงานบน transaction client ตัวหนึ่ง
+   * แยกออกมาเพื่อให้ใช้ tx ได้ทั้งแบบ "เปิดเอง" และ "รับจากภายนอก" ด้วย logic เดียวกัน
+   */
+  private async runTransition(
+    tx: Prisma.TransactionClient,
+    paymentId: string,
+    target: PaymentStatus,
+    options: TransitionOptions,
+  ): Promise<Payment> {
+    const payment = await tx.payment.findUnique({ where: { id: paymentId } });
 
-      // Prisma คืน paymentStatus เป็น string-union → cast เป็น local enum (ค่าเดียวกัน)
-      const current = payment.paymentStatus as PaymentStatus;
+    if (!payment) {
+      throw new NotFoundException(`ไม่พบ payment "${paymentId}"`);
+    }
 
-      if (!this.canTransition(current, target)) {
-        throw new InvalidPaymentTransitionError(current, target);
-      }
+    // Prisma คืน paymentStatus เป็น string-union → cast เป็น local enum (ค่าเดียวกัน)
+    const current = payment.paymentStatus as PaymentStatus;
 
-      // 1) อัปเดตสถานะบน payment
-      const updated = await tx.payment.update({
-        where: { id: paymentId },
-        data: { paymentStatus: target, updatedAt: new Date() },
-      });
+    if (!this.canTransition(current, target)) {
+      throw new InvalidPaymentTransitionError(current, target);
+    }
 
-      // 2) เขียน history (audit) — from = สถานะเดิม, to = สถานะใหม่
-      await tx.paymentStatusHistory.create({
-        data: {
-          paymentId,
-          fromStatus: current,
-          toStatus: target,
-          changedBy: options.changedBy,
-          reason: options.reason,
-          metadata:
-            options.metadata === undefined
-              ? undefined
-              : (options.metadata as Prisma.InputJsonValue),
-        },
-      });
-
-      return updated;
+    // 1) อัปเดตสถานะบน payment
+    const updated = await tx.payment.update({
+      where: { id: paymentId },
+      data: { paymentStatus: target, updatedAt: new Date() },
     });
+
+    // 2) เขียน history (audit) — from = สถานะเดิม, to = สถานะใหม่
+    await tx.paymentStatusHistory.create({
+      data: {
+        paymentId,
+        fromStatus: current,
+        toStatus: target,
+        changedBy: options.changedBy,
+        reason: options.reason,
+        metadata:
+          options.metadata === undefined
+            ? undefined
+            : (options.metadata as Prisma.InputJsonValue),
+      },
+    });
+
+    return updated;
   }
 
   /**
@@ -160,6 +183,39 @@ export class PaymentStateMachine {
       data: {
         paymentId,
         fromStatus: null, // null = ไม่มีสถานะก่อนหน้า (เป็นการสร้างใหม่)
+        toStatus: status,
+        changedBy: options.changedBy,
+        reason: options.reason,
+        metadata:
+          options.metadata === undefined
+            ? undefined
+            : (options.metadata as Prisma.InputJsonValue),
+      },
+    });
+  }
+
+  /**
+   * recordCaptureFailure — บันทึก "ความพยายาม capture ที่ล้มเหลว" ลง history (PYG-281)
+   *
+   * ต่างจาก transition() ตรงที่ "ไม่เปลี่ยนสถานะ" — payment ยังคงเป็น held อยู่
+   * (capture พัง = เงินยังกันวงเงินไว้เหมือนเดิม) แต่เราต้องมี audit row ไว้บอกว่า
+   * "เคยพยายาม capture แล้วไม่สำเร็จเพราะอะไร" → from = to = สถานะปัจจุบัน (held)
+   *
+   * ใช้โดย completeBooking: เมื่อ Omise capture fail → เรียกเมธอดนี้ + แจ้ง admin
+   *
+   * @param paymentId  - UUID ของ payment
+   * @param status     - สถานะปัจจุบันของ payment (ปกติคือ held)
+   * @param options    - { changedBy?, reason?, metadata? } — ใส่ metadata บอกสาเหตุจาก Omise
+   */
+  async recordCaptureFailure(
+    paymentId: string,
+    status: PaymentStatus,
+    options: TransitionOptions = {},
+  ): Promise<void> {
+    await this.prisma.paymentStatusHistory.create({
+      data: {
+        paymentId,
+        fromStatus: status, // capture พัง → สถานะคงเดิม (audit row ไม่ใช่การเปลี่ยนสถานะ)
         toStatus: status,
         changedBy: options.changedBy,
         reason: options.reason,

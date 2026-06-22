@@ -187,6 +187,7 @@ model Booking {
   confirmedAt              DateTime?            @map("confirmed_at") @db.Timestamptz(6)
   tasks                    String[]             @default([]) @map("tasks")
   acceptedAt               DateTime?            @map("accepted_at") @db.Timestamptz(6)
+  completedAt              DateTime?            @map("completed_at") @db.Timestamptz(6)  // PYG-281: เวลาที่งานเสร็จ + capture เงินสำเร็จ
   booking_tasks            booking_tasks[]
   careRecipient            CareRecipient?       @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?           @relation(fields: [caregiverId], references: [id])

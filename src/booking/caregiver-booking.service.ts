@@ -242,29 +242,6 @@ export class CaregiverBookingService {
    * accepted → rejected (+ เหตุผลบังคับ)
    * เก็บ acceptedAt เดิมไว้เพื่อเป็น audit trail (ว่าเคยรับแล้วถอน)
    */
-  async completeBooking(
-    userId: string,
-    bookingId: string,
-  ): Promise<CaregiverBookingSummary> {
-    const caregiverId = await this.resolveCaregiverId(userId);
-    const existing = await this.loadOwnedBooking(caregiverId, bookingId);
-
-    if (existing.status !== 'confirmed') {
-      throw new UnprocessableEntityException(
-        'Only bookings with status "confirmed" can be completed',
-      );
-    }
-
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: 'completed' },
-      include: BOOKING_INCLUDE,
-    });
-
-    this.logger.log({ event: 'booking.completed', bookingId, userId });
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
-  }
-
   async cancelAcceptance(
     userId: string,
     input: CancelAcceptanceInput,
