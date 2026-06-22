@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
@@ -15,6 +17,8 @@ import { PaymentStateMachine } from './payment-state-machine';
 import { Payment, PaymentStatusEnum } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
+import { OmiseService } from './omise/omise.service';
+import { CreatePaymentInput } from './dto/create-payment.input';
 
 type PrismaHistoryRow = {
   id: string;
@@ -34,6 +38,7 @@ export class PaymentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fsm: PaymentStateMachine,
+    private readonly omiseService: OmiseService,
   ) {}
 
   // ── PYG-277: audit history query ─────────────────────────────────────────
@@ -61,6 +66,98 @@ export class PaymentService {
     });
 
     return rows.map((row) => this.mapHistoryRow(row as PrismaHistoryRow));
+  }
+
+  // ── PYG-281: Authorize Payment ───────────────────────────────────────────
+
+  async createPayment(input: CreatePaymentInput, user: AuthUser): Promise<Payment> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: input.bookingId },
+      include: { caregiver: true },
+    });
+
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.patientId !== user.id) throw new ForbiddenException('Access denied');
+    if (booking.status !== 'accepted') {
+      throw new UnprocessableEntityException('Booking must be in accepted status to make a payment');
+    }
+    if (!booking.caregiverId || !booking.caregiver) {
+      throw new UnprocessableEntityException('Booking has no caregiver assigned');
+    }
+
+    const existingPayment = await this.prisma.payment.findUnique({
+      where: { bookingId: booking.id },
+    });
+
+    if (existingPayment && existingPayment.paymentStatus !== PaymentStatus.failed) {
+      throw new ConflictException('A valid payment already exists for this booking');
+    }
+
+    const duration = typeof (booking.durationHours as any).toNumber === 'function' 
+      ? (booking.durationHours as any).toNumber() 
+      : Number(booking.durationHours);
+      
+    const hourlyRate = booking.caregiver.hourlyRate ?? 0;
+    if (hourlyRate <= 0) {
+      throw new UnprocessableEntityException('Caregiver has an invalid hourly rate');
+    }
+
+    // Payment.amount expects Baht, Omise expects Satangs
+    const amountBaht = Math.round(duration * hourlyRate * 100) / 100;
+    const amountSatangs = Math.round(amountBaht * 100);
+
+    const chargeResult = await this.omiseService.createCharge(amountSatangs, input.omiseToken);
+
+    // Atomic: update booking status and upsert payment, plus initial history row
+    const payment = await this.prisma.$transaction(async (tx) => {
+      await tx.booking.update({
+        where: { id: booking.id },
+        data: { status: 'confirmed', confirmedAt: new Date() },
+      });
+
+      const paymentData = {
+        patientId: user.id,
+        caregiverId: booking.caregiver.userId,
+        amount: amountBaht,
+        paymentStatus: PaymentStatus.held,
+        paymentMethod: 'credit_card',
+        omiseToken: input.omiseToken,
+        omiseChargeId: chargeResult.id,
+        failureCode: chargeResult.failure_code ?? null,
+        failureMessage: chargeResult.failure_message ?? null,
+      };
+
+      let resultPayment;
+      if (existingPayment) {
+        resultPayment = await tx.payment.update({
+          where: { id: existingPayment.id },
+          data: paymentData,
+        });
+      } else {
+        resultPayment = await tx.payment.create({
+          data: {
+            bookingId: booking.id,
+            ...paymentData,
+          },
+        });
+      }
+
+      // Initial history row isn't achievable via PaymentStateMachine inside tx since
+      // there's no null -> held edge. We write it directly to the transaction client.
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: resultPayment.id,
+          fromStatus: existingPayment ? (existingPayment.paymentStatus as PaymentStatus) : null,
+          toStatus: PaymentStatus.held,
+          changedBy: user.id,
+          reason: 'Authorized payment via Omise',
+        },
+      });
+
+      return resultPayment;
+    });
+
+    return this.toGql(payment);
   }
 
   // ── PYG-282: admin transfer + payment list ───────────────────────────────

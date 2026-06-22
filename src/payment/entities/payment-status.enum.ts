@@ -17,7 +17,7 @@
  *   voided              → ยกเลิกการกันวงเงิน (ยกเลิกก่อนวันบริการ)
  *   refunded            → คืนเงินเต็มจำนวน
  *   partially_refunded  → คืนเงินบางส่วน
- *   failed              → authorize ไม่สำเร็จ (บัตรมีปัญหา)
+ *   failed              → authorize ไม่สำเร็จ (บัตรมีปัญหา); retry ได้ → held
  *   expired             → การกันวงเงินหมดอายุ (เกิน PAYMENT_HOLD_DAYS)
  */
 import { registerEnumType } from '@nestjs/graphql';

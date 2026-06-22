@@ -5,6 +5,7 @@ import { PaymentResolver } from './payment.resolver';
 import { OmiseService } from './omise/omise.service';
 import { CompleteBookingService } from './complete-booking.service';
 import { CompleteBookingResolver } from './complete-booking.resolver';
+import { PaymentCronService } from './payment-cron.service';
 import { OmiseController } from './webhook/omise.controller';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -19,6 +20,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
     OmiseService,
     CompleteBookingService,
     CompleteBookingResolver,
+    PaymentCronService,
     SupabaseAuthGuard,
     RolesGuard,
   ],

@@ -3,6 +3,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { join } from 'path';
 import { AppResolver } from './app.resolver';
 import { CommonModule } from './common/common.module';
@@ -26,6 +27,9 @@ import { PaymentModule } from './payment/payment.module';
 
     // ─── Scheduler (PYG-159) ──────────────────────────────────────────────
     ScheduleModule.forRoot(),
+
+    // ─── Event Emitter ────────────────────────────────────────────────────
+    EventEmitterModule.forRoot(),
 
     // ─── 2. GraphQL Module (Code-First approach) ──────────────────────────
     GraphQLModule.forRoot<ApolloDriverConfig>({

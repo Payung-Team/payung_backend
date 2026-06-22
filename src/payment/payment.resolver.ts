@@ -10,6 +10,7 @@ import { PaymentStatusHistory } from './entities/payment-status-history.entity';
 import { Payment } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
+import { CreatePaymentInput } from './dto/create-payment.input';
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard)
@@ -26,6 +27,18 @@ export class PaymentResolver {
     @Args('paymentId', { type: () => ID }) paymentId: string,
   ): Promise<PaymentStatusHistory[]> {
     return this.paymentService.getHistory(paymentId, user);
+  }
+
+  // ── PYG-281: Authorize Payment ───────────────────────────────────────────
+
+  @Mutation(() => Payment)
+  @UseGuards(RolesGuard)
+  @Roles(ROLE_ID.PATIENT)
+  async createPayment(
+    @Args('input') input: CreatePaymentInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<Payment> {
+    return this.paymentService.createPayment(input, user);
   }
 
   // ── PYG-282: admin-only ───────────────────────────────────────────────────

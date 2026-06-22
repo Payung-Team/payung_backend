@@ -18,6 +18,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CaptureFailedError } from '../errors/capture-failed.error';
+import { mapOmiseError } from '../errors/omise-error-mapper';
 
 /** ผลลัพธ์ที่ normalize แล้วจากการ capture (เอาเฉพาะ field ที่เราต้องใช้ต่อ) */
 export type OmiseCaptureResult = {
@@ -31,6 +32,11 @@ export type OmiseCaptureResult = {
   captured: boolean;
   /** จ่ายเงินสำเร็จหรือยัง */
   paid: boolean;
+  /** สถานะการ authorize */
+  authorized: boolean;
+  /** ข้อมูล error ถ้าการจ่ายเงินล้มเหลว */
+  failure_code?: string;
+  failure_message?: string;
 };
 
 @Injectable()
@@ -145,6 +151,138 @@ export class OmiseService {
       amount: typeof body.amount === 'number' ? body.amount : 0,
       captured,
       paid,
+      authorized: body.authorized === true,
+      failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message: typeof body.failure_message === 'string' ? body.failure_message : undefined,
+    };
+  }
+
+  /**
+   * createCharge — สั่งกันวงเงิน (authorize) จาก Omise แบบ capture=false
+   *
+   * @param amount - จำนวนเงิน (หน่วย satangs)
+   * @param token - Omise token ของบัตร
+   * @returns ข้อมูล charge ที่เพิ่งสร้าง
+   * @throws PaymentError ถ้ากันวงเงินไม่สำเร็จ
+   */
+  async createCharge(amount: number, token: string): Promise<OmiseCaptureResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+
+    const url = `${this.apiBase}/charges`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          amount: amount.toString(),
+          currency: 'thb',
+          card: token,
+          capture: 'false',
+        }),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] createCharge network error: ${message}`);
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง charge', { omiseMessage: message });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    // กรณี HTTP ไม่สำเร็จ (เช่น token ผิด, invalid request)
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(`[Omise] createCharge failed status=${res.status} code=${omiseCode} message=${omiseMessage}`);
+      throw mapOmiseError(omiseCode, omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    const status = typeof body.status === 'string' ? body.status : 'unknown';
+    const authorized = body.authorized === true;
+    const failureCode = typeof body.failure_code === 'string' ? body.failure_code : undefined;
+    const failureMessage = typeof body.failure_message === 'string' ? body.failure_message : undefined;
+
+    // ตรวจสอบว่าสำเร็จไหม: สำหรับ capture=false, authorized ควรเป็น true หรือ status เป็น 'pending' / 'successful'
+    // ถ้าระบุว่า failed ก็จัดการด้วย PaymentError
+    if (status === 'failed' || !authorized) {
+      this.logger.error(
+        `[Omise] createCharge not authorized status=${status} authorized=${authorized} failureCode=${failureCode}`,
+      );
+      throw mapOmiseError(failureCode || 'not_authorized', failureMessage, {
+        omiseCode: failureCode,
+        omiseMessage: failureMessage,
+      });
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      status,
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      captured: body.captured === true,
+      paid: body.paid === true,
+      authorized,
+      failure_code: failureCode,
+      failure_message: failureMessage,
+    };
+  }
+
+  /**
+   * reverseCharge — ยกเลิกการกันวงเงิน (authorize) ที่เกินเวลาหรือไม่ได้ใช้งาน
+   *
+   * @param omiseChargeId - charge id ของ Omise
+   * @returns ผลลัพธ์จากการ reverse
+   */
+  async reverseCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
+    if (!this.secretKey) {
+      throw new Error('ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+
+    const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}/reverse`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: authHeader },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] reverseCharge network error chargeId=${omiseChargeId}: ${message}`);
+      throw new Error(`ติดต่อ Omise ไม่สำเร็จขณะ reverse เงิน: ${message}`);
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] reverseCharge failed chargeId=${omiseChargeId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw new Error(`Omise ปฏิเสธการ reverse เงิน: ${omiseMessage}`);
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : omiseChargeId,
+      status: typeof body.status === 'string' ? body.status : 'unknown',
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      captured: body.captured === true,
+      paid: body.paid === true,
+      authorized: body.authorized === true,
+      failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message: typeof body.failure_message === 'string' ? body.failure_message : undefined,
     };
   }
 }

@@ -61,7 +61,7 @@ const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
   [PaymentStatus.voided]: [],
   [PaymentStatus.refunded]: [],
   [PaymentStatus.partially_refunded]: [],
-  [PaymentStatus.failed]: [],
+  [PaymentStatus.failed]: [PaymentStatus.held],
   [PaymentStatus.expired]: [],
 };
 
