@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PaymentStateMachine } from './payment-state-machine';
+import { OmiseService } from './omise.service';
 import { PaymentService } from './payment.service';
 import { PaymentResolver } from './payment.resolver';
 import { OmiseController } from './webhook/omise.controller';
@@ -10,6 +11,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
   controllers: [OmiseController],
   providers: [
     PaymentStateMachine,
+    OmiseService,
     PaymentService,
     PaymentResolver,
     SupabaseAuthGuard,

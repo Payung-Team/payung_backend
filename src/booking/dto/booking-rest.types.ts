@@ -26,6 +26,10 @@ export interface BookingRest {
   estimatedCost?: number;
   caregiver?: CaregiverBriefRest; // undefined when booking is unmatched
   careRecipientName?: string;
+  patientName?: string;
+  dayOfContactName?: string;
+  dayOfContactPhone?: string;
+  dayOfContactRelationship?: string;
   confirmedAt?: Date;
   createdAt: Date;
 }

@@ -38,6 +38,9 @@ export class Payment {
   @Field({ nullable: true })
   failureMessage?: string;
 
+  @Field({ nullable: true, description: 'QR code URL สำหรับ PromptPay (มาจาก Omise)' })
+  qrCodeUrl?: string;
+
   @Field()
   createdAt: Date;
 

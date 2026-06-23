@@ -36,6 +36,10 @@ export class BookingSummary {
   @Field(() => Float, { nullable: true })             estimatedCost?: number;
   @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
   @Field({ nullable: true })                          careRecipientName?: string;
+  @Field({ nullable: true })                          patientName?: string;
+  @Field({ nullable: true })                          dayOfContactName?: string;
+  @Field({ nullable: true })                          dayOfContactPhone?: string;
+  @Field({ nullable: true })                          dayOfContactRelationship?: string;
   @Field({ nullable: true })                          confirmedAt?: Date;
   @Field()                                            createdAt: Date;
 }

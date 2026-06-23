@@ -10,11 +10,44 @@ import { PaymentStatusHistory } from './entities/payment-status-history.entity';
 import { Payment } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
+import { CreatePaymentInput } from './dto/create-payment.input';
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard)
 export class PaymentResolver {
   constructor(private readonly paymentService: PaymentService) {}
+
+  // ── PYG-264: patient creates payment for accepted booking ─────────────────
+
+  @Mutation(() => Payment, {
+    description:
+      'สร้างการชำระเงินผ่าน Omise (patient เท่านั้น) — ' +
+      'authorize/hold บัตร ยังไม่หักเงิน รอ admin capture ภายหลัง. ' +
+      'Booking ต้องมีสถานะ accepted และเป็นของ patient ที่ login อยู่.',
+  })
+  @UseGuards(RolesGuard)
+  @Roles(ROLE_ID.PATIENT)
+  async createPayment(
+    @Args('input', { type: () => CreatePaymentInput }) input: CreatePaymentInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<Payment> {
+    return this.paymentService.createPayment(input, user);
+  }
+
+  // ── PromptPay polling: patient / caregiver / admin can query ────────────
+
+  @Query(() => Payment, {
+    nullable: true,
+    description:
+      'คืน payment ล่าสุดของ booking (ใช้สำหรับ poll สถานะ PromptPay). ' +
+      'เข้าถึงได้เฉพาะ patient / caregiver ที่เกี่ยวข้อง หรือ admin.',
+  })
+  async paymentByBooking(
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<Payment | null> {
+    return this.paymentService.getPaymentByBooking(bookingId, user);
+  }
 
   // ── PYG-277: open to authenticated users (service enforces party/admin check) ──
 

@@ -7,6 +7,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/entities/notification-type.enum';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -41,6 +43,10 @@ type CaregiverBookingRow = {
   createdAt: Date;
   patient: { id: string; displayName: string | null; avatarUrl: string | null };
   careRecipient: { name: string } | null;
+  patientName: string | null;
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
 };
 
 /**
@@ -57,7 +63,10 @@ const BOOKING_INCLUDE = {
 export class CaregiverBookingService {
   private readonly logger = new Logger(CaregiverBookingService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
   // ════════════════════════════════════════════════════════════════════════
   //  QUERIES (อ่านข้อมูล)
@@ -134,7 +143,7 @@ export class CaregiverBookingService {
       this.prisma.booking.findMany({
         where,
         include: BOOKING_INCLUDE,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { bookingDate: 'asc' },
         skip: offset,
         take: limit,
       }),
@@ -203,12 +212,20 @@ export class CaregiverBookingService {
     const now = new Date();
     const updated = await this.prisma.booking.update({
       where: { id: bookingId },
-      data: { status: 'confirmed', acceptedAt: now, confirmedAt: now },
+      data: { status: 'accepted', acceptedAt: now },
       include: BOOKING_INCLUDE,
     });
 
+    const updatedRow = updated as unknown as CaregiverBookingRow;
     this.logger.log({ event: 'booking.accepted', bookingId, userId });
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    void this.notificationService.create(
+      updatedRow.patient.id,
+      NotificationType.booking_accepted,
+      'Caregiver ตอบรับการจองของคุณ',
+      'กรุณายืนยันและชำระเงินเพื่อยืนยันนัดหมาย',
+      { bookingId },
+    );
+    return this.toSummary(updatedRow);
   }
 
   /**
@@ -233,8 +250,16 @@ export class CaregiverBookingService {
       include: BOOKING_INCLUDE,
     });
 
+    const updatedRow = updated as unknown as CaregiverBookingRow;
     this.logger.log({ event: 'booking.declined', bookingId: input.bookingId, userId });
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    void this.notificationService.create(
+      updatedRow.patient.id,
+      NotificationType.booking_declined,
+      'Caregiver ปฏิเสธคำขอของคุณ',
+      'Caregiver ไม่สามารถรับงานของคุณได้ในขณะนี้',
+      { bookingId: input.bookingId },
+    );
+    return this.toSummary(updatedRow);
   }
 
   /**
@@ -284,12 +309,20 @@ export class CaregiverBookingService {
       include: BOOKING_INCLUDE,
     });
 
+    const updatedRow = updated as unknown as CaregiverBookingRow;
     this.logger.log({
       event: 'booking.acceptance_cancelled',
       bookingId: input.bookingId,
       userId,
     });
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    void this.notificationService.create(
+      updatedRow.patient.id,
+      NotificationType.booking_declined,
+      'Caregiver ยกเลิกการตอบรับ',
+      'Caregiver ถอนการรับงานก่อนที่คุณจะยืนยัน',
+      { bookingId: input.bookingId },
+    );
+    return this.toSummary(updatedRow);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -349,12 +382,11 @@ export class CaregiverBookingService {
   private orderByForStatus(status: string): Record<string, 'asc' | 'desc'> {
     switch (status) {
       case 'pending':
-        return { createdAt: 'desc' }; // คำขอใหม่ล่าสุดอยู่บนสุด
       case 'accepted':
       case 'confirmed':
         return { bookingDate: 'asc' }; // ใกล้ถึงวันนัดอยู่บนสุด
       default:
-        return { createdAt: 'desc' };
+        return { bookingDate: 'asc' };
     }
   }
 
@@ -386,6 +418,10 @@ export class CaregiverBookingService {
         avatarUrl: b.patient.avatarUrl ?? undefined,
       },
       careRecipientName: b.careRecipient?.name ?? undefined,
+      patientName: b.patientName ?? undefined,
+      dayOfContactName: b.dayOfContactName ?? undefined,
+      dayOfContactPhone: b.dayOfContactPhone ?? undefined,
+      dayOfContactRelationship: b.dayOfContactRelationship ?? undefined,
       acceptedAt: b.acceptedAt ?? undefined,
       confirmedAt: b.confirmedAt ?? undefined,
       rejectionReason: b.rejectionReason ?? undefined,

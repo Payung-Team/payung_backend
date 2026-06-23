@@ -70,6 +70,16 @@ export class BookingController {
   ) {
     return this.bookingService.recoverBooking(id, user.id);
   }
+
+  // ── ⑤ POST /api/v1/bookings/:id/pay ─────────────────────────────────────────
+  @Post(':id/pay')
+  @HttpCode(HttpStatus.OK)
+  payBooking(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentHttpUser() user: AuthUser,
+  ) {
+    return this.bookingService.confirmBooking(id, user.id);
+  }
 }
 
 /**

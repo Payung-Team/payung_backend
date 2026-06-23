@@ -45,7 +45,7 @@ export type TransitionOptions = {
  * สถานะปลายทาง (transferred/voided/refunded/...) เป็น terminal → ไปต่อไม่ได้ ([])
  */
 const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
-  [PaymentStatus.pending]: [PaymentStatus.held, PaymentStatus.failed],
+  [PaymentStatus.pending]: [PaymentStatus.held, PaymentStatus.failed, PaymentStatus.captured],
   [PaymentStatus.held]: [
     PaymentStatus.captured,
     PaymentStatus.voided,

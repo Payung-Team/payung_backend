@@ -1,4 +1,4 @@
-import * as crypto from 'crypto';
+import * as crypto from 'node:crypto';
 import {
   Body,
   Controller,
@@ -8,6 +8,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PaymentService } from '../payment.service';
 
 interface OmiseWebhookBody {
   key: string;
@@ -18,23 +19,22 @@ interface OmiseWebhookBody {
 export class OmiseController {
   private readonly logger = new Logger(OmiseController.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly paymentService: PaymentService,
+  ) {}
 
   @Post('omise')
   @HttpCode(200)
-  handle(
+  async handle(
     @Body() body: OmiseWebhookBody,
     @Headers('x-omise-signature') signature?: string,
-  ): { received: boolean } {
+  ): Promise<{ received: boolean }> {
     const secret = this.configService.get<string>('OMISE_WEBHOOK_SECRET');
 
     if (!secret) {
-      // TODO: set OMISE_WEBHOOK_SECRET in .env to enable signature verification
       this.logger.warn('[OmiseWebhook] OMISE_WEBHOOK_SECRET not configured — skipping signature check');
     } else if (signature) {
-      // NOTE: for byte-accurate verification, configure NestJS to preserve rawBody
-      // (app.use(express.json({ verify: (req, _, buf) => { req['rawBody'] = buf; } })))
-      // Current implementation re-serialises the parsed JSON which may differ from the original bytes.
       const expected = crypto
         .createHmac('sha256', secret)
         .update(JSON.stringify(body))
@@ -54,20 +54,32 @@ export class OmiseController {
     this.logger.log(`[OmiseWebhook] received event key=${key}`);
 
     switch (key) {
-      case 'charge.complete':
-        // TODO: PYG-281 — update payment status to 'captured' when charge completes
-        this.logger.log(`[OmiseWebhook] charge.complete: ${JSON.stringify(data)}`);
+      case 'charge.complete': {
+        const chargeId = data?.['id'] as string | undefined;
+        if (chargeId) {
+          await this.paymentService.captureFromWebhook(chargeId);
+        }
         break;
+      }
 
-      case 'charge.reverse':
-        // TODO: update payment status to 'voided'
-        this.logger.log(`[OmiseWebhook] charge.reverse: ${JSON.stringify(data)}`);
+      case 'charge.reverse': {
+        const chargeId = data?.['id'] as string | undefined;
+        if (chargeId) {
+          await this.paymentService.voidFromWebhook(chargeId);
+        }
         break;
+      }
 
-      case 'refund.create':
-        // TODO: update payment status to 'refunded' or 'partially_refunded'
-        this.logger.log(`[OmiseWebhook] refund.create: ${JSON.stringify(data)}`);
+      case 'refund.create': {
+        // data.charge = parent charge id, data.id = refund id, data.amount = refund satangs
+        const chargeId  = data?.['charge'] as string | undefined;
+        const refundId  = data?.['id']     as string | undefined;
+        const amount    = data?.['amount'] as number | undefined;
+        if (chargeId) {
+          await this.paymentService.refundFromWebhook(chargeId, { refundId, amount });
+        }
         break;
+      }
 
       default:
         this.logger.log(`[OmiseWebhook] unhandled event key=${key ?? 'undefined'}`);

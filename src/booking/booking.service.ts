@@ -7,6 +7,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/entities/notification-type.enum';
 import {
   BookingListResponse,
   BookingPagination,
@@ -22,7 +24,7 @@ import {
   MatchedCaregiverRest,
   TaskSuggestion,
 } from './dto/booking-rest.types';
-import { booking_service_type, booking_status, time_slot } from '@prisma/client';
+// booking_service_type, booking_status, time_slot enums removed — bookings table columns are now TEXT after migration 20260620000001
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -88,9 +90,14 @@ type BookingWithIncludes = {
   estimatedCost: { toNumber(): number } | null;
   confirmedAt: Date | null;
   createdAt: Date;
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
+  patientName: string | null;
   // caregiver is nullable when booking is unmatched
   caregiver: {
     id: string;
+    userId: string;
     fullName: string | null;
     hourlyRate: number | null;
     user: { avatarUrl: string | null };
@@ -102,7 +109,10 @@ type BookingWithIncludes = {
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
   // ── ① POST /api/v1/bookings ─────────────────────────────────────────────────
 
@@ -124,16 +134,18 @@ export class BookingService {
 
     // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
     let resolvedCaregiverId: string | null = null;
+    let caregiverUserId: string | null = null;
     let estimatedCost: number | null = null;
     if (dto.caregiverId) {
       const caregiver = await this.prisma.caregiver.findUnique({
         where: { id: dto.caregiverId },
-        select: { id: true, kycStatus: true, isSearchable: true, hourlyRate: true },
+        select: { id: true, userId: true, kycStatus: true, isSearchable: true, hourlyRate: true },
       });
       if (!caregiver || caregiver.kycStatus !== 'verified' || !caregiver.isSearchable) {
         throw new NotFoundException('Caregiver not found or unavailable');
       }
       resolvedCaregiverId = caregiver.id;
+      caregiverUserId = caregiver.userId;
       if (caregiver.hourlyRate != null) {
         estimatedCost = caregiver.hourlyRate * dto.durationHours;
       }
@@ -172,8 +184,8 @@ export class BookingService {
         careRecipientId:  dto.careRecipientId ?? null,
         tasks:            dto.tasks,
         serviceLocations: dto.serviceLocations,
-        serviceType:      dto.serviceType as booking_service_type,
-        timeSlot:         dto.timeSlot as time_slot,
+        serviceType:      dto.serviceType,
+        timeSlot:         dto.timeSlot,
         startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
         durationHours:    dto.durationHours,
         locationAddress:  dto.locationAddress,
@@ -182,6 +194,7 @@ export class BookingService {
         dayOfContactName:         dto.dayOfContactName         ?? null,
         dayOfContactPhone:        dto.dayOfContactPhone        ?? null,
         dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
+        patientName:              dto.patientName              ?? null,
         estimatedCost:    estimatedCost,
         // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
         status: resolvedCaregiverId ? 'pending' : 'unmatched',
@@ -199,6 +212,15 @@ export class BookingService {
       caregiverId: resolvedCaregiverId,
       status: booking.status,
     });
+    if (caregiverUserId) {
+      void this.notificationService.create(
+        caregiverUserId,
+        NotificationType.booking_new,
+        'มีคำขอจองใหม่',
+        'ผู้ใช้บริการส่งคำขอจองบริการของคุณแล้ว กรุณาตรวจสอบและตอบรับ',
+        { bookingId: booking.id },
+      );
+    }
     return this.toRestSummary(booking as unknown as BookingWithIncludes);
   }
 
@@ -240,6 +262,15 @@ export class BookingService {
     });
 
     this.logger.log({ event: 'booking.cancelled', bookingId, patientId });
+    if (updated.caregiver?.userId) {
+      void this.notificationService.create(
+        updated.caregiver.userId,
+        NotificationType.booking_cancelled,
+        'ผู้ใช้บริการยกเลิกการจอง',
+        'การจองถูกยกเลิกโดยผู้ใช้บริการ',
+        { bookingId },
+      );
+    }
     return this.toRestSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -404,6 +435,15 @@ export class BookingService {
     });
 
     this.logger.log({ event: 'booking.confirmed', bookingId, userId });
+    if (updated.caregiver?.userId) {
+      void this.notificationService.create(
+        updated.caregiver.userId,
+        NotificationType.booking_confirmed,
+        'ผู้ใช้บริการยืนยันการจอง',
+        'ผู้ใช้บริการยืนยันและชำระเงินสำหรับการจองแล้ว',
+        { bookingId },
+      );
+    }
     return this.toSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -429,7 +469,7 @@ export class BookingService {
     limit = Math.min(50, Math.max(1, limit));
     const offset = (page - 1) * limit;
 
-    const where = { patientId: userId, status: 'accepted' as booking_status };
+    const where = { patientId: userId, status: 'accepted' };
     const [items, total] = await Promise.all([
       this.prisma.booking.findMany({
         where,
@@ -465,7 +505,7 @@ export class BookingService {
           caregiver: { include: { user: { select: { avatarUrl: true } } } },
           careRecipient: { select: { name: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { bookingDate: 'asc' },
         skip: offset,
         take: limit,
       }),
@@ -504,9 +544,13 @@ export class BookingService {
                           ? booking.estimatedCost.toNumber()
                           : undefined,
       caregiver,
-      careRecipientName: booking.careRecipient?.name ?? undefined,
-      confirmedAt:      booking.confirmedAt   ?? undefined,
-      createdAt:        booking.createdAt,
+      careRecipientName:        booking.careRecipient?.name           ?? undefined,
+      patientName:              booking.patientName                   ?? undefined,
+      dayOfContactName:         booking.dayOfContactName              ?? undefined,
+      dayOfContactPhone:        booking.dayOfContactPhone             ?? undefined,
+      dayOfContactRelationship: booking.dayOfContactRelationship      ?? undefined,
+      confirmedAt:              booking.confirmedAt                   ?? undefined,
+      createdAt:                booking.createdAt,
     };
   }
 
@@ -541,9 +585,13 @@ export class BookingService {
                           ? booking.estimatedCost.toNumber()
                           : undefined,
       caregiver,
-      careRecipientName: booking.careRecipient?.name ?? undefined,
-      confirmedAt:      booking.confirmedAt   ?? undefined,
-      createdAt:        booking.createdAt,
+      careRecipientName:        booking.careRecipient?.name           ?? undefined,
+      patientName:              booking.patientName                   ?? undefined,
+      dayOfContactName:         booking.dayOfContactName              ?? undefined,
+      dayOfContactPhone:        booking.dayOfContactPhone             ?? undefined,
+      dayOfContactRelationship: booking.dayOfContactRelationship      ?? undefined,
+      confirmedAt:              booking.confirmedAt                   ?? undefined,
+      createdAt:                booking.createdAt,
     };
   }
 

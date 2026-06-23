@@ -37,6 +37,7 @@
     "class-validator": "^0.14.4",
     "graphql": "^16.13.2",
     "nodemailer": "^8.0.7",
+    "omise": "^1.1.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",

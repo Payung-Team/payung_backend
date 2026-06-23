@@ -97,4 +97,9 @@ export class CreateBookingDto {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  patientName?: string;
 }

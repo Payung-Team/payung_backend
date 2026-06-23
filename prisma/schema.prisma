@@ -166,14 +166,14 @@ model Booking {
   caregiverId              String?              @map("caregiver_id")
   careRecipientId          String?              @map("care_recipient_id") @db.Uuid
   serviceLocations         String[]             @map("service_locations")
-  serviceType              booking_service_type @map("service_type")
-  timeSlot                 time_slot            @map("time_slot")
+  serviceType              String               @map("service_type")
+  timeSlot                 String               @map("time_slot")
   startTime                DateTime             @map("start_time") @db.Time(6)
   durationHours            Decimal              @map("duration_hours") @db.Decimal
   locationAddress          String               @map("location_address")
   locationLat              Decimal?             @map("location_lat") @db.Decimal(10, 7)
   locationLng              Decimal?             @map("location_lng") @db.Decimal(10, 7)
-  status                   booking_status       @default(unmatched)
+  status                   String               @default("unmatched")
   rejectionReason          String?              @map("rejection_reason")
   estimatedCost            Decimal?             @map("estimated_cost") @db.Decimal(10, 2)
   platformFee              Decimal?             @map("platform_fee") @db.Decimal(10, 2)
@@ -182,6 +182,7 @@ model Booking {
   dayOfContactName         String?              @map("day_of_contact_name")
   dayOfContactPhone        String?              @map("day_of_contact_phone")
   dayOfContactRelationship String?              @map("day_of_contact_relationship")
+  patientName              String?              @map("patient_name")
   createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime             @default(now()) @map("updated_at") @db.Timestamptz(6)
   confirmedAt              DateTime?            @map("confirmed_at") @db.Timestamptz(6)
@@ -397,6 +398,11 @@ enum NotificationType {
   kyc_verified
   kyc_rejected
   kyc_resubmitted
+  booking_new
+  booking_accepted
+  booking_declined
+  booking_confirmed
+  booking_cancelled
 }
 
 enum booking_service_type {
