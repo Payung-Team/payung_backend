@@ -85,6 +85,11 @@ export class PaymentService {
       throw new UnprocessableEntityException('Booking has no caregiver assigned');
     }
 
+    // Extract to a const so the non-null type is preserved inside the $transaction
+    // closure below. TS does NOT carry property-access narrowing (booking.caregiver)
+    // into closures, but it does keep a narrowed const — so use this everywhere.
+    const caregiver = booking.caregiver;
+
     const existingPayment = await this.prisma.payment.findUnique({
       where: { bookingId: booking.id },
     });
@@ -97,7 +102,7 @@ export class PaymentService {
       ? (booking.durationHours as any).toNumber() 
       : Number(booking.durationHours);
       
-    const hourlyRate = booking.caregiver.hourlyRate ?? 0;
+    const hourlyRate = caregiver.hourlyRate ?? 0;
     if (hourlyRate <= 0) {
       throw new UnprocessableEntityException('Caregiver has an invalid hourly rate');
     }
@@ -117,7 +122,7 @@ export class PaymentService {
 
       const paymentData = {
         patientId: user.id,
-        caregiverId: booking.caregiver.userId,
+        caregiverId: caregiver.userId,
         amount: amountBaht,
         paymentStatus: PaymentStatus.held,
         paymentMethod: 'credit_card',
