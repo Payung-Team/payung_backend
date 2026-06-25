@@ -104,7 +104,8 @@ export class SearchService {
           c.service_area_district                   AS district
         FROM caregivers c
         INNER JOIN users u ON u.id = c.user_id
-        LEFT  JOIN reviews r ON r.caregiver_id = c.id
+        LEFT  JOIN reviews r ON r.caregiver_id = c.id AND r.is_visible = true
+        -- PYG-297: ไม่นับรีวิวที่ถูก admin ซ่อน (hideReview) ใน avg_rating/review_count
         WHERE ${whereClause}
         GROUP BY c.id, c.full_name, u.avatar_url, c.hourly_rate,
                  c.skills, c.service_area_province, c.service_area_district

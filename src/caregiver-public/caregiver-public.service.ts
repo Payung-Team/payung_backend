@@ -38,6 +38,8 @@ export class CaregiverPublicService {
           orderBy: [{ dayOfWeek: 'asc' }, { timeSlot: 'asc' }],
         },
         patientReviews: {
+          // PYG-297: นับเฉพาะรีวิวที่ยังไม่ถูก admin ซ่อน (hideReview → is_visible=false)
+          where: { isVisible: true },
           select: { rating: true },
         },
         user: {

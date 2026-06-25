@@ -17,6 +17,7 @@ import { CaregiverPublicModule } from './caregiver-public/caregiver-public.modul
 import { BookingModule } from './booking/booking.module';
 import { PatientModule } from './patient/patient.module';
 import { PaymentModule } from './payment/payment.module';
+import { ReviewModule } from './review/review.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { PaymentModule } from './payment/payment.module';
     BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs
     PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
     PaymentModule,       // PYG-277 FSM + PYG-282 admin transfer + Omise webhook
+    ReviewModule,        // PYG-297: post-service reviews (createReview/caregiverReviews/hideReview)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
