@@ -21,8 +21,10 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService, OmiseCaptureResult } from './omise/omise.service';
@@ -40,6 +42,7 @@ export class CompleteBookingService {
     private readonly prisma: PrismaService,
     private readonly fsm: PaymentStateMachine,
     private readonly omise: OmiseService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -138,19 +141,23 @@ export class CompleteBookingService {
       });
     });
 
-    // 7) emit events — ตอนนี้ log ไว้ก่อน (ยังไม่มี EventEmitter2 ในโปรเจกต์)
-    // TODO: PYG-292 — replace ด้วย EventEmitter2.emit('booking.completed' / 'payment.captured')
-    this.logger.log(
-      JSON.stringify({ event: 'booking.completed', bookingId, by: user.id }),
-    );
-    this.logger.log(
-      JSON.stringify({
-        event: 'payment.captured',
-        paymentId: payment.id,
-        bookingId,
-        amount: this.toNumber(payment.amount),
-      }),
-    );
+    // 7) emit events (PYG-292) — listener สร้าง in-app notification + อีเมล
+    //    booking.completed → แจ้ง patient (พร้อม prompt ให้รีวิว)
+    //    payment.captured  → แจ้ง caregiver (เรียกเก็บเงินจากวงเงินที่กันไว้แล้ว)
+    const caregiverUserId = booking.caregiver?.userId ?? null;
+    this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, {
+      bookingId,
+      eventType: BOOKING_EVENTS.COMPLETED,
+      patientId: booking.patientId,
+      caregiverId: caregiverUserId,
+    });
+    this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_CAPTURED, {
+      bookingId,
+      eventType: BOOKING_EVENTS.PAYMENT_CAPTURED,
+      patientId: booking.patientId,
+      caregiverId: caregiverUserId,
+      metadata: { amount: this.toNumber(payment.amount) },
+    });
 
     // 8) นัดส่ง review prompt อีก 1 ชม. (listener จะมาใน PYG-292/297)
     this.scheduleReviewPrompt(bookingId);

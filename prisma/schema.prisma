@@ -404,6 +404,13 @@ enum NotificationType {
   booking_declined
   booking_confirmed
   booking_cancelled
+  // PYG-292: booking lifecycle additions (เพิ่มจาก Figma "All 11 Notification Types")
+  booking_completed
+  payment_held
+  payment_captured
+  refund_issued
+  dispute_created
+  dispute_resolved
 }
 
 enum booking_service_type {

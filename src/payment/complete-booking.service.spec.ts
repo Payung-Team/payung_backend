@@ -14,6 +14,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CompleteBookingService } from './complete-booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
@@ -88,6 +89,8 @@ describe('CompleteBookingService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
+        // PYG-292: completeBooking ยิง booking.completed/payment.captured — mock EventEmitter2
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

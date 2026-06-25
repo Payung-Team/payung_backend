@@ -4,6 +4,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CaregiverBookingService } from './caregiver-booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { BookingStatusEnum } from './dto/booking-summary.types';
@@ -78,7 +79,12 @@ describe('CaregiverBookingService', () => {
     prisma.caregiver.findUnique.mockResolvedValue({ id: CAREGIVER_ID });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [CaregiverBookingService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        CaregiverBookingService,
+        { provide: PrismaService, useValue: prisma },
+        // PYG-292: service ยิง booking event — mock EventEmitter2
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+      ],
     }).compile();
 
     service = module.get<CaregiverBookingService>(CaregiverBookingService);

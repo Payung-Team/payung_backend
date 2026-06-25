@@ -8,7 +8,9 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { PaymentStatus } from './entities/payment-status.enum';
@@ -39,6 +41,7 @@ export class PaymentService {
     private readonly prisma: PrismaService,
     private readonly fsm: PaymentStateMachine,
     private readonly omiseService: OmiseService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ── PYG-277: audit history query ─────────────────────────────────────────
@@ -160,6 +163,23 @@ export class PaymentService {
       });
 
       return resultPayment;
+    });
+
+    // PYG-292: authorize สำเร็จ → กันวงเงิน (held) + booking ขึ้น confirmed
+    //  - payment.held    → แจ้ง patient ว่าชำระเงินเรียบร้อย
+    //  - booking.confirmed → แจ้ง caregiver ว่าการจองยืนยันแล้ว
+    // ยิงหลัง $transaction commit เพื่อให้ listener อ่านข้อมูลที่ลงจริงได้
+    this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_HELD, {
+      bookingId: booking.id,
+      eventType: BOOKING_EVENTS.PAYMENT_HELD,
+      patientId: user.id,
+      caregiverId: caregiver.userId,
+    });
+    this.eventEmitter.emit(BOOKING_EVENTS.CONFIRMED, {
+      bookingId: booking.id,
+      eventType: BOOKING_EVENTS.CONFIRMED,
+      patientId: user.id,
+      caregiverId: caregiver.userId,
     });
 
     return this.toGql(payment);

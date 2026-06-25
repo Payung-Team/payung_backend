@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { BookingStatusEnum } from './dto/booking-summary.types';
@@ -61,6 +62,8 @@ describe('BookingService', () => {
       providers: [
         BookingService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-292: BookingService ยิง booking event — mock EventEmitter2 ใน test
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

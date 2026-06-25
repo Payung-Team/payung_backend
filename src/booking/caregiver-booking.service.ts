@@ -6,7 +6,9 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -57,7 +59,15 @@ const BOOKING_INCLUDE = {
 export class CaregiverBookingService {
   private readonly logger = new Logger(CaregiverBookingService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
+
+  /** ยิง booking event แบบ fire-and-forget (PYG-292) — ดู BookingService.emit */
+  private emit(event: BookingEvent): void {
+    this.eventEmitter.emit(event.eventType, event);
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   //  QUERIES (อ่านข้อมูล)
@@ -208,6 +218,15 @@ export class CaregiverBookingService {
     });
 
     this.logger.log({ event: 'booking.accepted', bookingId, userId });
+
+    // PYG-292: แจ้ง patient ว่าผู้ดูแลรับคำขอแล้ว (caregiverId = userId ของคนรับงาน)
+    this.emit({
+      bookingId,
+      eventType: BOOKING_EVENTS.ACCEPTED,
+      patientId: updated.patientId,
+      caregiverId: userId,
+    });
+
     return this.toSummary(updated as unknown as CaregiverBookingRow);
   }
 
@@ -234,6 +253,16 @@ export class CaregiverBookingService {
     });
 
     this.logger.log({ event: 'booking.declined', bookingId: input.bookingId, userId });
+
+    // PYG-292: แจ้ง patient ว่าผู้ดูแลปฏิเสธ + แนบเหตุผลไปใน metadata
+    this.emit({
+      bookingId: input.bookingId,
+      eventType: BOOKING_EVENTS.DECLINED,
+      patientId: updated.patientId,
+      caregiverId: userId,
+      metadata: { reason: input.reason.trim() },
+    });
+
     return this.toSummary(updated as unknown as CaregiverBookingRow);
   }
 

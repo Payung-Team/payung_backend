@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -85,6 +86,8 @@ describe('BookingService — new REST methods', () => {
       providers: [
         BookingService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-292: BookingService ยิง booking event — mock EventEmitter2
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

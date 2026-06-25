@@ -6,7 +6,9 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import {
   BookingListResponse,
   BookingPagination,
@@ -102,7 +104,20 @@ type BookingWithIncludes = {
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
+
+  /**
+   * ยิง booking event แบบ fire-and-forget (PYG-292)
+   * - emit() ไม่ await → ไม่หน่วง response ของ mutation
+   * - BookingNotificationListener (async + try/catch) จัดการ notification/email เอง
+   *   error ฝั่ง listener จะไม่เด้งกลับมาที่นี่
+   */
+  private emit(event: BookingEvent): void {
+    this.eventEmitter.emit(event.eventType, event);
+  }
 
   // ── ① POST /api/v1/bookings ─────────────────────────────────────────────────
 
@@ -199,6 +214,15 @@ export class BookingService {
       caregiverId: resolvedCaregiverId,
       status: booking.status,
     });
+
+    // PYG-292: แจ้งเตือน caregiver ที่ถูก assign (ถ้า unmatched listener จะข้ามให้เอง)
+    this.emit({
+      bookingId: booking.id,
+      eventType: BOOKING_EVENTS.CREATED,
+      patientId,
+      caregiverId: booking.caregiver?.userId ?? null,
+    });
+
     return this.toRestSummary(booking as unknown as BookingWithIncludes);
   }
 
@@ -240,6 +264,15 @@ export class BookingService {
     });
 
     this.logger.log({ event: 'booking.cancelled', bookingId, patientId });
+
+    // PYG-292: แจ้ง caregiver ว่าผู้ใช้บริการยกเลิกการจอง
+    this.emit({
+      bookingId,
+      eventType: BOOKING_EVENTS.CANCELLED,
+      patientId,
+      caregiverId: updated.caregiver?.userId ?? null,
+    });
+
     return this.toRestSummary(updated as unknown as BookingWithIncludes);
   }
 

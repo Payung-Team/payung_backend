@@ -37,6 +37,10 @@ import {
   adminCancelDeleteTemplate,
   userAutoDeletedTemplate,
 } from './templates/admin.templates';
+import {
+  bookingNotificationTemplate,
+  type BookingEmailParams,
+} from './templates/booking.templates';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
 type EmailUser = {
@@ -184,6 +188,41 @@ export class EmailService {
   ): Promise<void> {
     const tpl = userAutoDeletedTemplate(displayName, this.frontendUrl);
     await this.send(email, tpl);
+  }
+
+  /**
+   * Booking lifecycle email (PYG-292) — ใช้กับทุก event ที่ต้องส่งอีเมล
+   *
+   * เรียกจาก BookingNotificationListener ด้วยเนื้อหาเดียวกับ in-app notification
+   * - เช็ค emailPreferences ผ่าน fetchUser (ปิดรับ → ข้าม ไม่ throw)
+   * - SMTP error ก็ไม่ throw (จัดการใน send) → ไม่ทำ business flow พัง
+   *
+   * @param userId  - ผู้รับ (USER id)
+   * @param params  - เนื้อหา + รายละเอียด; ctaPath เป็น path ฝั่ง FE (service เติม frontendUrl ให้)
+   */
+  async sendBookingNotification(
+    userId: string,
+    params: Omit<BookingEmailParams, 'recipientName' | 'frontendUrl' | 'ctaUrl'> & {
+      ctaPath?: string;
+    },
+  ): Promise<void> {
+    const user = await this.fetchUser(userId);
+    if (!user) return;
+
+    const tpl = bookingNotificationTemplate({
+      recipientName: user.displayName,
+      frontendUrl: this.frontendUrl,
+      heading: params.heading,
+      intro: params.intro,
+      caregiverName: params.caregiverName,
+      dateText: params.dateText,
+      serviceText: params.serviceText,
+      amountText: params.amountText,
+      ctaUrl: params.ctaPath ? `${this.frontendUrl}${params.ctaPath}` : undefined,
+      ctaLabel: params.ctaLabel,
+    });
+
+    await this.send(user.email, tpl);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────
