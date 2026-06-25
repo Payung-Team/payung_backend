@@ -188,6 +188,7 @@ model Booking {
   tasks                    String[]             @default([]) @map("tasks")
   acceptedAt               DateTime?            @map("accepted_at") @db.Timestamptz(6)
   completedAt              DateTime?            @map("completed_at") @db.Timestamptz(6)  // PYG-281: เวลาที่งานเสร็จ + capture เงินสำเร็จ
+  patientName              String?              @map("patient_name")
   booking_tasks            booking_tasks[]
   careRecipient            CareRecipient?       @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?           @relation(fields: [caregiverId], references: [id])
@@ -398,6 +399,11 @@ enum NotificationType {
   kyc_verified
   kyc_rejected
   kyc_resubmitted
+  booking_new
+  booking_accepted
+  booking_declined
+  booking_confirmed
+  booking_cancelled
 }
 
 enum booking_service_type {
