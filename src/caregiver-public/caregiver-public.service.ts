@@ -32,15 +32,15 @@ export class CaregiverPublicService {
         kycVerifiedAt: true,
         serviceAreaProvince: true,
         serviceAreaDistrict: true,
+        // PYG-298: aggregate รีวิวอ่านจากคอลัมน์ที่ trigger trg_recalc_rating เก็บไว้
+        // (ไม่โหลด patientReviews มา reduce ใน JS อีกต่อไป) — ค่าตรงกันเสมอเพราะ trigger
+        // กรอง is_visible = true และปัด 2 ตำแหน่งให้แล้วที่ระดับ DB
+        averageRating: true,
+        reviewCount: true,
         availability: {
           where: { isActive: true },
           select: { dayOfWeek: true, timeSlot: true },
           orderBy: [{ dayOfWeek: 'asc' }, { timeSlot: 'asc' }],
-        },
-        patientReviews: {
-          // PYG-297: นับเฉพาะรีวิวที่ยังไม่ถูก admin ซ่อน (hideReview → is_visible=false)
-          where: { isVisible: true },
-          select: { rating: true },
         },
         user: {
           select: {
@@ -60,16 +60,10 @@ export class CaregiverPublicService {
       throw new NotFoundException('Caregiver not found');
     }
 
-    // ── Compute avg_rating + review_count ─────────────────────────────────
-    const reviewCount = caregiver.patientReviews.length;
-    const avgRating =
-      reviewCount > 0
-        ? Math.round(
-            (caregiver.patientReviews.reduce((sum, r) => sum + r.rating, 0) /
-              reviewCount) *
-              100,
-          ) / 100
-        : null;
+    // ── avg_rating + review_count อ่านตรงจากคอลัมน์ (PYG-298) ─────────────
+    // averageRating = null เมื่อยังไม่มีรีวิวที่มองเห็นได้ ; reviewCount default 0
+    const avgRating = caregiver.averageRating ?? null;
+    const reviewCount = caregiver.reviewCount;
 
     // ── Split fullName into first / last name ─────────────────────────────
     // fullName is stored as a single string; split on first space.

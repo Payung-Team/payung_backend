@@ -10,11 +10,12 @@ type RawCaregiverRow = {
   avatar_url: string | null;
   hourly_rate: number | null;
   avg_rating: number | null;
-  review_count: bigint;
+  // PYG-298: อ่านจากคอลัมน์ caregivers.review_count (INTEGER → number) แทนการ COUNT() สด
+  review_count: number;
   skills: string[];
   province: string | null;
   district: string | null;
-  total_count: bigint;
+  total_count: bigint; // COUNT(*) OVER() ของ Postgres เป็น bigint เสมอ
 };
 
 @Injectable()
@@ -27,9 +28,10 @@ export class SearchService {
    * searchCaregivers — ค้นหา caregiver ที่ is_searchable + kyc_status = 'verified'
    * มี active availability slot อย่างน้อย 1 slot
    *
-   * Strategy:
-   * - CTE `agg`: JOIN caregivers + users + reviews → GROUP BY เพื่อ compute avg_rating/review_count
-   * - Outer query: กรอง min_rating (HAVING ต้องทำหลัง GROUP BY) + COUNT(*) OVER() สำหรับ pagination
+   * Strategy (PYG-298):
+   * - CTE `agg`: JOIN caregivers + users → อ่าน avg_rating/review_count จากคอลัมน์ที่ trigger
+   *   trg_recalc_rating เก็บไว้ให้ (ไม่ JOIN/GROUP BY reviews สดอีกต่อไป → เร็วขึ้น)
+   * - Outer query: กรอง min_rating (อ้าง alias avg_rating ได้หลัง CTE) + COUNT(*) OVER() สำหรับ pagination
    * - $queryRaw: ใช้ Prisma.sql สำหรับ dynamic WHERE fragments (safe parameterization)
    */
   async searchCaregivers(input: SearchCaregiverInput): Promise<SearchCaregiverPayload> {
@@ -97,18 +99,15 @@ export class SearchService {
           c.full_name,
           u.avatar_url,
           c.hourly_rate,
-          ROUND(AVG(r.rating)::numeric, 2)::float8 AS avg_rating,
-          COUNT(r.id)::bigint                       AS review_count,
+          -- PYG-298: อ่านค่าที่ trigger trg_recalc_rating เก็บไว้ — ไม่ JOIN/aggregate reviews สด
+          c.average_rating                          AS avg_rating,
+          c.review_count                            AS review_count,
           c.skills,
           c.service_area_province                   AS province,
           c.service_area_district                   AS district
         FROM caregivers c
         INNER JOIN users u ON u.id = c.user_id
-        LEFT  JOIN reviews r ON r.caregiver_id = c.id AND r.is_visible = true
-        -- PYG-297: ไม่นับรีวิวที่ถูก admin ซ่อน (hideReview) ใน avg_rating/review_count
         WHERE ${whereClause}
-        GROUP BY c.id, c.full_name, u.avatar_url, c.hourly_rate,
-                 c.skills, c.service_area_province, c.service_area_district
       )
       SELECT
         *,

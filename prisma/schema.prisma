@@ -86,6 +86,11 @@ model Caregiver {
   serviceAreaProvince String?                    @map("service_area_province") @db.VarChar
   serviceAreaDistrict String?                    @map("service_area_district") @db.VarChar
   languages           String[]                   @default([])
+  // PYG-298: aggregate รีวิวแบบ denormalized — maintained โดย DB trigger trg_recalc_rating
+  // (ดู migration 20260626000002). search + public profile อ่านค่าจาก 2 คอลัมน์นี้แทนการ
+  // คำนวณ AVG/COUNT สดทุก request. averageRating = null เมื่อยังไม่มีรีวิวที่มองเห็นได้
+  averageRating       Float?                     @map("average_rating")
+  reviewCount         Int                        @default(0) @map("review_count")
   bookings            Booking[]
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]

@@ -18,7 +18,9 @@ type CaregiverRow = {
   serviceAreaProvince: string | null;
   serviceAreaDistrict: string | null;
   availability: { dayOfWeek: number; timeSlot: string }[];
-  patientReviews: { rating: number }[];
+  // PYG-298: aggregate อ่านจากคอลัมน์ (trigger เป็นคนคำนวณ) ไม่ใช่จาก patientReviews อีกแล้ว
+  averageRating: number | null;
+  reviewCount: number;
   user: { avatarUrl: string | null };
 };
 
@@ -42,7 +44,8 @@ function makeCaregiver(overrides: Partial<CaregiverRow> = {}): CaregiverRow {
       { dayOfWeek: 1, timeSlot: 'afternoon' },
       { dayOfWeek: 3, timeSlot: 'morning' },
     ],
-    patientReviews: [{ rating: 5 }, { rating: 4 }],
+    averageRating: 4.5,
+    reviewCount: 2,
     user: { avatarUrl: 'https://cdn.example.com/avatar.jpg' },
     ...overrides,
   };
@@ -89,11 +92,11 @@ describe('CaregiverPublicService', () => {
     });
   });
 
-  // ── avg_rating computation ─────────────────────────────────────────────────
+  // ── avg_rating / review_count (PYG-298: อ่านตรงจากคอลัมน์ที่ trigger เก็บไว้) ───
 
-  it('computes avg_rating correctly from reviews', async () => {
+  it('passes through stored avg_rating + review_count columns', async () => {
     prisma.caregiver.findUnique.mockResolvedValue(
-      makeCaregiver({ patientReviews: [{ rating: 5 }, { rating: 4 }] }),
+      makeCaregiver({ averageRating: 4.5, reviewCount: 2 }),
     );
 
     const result = await service.getPublicProfile('cg-1');
@@ -103,8 +106,9 @@ describe('CaregiverPublicService', () => {
   });
 
   it('returns avg_rating=null and review_count=0 when caregiver has no reviews', async () => {
+    // ยังไม่มีรีวิวที่มองเห็นได้ → trigger ตั้ง average_rating = NULL, review_count = 0
     prisma.caregiver.findUnique.mockResolvedValue(
-      makeCaregiver({ patientReviews: [] }),
+      makeCaregiver({ averageRating: null, reviewCount: 0 }),
     );
 
     const result = await service.getPublicProfile('cg-1');
@@ -113,12 +117,10 @@ describe('CaregiverPublicService', () => {
     expect(result.review_count).toBe(0);
   });
 
-  it('rounds avg_rating to 2 decimal places', async () => {
-    // 5 + 4 + 4 = 13 / 3 = 4.333...
+  it('returns the already-rounded value as-is (rounding happens at DB level)', async () => {
+    // การปัด 2 ตำแหน่งทำที่ trigger/backfill แล้ว (ROUND(AVG,2)) — service แค่ส่งต่อ
     prisma.caregiver.findUnique.mockResolvedValue(
-      makeCaregiver({
-        patientReviews: [{ rating: 5 }, { rating: 4 }, { rating: 4 }],
-      }),
+      makeCaregiver({ averageRating: 4.33, reviewCount: 3 }),
     );
 
     const result = await service.getPublicProfile('cg-1');
