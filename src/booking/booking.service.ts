@@ -4,11 +4,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/entities/notification-type.enum';
+import { OmiseService } from '../payment/omise.service';
+import { PaymentStatus } from '../payment/entities/payment-status.enum';
 import {
   BookingListResponse,
   BookingPagination,
@@ -112,6 +115,7 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
+    private readonly omise: OmiseService,
   ) {}
 
   // ── ① POST /api/v1/bookings ─────────────────────────────────────────────────
@@ -252,14 +256,68 @@ export class BookingService {
       );
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data:  { status: 'cancelled' },
-      include: {
-        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-      },
+    // Check for a held payment that needs to be voided
+    const payment = await this.prisma.payment.findFirst({
+      where: { bookingId },
     });
+
+    const shouldVoid =
+      payment !== null &&
+      (payment.paymentStatus as PaymentStatus) === PaymentStatus.held &&
+      payment.omiseChargeId !== null;
+
+    // Void at Omise outside DB transaction (same pattern as createPayment)
+    if (shouldVoid) {
+      try {
+        await this.omise.voidCharge(payment.omiseChargeId!);
+      } catch (err) {
+        this.logger.error(
+          `[cancelBooking] Omise void failed for chargeId=${payment.omiseChargeId}: ${(err as Error).message}`,
+        );
+        throw new ServiceUnavailableException(
+          'ไม่สามารถยกเลิกการกันวงเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
+        );
+      }
+    }
+
+    // Atomic: cancel booking + (if voided) update payment status + insert history
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const updatedBooking = await tx.booking.update({
+        where: { id: bookingId },
+        data:  { status: 'cancelled' },
+        include: {
+          caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+      });
+
+      if (shouldVoid) {
+        await tx.payment.update({
+          where: { id: payment.id },
+          data:  { paymentStatus: PaymentStatus.voided, updatedAt: new Date() },
+        });
+
+        await tx.paymentStatusHistory.create({
+          data: {
+            paymentId:  payment.id,
+            fromStatus: PaymentStatus.held,
+            toStatus:   PaymentStatus.voided,
+            changedBy:  patientId,
+            reason:     'booking cancelled by patient',
+            metadata:   { omiseChargeId: payment.omiseChargeId, voidedAt: new Date().toISOString() },
+          },
+        });
+      }
+
+      return updatedBooking;
+    });
+
+    if (shouldVoid) {
+      this.logger.log(JSON.stringify({
+        event:   'payment.voided',
+        payload: { paymentId: payment.id, bookingId, chargeId: payment.omiseChargeId },
+      }));
+    }
 
     this.logger.log({ event: 'booking.cancelled', bookingId, patientId });
     if (updated.caregiver?.userId) {

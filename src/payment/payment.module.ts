@@ -6,8 +6,10 @@ import { PaymentResolver } from './payment.resolver';
 import { OmiseController } from './webhook/omise.controller';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
+  imports: [NotificationModule],
   controllers: [OmiseController],
   providers: [
     PaymentStateMachine,
@@ -17,6 +19,6 @@ import { RolesGuard } from '../common/guards/roles.guard';
     SupabaseAuthGuard,
     RolesGuard,
   ],
-  exports: [PaymentStateMachine],
+  exports: [PaymentStateMachine, OmiseService],
 })
 export class PaymentModule {}

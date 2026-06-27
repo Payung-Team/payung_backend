@@ -6,9 +6,10 @@ import { CaregiverBookingService } from './caregiver-booking.service';
 import { CaregiverBookingResolver } from './caregiver-booking.resolver';
 import { CommonModule } from '../common/common.module';
 import { NotificationModule } from '../notification/notification.module';
+import { PaymentModule } from '../payment/payment.module';
 
 @Module({
-  imports: [CommonModule, NotificationModule],
+  imports: [CommonModule, NotificationModule, PaymentModule],
   // PYG-202: REST controllers (create/cancel booking + task suggestions)
   controllers: [BookingController, BookingTaskSuggestionsController],
   providers: [

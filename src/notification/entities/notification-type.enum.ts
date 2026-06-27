@@ -20,6 +20,7 @@ export enum NotificationType {
   booking_declined = 'booking_declined',  // patient ถูกแจ้งว่า caregiver ปฏิเสธ
   booking_confirmed = 'booking_confirmed',// caregiver ถูกแจ้งว่า patient ยืนยัน
   booking_cancelled = 'booking_cancelled',// caregiver ถูกแจ้งว่า patient ยกเลิก
+  payment_refunded = 'payment_refunded',  // patient ถูกแจ้งว่าได้รับเงินคืนแล้ว
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

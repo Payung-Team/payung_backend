@@ -403,6 +403,7 @@ enum NotificationType {
   booking_declined
   booking_confirmed
   booking_cancelled
+  payment_refunded
 }
 
 enum booking_service_type {

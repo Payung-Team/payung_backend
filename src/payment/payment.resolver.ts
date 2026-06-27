@@ -11,6 +11,7 @@ import { Payment } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
 import { CreatePaymentInput } from './dto/create-payment.input';
+import { RefundPaymentInput } from './dto/refund-payment.input';
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard)
@@ -96,5 +97,23 @@ export class PaymentResolver {
     input?: AdminPaymentsInput,
   ): Promise<PaymentConnection> {
     return this.paymentService.adminPayments(input ?? {});
+  }
+
+  // ── PYG-267: admin refund mutation ───────────────────────────────────────
+
+  @Mutation(() => Payment, {
+    description:
+      'Admin only: คืนเงินให้ patient (เต็มหรือบางส่วน). ' +
+      'Payment ต้องมีสถานะ "captured". ไม่ระบุ amount = คืนเต็มจำนวน. ' +
+      'full refund → "refunded" / partial → "partially_refunded". ' +
+      'ป้องกัน double-refund ด้วย status check + FSM guard.',
+  })
+  @UseGuards(RolesGuard)
+  @Roles(ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN)
+  async refundPayment(
+    @Args('input', { type: () => RefundPaymentInput }) input: RefundPaymentInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<Payment> {
+    return this.paymentService.refundPayment(input, admin);
   }
 }

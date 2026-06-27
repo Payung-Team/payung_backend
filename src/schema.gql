@@ -819,6 +819,11 @@ type Mutation {
   """
   markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
 
+  """
+  Admin only: คืนเงินให้ patient (เต็มหรือบางส่วน). Payment ต้องมีสถานะ "captured". ไม่ระบุ amount = คืนเต็มจำนวน. full refund → "refunded" / partial → "partially_refunded". ป้องกัน double-refund ด้วย status check + FSM guard.
+  """
+  refundPayment(input: RefundPaymentInput!): Payment!
+
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
 
@@ -925,6 +930,7 @@ enum NotificationType {
   kyc_resubmitted
   kyc_submitted
   kyc_verified
+  payment_refunded
 }
 
 type PatientBriefDto {
@@ -1106,6 +1112,15 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
+}
+
+input RefundPaymentInput {
+  """จำนวนเงินที่คืน (THB) — ไม่ระบุ = คืนเต็มจำนวน"""
+  amount: Float
+  paymentId: ID!
+
+  """เหตุผลการคืนเงิน"""
+  reason: String
 }
 
 input RegisterInput {

@@ -18,7 +18,10 @@ import { Payment, PaymentStatusEnum } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
 import { CreatePaymentInput } from './dto/create-payment.input';
+import { RefundPaymentInput } from './dto/refund-payment.input';
 import { OmiseService, mapOmiseFailureCode } from './omise.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/entities/notification-type.enum';
 
 type PrismaHistoryRow = {
   id: string;
@@ -50,23 +53,42 @@ export class PaymentService {
     private readonly prisma: PrismaService,
     private readonly fsm: PaymentStateMachine,
     private readonly omise: OmiseService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   // ── PYG-264: createPayment mutation ──────────────────────────────────────
+
+  // Statuses where a new payment attempt is allowed (existing record will be reset)
+  private static readonly RETRYABLE_STATUSES: PaymentStatus[] = [
+    PaymentStatus.failed,
+    PaymentStatus.voided,
+    PaymentStatus.expired,
+  ];
+
+  // Human-readable reason why an existing non-retryable payment blocks the request
+  private static readonly PAYMENT_ACTIVE_MESSAGES: Partial<Record<PaymentStatus, string>> = {
+    [PaymentStatus.pending]:            'มีการชำระเงินกำลังดำเนินอยู่ กรุณารอสักครู่',
+    [PaymentStatus.held]:               'มีการกันวงเงินสำหรับ booking นี้แล้ว',
+    [PaymentStatus.captured]:           'booking นี้ชำระเงินสำเร็จแล้ว',
+    [PaymentStatus.transferred]:        'booking นี้โอนเงินให้ caregiver แล้ว',
+    [PaymentStatus.refunded]:           'booking นี้ได้รับการคืนเงินแล้ว',
+    [PaymentStatus.partially_refunded]: 'booking นี้ได้รับการคืนเงินบางส่วนแล้ว',
+  };
 
   /**
    * สร้างการชำระเงินผ่าน Omise (authorize/hold เท่านั้น — capture:false)
    *
    * ขั้นตอน:
-   *  1) advisory lock + validate booking (accepted, patient match, no duplicate)
-   *  2) recalc amount server-side (hours × hourlyRate) → satangs
-   *  3) insert payment record (pending) inside locked tx
-   *  4) call Omise outside tx (retry 1x on network error)
-   *  5) atomic tx: transition pending→held + update omiseChargeId + set booking=confirmed
+   *  1) advisory lock + validate booking (accepted, patient match)
+   *  2) ตรวจ payment เดิม — ถ้า failed/voided/expired → reset เพื่อลองใหม่
+   *  3) recalc amount server-side (hours × hourlyRate) → satangs
+   *  4) create หรือ reset payment record (pending) inside locked tx
+   *  5) call Omise outside tx (retry 1x on network error)
+   *  6) atomic tx: transition pending→held + update omiseChargeId + set booking=confirmed
    *     OR: transition pending→failed + store failure details
    */
   async createPayment(input: CreatePaymentInput, user: AuthUser): Promise<Payment> {
-    // ── Phase 1: Validate + advisory lock + insert pending payment ─────────
+    // ── Phase 1: Validate + advisory lock + create/reset pending payment ───
     const { paymentId, amountSatangs, bookingId } =
       await this.prisma.$transaction(async (tx) => {
         // Advisory lock — prevents two concurrent createPayment calls for the same booking
@@ -98,10 +120,16 @@ export class PaymentService {
           throw new BadRequestException('caregiver ยังไม่ได้ตั้งอัตราค่าจ้าง');
         }
 
-        // Check duplicate payment
+        // Check existing payment — allow retry if previous attempt failed/voided/expired
         const existing = await tx.payment.findUnique({ where: { bookingId: input.bookingId } });
         if (existing) {
-          throw new ConflictException('มีการชำระเงินสำหรับ booking นี้อยู่แล้ว');
+          const currentStatus = existing.paymentStatus as PaymentStatus;
+          if (!PaymentService.RETRYABLE_STATUSES.includes(currentStatus)) {
+            const msg =
+              PaymentService.PAYMENT_ACTIVE_MESSAGES[currentStatus] ??
+              'มีการชำระเงินสำหรับ booking นี้อยู่แล้ว';
+            throw new ConflictException(msg);
+          }
         }
 
         // Recalc amount server-side (never trust client amount)
@@ -110,7 +138,37 @@ export class PaymentService {
         const amountThb = Math.round(durationHours * hourlyRate * 100) / 100; // 2 decimal places
         const amountSatangs = Math.round(amountThb * 100); // convert to satangs
 
-        // Insert payment (pending) + initial history
+        if (existing) {
+          // ── Retry path: reset failed/voided/expired record for a new attempt ──
+          await tx.payment.update({
+            where: { id: existing.id },
+            data: {
+              paymentStatus:  PaymentStatus.pending,
+              omiseToken:     input.omiseToken,
+              paymentMethod:  input.paymentMethod,
+              omiseChargeId:  null,
+              failureCode:    null,
+              failureMessage: null,
+              amount:         amountThb, // recalc in case rate changed
+              metadata:       {},
+              updatedAt:      new Date(),
+            },
+          });
+
+          await tx.paymentStatusHistory.create({
+            data: {
+              paymentId:  existing.id,
+              fromStatus: existing.paymentStatus as PaymentStatus,
+              toStatus:   PaymentStatus.pending,
+              changedBy:  user.id,
+              reason:     'payment retry by patient',
+            },
+          });
+
+          return { paymentId: existing.id, amountSatangs, bookingId: input.bookingId };
+        }
+
+        // ── First attempt: insert new payment (pending) + initial history ──
         const payment = await tx.payment.create({
           data: {
             bookingId:     input.bookingId,
@@ -559,6 +617,99 @@ export class PaymentService {
     }
 
     return this.toGql(payment);
+  }
+
+  // ── PYG-267: admin refund mutation ──────────────────────────────────────
+
+  async refundPayment(input: RefundPaymentInput, admin: AuthUser): Promise<Payment> {
+    const payment = await this.prisma.payment.findUnique({ where: { id: input.paymentId } });
+    if (!payment) throw new NotFoundException(`ไม่พบ payment "${input.paymentId}"`);
+
+    // Double-refund guard — also enforced by FSM inside the transaction
+    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.captured) {
+      throw new BadRequestException(
+        `ไม่สามารถคืนเงินได้ payment ต้องมีสถานะ "captured" (สถานะปัจจุบัน: ${payment.paymentStatus})`,
+      );
+    }
+
+    if (!payment.omiseChargeId) {
+      throw new BadRequestException('payment ไม่มี omiseChargeId — ไม่สามารถคืนเงินได้');
+    }
+
+    const paymentAmountThb = Number(payment.amount);
+
+    if (input.amount !== undefined && input.amount > paymentAmountThb) {
+      throw new BadRequestException(
+        `จำนวนเงินที่คืนต้องไม่เกินยอดเดิม (${paymentAmountThb} THB)`,
+      );
+    }
+
+    const refundAmountThb = input.amount ?? paymentAmountThb;
+    const refundAmountSatangs = Math.round(refundAmountThb * 100);
+    const paymentAmountSatangs = Math.round(paymentAmountThb * 100);
+
+    // Call Omise outside DB transaction
+    let refund: Awaited<ReturnType<OmiseService['createRefund']>>;
+    try {
+      refund = await this.omise.createRefund(
+        payment.omiseChargeId,
+        input.amount === undefined ? undefined : refundAmountSatangs,
+      );
+    } catch (err) {
+      this.logger.error(`[refundPayment] Omise refund failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('ไม่สามารถดำเนินการคืนเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง');
+    }
+
+    const isPartial = refundAmountSatangs < paymentAmountSatangs;
+    const targetStatus = isPartial ? PaymentStatus.partially_refunded : PaymentStatus.refunded;
+
+    const updated = await this.fsm.transition(input.paymentId, targetStatus, {
+      changedBy: admin.id,
+      reason:    input.reason,
+      metadata: {
+        omiseRefundId:    refund.id,
+        refundAmount:     refundAmountThb,
+        refundReason:     input.reason,
+        refundedBy:       admin.id,
+        refundedAt:       new Date().toISOString(),
+      },
+    });
+
+    // Merge refund fields into payment.metadata
+    await this.prisma.payment.update({
+      where: { id: input.paymentId },
+      data: {
+        metadata: {
+          ...(updated.metadata === null ? undefined : (updated.metadata as Record<string, unknown>)),
+          omiseRefundId: refund.id,
+          refundAmount:  refundAmountThb,
+          refundReason:  input.reason,
+          refundedBy:    admin.id,
+        },
+      },
+    });
+
+    this.logger.log(JSON.stringify({
+      event: 'payment.refunded',
+      payload: {
+        paymentId:     input.paymentId,
+        patientId:     payment.patientId,
+        bookingId:     payment.bookingId,
+        refundAmount:  refundAmountThb,
+        omiseRefundId: refund.id,
+        isPartial,
+      },
+    }));
+
+    void this.notificationService.create(
+      payment.patientId,
+      NotificationType.payment_refunded,
+      'ได้รับเงินคืนแล้ว',
+      `ระบบได้ดำเนินการคืนเงินจำนวน ${refundAmountThb.toLocaleString('th-TH')} บาท เรียบร้อยแล้ว`,
+      { paymentId: input.paymentId, refundAmount: refundAmountThb, omiseRefundId: refund.id },
+    );
+
+    return this.toGql(updated);
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────
