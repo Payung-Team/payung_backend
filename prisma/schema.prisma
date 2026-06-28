@@ -414,6 +414,8 @@ enum NotificationType {
   booking_completed
   payment_held
   payment_captured
+  // PYG-286: hold ถูกยกเลิก (auto-void on cancel)
+  payment_voided
   refund_issued
   dispute_created
   dispute_resolved

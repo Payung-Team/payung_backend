@@ -414,6 +414,22 @@ type CaregiverKycSummary {
   submittedAt: DateTime
 }
 
+input CaregiverReviewsInput {
+  """caregiver.id ที่ต้องการดูรีวิว"""
+  caregiverId: ID!
+
+  """จำนวนต่อหน้า (สูงสุด 50)"""
+  limit: Int = 10
+
+  """เลขหน้า (เริ่มที่ 1)"""
+  page: Int = 1
+}
+
+type CaregiverReviewsResponse {
+  data: [ReviewItem!]!
+  pagination: ReviewPagination!
+}
+
 type CaregiverSummary {
   """Avatar URL from user profile"""
   avatarUrl: String
@@ -458,6 +474,25 @@ type CompleteBookingResult {
   omiseChargeId: String
   paymentStatus: PaymentStatus!
   status: String!
+}
+
+input CreatePaymentInput {
+  bookingId: String!
+  omiseToken: String!
+}
+
+input CreateReviewInput {
+  """booking ที่จะรีวิว — ต้องเป็นของ patient คนนี้ และสถานะ completed"""
+  bookingId: ID!
+
+  """ข้อความรีวิว (ไม่บังคับ) ยาวไม่เกิน 500 ตัวอักษร"""
+  comment: String
+
+  """true = ไม่เปิดเผยชื่อผู้รีวิวบนหน้าโปรไฟล์ caregiver"""
+  isAnonymous: Boolean = false
+
+  """คะแนนดาว 1–5"""
+  rating: Int!
 }
 
 """High-level KYC statistics for the admin dashboard"""
@@ -768,6 +803,10 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+  createPayment(input: CreatePaymentInput!): Payment!
+
+  """Patient เขียนรีวิวให้ caregiver หลังงาน completed (1 รีวิว/booking)"""
+  createReview(input: CreateReviewInput!): ReviewItem!
 
   """
   Caregiver declines a pending booking request with a required reason (pending → rejected).
@@ -781,6 +820,9 @@ type Mutation {
   Super Admin only: Edit an admin account (name, email, role). Syncs email to Supabase Auth. Protects the last active Super Admin from demotion. Records audit log.
   """
   editAdminInfo(input: EditAdminInfoInput!): EditAdminInfoPayload!
+
+  """Admin ซ่อนรีวิว (is_visible=false) เช่นรีวิวไม่เหมาะสม"""
+  hideReview(reviewId: ID!): ReviewItem!
 
   """
   Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
@@ -803,6 +845,11 @@ type Mutation {
   Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
   """
   markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
+
+  """
+  Admin only: Refund a captured payment (full or partial). amount omitted = full refund. amount specified must be in (0, payment.amount]. Uses Omise-Idempotency-Key to prevent double-refund races.
+  """
+  refundPayment(input: RefundPaymentInput!): Payment!
 
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
@@ -901,10 +948,22 @@ type Notification {
 
 """Type of in-app notification"""
 enum NotificationType {
+  booking_accepted
+  booking_cancelled
+  booking_completed
+  booking_confirmed
+  booking_declined
+  booking_new
+  dispute_created
+  dispute_resolved
   kyc_rejected
   kyc_resubmitted
   kyc_submitted
   kyc_verified
+  payment_captured
+  payment_held
+  payment_voided
+  refund_issued
 }
 
 type PatientBriefDto {
@@ -1018,6 +1077,11 @@ type Query {
   """
   caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
 
+  """
+  รายการรีวิวที่มองเห็นได้ของ caregiver (ใหม่สุดก่อน) พร้อม pagination — public
+  """
+  caregiverReviews(input: CaregiverReviewsInput!): CaregiverReviewsResponse!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
 
@@ -1080,6 +1144,17 @@ type RecentActivity {
   type: String!
 }
 
+input RefundPaymentInput {
+  """จำนวนเงินที่คืน (THB) — ไม่ระบุ = คืนเต็มจำนวน, ระบุ = partial refund"""
+  amount: Float
+
+  """UUID ของ payment ที่ต้องการคืนเงิน"""
+  paymentId: ID!
+
+  """เหตุผลการคืนเงิน (audit)"""
+  reason: String
+}
+
 input RegisterInput {
   email: String!
   password: String!
@@ -1118,17 +1193,46 @@ input RejectionReasonItem {
   title: String!
 }
 
-type RepeatPatientDto {
-  avatarUrl: String
-  completedCount: Int!
-  displayName: String
-  lastCompletedAt: DateTime
-  patientId: ID!
+input RequestPasswordResetInput {
+  """Email address to send the password reset link to"""
+  email: String!
 }
 
-type RepeatPatientListResponse {
-  data: [RepeatPatientDto!]!
-  pagination: BookingPagination!
+type RequestPasswordResetResponse {
+  message: String
+
+  """Always true — does not reveal whether the email exists"""
+  success: Boolean!
+}
+
+type ReviewItem {
+  """
+  ข้อความรีวิว (ตัด HTML tag ออกแล้ว) — อาจเป็น null ถ้าผู้รีวิวให้แต่ดาว
+  """
+  comment: String
+
+  """เวลาที่สร้างรีวิว (frontend เอาไปทำ "x วันก่อน")"""
+  createdAt: DateTime!
+  id: ID!
+
+  """true = ผู้รีวิวเลือกไม่เปิดเผยชื่อ"""
+  isAnonymous: Boolean!
+
+  """false = ถูก admin ซ่อนไว้ (hideReview) จะไม่ถูกนับใน rating รวม"""
+  isVisible: Boolean!
+
+  """คะแนนดาว 1–5"""
+  rating: Int!
+
+  """ชื่อต้นของผู้รีวิว หรือ "ผู้ใช้ไม่ระบุชื่อ" ถ้า isAnonymous"""
+  reviewerName: String!
+}
+
+type ReviewPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
 }
 
 """Filter users by role. Use "all" to return every role."""

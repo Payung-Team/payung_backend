@@ -22,6 +22,8 @@ export const BOOKING_EVENTS = {
   CANCELLED: 'booking.cancelled',
   PAYMENT_HELD: 'payment.held',
   PAYMENT_CAPTURED: 'payment.captured',
+  // PYG-286: hold ถูกยกเลิก (auto-void on cancel) — แจ้ง patient ว่า hold ถูกปล่อย
+  PAYMENT_VOIDED: 'payment.voided',
   REFUND_ISSUED: 'refund.issued',
   DISPUTE_CREATED: 'dispute.created',
   DISPUTE_RESOLVED: 'dispute.resolved',

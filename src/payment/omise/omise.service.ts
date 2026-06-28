@@ -5,9 +5,12 @@
  * - โปรเจกต์นี้ไม่ได้ติดตั้ง SDK ของ Omise (webhook controller ก็ hand-roll HMAC เองด้วย crypto)
  * - capture เป็น request เดียวง่ายๆ → ใช้ global fetch (Node 18+) พอ ไม่ต้องเพิ่ม dependency
  *
- * หน้าที่ตอนนี้ (PYG-281):
- * - captureCharge(omiseChargeId) — ตัดเงินจริงจากวงเงินที่ "held" ไว้ตอน checkout
- *   (Omise เรียกขั้นนี้ว่า "capture" ของ charge ที่ authorize ไว้แบบ capture=false)
+ * หน้าที่ตอนนี้:
+ * - captureCharge(omiseChargeId) — PYG-281: ตัดเงินจริงจากวงเงินที่ "held"
+ * - createCharge(amount, token) — PYG-281: กันวงเงิน (authorize) capture=false
+ * - reverseCharge(omiseChargeId) — PYG-281: ยกเลิกการกัน hold (expire / void)
+ * - voidCharge(omiseChargeId) — PYG-286: semantic alias ของ reverseCharge สำหรับ auto-void on cancel
+ * - createRefund(omiseChargeId, amountSatangs?) — PYG-286: คืนเงินจาก charge ที่ capture แล้ว (เต็ม/บางส่วน)
  *
  * Auth ของ Omise = HTTP Basic โดยใช้ secret key เป็น username, password ว่าง
  *   → header: Authorization: Basic base64("<SECRET_KEY>:")
@@ -19,6 +22,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CaptureFailedError } from '../errors/capture-failed.error';
 import { mapOmiseError } from '../errors/omise-error-mapper';
+
+/** PYG-286: ผลลัพธ์จาก /charges/:id/refunds (เอาเฉพาะ field ที่ต้องบันทึก audit) */
+export type OmiseRefundResult = {
+  /** refund id ของ Omise (เก็บใน payment.metadata.omiseRefundId) */
+  id: string;
+  /** จำนวนเงินที่คืน (หน่วย satangs ตามที่ Omise บันทึก) */
+  amount: number;
+  /** charge id ของ Omise ที่ refund อ้างถึง */
+  charge: string;
+  /** สกุลเงิน (3-letter ISO) */
+  currency: string;
+  /** Omise คืน voided=true เมื่อ refund เป็นการ void ก่อน settle */
+  voided: boolean;
+};
 
 /** ผลลัพธ์ที่ normalize แล้วจากการ capture (เอาเฉพาะ field ที่เราต้องใช้ต่อ) */
 export type OmiseCaptureResult = {
@@ -283,6 +300,106 @@ export class OmiseService {
       authorized: body.authorized === true,
       failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
       failure_message: typeof body.failure_message === 'string' ? body.failure_message : undefined,
+    };
+  }
+
+  /**
+   * voidCharge — PYG-286 alias ของ reverseCharge สำหรับ semantic ที่ใช้ใน auto-void on cancel
+   *
+   * Omise treats "void" (ยกเลิก authorize hold ก่อน capture) เป็นการ reverse charge อันเดียวกัน
+   * เราแยกชื่อเพื่อให้ตอนอ่านโค้ดของ booking.cancelBooking ชัดว่าเป็นการคืน hold ไม่ใช่ expire
+   */
+  async voidCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
+    return this.reverseCharge(omiseChargeId);
+  }
+
+  /**
+   * createRefund — PYG-286: คืนเงินจาก charge ที่ capture แล้ว (refund_full / refund_partial)
+   *
+   * @param omiseChargeId  - charge id ของ Omise ที่อยู่ในสถานะ captured/successful
+   * @param amountSatangs  - จำนวนเงินที่จะคืน (หน่วย satangs). undefined = คืนเต็มจำนวน
+   * @param idempotencyKey - (recommended) ส่ง Omise-Idempotency-Key เพื่อกัน double-refund race
+   *                         Omise dedup ที่ฝั่งเขา: same key + same charge → return cached response
+   *                         (ไม่ส่ง = MVP fallback, ใช้ status pre-check + FSM ป้องกันแทน)
+   * @returns ข้อมูล refund (refund id ใช้สำหรับ audit + บันทึก metadata)
+   * @throws PaymentError ถ้า Omise ปฏิเสธหรือ network ติดต่อไม่ได้
+   *
+   * หมายเหตุ:
+   * - amount = undefined → ไม่ส่ง param `amount` ไปให้ Omise = refund เต็มจำนวน
+   *   ถ้าระบุ → Omise ตรวจสอบ amount ≤ captured ปัจจุบัน (ชั้นบนตรวจอีกชั้น)
+   * - การคืนเงินซ้ำป้องกัน 3 ชั้น: (1) status pre-check, (2) re-check ก่อนเรียก Omise,
+   *   (3) Omise-Idempotency-Key (ถ้าส่ง), + FSM transition กัน state ผิด
+   */
+  async createRefund(
+    omiseChargeId: string,
+    amountSatangs?: number,
+    idempotencyKey?: string,
+  ): Promise<OmiseRefundResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+    if (!omiseChargeId) {
+      throw mapOmiseError('invalid_request', 'ไม่มี omiseChargeId — ไม่สามารถคืนเงินได้');
+    }
+
+    const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}/refunds`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    const formBody = new URLSearchParams();
+    if (amountSatangs !== undefined) {
+      formBody.set('amount', String(amountSatangs));
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: authHeader,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (idempotencyKey) {
+      headers['Omise-Idempotency-Key'] = idempotencyKey;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: formBody,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[Omise] createRefund network error chargeId=${omiseChargeId}: ${message}`,
+      );
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะคืนเงิน', {
+        omiseChargeId,
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createRefund failed chargeId=${omiseChargeId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode ?? 'refund_failed', omiseMessage, {
+        omiseChargeId,
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      charge: typeof body.charge === 'string' ? body.charge : omiseChargeId,
+      currency:
+        typeof body.currency === 'string' ? body.currency.toUpperCase() : 'THB',
+      voided: body.voided === true,
     };
   }
 }

@@ -8,6 +8,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
+import { OmiseService } from '../payment/omise/omise.service';
+import { PaymentStateMachine } from '../payment/payment-state-machine';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -67,9 +69,12 @@ describe('BookingService — new REST methods', () => {
     };
     careRecipient: { findUnique: jest.Mock };
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
+    $transaction:  jest.Mock;
   };
 
   beforeEach(async () => {
+    // PYG-286: cancelBooking ใช้ $transaction → ใส่ tx mock ที่ส่ง booking.update ของ prisma ให้ callback
+    const tx = { booking: { update: jest.fn((args) => prisma.booking.update(args)) } };
     prisma = {
       booking: {
         findUnique: jest.fn(),
@@ -80,6 +85,7 @@ describe('BookingService — new REST methods', () => {
       },
       careRecipient: { findUnique: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
+      $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -88,6 +94,9 @@ describe('BookingService — new REST methods', () => {
         { provide: PrismaService, useValue: prisma },
         // PYG-292: BookingService ยิง booking event — mock EventEmitter2
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        // PYG-286: cancelBooking auto-void deps (ไม่ถูกเรียกใน create/search tests แต่ต้อง inject ให้ DI ผ่าน)
+        { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
+        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
       ],
     }).compile();
 
