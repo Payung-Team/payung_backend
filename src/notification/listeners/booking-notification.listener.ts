@@ -135,6 +135,16 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     // อีเมลฝั่ง payout ของ caregiver ค่อยทำใน payout ticket — in-app พอสำหรับตอนนี้
     email: false,
   },
+  [BOOKING_EVENTS.PAYMENT_VOIDED]: {
+    // PYG-286: hold ถูกยกเลิก (จาก cancelBooking auto-void) — แจ้ง patient ว่า hold ถูกปล่อย
+    // in-app เพียงพอ (patient ทริกเองอยู่แล้ว) — ไม่ต้องอีเมลซ้ำ
+    type: NotificationType.payment_voided,
+    recipient: 'patient',
+    title: 'ยกเลิกการกันวงเงิน',
+    body: (c) =>
+      `เราได้ยกเลิกการกันวงเงิน ${c.amountText} กลับคืนไปยังบัตรของคุณแล้ว`,
+    email: false,
+  },
   [BOOKING_EVENTS.REFUND_ISSUED]: {
     type: NotificationType.refund_issued,
     recipient: 'patient',
@@ -181,6 +191,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)
   @OnEvent(BOOKING_EVENTS.PAYMENT_CAPTURED)
+  @OnEvent(BOOKING_EVENTS.PAYMENT_VOIDED)
   @OnEvent(BOOKING_EVENTS.REFUND_ISSUED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_CREATED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_RESOLVED)

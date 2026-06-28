@@ -1,8 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
+import { OmiseService } from '../payment/omise/omise.service';
+import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { PaymentStatus } from '../payment/entities/payment-status.enum';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { BookingStatusEnum } from './dto/booking-summary.types';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -46,9 +55,16 @@ describe('BookingService', () => {
       findMany:   jest.Mock;
       count:      jest.Mock;
     };
+    $transaction: jest.Mock;
   };
+  // PYG-286: shared mocks for cancelBooking auto-void
+  let tx: { booking: { update: jest.Mock } };
+  let omise: { voidCharge: jest.Mock };
+  let fsm: { transition: jest.Mock };
+  let emitter: { emit: jest.Mock };
 
   beforeEach(async () => {
+    tx = { booking: { update: jest.fn() } };
     prisma = {
       booking: {
         findUnique: jest.fn(),
@@ -56,14 +72,21 @@ describe('BookingService', () => {
         findMany:   jest.fn(),
         count:      jest.fn(),
       },
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
+    omise = { voidCharge: jest.fn() };
+    fsm = { transition: jest.fn() };
+    emitter = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BookingService,
         { provide: PrismaService, useValue: prisma },
         // PYG-292: BookingService ยิง booking event — mock EventEmitter2 ใน test
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: emitter },
+        // PYG-286: cancelBooking auto-void deps
+        { provide: OmiseService, useValue: omise },
+        { provide: PaymentStateMachine, useValue: fsm },
       ],
     }).compile();
 
@@ -200,6 +223,138 @@ describe('BookingService', () => {
       expect(prisma.booking.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ skip: 3, take: 3 }),
       );
+    });
+  });
+
+  // ── cancelBooking + auto-void (PYG-286) ────────────────────────────────────
+
+  describe('cancelBooking auto-void (PYG-286)', () => {
+    const CHARGE_ID = 'chrg_test_1';
+    const PAYMENT_ID_LOCAL = 'pay-cancel-1';
+
+    /** booking ที่มี caregiver.userId + payment ตามรูปทรงที่ cancelBooking select */
+    function fakeBookingWithPayment(payment: Record<string, unknown> | null) {
+      return {
+        ...fakeBooking({ status: 'accepted' }),
+        caregiver: {
+          id: CAREGIVER_ID,
+          userId: 'cg-user-1',
+          fullName: 'สมชาย ใจดี',
+          hourlyRate: 350,
+          user: { avatarUrl: null },
+        },
+        payment,
+      };
+    }
+
+    it('held payment + omiseChargeId → void + FSM voided + emit PAYMENT_VOIDED + CANCELLED', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBookingWithPayment({
+          id: PAYMENT_ID_LOCAL,
+          paymentStatus: 'held',
+          omiseChargeId: CHARGE_ID,
+          amount: 1200,
+        }),
+      );
+      tx.booking.update.mockResolvedValue({
+        ...fakeBooking({ status: 'cancelled' }),
+        caregiver: {
+          id: CAREGIVER_ID,
+          userId: 'cg-user-1',
+          fullName: 'สมชาย ใจดี',
+          hourlyRate: 350,
+          user: { avatarUrl: null },
+        },
+      });
+      omise.voidCharge.mockResolvedValue({ id: CHARGE_ID, status: 'reversed' });
+      fsm.transition.mockResolvedValue({});
+
+      await service.cancelBooking(BOOKING_ID, PATIENT_ID);
+
+      // Omise void เรียกด้วย charge id ของ payment
+      expect(omise.voidCharge).toHaveBeenCalledWith(CHARGE_ID);
+
+      // FSM held → voided ใน tx เดียวกับ booking.update
+      expect(fsm.transition).toHaveBeenCalledWith(
+        PAYMENT_ID_LOCAL,
+        PaymentStatus.voided,
+        expect.objectContaining({ changedBy: PATIENT_ID }),
+        tx,
+      );
+
+      // emit 2 events: CANCELLED (→ caregiver) + PAYMENT_VOIDED (→ patient) — ไม่ซ้ำ
+      const events = emitter.emit.mock.calls.map((c) => c[0]);
+      expect(events).toContain(BOOKING_EVENTS.CANCELLED);
+      expect(events).toContain(BOOKING_EVENTS.PAYMENT_VOIDED);
+      expect(emitter.emit).toHaveBeenCalledTimes(2);
+    });
+
+    it('ไม่มี payment → ไม่เรียก Omise / ไม่ FSM / emit แค่ CANCELLED', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBookingWithPayment(null));
+      tx.booking.update.mockResolvedValue({
+        ...fakeBooking({ status: 'cancelled' }),
+        caregiver: {
+          id: CAREGIVER_ID,
+          userId: 'cg-user-1',
+          fullName: 'สมชาย ใจดี',
+          hourlyRate: 350,
+          user: { avatarUrl: null },
+        },
+      });
+
+      await service.cancelBooking(BOOKING_ID, PATIENT_ID);
+
+      expect(omise.voidCharge).not.toHaveBeenCalled();
+      expect(fsm.transition).not.toHaveBeenCalled();
+      expect(emitter.emit).toHaveBeenCalledTimes(1);
+      expect(emitter.emit.mock.calls[0][0]).toBe(BOOKING_EVENTS.CANCELLED);
+    });
+
+    it('payment status != held → defensive skip void (เช่น captured)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBookingWithPayment({
+          id: PAYMENT_ID_LOCAL,
+          paymentStatus: 'captured',
+          omiseChargeId: CHARGE_ID,
+          amount: 1200,
+        }),
+      );
+      tx.booking.update.mockResolvedValue({
+        ...fakeBooking({ status: 'cancelled' }),
+        caregiver: {
+          id: CAREGIVER_ID,
+          userId: 'cg-user-1',
+          fullName: 'สมชาย ใจดี',
+          hourlyRate: 350,
+          user: { avatarUrl: null },
+        },
+      });
+
+      await service.cancelBooking(BOOKING_ID, PATIENT_ID);
+
+      expect(omise.voidCharge).not.toHaveBeenCalled();
+      expect(fsm.transition).not.toHaveBeenCalled();
+    });
+
+    it('Omise void fail → ServiceUnavailableException + ไม่เปลี่ยน status booking', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBookingWithPayment({
+          id: PAYMENT_ID_LOCAL,
+          paymentStatus: 'held',
+          omiseChargeId: CHARGE_ID,
+          amount: 1200,
+        }),
+      );
+      omise.voidCharge.mockRejectedValue(new Error('Omise 503'));
+
+      await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+
+      // tx callback ต้องไม่ถูกเรียกถ้า Omise พัง
+      expect(tx.booking.update).not.toHaveBeenCalled();
+      expect(fsm.transition).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
     });
   });
 });

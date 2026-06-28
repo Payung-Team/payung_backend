@@ -4,11 +4,15 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
+import { OmiseService } from '../payment/omise/omise.service';
+import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { PaymentStatus } from '../payment/entities/payment-status.enum';
 import {
   BookingListResponse,
   BookingPagination,
@@ -107,6 +111,9 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    // PYG-286: ใช้ใน cancelBooking auto-void เท่านั้น (held payment → reverse charge + FSM)
+    private readonly omiseService: OmiseService,
+    private readonly fsm: PaymentStateMachine,
   ) {}
 
   /**
@@ -232,6 +239,11 @@ export class BookingService {
    * Patient ยกเลิก booking ของตัวเอง
    * อนุญาตเฉพาะ status: unmatched | pending | accepted
    * (ไม่อนุญาต: completed | cancelled | rejected)
+   *
+   * PYG-286: ถ้า booking มี payment 'held' (กันวงเงินไว้) → void hold ที่ Omise + FSM voided
+   *   - Omise call นอก tx (HTTP, อย่าถือ tx ค้าง)
+   *   - booking.update + FSM.transition(voided) ใน tx เดียว (atomic)
+   *   - ยิง BOOKING_EVENTS.PAYMENT_VOIDED แยกจาก CANCELLED → patient รู้ว่า hold ถูกปล่อยแล้ว
    */
   async cancelBooking(bookingId: string, patientId: string): Promise<BookingRest> {
     const booking = await this.prisma.booking.findUnique({
@@ -239,6 +251,7 @@ export class BookingService {
       include: {
         caregiver:     { include: { user: { select: { avatarUrl: true } } } },
         careRecipient: { select: { name: true } },
+        payment:       true,
       },
     });
 
@@ -254,16 +267,61 @@ export class BookingService {
       );
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data:  { status: 'cancelled' },
-      include: {
-        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-      },
+    // PYG-286: เช็คว่ามี held payment ต้อง void หรือไม่
+    // ใช้ != null เพื่อครอบทั้ง null และ undefined (test mocks อาจไม่ได้ใส่ field นี้)
+    const payment = booking.payment;
+    const shouldVoid =
+      payment != null &&
+      (payment.paymentStatus as PaymentStatus) === PaymentStatus.held &&
+      !!payment.omiseChargeId;
+
+    // void Omise นอก tx (ถ้ามี held payment) — fail → throw ServiceUnavailable, ไม่ cancel booking
+    if (shouldVoid) {
+      try {
+        await this.omiseService.voidCharge(payment!.omiseChargeId!);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `[cancelBooking] Omise void failed for chargeId=${payment!.omiseChargeId}: ${msg}`,
+        );
+        throw new ServiceUnavailableException(
+          'ไม่สามารถยกเลิกการกันวงเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
+        );
+      }
+    }
+
+    // atomic: booking.cancelled + (ถ้า void แล้ว) FSM transition payment → voided
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.booking.update({
+        where: { id: bookingId },
+        data:  { status: 'cancelled' },
+        include: {
+          caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+      });
+
+      if (shouldVoid) {
+        // FSM ตรวจกฎ held → voided + เขียน history (atomic ใน tx เดียว)
+        await this.fsm.transition(
+          payment!.id,
+          PaymentStatus.voided,
+          {
+            changedBy: patientId,
+            reason: 'booking cancelled by patient',
+            metadata: {
+              omiseChargeId: payment!.omiseChargeId,
+              voidedAt: new Date().toISOString(),
+            },
+          },
+          tx,
+        );
+      }
+
+      return u;
     });
 
-    this.logger.log({ event: 'booking.cancelled', bookingId, patientId });
+    this.logger.log({ event: 'booking.cancelled', bookingId, patientId, voided: shouldVoid });
 
     // PYG-292: แจ้ง caregiver ว่าผู้ใช้บริการยกเลิกการจอง
     this.emit({
@@ -272,6 +330,20 @@ export class BookingService {
       patientId,
       caregiverId: updated.caregiver?.userId ?? null,
     });
+
+    // PYG-286: ถ้า void → แจ้ง patient ว่า hold ถูกปล่อย (ผู้รับ = patient เอง, in-app เป็น signal สำหรับ FE refresh wallet)
+    if (shouldVoid) {
+      this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_VOIDED, {
+        bookingId,
+        eventType: BOOKING_EVENTS.PAYMENT_VOIDED,
+        patientId,
+        caregiverId: updated.caregiver?.userId ?? null,
+        metadata: {
+          amount: payment!.amount,
+          omiseChargeId: payment!.omiseChargeId,
+        },
+      });
+    }
 
     return this.toRestSummary(updated as unknown as BookingWithIncludes);
   }

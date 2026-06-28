@@ -11,6 +11,7 @@ import { Payment } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
 import { CreatePaymentInput } from './dto/create-payment.input';
+import { RefundPaymentInput } from './dto/refund-payment.input';
 
 @Resolver()
 @UseGuards(SupabaseAuthGuard)
@@ -76,5 +77,22 @@ export class PaymentResolver {
     input?: AdminPaymentsInput,
   ): Promise<PaymentConnection> {
     return this.paymentService.adminPayments(input ?? {});
+  }
+
+  // ── PYG-286: admin refund (full / partial) ──────────────────────────────
+
+  @Mutation(() => Payment, {
+    description:
+      'Admin only: Refund a captured payment (full or partial). ' +
+      'amount omitted = full refund. amount specified must be in (0, payment.amount]. ' +
+      'Uses Omise-Idempotency-Key to prevent double-refund races.',
+  })
+  @UseGuards(RolesGuard)
+  @Roles(ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN)
+  async refundPayment(
+    @Args('input') input: RefundPaymentInput,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<Payment> {
+    return this.paymentService.refundPayment(input, admin);
   }
 }

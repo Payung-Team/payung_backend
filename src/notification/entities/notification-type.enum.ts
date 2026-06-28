@@ -30,6 +30,7 @@ export enum NotificationType {
   booking_cancelled = 'booking_cancelled',      // การจองถูกยกเลิก (→ caregiver)
   payment_held = 'payment_held',                // ชำระเงินเรียบร้อย/กันวงเงิน (→ patient)
   payment_captured = 'payment_captured',        // เรียกเก็บเงินแล้ว (→ caregiver)
+  payment_voided = 'payment_voided',            // PYG-286: ยกเลิกการกันวงเงิน (→ patient)
   refund_issued = 'refund_issued',              // คืนเงินเรียบร้อย (→ patient)
   dispute_created = 'dispute_created',           // แจ้งปัญหาใหม่ (→ admin)
   dispute_resolved = 'dispute_resolved',        // ผลตรวจสอบปัญหา (→ patient + caregiver)
