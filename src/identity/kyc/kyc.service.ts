@@ -351,12 +351,10 @@ export class KycService {
       this.logCaught('notification kyc_submitted', userId, err);
     }
 
-    try {
-      await this.emailService.sendKycSubmitted(userId);
-    } catch (err) {
-      // EmailService สวอลโลว์ error เองอยู่แล้ว — แต่กันไว้เผื่อ throw จาก fetchUser
-      this.logCaught('email kyc_submitted', userId, err);
-    }
+    // fire-and-forget — SMTP ช้าบน Render, ไม่ควร block mutation response
+    void this.emailService.sendKycSubmitted(userId).catch((err) =>
+      this.logCaught('email kyc_submitted', userId, err),
+    );
   }
 
   /** Resubmit หลังถูก reject → kyc_resubmitted event */
@@ -376,11 +374,10 @@ export class KycService {
       this.logCaught('notification kyc_resubmitted', userId, err);
     }
 
-    try {
-      await this.emailService.sendKycResubmitted(userId);
-    } catch (err) {
-      this.logCaught('email kyc_resubmitted', userId, err);
-    }
+    // fire-and-forget — SMTP ช้าบน Render, ไม่ควร block mutation response
+    void this.emailService.sendKycResubmitted(userId).catch((err) =>
+      this.logCaught('email kyc_resubmitted', userId, err),
+    );
   }
 
   /** Admin approve → kyc_verified event */
