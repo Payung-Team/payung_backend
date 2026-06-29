@@ -77,6 +77,12 @@ export class CreateBookingDto {
   @IsDateString()
   bookingDate!: string;
 
+  /** ชื่อผู้ป่วย (กรณีไม่ได้เลือก careRecipientId) */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  patientName?: string;
+
   // ── วันที่ให้บริการ — ผู้ติดต่อ ──────────────────────────────────────────
   @IsOptional()
   @IsString()
