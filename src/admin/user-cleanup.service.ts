@@ -31,7 +31,7 @@ export class UserCleanupService {
     private readonly emailService: EmailService,
   ) {}
 
-  @Cron(process.env['CRON_USER_CLEANUP_SCHEDULE'] ?? CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  // @Cron(process.env['CRON_USER_CLEANUP_SCHEDULE'] ?? CronExpression.EVERY_DAY_AT_MIDNIGHT) — disabled for demo
   async handleUserCleanup(): Promise<void> {
     this.logger.log('Starting user cleanup cron job...');
 

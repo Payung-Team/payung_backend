@@ -31,7 +31,7 @@ export class AdminCleanupService {
     private readonly emailService: EmailService,
   ) {}
 
-  @Cron(process.env['CRON_ADMIN_CLEANUP_SCHEDULE'] ?? CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  // @Cron(process.env['CRON_ADMIN_CLEANUP_SCHEDULE'] ?? CronExpression.EVERY_DAY_AT_MIDNIGHT) — disabled for demo
   async handleAdminCleanup(): Promise<void> {
     this.logger.log('Starting admin cleanup cron job...');
 

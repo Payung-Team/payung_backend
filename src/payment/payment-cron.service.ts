@@ -19,7 +19,7 @@ export class PaymentCronService {
     private readonly config: ConfigService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  // @Cron(CronExpression.EVERY_DAY_AT_2AM) — disabled for demo
   async handleExpiredHolds(): Promise<void> {
     this.logger.log('Running expired holds cron job...');
 

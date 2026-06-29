@@ -18,9 +18,9 @@ async function bootstrap() {
     }),
   );
 
-  // CORS สำหรับให้ Frontend เรียกใช้งาน Api Backend ได้
+  // CORS — อ่านจาก env FRONTEND_URL; fallback localhost สำหรับ local dev
   app.enableCors({
-    origin: '*', // ถ้า Deploy จริงให้ใส่ URL ของ Frontend (e.g., 'http://localhost:5173')
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     credentials: true,
   });
 
