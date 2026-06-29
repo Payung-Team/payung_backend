@@ -1,5 +1,5 @@
-import { Field, InputType } from '@nestjs/graphql';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { InputType, Field, ID } from '@nestjs/graphql';
+import { IsUUID, IsNotEmpty, IsString, IsIn, IsOptional, ValidateIf } from 'class-validator';
 
 @InputType()
 export class CreatePaymentInput {
@@ -7,6 +7,9 @@ export class CreatePaymentInput {
   @IsString()
   @IsNotEmpty()
   bookingId: string;
+  @Field({ defaultValue: 'credit_card', description: 'วิธีการชำระเงิน: credit_card | promptpay' })
+  @IsIn(['credit_card', 'promptpay'])
+  paymentMethod: string = 'credit_card';
 
   @Field()
   @IsString()
