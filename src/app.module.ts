@@ -18,6 +18,7 @@ import { BookingModule } from './booking/booking.module';
 import { PatientModule } from './patient/patient.module';
 import { PaymentModule } from './payment/payment.module';
 import { ReviewModule } from './review/review.module';
+import { DisputeModule } from './dispute/dispute.module';
 
 @Module({
   imports: [
@@ -66,6 +67,7 @@ import { ReviewModule } from './review/review.module';
     PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
     PaymentModule,       // PYG-277 FSM + PYG-282 admin transfer + Omise webhook
     ReviewModule,        // PYG-297: post-service reviews (createReview/caregiverReviews/hideReview)
+    DisputeModule,       // PYG-287: flag / adminDisputes / resolveDispute
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

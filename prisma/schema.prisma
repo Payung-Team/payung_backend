@@ -195,6 +195,9 @@ model Booking {
   acceptedAt               DateTime?            @map("accepted_at") @db.Timestamptz(6)
   completedAt              DateTime?            @map("completed_at") @db.Timestamptz(6)  // PYG-281: เวลาที่งานเสร็จ + capture เงินสำเร็จ
   patientName              String?              @map("patient_name")
+  disputeStatus            String               @default("none") @map("dispute_status") @db.VarChar(20)
+  disputeReason            String?              @map("dispute_reason")
+  disputeResolvedAt        DateTime?            @map("dispute_resolved_at") @db.Timestamptz(6)
   booking_tasks            booking_tasks[]
   careRecipient            CareRecipient?       @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?           @relation(fields: [caregiverId], references: [id])
@@ -206,6 +209,7 @@ model Booking {
   @@index([bookingDate], map: "idx_bookings_date")
   @@index([patientId], map: "idx_bookings_patient")
   @@index([status], map: "idx_bookings_status")
+  @@index([disputeStatus], map: "idx_bookings_dispute_status")
   @@map("bookings")
 }
 
