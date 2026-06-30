@@ -29,9 +29,28 @@ import {
   type BookingEvent,
   type BookingEventType,
 } from '../events/booking-event';
+import {
+  BOOKING_EMAIL_TEMPLATES,
+  type BookingEmailContext,
+  type RecipientRole,
+} from '../../email/templates/booking';
+import {
+  formatBaht as formatBahtEmail,
+  formatPriceBreakdown,
+  formatRating,
+  formatServiceType,
+  formatThaiDate as formatThaiDateEmail,
+  formatTimeSlot,
+} from '../../email/templates/booking/helpers';
 
 /** ใครเป็นผู้รับ notification ของ event นี้ */
 type Recipient = 'patient' | 'caregiver' | 'both' | 'admin';
+
+/** ผลลัพธ์การ resolve recipient — รวม role ของแต่ละ userId เพื่อให้ template ใช้ render ต่างกันได้ */
+type ResolvedRecipient = {
+  userId: string;
+  role: RecipientRole | 'admin';
+};
 
 /** context ที่ใช้สร้างข้อความ (มาจาก booking ที่โหลด + metadata ของ event) */
 interface NotifyContext {
@@ -96,20 +115,24 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     ctaLabel: 'ค้นหาผู้ดูแล',
   },
   [BOOKING_EVENTS.CONFIRMED]: {
+    // PYG-293: ส่งให้ทั้งสองฝ่าย (PT เห็นยืนยัน + เบอร์ CG, CG เห็น "เตรียมตัวให้บริการ")
+    // role-specific render อยู่ใน email template (bookingConfirmedTemplate)
     type: NotificationType.booking_confirmed,
-    recipient: 'caregiver',
+    recipient: 'both',
     title: 'การจองยืนยันแล้ว',
     body: (c) => `การจองบริการ${c.serviceText} วันที่ ${c.dateText} ได้รับการยืนยันและชำระเงินแล้ว`,
     email: true,
-    ctaLabel: 'ดูรายละเอียดงาน',
+    ctaLabel: 'ดูรายละเอียด',
   },
   [BOOKING_EVENTS.COMPLETED]: {
+    // PYG-293: ส่งให้ทั้งสองฝ่าย — PT เห็น CTA review, CG เห็น CTA สรุปงาน
+    // role-specific render อยู่ใน email template (bookingCompletedTemplate)
     type: NotificationType.booking_completed,
-    recipient: 'patient',
+    recipient: 'both',
     title: 'บริการเสร็จสิ้น',
-    body: (c) => `บริการ${c.serviceText} เสร็จสมบูรณ์แล้ว ขอบคุณที่ใช้บริการ — อย่าลืมให้คะแนนผู้ดูแล`,
+    body: (c) => `บริการ${c.serviceText} เสร็จสมบูรณ์แล้ว ขอบคุณที่ใช้บริการ`,
     email: true,
-    ctaLabel: 'ให้คะแนนผู้ดูแล',
+    ctaLabel: 'ดูรายละเอียด',
   },
   [BOOKING_EVENTS.CANCELLED]: {
     type: NotificationType.booking_cancelled,
@@ -128,12 +151,14 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     ctaLabel: 'ดูใบเสร็จ',
   },
   [BOOKING_EVENTS.PAYMENT_CAPTURED]: {
+    // PYG-293: ส่งให้ทั้งสองฝ่าย — PT เห็นใบเสร็จ, CG เห็นแจ้งค่าตอบแทน
+    // (PYG-292 เดิม email=false ฝั่ง CG — Wave 1 เปิดเพราะมี role-specific template แล้ว)
     type: NotificationType.payment_captured,
-    recipient: 'caregiver',
+    recipient: 'both',
     title: 'เรียกเก็บเงินแล้ว',
     body: (c) => `เรียกเก็บเงิน ${c.amountText} สำหรับงานที่เสร็จสิ้นเรียบร้อยแล้ว`,
-    // อีเมลฝั่ง payout ของ caregiver ค่อยทำใน payout ticket — in-app พอสำหรับตอนนี้
-    email: false,
+    email: true,
+    ctaLabel: 'ดูรายละเอียด',
   },
   [BOOKING_EVENTS.PAYMENT_VOIDED]: {
     // PYG-286: hold ถูกยกเลิก (จาก cancelBooking auto-void) — แจ้ง patient ว่า hold ถูกปล่อย
@@ -204,15 +229,30 @@ export class BookingNotificationListener {
       }
 
       // โหลดรายละเอียด booking (ผู้ดูแล/วันที่/บริการ/ยอดเงิน) แบบสด ๆ
+      // PYG-293: เพิ่ม field สำหรับ Wave 1 templates (startTime, durationHours, locationAddress,
+      // platformFee, caregiver.phone/averageRating/reviewCount, payment.omiseChargeId)
       const booking = await this.prisma.booking.findUnique({
         where: { id: event.bookingId },
         select: {
           patientId: true,
           serviceType: true,
           bookingDate: true,
+          startTime: true,
+          durationHours: true,
+          locationAddress: true,
           estimatedCost: true,
-          caregiver: { select: { userId: true, fullName: true } },
-          payment: { select: { amount: true } },
+          platformFee: true,
+          caregiver: {
+            select: {
+              userId: true,
+              fullName: true,
+              phone: true,
+              averageRating: true,
+              reviewCount: true,
+            },
+          },
+          patient: { select: { displayName: true } },
+          payment: { select: { amount: true, omiseChargeId: true } },
         },
       });
 
@@ -223,23 +263,25 @@ export class BookingNotificationListener {
         return;
       }
 
+      const reason =
+        typeof event.metadata?.reason === 'string' ? event.metadata.reason : undefined;
+      const refundAmountRaw =
+        typeof event.metadata?.amount === 'number' ? event.metadata.amount : undefined;
+
       const ctx: NotifyContext = {
         caregiverName: booking.caregiver?.fullName ?? 'ผู้ดูแล',
         serviceText: SERVICE_LABEL[booking.serviceType] ?? booking.serviceType,
         dateText: this.formatThaiDate(booking.bookingDate),
         amountText: this.formatBaht(booking.payment?.amount ?? booking.estimatedCost),
-        reason:
-          typeof event.metadata?.reason === 'string'
-            ? event.metadata.reason
-            : undefined,
+        reason,
       };
 
-      const recipientIds = await this.resolveRecipientIds(config.recipient, {
+      const recipients = await this.resolveRecipients(config.recipient, {
         patientId: booking.patientId,
         caregiverUserId: booking.caregiver?.userId ?? null,
       });
 
-      if (recipientIds.length === 0) {
+      if (recipients.length === 0) {
         this.logger.log(
           `No recipient for ${event.eventType} (booking ${event.bookingId}) — skipping`,
         );
@@ -255,12 +297,57 @@ export class BookingNotificationListener {
         source: 'booking',
       };
 
-      for (const userId of recipientIds) {
+      // PYG-293: per-event template (Wave 1) — fallback ไป generic template ถ้าไม่มี
+      const wave1Template = BOOKING_EMAIL_TEMPLATES[event.eventType];
+      const priceBreakdown = formatPriceBreakdown(
+        booking.estimatedCost,
+        booking.platformFee,
+      );
+
+      for (const { userId, role } of recipients) {
         // in-app (insert → Supabase realtime ดันให้ FE)
         await this.notificationService.create(userId, config.type, title, body, data);
 
         // email (ถ้า config เปิด) — EmailService เช็ค emailPreferences ให้เอง
-        if (config.email) {
+        if (!config.email) continue;
+
+        // Wave 1: per-event template (รู้ role → render ต่างกันได้)
+        // — admin ใช้ fallback (Wave 1 ยังไม่มี admin template)
+        if (wave1Template && role !== 'admin') {
+          const recipientRole: RecipientRole = role;
+          await this.emailService.sendBookingEmail(
+            userId,
+            ({ recipientName, frontendUrl }) =>
+              wave1Template({
+                recipientName,
+                recipientRole,
+                caregiverName: ctx.caregiverName,
+                caregiverPhone: booking.caregiver?.phone ?? null,
+                caregiverRatingText: formatRating(
+                  booking.caregiver?.averageRating ?? null,
+                  booking.caregiver?.reviewCount ?? 0,
+                ),
+                patientName: booking.patient?.displayName ?? null,
+                dateText: formatThaiDateEmail(booking.bookingDate),
+                timeText: formatTimeSlot(booking.startTime, booking.durationHours),
+                serviceText: formatServiceType(booking.serviceType),
+                locationAddress: booking.locationAddress,
+                ...priceBreakdown,
+                paymentAmountText: formatBahtEmail(
+                  booking.payment?.amount ?? booking.estimatedCost,
+                ),
+                refundAmountText:
+                  refundAmountRaw !== undefined
+                    ? formatBahtEmail(refundAmountRaw)
+                    : undefined,
+                chargeId: booking.payment?.omiseChargeId ?? null,
+                declineReason: reason,
+                bookingId: event.bookingId,
+                frontendUrl,
+              } satisfies BookingEmailContext),
+          );
+        } else {
+          // Wave 2 fallback: generic template (cancelled / dispute_resolved)
           await this.emailService.sendBookingNotification(userId, {
             heading: title,
             intro: body,
@@ -275,7 +362,7 @@ export class BookingNotificationListener {
       }
 
       this.logger.log(
-        `Handled ${event.eventType} for booking ${event.bookingId} → ${recipientIds.length} recipient(s)`,
+        `Handled ${event.eventType} for booking ${event.bookingId} → ${recipients.length} recipient(s)`,
       );
     } catch (err) {
       // ห้าม throw — notification/email พัง ต้องไม่ทำให้ mutation ที่ยิง event ล่ม
@@ -288,25 +375,32 @@ export class BookingNotificationListener {
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
-  /** map recipient → รายชื่อ USER id ที่ต้องแจ้ง */
-  private async resolveRecipientIds(
+  /** map recipient → รายชื่อ USER id + role (PYG-293: role ทำให้ template render ต่างกันได้) */
+  private async resolveRecipients(
     recipient: Recipient,
     ids: { patientId: string; caregiverUserId: string | null },
-  ): Promise<string[]> {
+  ): Promise<ResolvedRecipient[]> {
     switch (recipient) {
       case 'patient':
-        return [ids.patientId];
+        return [{ userId: ids.patientId, role: 'patient' }];
       case 'caregiver':
-        return ids.caregiverUserId ? [ids.caregiverUserId] : [];
+        return ids.caregiverUserId
+          ? [{ userId: ids.caregiverUserId, role: 'caregiver' }]
+          : [];
       case 'both':
-        return [ids.patientId, ...(ids.caregiverUserId ? [ids.caregiverUserId] : [])];
+        return [
+          { userId: ids.patientId, role: 'patient' },
+          ...(ids.caregiverUserId
+            ? ([{ userId: ids.caregiverUserId, role: 'caregiver' as const }])
+            : []),
+        ];
       case 'admin': {
         // role=3 = admin (ดู project_admin_role) — แจ้งแอดมินทุกคน
         const admins = await this.prisma.user.findMany({
           where: { role: 3 },
           select: { id: true },
         });
-        return admins.map((a) => a.id);
+        return admins.map((a) => ({ userId: a.id, role: 'admin' as const }));
       }
     }
   }

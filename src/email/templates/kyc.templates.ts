@@ -7,14 +7,14 @@
  * - kyc_rejected     → ไม่ผ่าน + เหตุผล
  * - kyc_resubmitted  → รับเอกสารใหม่แล้ว
  *
- * ทุก template return { subject, html, text } เพื่อให้ EmailService ส่งเข้า Resend ได้ตรงๆ
+ * ทุก template return { subject, html, text } เพื่อให้ EmailService ส่งเข้า SMTP (nodemailer) ได้ตรงๆ
  *
  * input: ชื่อ user (สำหรับ greeting) + frontendUrl (สำหรับสร้าง CTA link)
  *        kyc_rejected พิเศษ — รับ reason ด้วย
  */
 import { wrapHtml, plainTextFooter, escapeHtml } from './layout';
 
-/** ผลลัพธ์ของแต่ละ template — match Resend API params (subject/html/text) */
+/** ผลลัพธ์ของแต่ละ template — match nodemailer sendMail params (subject/html/text) */
 export type EmailTemplate = {
   subject: string;
   html: string;
