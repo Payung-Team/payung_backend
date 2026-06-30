@@ -201,6 +201,7 @@ export class BookingService {
         locationAddress:  dto.locationAddress,
         bookingDate:      new Date(dto.bookingDate),
         notes:            dto.notes ?? null,
+        patientName:              dto.patientName              ?? null,
         dayOfContactName:         dto.dayOfContactName         ?? null,
         dayOfContactPhone:        dto.dayOfContactPhone        ?? null,
         dayOfContactRelationship: dto.dayOfContactRelationship ?? null,

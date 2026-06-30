@@ -28,11 +28,7 @@ export class CreatePaymentInput {
   @Field(() => ID, { description: 'UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)' })
   @IsUUID('4')
   bookingId: string;
-
-  @Field({
-    defaultValue: 'credit_card',
-    description: 'วิธีการชำระเงิน: credit_card | promptpay',
-  })
+  @Field({ defaultValue: 'credit_card', description: 'วิธีการชำระเงิน: credit_card | promptpay' })
   @IsIn(['credit_card', 'promptpay'])
   paymentMethod: string = 'credit_card';
 

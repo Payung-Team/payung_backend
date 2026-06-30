@@ -483,8 +483,14 @@ type CompleteBookingResult {
 }
 
 input CreatePaymentInput {
-  bookingId: String!
-  omiseToken: String!
+  """UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)"""
+  bookingId: ID!
+
+  """Omise card token (tokn_...) — จำเป็นสำหรับ credit_card เท่านั้น"""
+  omiseToken: String
+
+  """วิธีการชำระเงิน: credit_card | promptpay"""
+  paymentMethod: String! = "credit_card"
 }
 
 input CreateReviewInput {
@@ -885,13 +891,13 @@ type Mutation {
   """
   editAdminInfo(input: EditAdminInfoInput!): EditAdminInfoPayload!
 
-  """Admin ซ่อนรีวิว (is_visible=false) เช่นรีวิวไม่เหมาะสม"""
-  hideReview(reviewId: ID!): ReviewItem!
-
   """
   Patient flags a dispute on their completed booking. Requires booking.status="completed" and reason length ≥ 20.
   """
   flagBookingDispute(input: FlagDisputeInput!): DisputeBooking!
+
+  """Admin ซ่อนรีวิว (is_visible=false) เช่นรีวิวไม่เหมาะสม"""
+  hideReview(reviewId: ID!): ReviewItem!
 
   """
   Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
@@ -1059,6 +1065,9 @@ type Payment {
   patientId: String!
   paymentMethod: String!
   paymentStatus: PaymentStatus!
+
+  """QR code URL สำหรับ PromptPay (มาจาก Omise)"""
+  qrCodeUrl: String
   updatedAt: DateTime!
 }
 
@@ -1194,6 +1203,11 @@ type Query {
   """List notifications of current user (newest first)"""
   notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
 
+  """
+  ดู payment ของ booking — สำหรับ FE PromptPay polling (เปิดให้ patient/caregiver/admin). ถ้า payment ยังเป็น pending + paymentMethod=promptpay จะ retrieve charge จาก Omise สด ๆ แล้ว reconcile ถ้า user จ่ายแล้ว (กันเคส webhook เลทหรือหาย).
+  """
+  paymentByBooking(bookingId: ID!): Payment
+
   """ประวัติการเปลี่ยนสถานะของ payment (เรียงเก่า → ใหม่)"""
   paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
 
@@ -1284,6 +1298,13 @@ type RequestPasswordResetResponse {
   success: Boolean!
 }
 
+input ResolveDisputeInput {
+  bookingId: ID!
+  decision: DisputeDecision!
+  notes: String!
+  refundAmount: Float
+}
+
 type ReviewItem {
   """
   ข้อความรีวิว (ตัด HTML tag ออกแล้ว) — อาจเป็น null ถ้าผู้รีวิวให้แต่ดาว
@@ -1312,13 +1333,6 @@ type ReviewPagination {
   page: Int!
   total: Int!
   totalPages: Int!
-}
-
-input ResolveDisputeInput {
-  bookingId: ID!
-  decision: DisputeDecision!
-  notes: String!
-  refundAmount: Float
 }
 
 """Filter users by role. Use "all" to return every role."""
