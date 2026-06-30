@@ -8,6 +8,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PaymentService } from '../payment.service';
 
 interface OmiseWebhookBody {
   key: string;
@@ -18,14 +19,17 @@ interface OmiseWebhookBody {
 export class OmiseController {
   private readonly logger = new Logger(OmiseController.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly paymentService: PaymentService,
+  ) {}
 
   @Post('omise')
   @HttpCode(200)
-  handle(
+  async handle(
     @Body() body: OmiseWebhookBody,
     @Headers('x-omise-signature') signature?: string,
-  ): { received: boolean } {
+  ): Promise<{ received: boolean }> {
     const secret = this.configService.get<string>('OMISE_WEBHOOK_SECRET');
 
     if (!secret) {
@@ -54,18 +58,36 @@ export class OmiseController {
     this.logger.log(`[OmiseWebhook] received event key=${key}`);
 
     switch (key) {
-      case 'charge.complete':
-        // TODO: PYG-281 — update payment status to 'captured' when charge completes
-        this.logger.log(`[OmiseWebhook] charge.complete: ${JSON.stringify(data)}`);
+      case 'charge.complete': {
+        // PYG-278: PromptPay async confirm — Omise webhook = user สแกน + bank ยืนยันแล้ว
+        // captureFromWebhook idempotent + re-fetch จาก Omise (กัน tamper) + skip ถ้า process แล้ว
+        const chargeId = typeof data?.id === 'string' ? data.id : undefined;
+        if (chargeId) {
+          try {
+            await this.paymentService.captureFromWebhook(chargeId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.error(
+              `[OmiseWebhook] charge.complete handler failed chargeId=${chargeId}: ${msg}`,
+            );
+            // ตอบ 200 เพื่อกัน retry flood — error ถูก log ไปแล้ว
+          }
+        } else {
+          this.logger.warn(
+            `[OmiseWebhook] charge.complete missing data.id — payload: ${JSON.stringify(data)}`,
+          );
+        }
         break;
+      }
 
       case 'charge.reverse':
-        // TODO: update payment status to 'voided'
+        // TODO (out of scope ของ PYG-278): handler ของ async reverse จาก Omise dashboard
+        // — PYG-286 ทำ void/refund ผ่าน mutation อยู่แล้ว ครอบคลุม flow ปัจจุบัน
         this.logger.log(`[OmiseWebhook] charge.reverse: ${JSON.stringify(data)}`);
         break;
 
       case 'refund.create':
-        // TODO: update payment status to 'refunded' or 'partially_refunded'
+        // TODO (out of scope ของ PYG-278): sync refund ที่ทำใน Omise dashboard กลับเข้า DB
         this.logger.log(`[OmiseWebhook] refund.create: ${JSON.stringify(data)}`);
         break;
 

@@ -38,6 +38,11 @@ export class Payment {
   @Field({ nullable: true })
   failureMessage?: string;
 
+  /** PYG-278: PromptPay QR code URL — มาจาก Omise source.scannable_code.image.download_uri
+   *  เก็บใน payment.metadata.qrCodeUrl (jsonb) ไม่ใช่ column → ไม่ต้อง migration */
+  @Field({ nullable: true, description: 'QR code URL สำหรับ PromptPay (มาจาก Omise)' })
+  qrCodeUrl?: string;
+
   @Field()
   createdAt: Date;
 

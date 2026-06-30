@@ -103,10 +103,10 @@ export class PaymentService {
       throw new ConflictException('A valid payment already exists for this booking');
     }
 
-    const duration = typeof (booking.durationHours as any).toNumber === 'function' 
-      ? (booking.durationHours as any).toNumber() 
+    const duration = typeof (booking.durationHours as any).toNumber === 'function'
+      ? (booking.durationHours as any).toNumber()
       : Number(booking.durationHours);
-      
+
     const hourlyRate = caregiver.hourlyRate ?? 0;
     if (hourlyRate <= 0) {
       throw new UnprocessableEntityException('Caregiver has an invalid hourly rate');
@@ -116,7 +116,29 @@ export class PaymentService {
     const amountBaht = Math.round(duration * hourlyRate * 100) / 100;
     const amountSatangs = Math.round(amountBaht * 100);
 
-    const chargeResult = await this.omiseService.createCharge(amountSatangs, input.omiseToken);
+    // ── PYG-278: PromptPay branch — แยกออกจาก flow card 100% ─────────────────
+    // PromptPay = สร้าง QR, payment stays pending, confirmation via webhook async
+    // ไม่กระทบ flow card เดิมเลย (เข้า if-return ก่อนเรียก createCharge)
+    if (input.paymentMethod === 'promptpay') {
+      return this.finalisePromptPay({
+        bookingId: booking.id,
+        patientId: user.id,
+        caregiverUserId: caregiver.userId,
+        amountBaht,
+        amountSatangs,
+        existingPayment,
+        actorId: user.id,
+      });
+    }
+
+    // PYG-278: ในที่นี้ paymentMethod = 'credit_card' (PromptPay return ไปแล้ว) —
+    // DTO @ValidateIf บังคับให้มี omiseToken แล้วถ้า paymentMethod=card; assert ทับอีกชั้น
+    if (!input.omiseToken) {
+      throw new UnprocessableEntityException('omiseToken is required for credit_card payment');
+    }
+    const omiseToken = input.omiseToken;
+
+    const chargeResult = await this.omiseService.createCharge(amountSatangs, omiseToken);
 
     // Atomic: update booking status and upsert payment, plus initial history row
     const payment = await this.prisma.$transaction(async (tx) => {
@@ -131,7 +153,7 @@ export class PaymentService {
         amount: amountBaht,
         paymentStatus: PaymentStatus.held,
         paymentMethod: 'credit_card',
-        omiseToken: input.omiseToken,
+        omiseToken,
         omiseChargeId: chargeResult.id,
         failureCode: chargeResult.failure_code ?? null,
         failureMessage: chargeResult.failure_message ?? null,
@@ -451,7 +473,16 @@ export class PaymentService {
     failureMessage: string | null;
     createdAt: Date;
     updatedAt: Date;
+    // PYG-278: optional — read qrCodeUrl out of metadata for PromptPay
+    metadata?: Prisma.JsonValue | null;
   }): Payment {
+    const meta =
+      p.metadata && typeof p.metadata === 'object' && !Array.isArray(p.metadata)
+        ? (p.metadata as Record<string, unknown>)
+        : undefined;
+    const qrCodeUrl =
+      meta && typeof meta.qrCodeUrl === 'string' ? meta.qrCodeUrl : undefined;
+
     return {
       id:             p.id,
       bookingId:      p.bookingId,
@@ -466,8 +497,228 @@ export class PaymentService {
       paymentStatus:  p.paymentStatus as PaymentStatusEnum,
       failureCode:    p.failureCode    ?? undefined,
       failureMessage: p.failureMessage ?? undefined,
+      qrCodeUrl,
       createdAt:      p.createdAt,
       updatedAt:      p.updatedAt,
     };
+  }
+
+  // ─── PYG-278: PromptPay flow ────────────────────────────────────────────
+
+  /**
+   * finalisePromptPay — สร้าง PromptPay charge + เก็บ QR URL ใน metadata
+   *
+   * Flow ต่างจากบัตร:
+   * - payment เริ่มต้นเป็น 'pending' (ยังไม่ held — ยังไม่มีเงินจริง)
+   * - ไม่อัปเดต booking.status (ยังคงเป็น 'accepted' จนกว่าจะมี webhook ยืนยัน)
+   * - qrCodeUrl เก็บใน payment.metadata.qrCodeUrl (jsonb) ไม่ต้อง migration
+   *
+   * ไม่ยิง event PAYMENT_HELD/CONFIRMED ที่นี่ — รอ captureFromWebhook ดำเนินการ
+   * ตอน user สแกน QR + bank ยืนยันแล้วเท่านั้น
+   */
+  private async finalisePromptPay(args: {
+    bookingId: string;
+    patientId: string;
+    caregiverUserId: string;
+    amountBaht: number;
+    amountSatangs: number;
+    existingPayment: { id: string; paymentStatus: string } | null;
+    actorId: string;
+  }): Promise<Payment> {
+    // 1) call Omise (external) — อยู่นอก transaction
+    const charge = await this.omiseService.createPromptPayCharge(args.amountSatangs);
+
+    // 2) atomic: upsert payment + write initial history (no booking update)
+    const payment = await this.prisma.$transaction(async (tx) => {
+      const baseData = {
+        patientId: args.patientId,
+        caregiverId: args.caregiverUserId,
+        amount: args.amountBaht,
+        paymentStatus: PaymentStatus.pending,
+        paymentMethod: 'promptpay',
+        omiseChargeId: charge.id,
+        metadata: {
+          qrCodeUrl: charge.qrCodeUrl,
+          amountSatangs: args.amountSatangs,
+        } as Prisma.InputJsonValue,
+        failureCode: null,
+        failureMessage: null,
+      };
+
+      const resultPayment = args.existingPayment
+        ? await tx.payment.update({
+            where: { id: args.existingPayment.id },
+            data: baseData,
+          })
+        : await tx.payment.create({
+            data: { bookingId: args.bookingId, ...baseData },
+          });
+
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: resultPayment.id,
+          fromStatus: args.existingPayment
+            ? (args.existingPayment.paymentStatus as PaymentStatus)
+            : null,
+          toStatus: PaymentStatus.pending,
+          changedBy: args.actorId,
+          reason: 'PromptPay charge created — รอ user สแกน + bank confirm',
+          metadata: {
+            omiseChargeId: charge.id,
+            qrCodeUrl: charge.qrCodeUrl,
+            amountSatangs: args.amountSatangs,
+          },
+        },
+      });
+
+      return resultPayment;
+    });
+
+    this.logger.log(
+      `[PromptPay] charge created paymentId=${payment.id} chargeId=${charge.id} amount=${args.amountSatangs}sth`,
+    );
+
+    return this.toGql(payment);
+  }
+
+  /**
+   * captureFromWebhook — PYG-278: อัปเดต PromptPay payment เมื่อ Omise ส่ง charge.complete
+   *
+   * เรียกจาก OmiseController webhook handler (signature verified แล้ว)
+   *
+   * พฤติกรรม:
+   * - หา payment จาก omiseChargeId; ไม่เจอ → log + return (Omise อาจส่ง webhook ของ
+   *   charge ที่ไม่ใช่ของเรา หรือ retry หลังลบ payment)
+   * - retrieveCharge อีกที (defense in depth): webhook body อาจไม่ครบ/ปลอม → re-fetch
+   *   จาก Omise ก่อนตัดสินใจ
+   * - ถ้า paid+captured+successful → FSM transition pending → captured + booking confirmed
+   * - emit CONFIRMED (PYG-292) — ไม่ emit PAYMENT_HELD เพราะ PromptPay ไม่มี "hold" จริง
+   *
+   * Idempotent: ถ้า payment ไม่ใช่ pending แล้ว (เคย captured/voided/refunded) → log + skip
+   * เพื่อกัน Omise retry webhook ซ้ำซ้อน
+   */
+  async captureFromWebhook(omiseChargeId: string): Promise<void> {
+    if (!omiseChargeId) {
+      this.logger.warn('[PromptPay/webhook] missing omiseChargeId — skipping');
+      return;
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: { omiseChargeId },
+    });
+    if (!payment) {
+      this.logger.warn(
+        `[PromptPay/webhook] no payment found for chargeId=${omiseChargeId} — skipping`,
+      );
+      return;
+    }
+
+    // Idempotent guard — Omise retries until 2xx; skip ถ้า process ไปแล้ว
+    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.pending) {
+      this.logger.log(
+        `[PromptPay/webhook] payment ${payment.id} already in '${payment.paymentStatus}' — skipping`,
+      );
+      return;
+    }
+
+    // Re-fetch จาก Omise เพื่อกันใช้ webhook body ที่ tamper
+    const omiseCharge = await this.omiseService.retrieveCharge(omiseChargeId);
+    if (omiseCharge.status !== 'successful' || !omiseCharge.paid) {
+      this.logger.warn(
+        `[PromptPay/webhook] charge ${omiseChargeId} not successful (status=${omiseCharge.status}, paid=${omiseCharge.paid}) — skipping`,
+      );
+      return;
+    }
+
+    // FSM-driven transition + booking → confirmed (atomic)
+    await this.prisma.$transaction(async (tx) => {
+      await this.fsm.transition(
+        payment.id,
+        PaymentStatus.captured,
+        {
+          reason: 'PromptPay charge.complete webhook — user scanned + bank confirmed',
+          metadata: {
+            omiseChargeId,
+            capturedAt: new Date().toISOString(),
+            source: 'webhook',
+          },
+        },
+        tx,
+      );
+
+      await tx.booking.update({
+        where: { id: payment.bookingId },
+        data: { status: 'confirmed', confirmedAt: new Date() },
+      });
+    });
+
+    // booking.confirmed → แจ้ง patient/caregiver (PYG-292 listener)
+    this.eventEmitter.emit(BOOKING_EVENTS.CONFIRMED, {
+      bookingId: payment.bookingId,
+      eventType: BOOKING_EVENTS.CONFIRMED,
+      patientId: payment.patientId,
+      caregiverId: payment.caregiverId,
+    });
+
+    this.logger.log(
+      `[PromptPay/webhook] payment ${payment.id} → captured (chargeId=${omiseChargeId})`,
+    );
+  }
+
+  /**
+   * paymentByBooking — PYG-278: query สำหรับ FE polling
+   *
+   * Patient/caregiver/admin เรียกเพื่อดูสถานะ payment ของ booking หนึ่ง — โดยเฉพาะ
+   * FE PromptPay screen ที่ poll สถานะระหว่างรอ webhook
+   *
+   * Polling fallback:
+   * - ถ้า payment status = 'pending' AND paymentMethod = 'promptpay' → retrieveCharge
+   *   จาก Omise สด ๆ
+   * - ถ้า Omise บอก successful + paid → reconcile โดยเรียก captureFromWebhook
+   *   (handle เคส webhook เลทหรือหาย)
+   *
+   * @returns payment ล่าสุด (อาจมี qrCodeUrl ใน metadata)
+   * @throws ForbiddenException ถ้าไม่ใช่ party ของ booking
+   */
+  async paymentByBooking(bookingId: string, user: AuthUser): Promise<Payment | null> {
+    const payment = await this.prisma.payment.findUnique({
+      where: { bookingId },
+    });
+    if (!payment) return null;
+
+    const isParty = payment.patientId === user.id || payment.caregiverId === user.id;
+    const isAdmin = user.role >= ROLE_ID.ADMIN;
+    if (!isParty && !isAdmin) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์ดูรายการชำระเงินนี้');
+    }
+
+    // Polling fallback — เฉพาะ PromptPay pending เท่านั้น
+    const isPromptPayPending =
+      payment.paymentMethod === 'promptpay' &&
+      (payment.paymentStatus as PaymentStatus) === PaymentStatus.pending &&
+      !!payment.omiseChargeId;
+
+    if (isPromptPayPending) {
+      try {
+        const omiseCharge = await this.omiseService.retrieveCharge(payment.omiseChargeId!);
+        if (omiseCharge.status === 'successful' && omiseCharge.paid) {
+          // Webhook อาจยังไม่ถึง / หาย → reconcile เลย
+          await this.captureFromWebhook(payment.omiseChargeId!);
+          // อ่าน payment ใหม่ที่ status อัปเดตแล้ว
+          const refreshed = await this.prisma.payment.findUnique({
+            where: { bookingId },
+          });
+          return refreshed ? this.toGql(refreshed) : null;
+        }
+      } catch (err) {
+        // polling reconcile fail ต้องไม่ทำให้ query พัง — log แล้วคืน payment เดิม
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[PromptPay/poll] reconcile failed for payment ${payment.id}: ${msg}`,
+        );
+      }
+    }
+
+    return this.toGql(payment);
   }
 }
