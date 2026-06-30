@@ -71,6 +71,7 @@ export class CompleteBookingService {
           select: {
             id: true,
             paymentStatus: true,
+            paymentMethod: true, // PYG-278: ต้องรู้ method เพื่อตัดสินใจ skip Omise capture (PromptPay)
             omiseChargeId: true,
             amount: true,
           },
@@ -94,46 +95,61 @@ export class CompleteBookingService {
       );
     }
 
-    // 4) payment ต้องเป็น held (กันวงเงินไว้ รอ capture)
+    // 4) payment validity check — card vs PromptPay มีกฎต่างกัน
     const payment = booking.payment;
     if (!payment) {
       throw new UnprocessableEntityException(
         'ไม่พบรายการชำระเงินสำหรับ booking นี้',
       );
     }
-    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.held) {
+
+    // PYG-278: PromptPay paid via webhook → payment เป็น 'captured' ตั้งแต่ก่อนกด completeBooking
+    //   skip Omise capture (เงินอยู่ในมือเราแล้ว) — แค่ปิด booking
+    // Card (PYG-281): payment เป็น 'held' (authorize/hold) — ต้องเรียก Omise capture
+    const isPromptPayCaptured =
+      payment.paymentMethod === 'promptpay' &&
+      (payment.paymentStatus as PaymentStatus) === PaymentStatus.captured;
+
+    if (
+      !isPromptPayCaptured &&
+      (payment.paymentStatus as PaymentStatus) !== PaymentStatus.held
+    ) {
       throw new UnprocessableEntityException(
         `Only payments with status "held" can be captured (current: "${payment.paymentStatus}")`,
       );
     }
 
-    // 5) capture เงินกับ Omise (นอก transaction) — พังเมื่อไหร่ helper จัดการ audit + แจ้ง admin
-    const captureResult = await this.capture(
-      payment.id,
-      payment.omiseChargeId ?? '',
-      user,
-    );
+    // 5) capture: card → Omise capture; PromptPay → skip (จ่ายเสร็จตั้งแต่ webhook)
+    // omiseChargeId เก็บไว้ใช้ใน response (ทั้งสอง flow มี chargeId อยู่แล้ว)
+    const omiseChargeIdForResponse = isPromptPayCaptured
+      ? (payment.omiseChargeId ?? '')
+      : (
+          await this.capture(payment.id, payment.omiseChargeId ?? '', user)
+        ).id;
 
-    // 6) capture สำเร็จ → atomic: payment captured + booking completed (transaction เดียว)
+    // 6) atomic: (card) payment held→captured + booking confirmed→completed
+    //            (PromptPay) booking confirmed→completed เท่านั้น (payment เป็น captured อยู่แล้ว)
     const completedAt = new Date();
     const updatedBooking = await this.prisma.$transaction(async (tx) => {
-      // 6a) payment held → captured (ผ่าน FSM: ตรวจกฎ + insert history ใน tx เดียวกัน)
-      await this.fsm.transition(
-        payment.id,
-        PaymentStatus.captured,
-        {
-          changedBy: user.id,
-          reason: 'งานเสร็จสมบูรณ์ — capture เงินจากวงเงินที่กันไว้',
-          metadata: {
-            omiseChargeId: captureResult.id,
-            capturedAt: completedAt.toISOString(),
-            completedBy: isPatient ? 'patient' : 'caregiver',
+      // 6a) card flow เท่านั้น: payment held → captured (ผ่าน FSM)
+      if (!isPromptPayCaptured) {
+        await this.fsm.transition(
+          payment.id,
+          PaymentStatus.captured,
+          {
+            changedBy: user.id,
+            reason: 'งานเสร็จสมบูรณ์ — capture เงินจากวงเงินที่กันไว้',
+            metadata: {
+              omiseChargeId: omiseChargeIdForResponse,
+              capturedAt: completedAt.toISOString(),
+              completedBy: isPatient ? 'patient' : 'caregiver',
+            },
           },
-        },
-        tx,
-      );
+          tx,
+        );
+      }
 
-      // 6b) booking confirmed → completed + completed_at
+      // 6b) booking confirmed → completed + completed_at (ทั้งสอง flow ทำเหมือนกัน)
       return tx.booking.update({
         where: { id: bookingId },
         data: { status: 'completed', completedAt },
@@ -142,8 +158,9 @@ export class CompleteBookingService {
     });
 
     // 7) emit events (PYG-292) — listener สร้าง in-app notification + อีเมล
-    //    booking.completed → แจ้ง patient (พร้อม prompt ให้รีวิว)
-    //    payment.captured  → แจ้ง caregiver (เรียกเก็บเงินจากวงเงินที่กันไว้แล้ว)
+    //    booking.completed   → แจ้ง patient (พร้อม prompt ให้รีวิว)
+    //    payment.captured    → card: เรียกเก็บเงินจากวงเงินที่กันไว้แล้ว
+    //                          PromptPay: ปกติ emit จาก webhook ไปแล้วตอน user สแกน — ไม่ emit ซ้ำ
     const caregiverUserId = booking.caregiver?.userId ?? null;
     this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, {
       bookingId,
@@ -151,13 +168,15 @@ export class CompleteBookingService {
       patientId: booking.patientId,
       caregiverId: caregiverUserId,
     });
-    this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_CAPTURED, {
-      bookingId,
-      eventType: BOOKING_EVENTS.PAYMENT_CAPTURED,
-      patientId: booking.patientId,
-      caregiverId: caregiverUserId,
-      metadata: { amount: this.toNumber(payment.amount) },
-    });
+    if (!isPromptPayCaptured) {
+      this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_CAPTURED, {
+        bookingId,
+        eventType: BOOKING_EVENTS.PAYMENT_CAPTURED,
+        patientId: booking.patientId,
+        caregiverId: caregiverUserId,
+        metadata: { amount: this.toNumber(payment.amount) },
+      });
+    }
 
     // 8) นัดส่ง review prompt อีก 1 ชม. (listener จะมาใน PYG-292/297)
     this.scheduleReviewPrompt(bookingId);
@@ -167,7 +186,7 @@ export class CompleteBookingService {
       status: updatedBooking.status,
       paymentStatus: PaymentStatus.captured,
       amount: this.toNumber(payment.amount),
-      omiseChargeId: captureResult.id,
+      omiseChargeId: omiseChargeIdForResponse,
       completedAt: updatedBooking.completedAt ?? completedAt,
     };
   }

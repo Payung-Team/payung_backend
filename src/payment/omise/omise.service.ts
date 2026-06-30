@@ -11,6 +11,8 @@
  * - reverseCharge(omiseChargeId) — PYG-281: ยกเลิกการกัน hold (expire / void)
  * - voidCharge(omiseChargeId) — PYG-286: semantic alias ของ reverseCharge สำหรับ auto-void on cancel
  * - createRefund(omiseChargeId, amountSatangs?) — PYG-286: คืนเงินจาก charge ที่ capture แล้ว (เต็ม/บางส่วน)
+ * - createPromptPayCharge(amount) — PYG-278: สร้าง PromptPay charge (source[type]=promptpay) + คืน QR
+ * - retrieveCharge(omiseChargeId) — PYG-278: GET /charges/:id สำหรับ polling / webhook reconciliation
  *
  * Auth ของ Omise = HTTP Basic โดยใช้ secret key เป็น username, password ว่าง
  *   → header: Authorization: Basic base64("<SECRET_KEY>:")
@@ -22,6 +24,24 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CaptureFailedError } from '../errors/capture-failed.error';
 import { mapOmiseError } from '../errors/omise-error-mapper';
+
+/** PYG-278: ผลลัพธ์จาก POST /charges กับ source[type]=promptpay (เน้นที่ QR + chargeId) */
+export type OmisePromptPayResult = {
+  /** charge id ของ Omise — เก็บลง payment.omiseChargeId */
+  id: string;
+  /** สถานะหลังสร้าง — PromptPay จะเป็น 'pending' จนกว่าจะ scan + bank confirm */
+  status: string;
+  /** จำนวนเงิน (satangs) ตามที่ Omise บันทึก */
+  amount: number;
+  /** captured/paid/authorized — PromptPay ตอนสร้างจะเป็น false ทั้งหมด */
+  captured: boolean;
+  paid: boolean;
+  authorized: boolean;
+  /** QR code image URL จาก source.scannable_code.image.download_uri (อาจ undefined ถ้า Omise ไม่ส่ง) */
+  qrCodeUrl?: string;
+  failure_code?: string;
+  failure_message?: string;
+};
 
 /** PYG-286: ผลลัพธ์จาก /charges/:id/refunds (เอาเฉพาะ field ที่ต้องบันทึก audit) */
 export type OmiseRefundResult = {
@@ -400,6 +420,152 @@ export class OmiseService {
       currency:
         typeof body.currency === 'string' ? body.currency.toUpperCase() : 'THB',
       voided: body.voided === true,
+    };
+  }
+
+  /**
+   * createPromptPayCharge — PYG-278: สร้าง PromptPay charge (Omise คืน QR code URL)
+   *
+   * ต่างจาก createCharge (บัตร):
+   * - ใช้ source[type]=promptpay (ไม่ใช่ card token)
+   * - ไม่มี capture=false — PromptPay จ่ายเต็มทันทีเมื่อ user สแกน (charge.complete webhook)
+   * - คืน QR URL จาก source.scannable_code.image.download_uri
+   *
+   * @param amountSatangs - จำนวนเงิน (หน่วย satangs)
+   * @returns charge ที่เพิ่งสร้าง (status='pending' จนกว่า user จะ scan + bank confirm)
+   * @throws PaymentError ถ้าสร้าง charge ไม่สำเร็จ
+   */
+  async createPromptPayCharge(amountSatangs: number): Promise<OmisePromptPayResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+
+    const url = `${this.apiBase}/charges`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        // x-www-form-urlencoded ของ Omise รับ nested key แบบ source[type]=promptpay
+        body: new URLSearchParams({
+          amount: amountSatangs.toString(),
+          currency: 'thb',
+          'source[type]': 'promptpay',
+        }),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] createPromptPayCharge network error: ${message}`);
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง PromptPay charge', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createPromptPayCharge failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode, omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    // ดึง QR URL จาก nested source.scannable_code.image.download_uri (safe access)
+    const source = (body.source ?? {}) as Record<string, unknown>;
+    const scannable = (source.scannable_code ?? {}) as Record<string, unknown>;
+    const image = (scannable.image ?? {}) as Record<string, unknown>;
+    const qrCodeUrl =
+      typeof image.download_uri === 'string' ? image.download_uri : undefined;
+
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      status: typeof body.status === 'string' ? body.status : 'unknown',
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      captured: body.captured === true,
+      paid: body.paid === true,
+      authorized: body.authorized === true,
+      qrCodeUrl,
+      failure_code:
+        typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message:
+        typeof body.failure_message === 'string' ? body.failure_message : undefined,
+    };
+  }
+
+  /**
+   * retrieveCharge — PYG-278: GET /charges/:id (read-only)
+   *
+   * ใช้สำหรับ:
+   *  - polling fallback ของ PromptPay (paymentByBooking query)
+   *  - reconciliation จาก webhook
+   *
+   * คืน OmiseCaptureResult format เดียวกับ captureCharge/createCharge เพื่อให้
+   * ผู้เรียกประมวลผลด้วย logic เดียวกัน
+   *
+   * @param omiseChargeId - charge id ของ Omise (เช่น 'chrg_xxx')
+   * @returns สถานะ charge ปัจจุบัน
+   * @throws Error ถ้า Omise ตอบ error หรือ network ติดต่อไม่ได้
+   */
+  async retrieveCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
+    if (!this.secretKey) {
+      throw new Error('ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+    if (!omiseChargeId) {
+      throw new Error('ไม่มี omiseChargeId — ไม่สามารถ retrieve charge ได้');
+    }
+
+    const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: authHeader },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[Omise] retrieveCharge network error chargeId=${omiseChargeId}: ${message}`,
+      );
+      throw new Error(`ติดต่อ Omise ไม่สำเร็จขณะ retrieve charge: ${message}`);
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] retrieveCharge failed chargeId=${omiseChargeId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw new Error(`Omise ปฏิเสธการ retrieve charge: ${omiseMessage}`);
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : omiseChargeId,
+      status: typeof body.status === 'string' ? body.status : 'unknown',
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      captured: body.captured === true,
+      paid: body.paid === true,
+      authorized: body.authorized === true,
+      failure_code:
+        typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message:
+        typeof body.failure_message === 'string' ? body.failure_message : undefined,
     };
   }
 }

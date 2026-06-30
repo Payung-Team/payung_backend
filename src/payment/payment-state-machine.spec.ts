@@ -68,6 +68,8 @@ describe('PaymentStateMachine', () => {
     it.each([
       [PaymentStatus.pending, PaymentStatus.held],
       [PaymentStatus.pending, PaymentStatus.failed],
+      // PYG-278: PromptPay async confirm — pending → captured ตรง ๆ
+      [PaymentStatus.pending, PaymentStatus.captured],
       [PaymentStatus.held, PaymentStatus.captured],
       [PaymentStatus.held, PaymentStatus.voided],
       [PaymentStatus.held, PaymentStatus.expired],
@@ -81,7 +83,6 @@ describe('PaymentStateMachine', () => {
     it.each([
       [PaymentStatus.held, PaymentStatus.pending], // ย้อนกลับ
       [PaymentStatus.captured, PaymentStatus.held], // ย้อนกลับ
-      [PaymentStatus.pending, PaymentStatus.captured], // ข้ามขั้น
       [PaymentStatus.failed, PaymentStatus.captured], // ออกจาก terminal
       [PaymentStatus.refunded, PaymentStatus.captured], // ออกจาก terminal
       [PaymentStatus.held, PaymentStatus.held], // same → same
