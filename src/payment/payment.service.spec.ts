@@ -286,3 +286,49 @@ describe('PaymentService.refundPayment (PYG-286)', () => {
     );
   });
 });
+
+// ─── PYG-278: findByBookingId ───────────────────────────────────────────────
+
+describe('PaymentService.findByBookingId (PYG-278)', () => {
+  let service: PaymentService;
+  let prisma: { payment: { findUnique: jest.Mock } };
+
+  beforeEach(async () => {
+    prisma = { payment: { findUnique: jest.fn() } };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        { provide: OmiseService, useValue: { createRefund: jest.fn() } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+      ],
+    }).compile();
+
+    service = moduleRef.get(PaymentService);
+  });
+
+  it('มี payment record → คืน Payment object (amount เป็น number)', async () => {
+    const row = fakePayment({ amount: { toNumber: () => 1140 } });
+    prisma.payment.findUnique.mockResolvedValueOnce(row);
+
+    const result = await service.findByBookingId(BOOKING_ID);
+
+    expect(prisma.payment.findUnique).toHaveBeenCalledWith({ where: { bookingId: BOOKING_ID } });
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(PAYMENT_ID);
+    expect(typeof result!.amount).toBe('number');
+    expect(result!.amount).toBe(1140);
+    expect(result!.paymentStatus).toBe('captured');
+  });
+
+  it('ไม่มี payment record → คืน null', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+
+    const result = await service.findByBookingId(BOOKING_ID);
+
+    expect(prisma.payment.findUnique).toHaveBeenCalledWith({ where: { bookingId: BOOKING_ID } });
+    expect(result).toBeNull();
+  });
+});
