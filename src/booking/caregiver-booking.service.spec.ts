@@ -123,7 +123,7 @@ describe('CaregiverBookingService', () => {
       expect(prisma.booking.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: BOOKING_ID },
-          data: expect.objectContaining({ status: 'confirmed' }),
+          data: expect.objectContaining({ status: 'accepted' }),
         }),
       );
       // ตรวจว่ามีการ set acceptedAt เป็น Date

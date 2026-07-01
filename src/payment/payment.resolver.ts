@@ -42,6 +42,22 @@ export class PaymentResolver {
     return this.paymentService.createPayment(input, user);
   }
 
+  // ── PYG-278: PromptPay polling fallback ──────────────────────────────────
+
+  @Query(() => Payment, {
+    nullable: true,
+    description:
+      'ดู payment ของ booking — สำหรับ FE PromptPay polling (เปิดให้ patient/caregiver/admin). ' +
+      'ถ้า payment ยังเป็น pending + paymentMethod=promptpay จะ retrieve charge จาก Omise สด ๆ ' +
+      'แล้ว reconcile ถ้า user จ่ายแล้ว (กันเคส webhook เลทหรือหาย).',
+  })
+  async paymentByBooking(
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<Payment | null> {
+    return this.paymentService.paymentByBooking(bookingId, user);
+  }
+
   // ── PYG-282: admin-only ───────────────────────────────────────────────────
 
   @Mutation(() => Payment, {

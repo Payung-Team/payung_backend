@@ -213,7 +213,7 @@ export class CaregiverBookingService {
     const now = new Date();
     const updated = await this.prisma.booking.update({
       where: { id: bookingId },
-      data: { status: 'confirmed', acceptedAt: now, confirmedAt: now },
+      data: { status: 'accepted', acceptedAt: now },
       include: BOOKING_INCLUDE,
     });
 

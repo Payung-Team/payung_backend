@@ -23,6 +23,7 @@ import { CaptureFailedError } from './errors/capture-failed.error';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 
 const BOOKING_ID = 'book-0001';
 const PAYMENT_ID = 'pay-0001';
@@ -39,6 +40,8 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     payment: {
       id: PAYMENT_ID,
       paymentStatus: 'held',
+      // PYG-278: default = card (existing card tests behavior unchanged)
+      paymentMethod: 'credit_card',
       omiseChargeId: 'chrg_test_1',
       amount: 1200,
     },
@@ -71,6 +74,7 @@ describe('CompleteBookingService', () => {
   };
   let fsm: { transition: jest.Mock; recordCaptureFailure: jest.Mock };
   let omise: { captureCharge: jest.Mock };
+  let emitter: { emit: jest.Mock };
 
   beforeEach(async () => {
     tx = { booking: { update: jest.fn() } };
@@ -82,6 +86,7 @@ describe('CompleteBookingService', () => {
     };
     fsm = { transition: jest.fn(), recordCaptureFailure: jest.fn() };
     omise = { captureCharge: jest.fn() };
+    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -90,7 +95,7 @@ describe('CompleteBookingService', () => {
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
         // PYG-292: completeBooking ยิง booking.completed/payment.captured — mock EventEmitter2
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
 
@@ -247,5 +252,114 @@ describe('CompleteBookingService', () => {
     // ต้องไม่ transition/ปิด booking เมื่อ capture พัง
     expect(fsm.transition).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  // ─── PromptPay flow (PYG-278) ──────────────────────────────────────────────
+
+  describe('PromptPay flow', () => {
+    /** PromptPay payment: paymentMethod='promptpay' + status='captured' (จ่ายผ่าน webhook ไปแล้ว) */
+    function promptPayBooking(overrides: Record<string, unknown> = {}) {
+      return fakeBooking({
+        payment: {
+          id: PAYMENT_ID,
+          paymentStatus: 'captured',
+          paymentMethod: 'promptpay',
+          omiseChargeId: 'chrg_test_promptpay',
+          amount: 1200,
+        },
+        ...overrides,
+      });
+    }
+
+    it('completeBooking สำเร็จ — ไม่เรียก Omise capture, ไม่ FSM transition, แค่ปิด booking', async () => {
+      prisma.booking.findUnique.mockResolvedValue(promptPayBooking());
+      const completedAt = new Date('2026-06-22T10:00:00Z');
+      tx.booking.update.mockResolvedValue({
+        id: BOOKING_ID,
+        status: 'completed',
+        completedAt,
+      });
+
+      const result = await service.completeBooking(
+        asUser(PATIENT_ID, ROLE_ID.PATIENT),
+        BOOKING_ID,
+      );
+
+      // ❌ skip Omise capture (เงินอยู่ในมือเราแล้วตั้งแต่ webhook)
+      expect(omise.captureCharge).not.toHaveBeenCalled();
+      // ❌ skip FSM transition (payment เป็น captured อยู่แล้ว)
+      expect(fsm.transition).not.toHaveBeenCalled();
+      // ✅ booking confirmed → completed ตามปกติ
+      expect(tx.booking.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: BOOKING_ID },
+          data: expect.objectContaining({ status: 'completed' }),
+        }),
+      );
+      // ผลลัพธ์: paymentStatus = captured, omiseChargeId ใช้ของเดิม
+      expect(result).toEqual(
+        expect.objectContaining({
+          bookingId: BOOKING_ID,
+          status: 'completed',
+          paymentStatus: PaymentStatus.captured,
+          omiseChargeId: 'chrg_test_promptpay',
+          completedAt,
+        }),
+      );
+    });
+
+    it('emit COMPLETED แต่ไม่ emit PAYMENT_CAPTURED (webhook ยิงไปแล้วตอน user สแกน)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(promptPayBooking());
+      tx.booking.update.mockResolvedValue({
+        id: BOOKING_ID,
+        status: 'completed',
+        completedAt: new Date(),
+      });
+
+      await service.completeBooking(
+        asUser(PATIENT_ID, ROLE_ID.PATIENT),
+        BOOKING_ID,
+      );
+
+      const emittedKeys = emitter.emit.mock.calls.map((c) => c[0] as string);
+      expect(emittedKeys).toContain(BOOKING_EVENTS.COMPLETED);
+      expect(emittedKeys).not.toContain(BOOKING_EVENTS.PAYMENT_CAPTURED);
+    });
+
+    it('PromptPay payment status="pending" → 422 (ยังไม่ได้จ่าย ปิดงานไม่ได้)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        promptPayBooking({
+          payment: {
+            id: PAYMENT_ID,
+            paymentStatus: 'pending',
+            paymentMethod: 'promptpay',
+            omiseChargeId: 'chrg_test_promptpay',
+            amount: 1200,
+          },
+        }),
+      );
+
+      await expect(
+        service.completeBooking(asUser(PATIENT_ID, ROLE_ID.PATIENT), BOOKING_ID),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(omise.captureCharge).not.toHaveBeenCalled();
+    });
+
+    it('caregiver กดจบงาน PromptPay → ปิดได้เช่นกัน', async () => {
+      prisma.booking.findUnique.mockResolvedValue(promptPayBooking());
+      tx.booking.update.mockResolvedValue({
+        id: BOOKING_ID,
+        status: 'completed',
+        completedAt: new Date(),
+      });
+
+      await expect(
+        service.completeBooking(
+          asUser(CAREGIVER_USER_ID, ROLE_ID.CAREGIVER),
+          BOOKING_ID,
+        ),
+      ).resolves.toBeDefined();
+      expect(omise.captureCharge).not.toHaveBeenCalled();
+    });
   });
 });

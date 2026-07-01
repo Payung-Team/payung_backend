@@ -45,7 +45,13 @@ export type TransitionOptions = {
  * สถานะปลายทาง (transferred/voided/refunded/...) เป็น terminal → ไปต่อไม่ได้ ([])
  */
 const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
-  [PaymentStatus.pending]: [PaymentStatus.held, PaymentStatus.failed],
+  // PYG-278: เพิ่ม pending → captured สำหรับ PromptPay async confirm (จาก webhook)
+  // — flow card เดิม pending → held ยังคงเดิม
+  [PaymentStatus.pending]: [
+    PaymentStatus.held,
+    PaymentStatus.failed,
+    PaymentStatus.captured,
+  ],
   [PaymentStatus.held]: [
     PaymentStatus.captured,
     PaymentStatus.voided,
