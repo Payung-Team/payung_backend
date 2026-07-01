@@ -163,9 +163,9 @@ export class OmiseService {
 
     // 2) HTTP 200 แต่ charge ไม่ได้ capture/ไม่สำเร็จ → ถือว่าพังเช่นกัน
     const status = typeof body.status === 'string' ? body.status : 'unknown';
-    const captured = body.captured === true;
     const paid = body.paid === true;
-    if (status !== 'successful' || !captured) {
+    const captured = paid; // Omise ไม่มี field "captured" — paid คือ field ที่ถูกต้องตาม docs (docs.omise.co/charges-api: "paid: Whether charge has been captured (paid)")
+    if (status !== 'successful' || !paid) {
       const omiseCode =
         typeof body.failure_code === 'string' ? body.failure_code : undefined;
       const omiseMessage =
@@ -266,7 +266,7 @@ export class OmiseService {
       id: typeof body.id === 'string' ? body.id : '',
       status,
       amount: typeof body.amount === 'number' ? body.amount : 0,
-      captured: body.captured === true,
+      captured: body.paid === true,
       paid: body.paid === true,
       authorized,
       failure_code: failureCode,
@@ -315,7 +315,7 @@ export class OmiseService {
       id: typeof body.id === 'string' ? body.id : omiseChargeId,
       status: typeof body.status === 'string' ? body.status : 'unknown',
       amount: typeof body.amount === 'number' ? body.amount : 0,
-      captured: body.captured === true,
+      captured: body.paid === true,
       paid: body.paid === true,
       authorized: body.authorized === true,
       failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
@@ -493,7 +493,7 @@ export class OmiseService {
       id: typeof body.id === 'string' ? body.id : '',
       status: typeof body.status === 'string' ? body.status : 'unknown',
       amount: typeof body.amount === 'number' ? body.amount : 0,
-      captured: body.captured === true,
+      captured: body.paid === true,
       paid: body.paid === true,
       authorized: body.authorized === true,
       qrCodeUrl,
@@ -559,7 +559,7 @@ export class OmiseService {
       id: typeof body.id === 'string' ? body.id : omiseChargeId,
       status: typeof body.status === 'string' ? body.status : 'unknown',
       amount: typeof body.amount === 'number' ? body.amount : 0,
-      captured: body.captured === true,
+      captured: body.paid === true,
       paid: body.paid === true,
       authorized: body.authorized === true,
       failure_code:
