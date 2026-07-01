@@ -459,6 +459,14 @@ export class PaymentService {
     };
   }
 
+  // ── PYG-278: ดึง payment ของ booking สำหรับหน้า booking detail ──────────────
+
+  /** PYG-278: ดึง payment ของ booking 1 รายการ (1:1, bookingId @unique) สำหรับแสดงบนหน้า booking detail */
+  async findByBookingId(bookingId: string): Promise<Payment | null> {
+    const row = await this.prisma.payment.findUnique({ where: { bookingId } });
+    return row ? this.toGql(row) : null;
+  }
+
   private toGql(p: {
     id: string;
     bookingId: string;
