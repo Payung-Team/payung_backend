@@ -18,7 +18,8 @@ export class CaregiverPublicService {
    */
   async getPublicProfile(id: string): Promise<CaregiverPublicDto> {
     // Single query: fetch caregiver + user + availability + aggregated reviews
-    const caregiver = await this.prisma.caregiver.findUnique({
+    const [caregiver, completedBookingCount] = await Promise.all([
+    this.prisma.caregiver.findUnique({
       where: { id },
       select: {
         id: true,
@@ -49,7 +50,11 @@ export class CaregiverPublicService {
           },
         },
       },
-    });
+    }),
+    this.prisma.booking.count({
+      where: { caregiverId: id, status: 'completed' },
+    }),
+    ]);
 
     // ── 404 guard ─────────────────────────────────────────────────────────
     if (
@@ -92,6 +97,7 @@ export class CaregiverPublicService {
       hourly_rate: caregiver.hourlyRate ?? null,
       avg_rating: avgRating,
       review_count: reviewCount,
+      completed_booking_count: completedBookingCount,
       skills: caregiver.skills,
       availability,
       province: caregiver.serviceAreaProvince ?? null,

@@ -20,6 +20,7 @@ export class CaregiverPublicDto {
   hourly_rate: number | null;
   avg_rating: number | null;
   review_count: number;
+  completed_booking_count: number;
   skills: string[];
   availability: AvailabilitySlotDto[];
   province: string | null;
