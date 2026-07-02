@@ -93,6 +93,8 @@ type BookingWithIncludes = {
   notes: string | null;
   estimatedCost: { toNumber(): number } | null;
   confirmedAt: Date | null;
+  disputeStatus: string | null;
+  disputeReason: string | null;
   createdAt: Date;
   // caregiver is nullable when booking is unmatched
   caregiver: {
@@ -649,6 +651,8 @@ export class BookingService {
       caregiver,
       careRecipientName: booking.careRecipient?.name ?? undefined,
       confirmedAt:      booking.confirmedAt   ?? undefined,
+      disputeStatus:    booking.disputeStatus ?? 'none',
+      disputeReason:    booking.disputeReason ?? undefined,
       createdAt:        booking.createdAt,
     };
   }

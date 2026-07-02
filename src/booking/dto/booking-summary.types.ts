@@ -25,6 +25,8 @@ export class BookingSummary {
   @Field(() => ID)                                    id: string;
   @Field()                                            bookingDate: string;
   @Field()                                            status: string;
+  @Field({ nullable: true })                          disputeStatus?: string;
+  @Field({ nullable: true })                          disputeReason?: string;
   @Field()                                            serviceType: string;
   @Field()                                            timeSlot: string;
   @Field({ nullable: true })                          startTime?: string;
