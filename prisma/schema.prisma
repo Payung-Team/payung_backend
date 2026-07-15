@@ -97,10 +97,33 @@ model Caregiver {
   documents           KycDocument[]
   kycReviews          KycReview[]
   patientReviews      Review[]
+  payoutAccount       CaregiverPayoutAccount?
   savedByPatients     SavedCaregiver[]
 
   @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
   @@map("caregivers")
+}
+
+/// PYG-306 — Payout bank account 1:1 กับ Caregiver (foundation ของ Auto-Payout epic PYG-329)
+/// account_number_enc = ciphertext เข้ารหัสที่ app layer; แสดงผลใช้ account_number_last4 เท่านั้น
+/// omise_recipient_id + recipient_status จะถูกกรอกโดย webhook PYG-304 (ยังไม่ implement)
+model CaregiverPayoutAccount {
+  id                 String    @id @default(uuid())
+  caregiverId        String    @unique @map("caregiver_id")
+  bankCode           String    @map("bank_code")
+  accountName        String    @map("account_name")
+  accountNumberEnc   String    @map("account_number_enc")
+  accountNumberLast4 String    @map("account_number_last4")
+  omiseRecipientId   String?   @map("omise_recipient_id")
+  recipientStatus    String    @default("unverified") @map("recipient_status")
+  status             String    @default("pending")
+  verifiedAt         DateTime? @map("verified_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+
+  @@map("caregiver_payout_accounts")
 }
 
 model CaregiverJobType {
@@ -422,6 +445,7 @@ enum NotificationType {
   dispute_resolved
   payment_refunded
   payment_voided
+  payment_transferred
 }
 
 enum booking_service_type {
