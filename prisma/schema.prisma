@@ -103,6 +103,7 @@ model Caregiver {
   kycReviews          KycReview[]
   patientReviews      Review[]
   payoutAccount       CaregiverPayoutAccount?
+  payouts             Payout[]
   savedByPatients     SavedCaregiver[]
 
   @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
@@ -129,6 +130,32 @@ model CaregiverPayoutAccount {
   caregiver Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
 
   @@map("caregiver_payout_accounts")
+}
+
+/// PYG-330 — Payout record 1:1 กับ Booking (worker + Omise Transfer จะทำในก้อน B)
+/// - booking_id @unique = DB-level idempotency (1 booking = 1 payout) ไม่พึ่งแค่โค้ด
+/// - onDelete Restrict ทั้ง 2 FK — ห้าม cascade ลบ record การเงิน
+/// - timestamptz ทุกช่อง — worker query "scheduled_at <= now()" ต้อง tz-safe (ไทย UTC+7)
+/// - index (status, scheduled_at) รองรับ worker query หลัก
+model Payout {
+  id              String    @id @default(uuid())
+  bookingId       String    @unique @map("booking_id") @db.Uuid
+  caregiverId     String    @map("caregiver_id")
+  recipientId     String?   @map("recipient_id")
+  amount          Decimal   @db.Decimal(10, 2)
+  status          String    @default("scheduled")
+  scheduledAt     DateTime  @map("scheduled_at") @db.Timestamptz(3)
+  processedAt     DateTime? @map("processed_at") @db.Timestamptz(3)
+  omiseTransferId String?   @map("omise_transfer_id")
+  retryCount      Int       @default(0) @map("retry_count")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Restrict)
+
+  @@index([status, scheduledAt])
+  @@map("payouts")
 }
 
 model CaregiverJobType {
@@ -228,6 +255,7 @@ model Booking {
   caregiver                Caregiver?      @relation(fields: [caregiverId], references: [id])
   patient                  User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   payment                  Payment?
+  payout                   Payout?
   review                   Review?
 
   @@index([caregiverId], map: "idx_bookings_caregiver")
