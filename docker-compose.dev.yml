@@ -1,0 +1,37 @@
+# Dev-only shadow database for `prisma migrate dev` (PYG-330 prep)
+#
+# Why: our real DB is Supabase, which auto-creates schema "auth" and function
+# auth.uid() at project bootstrap. Prisma's default "auto shadow" is a fresh
+# plain Postgres → auth schema is missing → replaying old migrations fails P3006.
+# See prisma/migrations/00000000000000_supabase_shadow_shim/migration.sql for
+# the tiny shim that fills the gap; this compose file just provides an empty
+# Postgres for the shim + migrations to run against.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#   # then in .env:
+#   SHADOW_DATABASE_URL="postgresql://shadow:shadow@localhost:5433/payung_shadow"
+#   npx prisma migrate dev --name <feature>
+#
+# Notes:
+# - Port 5433 (not 5432) so it does not clash with a native local Postgres.
+# - Password "shadow" is a well-known localhost-only value — no secret at risk.
+# - Volume kept so re-runs are fast; wipe with `docker compose ... down -v`
+#   if you ever suspect the shadow is stale.
+
+services:
+  shadow-db:
+    image: postgres:17
+    container_name: payung_shadow_db
+    environment:
+      POSTGRES_USER: shadow
+      POSTGRES_PASSWORD: shadow
+      POSTGRES_DB: payung_shadow
+    ports:
+      - "5433:5432"
+    volumes:
+      - shadow_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  shadow_db_data:

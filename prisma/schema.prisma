@@ -3,8 +3,13 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  // Optional shadow DB for `prisma migrate dev` (does not affect `deploy`).
+  // Points at the container in docker-compose.dev.yml. See
+  // prisma/migrations/00000000000000_supabase_shadow_shim/migration.sql for
+  // the Supabase-auth shim that lets old migrations replay against plain Postgres.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
