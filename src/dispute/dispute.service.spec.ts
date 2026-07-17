@@ -22,6 +22,8 @@ import { PaymentService } from '../payment/payment.service';
 import { DisputeService } from './dispute.service';
 import { DisputeDecision } from './entities/dispute-decision.enum';
 import { DisputeStatus } from './entities/dispute-status.enum';
+import { DisputeFiledBy } from './entities/dispute-filed-by.enum';
+import { DisputeSortBy } from './dto/dispute-sort.enum';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 
@@ -31,7 +33,10 @@ const BOOKING_ID = '00000000-0000-0000-0000-000000000001';
 const PAYMENT_ID = '00000000-0000-0000-0000-000000000099';
 
 // PYG-286: refundPayment ใหม่รับ AuthUser ไม่ใช่ string id
-const ADMIN_AUTHUSER: AuthUser = { id: ADMIN_ID, role: ROLE_ID.ADMIN } as AuthUser;
+const ADMIN_AUTHUSER: AuthUser = {
+  id: ADMIN_ID,
+  role: ROLE_ID.ADMIN,
+} as AuthUser;
 
 // reason ที่มี ≥ 20 ตัวอักษร (default ใช้ในเคสปกติ)
 const REASON_LONG = 'caregiver ไม่มาตามนัด รอเก้อทั้งวัน';
@@ -50,6 +55,8 @@ function fakeBookingRow(overrides: Record<string, unknown> = {}) {
     disputeStatus: DisputeStatus.none,
     disputeReason: null,
     disputeResolvedAt: null,
+    disputeFiledAt: null,
+    disputeFiledBy: null,
     createdAt: new Date('2026-06-01T08:00:00Z'),
     updatedAt: new Date('2026-06-02T08:00:00Z'),
     patient: { id: PATIENT_ID, displayName: 'Patient One', email: 'p1@x.test' },
@@ -113,14 +120,29 @@ describe('DisputeService', () => {
           status: 'completed',
           disputeStatus: 'none',
         })
-        .mockResolvedValueOnce(fakeBookingRow({ disputeStatus: 'flagged', disputeReason: REASON_LONG }));
+        .mockResolvedValueOnce(
+          fakeBookingRow({
+            disputeStatus: 'flagged',
+            disputeReason: REASON_LONG,
+          }),
+        );
       prisma.booking.update.mockResolvedValue({});
 
-      const result = await service.flagBookingDispute(BOOKING_ID, REASON_LONG, PATIENT_ID);
+      const result = await service.flagBookingDispute(
+        BOOKING_ID,
+        REASON_LONG,
+        PATIENT_ID,
+      );
 
+      // PYG-316: flag ต้องบันทึก filed_at (เวลาปัจจุบัน) + filed_by='customer' ด้วย
       expect(prisma.booking.update).toHaveBeenCalledWith({
         where: { id: BOOKING_ID },
-        data: { disputeStatus: 'flagged', disputeReason: REASON_LONG },
+        data: {
+          disputeStatus: 'flagged',
+          disputeReason: REASON_LONG,
+          disputeFiledAt: expect.any(Date),
+          disputeFiledBy: 'customer',
+        },
       });
       expect(result.disputeStatus).toBe(DisputeStatus.flagged);
       expect(result.disputeReason).toBe(REASON_LONG);
@@ -181,39 +203,142 @@ describe('DisputeService', () => {
   // ─── adminDisputes ───────────────────────────────────────────────────────
 
   describe('adminDisputes', () => {
-    it('Pass — default filter = flagged, pagination math correct', async () => {
-      prisma.booking.findMany.mockResolvedValue([fakeBookingRow()]);
+    it('Pass — default: all disputes (exclude none), sla_asc, maps summary + SLA', async () => {
+      const filedAt = new Date('2026-06-01T09:00:00Z');
+      prisma.booking.findMany.mockResolvedValue([
+        fakeBookingRow({
+          disputeStatus: 'flagged',
+          disputeFiledAt: filedAt,
+          disputeFiledBy: 'customer',
+        }),
+      ]);
       prisma.booking.count.mockResolvedValue(35);
 
       const result = await service.adminDisputes({});
 
+      // default where = ทุก dispute ยกเว้น 'none'; sort = filed_at asc (sla_asc)
       expect(prisma.booking.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { disputeStatus: DisputeStatus.flagged },
-          orderBy: { createdAt: 'asc' },
+          where: expect.objectContaining({
+            disputeStatus: { not: DisputeStatus.none },
+          }),
+          orderBy: { disputeFiledAt: 'asc' },
           skip: 0,
           take: 20,
         }),
       );
-      expect(result.nodes).toHaveLength(1);
       expect(result.totalCount).toBe(35);
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
       expect(result.hasNextPage).toBe(true);
+
+      // summary mapping
+      const node = result.nodes[0];
+      expect(node.id).toBe(BOOKING_ID);
+      expect(node.bookingId).toBe(BOOKING_ID);
+      expect(node.filedBy).toBe(DisputeFiledBy.customer);
+      expect(node.amount).toBe(1500);
+      expect(node.status).toBe(DisputeStatus.flagged);
+      expect(node.filedAt).toEqual(filedAt);
+      // sla_due_at = filed_at + 72h
+      expect(node.slaDueAt).toEqual(
+        new Date(filedAt.getTime() + 72 * 60 * 60 * 1000),
+      );
     });
 
-    it('Pass — filter by disputeStatus when caller provides one', async () => {
+    it('Pass — explicit status filter + pagination offset', async () => {
       prisma.booking.findMany.mockResolvedValue([]);
       prisma.booking.count.mockResolvedValue(0);
 
-      await service.adminDisputes({ disputeStatus: DisputeStatus.resolved, page: 2, limit: 5 });
+      await service.adminDisputes({
+        disputeStatus: DisputeStatus.resolved,
+        page: 2,
+        limit: 5,
+      });
 
       expect(prisma.booking.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { disputeStatus: DisputeStatus.resolved },
+          where: expect.objectContaining({
+            disputeStatus: DisputeStatus.resolved,
+          }),
           skip: 5,
           take: 5,
         }),
+      );
+    });
+
+    it('Pass — filedBy + date range → WHERE clauses', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.count.mockResolvedValue(0);
+      const dateFrom = new Date('2026-06-01T00:00:00Z');
+      const dateTo = new Date('2026-06-30T00:00:00Z');
+
+      await service.adminDisputes({
+        filedBy: DisputeFiledBy.customer,
+        dateFrom,
+        dateTo,
+      });
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            disputeFiledBy: DisputeFiledBy.customer,
+            disputeFiledAt: { gte: dateFrom, lte: dateTo },
+          }),
+        }),
+      );
+    });
+
+    it('Pass — search q (UUID) → adds id equals to OR', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.count.mockResolvedValue(0);
+
+      await service.adminDisputes({ q: BOOKING_ID });
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: expect.arrayContaining([{ id: BOOKING_ID }]),
+          }),
+        }),
+      );
+    });
+
+    it('Pass — search q (non-UUID) → name/email OR only, no id clause', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.count.mockResolvedValue(0);
+
+      await service.adminDisputes({ q: 'john' });
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            // มี clause ค้นชื่อ/อีเมล แต่ต้องไม่มี id clause (q ไม่ใช่ UUID)
+            OR: expect.arrayContaining([
+              { patient: { email: { contains: 'john', mode: 'insensitive' } } },
+            ]),
+          }),
+        }),
+      );
+      expect(prisma.booking.findMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({ id: expect.anything() }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('Pass — sortBy sla_desc → orderBy disputeFiledAt desc', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.count.mockResolvedValue(0);
+
+      await service.adminDisputes({ sortBy: DisputeSortBy.sla_desc });
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { disputeFiledAt: 'desc' } }),
       );
     });
   });
@@ -274,7 +399,13 @@ describe('DisputeService', () => {
     it('Fail — booking not found → NotFoundException', async () => {
       prisma.booking.findUnique.mockResolvedValueOnce(null);
       await expect(
-        service.resolveDispute(BOOKING_ID, DisputeDecision.no_refund, undefined, 'note', ADMIN_AUTHUSER),
+        service.resolveDispute(
+          BOOKING_ID,
+          DisputeDecision.no_refund,
+          undefined,
+          'note',
+          ADMIN_AUTHUSER,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
@@ -286,7 +417,13 @@ describe('DisputeService', () => {
         payment: { id: PAYMENT_ID, amount: { toNumber: () => 1500 } },
       });
       await expect(
-        service.resolveDispute(BOOKING_ID, DisputeDecision.refund_partial, undefined, 'note', ADMIN_AUTHUSER),
+        service.resolveDispute(
+          BOOKING_ID,
+          DisputeDecision.refund_partial,
+          undefined,
+          'note',
+          ADMIN_AUTHUSER,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -298,7 +435,13 @@ describe('DisputeService', () => {
         payment: { id: PAYMENT_ID, amount: { toNumber: () => 1500 } },
       });
       await expect(
-        service.resolveDispute(BOOKING_ID, DisputeDecision.refund_partial, 2000, 'note', ADMIN_AUTHUSER),
+        service.resolveDispute(
+          BOOKING_ID,
+          DisputeDecision.refund_partial,
+          2000,
+          'note',
+          ADMIN_AUTHUSER,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 

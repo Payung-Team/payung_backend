@@ -22,9 +22,14 @@ type AdminDashboardPayload {
 }
 
 input AdminDisputesInput {
+  dateFrom: DateTime
+  dateTo: DateTime
   disputeStatus: DisputeStatus
+  filedBy: DisputeFiledBy
   limit: Int
   page: Int
+  q: String
+  sortBy: DisputeSortBy
 }
 
 input AdminEditUserInput {
@@ -251,11 +256,18 @@ type BookingSummary {
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
   createdAt: DateTime!
+  disputeReason: String
+  disputeStatus: String
   durationHours: Float
   estimatedCost: Float
   id: ID!
   locationAddress: String!
   notes: String
+
+  """
+  PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
+  """
+  payment: Payment
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String
@@ -553,19 +565,17 @@ type DisputeBooking {
   updatedAt: DateTime!
 }
 
-type DisputeConnection {
-  hasNextPage: Boolean!
-  limit: Int!
-  nodes: [DisputeBooking!]!
-  page: Int!
-  totalCount: Int!
-}
-
 """Admin decision when resolving a booking dispute (PYG-287)"""
 enum DisputeDecision {
   no_refund
   refund_full
   refund_partial
+}
+
+"""ผู้ยื่น dispute: customer (patient) หรือ caregiver (PYG-316)"""
+enum DisputeFiledBy {
+  caregiver
+  customer
 }
 
 type DisputePartyBrief {
@@ -581,11 +591,38 @@ type DisputePaymentBrief {
   paymentStatus: PaymentStatus!
 }
 
+"""การเรียงลำดับ dispute queue — default sla_asc (ด่วนสุดก่อน) (PYG-316)"""
+enum DisputeSortBy {
+  sla_asc
+  sla_desc
+}
+
 """Status of a booking dispute (PYG-287)"""
 enum DisputeStatus {
   flagged
   none
   resolved
+}
+
+type DisputeSummary {
+  amount: Float
+  bookingId: ID!
+  caregiver: DisputePartyBrief
+  currency: String
+  filedAt: DateTime
+  filedBy: DisputeFiledBy
+  id: ID!
+  patient: DisputePartyBrief!
+  slaDueAt: DateTime
+  status: DisputeStatus!
+}
+
+type DisputeSummaryConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [DisputeSummary!]!
+  page: Int!
+  totalCount: Int!
 }
 
 input EditAdminInfoInput {
@@ -1123,9 +1160,9 @@ type Query {
   adminDashboard: AdminDashboardPayload!
 
   """
-  Admin only: Paginated dispute queue. Defaults to disputeStatus="flagged" (review queue). FIFO order.
+  Admin only: Paginated dispute queue (PYG-316). Filters: disputeStatus, dateFrom/dateTo (filed_at), filedBy, q (id / name / email). Default: all disputes (excludes "none"), sorted sla_asc (most urgent first).
   """
-  adminDisputes(input: AdminDisputesInput): DisputeConnection!
+  adminDisputes(input: AdminDisputesInput): DisputeSummaryConnection!
 
   """
   Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
