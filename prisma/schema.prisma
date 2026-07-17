@@ -137,11 +137,29 @@ model CaregiverPayoutAccount {
 /// - onDelete Restrict ทั้ง 2 FK — ห้าม cascade ลบ record การเงิน
 /// - timestamptz ทุกช่อง — worker query "scheduled_at <= now()" ต้อง tz-safe (ไทย UTC+7)
 /// - index (status, scheduled_at) รองรับ worker query หลัก
+///
+/// PYG-330 (ก้อน A2) — fee snapshot:
+///   gross_amount = payments.amount ของ booking นั้น
+///   fee_rate     = config PAYOUT_PLATFORM_FEE_RATE (default 0.10) — snapshot ลง row เสมอ
+///                  ห้าม default ระดับ DB / ห้ามคำนวณจาก env ตอน query (นโยบายเปลี่ยน = ประวัติเพี้ยน)
+///   platform_fee = round(gross_amount * fee_rate, 2) HALF_UP
+///   amount       = gross_amount - platform_fee  ← ต้องได้จาก "ลบ" เท่านั้น
+///                  (ห้าม gross * (1 - rate) แยก — ปัดเศษแล้ว sum ไม่ตรง)
+///
+/// ⚠️ DB มี CHECK constraint `payouts_amount_split_check` (Prisma ไม่ support declare)
+///    บังคับ: gross_amount = platform_fee + amount
+///        AND platform_fee >= 0
+///        AND amount >= 0
+///        AND fee_rate >= 0
+///    → โค้ดคำนวณผิด = INSERT ถูก reject ทันที (ป้องกันเงินหายทีละสตางค์)
 model Payout {
   id              String    @id @default(uuid())
   bookingId       String    @unique @map("booking_id") @db.Uuid
   caregiverId     String    @map("caregiver_id")
   recipientId     String?   @map("recipient_id")
+  grossAmount     Decimal   @map("gross_amount") @db.Decimal(10, 2)
+  feeRate         Decimal   @map("fee_rate") @db.Decimal(5, 4)
+  platformFee     Decimal   @map("platform_fee") @db.Decimal(10, 2)
   amount          Decimal   @db.Decimal(10, 2)
   status          String    @default("scheduled")
   scheduledAt     DateTime  @map("scheduled_at") @db.Timestamptz(3)
