@@ -17,6 +17,7 @@ import { CaregiverPublicModule } from './caregiver-public/caregiver-public.modul
 import { BookingModule } from './booking/booking.module';
 import { PatientModule } from './patient/patient.module';
 import { PaymentModule } from './payment/payment.module';
+import { PayoutModule } from './payout/payout.module';
 import { ReviewModule } from './review/review.module';
 import { DisputeModule } from './dispute/dispute.module';
 
@@ -66,6 +67,7 @@ import { DisputeModule } from './dispute/dispute.module';
     BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs
     PatientModule,       // Care recipients + Saved caregivers (spec rev 2)
     PaymentModule,       // PYG-277 FSM + PYG-282 admin transfer + Omise webhook
+    PayoutModule,        // PYG-330 ก้อน B: payout worker + Omise Transfer
     ReviewModule,        // PYG-297: post-service reviews (createReview/caregiverReviews/hideReview)
     DisputeModule,       // PYG-287: flag / adminDisputes / resolveDispute
   ],
