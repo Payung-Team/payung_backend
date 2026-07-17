@@ -34,6 +34,10 @@ export enum NotificationType {
   refund_issued = 'refund_issued',              // คืนเงินเรียบร้อย (→ patient)
   dispute_created = 'dispute_created',           // แจ้งปัญหาใหม่ (→ admin)
   dispute_resolved = 'dispute_resolved',        // ผลตรวจสอบปัญหา (→ patient + caregiver)
+
+  // ─── Payout lifecycle (PYG-330 ก้อน B) ────────────────────────────────
+  // ⚠️ Prisma enum มีมาตั้งแต่ PYG-306 แต่ TS enum พึ่ง sync ที่นี่ (ก่อนหน้านี้ไม่มีใครใช้)
+  payment_transferred = 'payment_transferred',  // ค่าตอบแทนโอนสำเร็จ (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

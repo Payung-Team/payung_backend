@@ -13,6 +13,8 @@
  * - createRefund(omiseChargeId, amountSatangs?) — PYG-286: คืนเงินจาก charge ที่ capture แล้ว (เต็ม/บางส่วน)
  * - createPromptPayCharge(amount) — PYG-278: สร้าง PromptPay charge (source[type]=promptpay) + คืน QR
  * - retrieveCharge(omiseChargeId) — PYG-278: GET /charges/:id สำหรับ polling / webhook reconciliation
+ * - createTransfer(amountSatangs, recipientId, idempotencyKey) — PYG-330 ก้อน B:
+ *     โอนเงินไปยัง Omise recipient (ใช้ Omise-Idempotency-Key กันโอนซ้ำ)
  *
  * Auth ของ Omise = HTTP Basic โดยใช้ secret key เป็น username, password ว่าง
  *   → header: Authorization: Basic base64("<SECRET_KEY>:")
@@ -24,6 +26,26 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CaptureFailedError } from '../errors/capture-failed.error';
 import { mapOmiseError } from '../errors/omise-error-mapper';
+
+/** PYG-330 (ก้อน B): ผลลัพธ์จาก POST /transfers */
+export type OmiseTransferResult = {
+  /** transfer id ของ Omise (เก็บลง payouts.omise_transfer_id) */
+  id: string;
+  /** สถานะ transfer หลังสร้าง — Omise ปกติคืน pending → ต้องรอ webhook ยืนยัน sent/paid */
+  status: string;
+  /** จำนวนเงิน (satangs) ตามที่ Omise บันทึก */
+  amount: number;
+  /** recipient id ที่โอนไปถึง */
+  recipient: string;
+  /** สกุลเงิน (uppercase) */
+  currency: string;
+  /** โอนสำเร็จหรือยัง */
+  sent: boolean;
+  /** เงินเข้าบัญชีปลายทางแล้วหรือยัง */
+  paid: boolean;
+  failure_code?: string;
+  failure_message?: string;
+};
 
 /** PYG-278: ผลลัพธ์จาก POST /charges กับ source[type]=promptpay (เน้นที่ QR + chargeId) */
 export type OmisePromptPayResult = {
@@ -562,6 +584,105 @@ export class OmiseService {
       captured: body.paid === true,
       paid: body.paid === true,
       authorized: body.authorized === true,
+      failure_code:
+        typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message:
+        typeof body.failure_message === 'string' ? body.failure_message : undefined,
+    };
+  }
+
+  /**
+   * createTransfer — PYG-330 (ก้อน B): โอนเงินไปยัง Omise recipient
+   *
+   * ใช้ pattern เดียวกับ createRefund:
+   *   - REST + Basic auth ผ่าน OMISE_SECRET_KEY
+   *   - Omise-Idempotency-Key = `payout:<payout.id>` (stable ต่อ payout ใบเดียว)
+   *     ถ้ายิงซ้ำด้วย key เดิม + params เดิม → Omise คืน response เดิม ไม่โอนซ้ำ
+   *   - ห้ามใส่ retryCount / timestamp ใน key (จะเสียคุณสมบัติ "อย่าเผลอโอนซ้ำ")
+   *
+   * @param amountSatangs   จำนวนเงิน (satangs, integer)
+   * @param recipientId     Omise recipient id (`recp_*`) — ต้อง verified ก่อนเรียก
+   * @param idempotencyKey  ต้องคงที่ต่อ payout (`payout:${payout.id}`)
+   * @returns Transfer object (มี `id`, `status`, `sent`, `paid`)
+   * @throws PaymentError ถ้า Omise ปฏิเสธหรือ network ติดต่อไม่ได้
+   */
+  async createTransfer(
+    amountSatangs: number,
+    recipientId: string,
+    idempotencyKey: string,
+  ): Promise<OmiseTransferResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+    if (!recipientId) {
+      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถโอนเงินได้');
+    }
+    if (!idempotencyKey) {
+      throw mapOmiseError('invalid_request', 'ต้องระบุ idempotencyKey ให้ createTransfer');
+    }
+    if (!Number.isInteger(amountSatangs) || amountSatangs <= 0) {
+      throw mapOmiseError(
+        'invalid_request',
+        `amountSatangs ต้องเป็น integer > 0 (ได้รับ ${amountSatangs})`,
+      );
+    }
+
+    const url = `${this.apiBase}/transfers`;
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    const formBody = new URLSearchParams({
+      amount: String(amountSatangs),
+      recipient: recipientId,
+    });
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Omise-Idempotency-Key': idempotencyKey,
+        },
+        body: formBody,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[Omise] createTransfer network error recipient=${recipientId}: ${message}`,
+      );
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง transfer', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createTransfer failed recipient=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode ?? 'transfer_failed', omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      status: typeof body.status === 'string' ? body.status : 'unknown',
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      recipient:
+        typeof body.recipient === 'string' ? body.recipient : recipientId,
+      currency:
+        typeof body.currency === 'string' ? body.currency.toUpperCase() : 'THB',
+      sent: body.sent === true,
+      paid: body.paid === true,
       failure_code:
         typeof body.failure_code === 'string' ? body.failure_code : undefined,
       failure_message:
