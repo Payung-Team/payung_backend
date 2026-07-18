@@ -166,14 +166,45 @@ model Payout {
   processedAt     DateTime? @map("processed_at") @db.Timestamptz(3)
   omiseTransferId String?   @map("omise_transfer_id")
   retryCount      Int       @default(0) @map("retry_count")
+  // PYG-331 (ก้อน A) — next_retry_at ใช้กับ exponential backoff ในก้อน B
+  //   worker query จะเปลี่ยนเป็น: status='scheduled' AND scheduled_at <= now()
+  //                                AND (next_retry_at IS NULL OR next_retry_at <= now())
+  //   nullable — payout ที่ยังไม่เคย fail ไม่มีค่านี้ (worker เห็นเป็น "พร้อมยิงเลย")
+  nextRetryAt     DateTime? @map("next_retry_at") @db.Timestamptz(3)
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  caregiver Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Restrict)
+  booking       Booking               @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  caregiver     Caregiver             @relation(fields: [caregiverId], references: [id], onDelete: Restrict)
+  statusHistory PayoutStatusHistory[]
 
   @@index([status, scheduledAt])
   @@map("payouts")
+}
+
+/// PYG-331 (ก้อน A) — audit log ทุก transition ของ payout
+/// mirror pattern ของ payment_status_history (PaymentStateMachine.runTransition() จะเขียนที่นี่ในก้อน B)
+///
+/// - fromStatus nullable → transition แรกตอนสร้าง payout (from = null)
+/// - changedBy nullable → null = system (auto-retry worker); userId = admin action (336/337)
+/// - onDelete Cascade ต่างจาก payouts FK (Restrict) เพราะ history เป็น log ลูกของ payout
+///   ถ้าลบ payout log ควรหายตาม ไม่ใช่ block
+/// - index (payout_id, created_at) → timeline query เรียงเวลา (337 export/reporting)
+/// - status ยังเป็น text อิสระ (ไม่มี enum) — validate ใน state machine ของก้อน B
+model PayoutStatusHistory {
+  id         String   @id @default(uuid())
+  payoutId   String   @map("payout_id")
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  changedBy  String?  @map("changed_by")
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  payout Payout @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+
+  @@index([payoutId, createdAt])
+  @@map("payout_status_history")
 }
 
 model CaregiverJobType {
