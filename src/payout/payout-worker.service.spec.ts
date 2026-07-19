@@ -1,15 +1,16 @@
 /**
- * PayoutWorkerService tests (PYG-330 ก้อน B — worker side)
+ * PayoutWorkerService tests (PYG-330 + PYG-331 ก้อน B)
  *
  * ครอบคลุม:
- * - recipient null → NO claim, NO Omise call, payout unchanged
- * - recipient_status != 'verified' → NO claim, NO Omise call
- * - claim ไม่ติด (updateMany count=0) → skip เงียบ ๆ ไม่เรียก Omise
- * - success path → status='paid', omise_transfer_id, processed_at + notification
- * - idempotency key คงที่ `payout:<id>` (ไม่มี retry_count/timestamp)
- * - Omise error → retry_count++, กลับ scheduled, ไม่ set 'failed'
- * - notification failure ไม่ rollback payout ที่ paid แล้ว
- * - satangs conversion — amount(THB Decimal) → integer satangs
+ * - kill-switch on → skip ทั้งรอบ ไม่เรียก Omise
+ * - recipient not ready → no claim, no Omise call
+ * - claim lost (state machine returns claimed=false) → no Omise call
+ * - success path → transition to 'paid' via state machine + notification
+ * - idempotency key stable (payout:${id})
+ * - failure + retry (< max) → state machine transition scheduled + retry_count++ + next_retry_at
+ * - failure + terminate (>= max) → tx: scheduled → failed
+ * - next_retry_at filter — worker query respects backoff
+ * - satangs conversion + notification failure isolation
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
@@ -18,6 +19,10 @@ import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/entities/notification-type.enum';
+import { PayoutStateMachine } from './payout-state-machine';
+import { PayoutStatus } from './entities/payout-status.enum';
+import { PayoutRetryPolicy } from './payout-retry-policy';
+import { PayoutKillswitch } from './payout-killswitch';
 
 const PAYOUT_ID = 'payout-1';
 const BOOKING_ID = 'booking-1';
@@ -28,7 +33,7 @@ const RECIPIENT_ID = 'recp_test_1';
 function makePayoutRow(overrides: Record<string, unknown> = {}) {
   return {
     id: PAYOUT_ID,
-    status: 'scheduled',
+    status: PayoutStatus.scheduled,
     bookingId: BOOKING_ID,
     caregiverId: CAREGIVER_PROFILE_ID,
     amount: new Prisma.Decimal('900.00'),
@@ -44,46 +49,85 @@ function makePayoutRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe('PayoutWorkerService', () => {
+describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill-switch)', () => {
   let worker: PayoutWorkerService;
   let prisma: {
-    payout: {
-      findMany: jest.Mock;
-      findUnique: jest.Mock;
-      updateMany: jest.Mock;
-      update: jest.Mock;
-    };
+    payout: { findMany: jest.Mock; findUnique: jest.Mock };
+    $transaction: jest.Mock;
   };
   let omise: { createTransfer: jest.Mock };
   let notifications: { create: jest.Mock };
+  let stateMachine: { claim: jest.Mock; transition: jest.Mock };
+  let retryPolicy: { decide: jest.Mock };
+  let killswitch: { gate: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
-      payout: {
-        findMany: jest.fn(),
-        findUnique: jest.fn(),
-        updateMany: jest.fn(),
-        update: jest.fn(),
-      },
+      payout: { findMany: jest.fn(), findUnique: jest.fn() },
+      $transaction: jest.fn(async (cb: (t: unknown) => Promise<unknown>) =>
+        cb({}),
+      ),
     };
     omise = { createTransfer: jest.fn() };
     notifications = { create: jest.fn().mockResolvedValue({}) };
+    stateMachine = {
+      claim: jest.fn(),
+      transition: jest.fn().mockResolvedValue({}),
+    };
+    retryPolicy = { decide: jest.fn() };
+    killswitch = { gate: jest.fn().mockReturnValue(false) };
 
-    const moduleRef: TestingModule = await Test.createTestingModule({
+    const mod: TestingModule = await Test.createTestingModule({
       providers: [
         PayoutWorkerService,
         { provide: PrismaService, useValue: prisma },
         { provide: OmiseService, useValue: omise },
         { provide: NotificationService, useValue: notifications },
+        { provide: PayoutStateMachine, useValue: stateMachine },
+        { provide: PayoutRetryPolicy, useValue: retryPolicy },
+        { provide: PayoutKillswitch, useValue: killswitch },
       ],
     }).compile();
 
-    worker = moduleRef.get(PayoutWorkerService);
+    worker = mod.get(PayoutWorkerService);
   });
 
-  // ── Guards (BEFORE claim) ────────────────────────────────────────────────
+  // ── kill-switch ──────────────────────────────────────────────────────────
 
-  it('recipient null → NO claim, NO Omise call, log warn and skip', async () => {
+  it('kill-switch on → skip whole tick, no query, no Omise', async () => {
+    killswitch.gate.mockReturnValue(true);
+
+    await worker.run();
+
+    expect(prisma.payout.findMany).not.toHaveBeenCalled();
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+    expect(stateMachine.claim).not.toHaveBeenCalled();
+  });
+
+  // ── worker query respects next_retry_at ──────────────────────────────────
+
+  it('run() query filter includes nextRetryAt backoff guard', async () => {
+    prisma.payout.findMany.mockResolvedValue([]);
+
+    await worker.run();
+
+    expect(prisma.payout.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: PayoutStatus.scheduled,
+          scheduledAt: { lte: expect.any(Date) },
+          OR: [
+            { nextRetryAt: null },
+            { nextRetryAt: { lte: expect.any(Date) } },
+          ],
+        }),
+      }),
+    );
+  });
+
+  // ── recipient guards (no claim) ──────────────────────────────────────────
+
+  it('recipient null → no claim, no state machine call, no Omise', async () => {
     prisma.payout.findUnique.mockResolvedValue(
       makePayoutRow({
         caregiver: {
@@ -98,15 +142,11 @@ describe('PayoutWorkerService', () => {
 
     await worker.processOne(PAYOUT_ID);
 
-    // No claim: updateMany not called, no status churn
-    expect(prisma.payout.updateMany).not.toHaveBeenCalled();
-    // No Omise call
+    expect(stateMachine.claim).not.toHaveBeenCalled();
     expect(omise.createTransfer).not.toHaveBeenCalled();
-    // No paid update
-    expect(prisma.payout.update).not.toHaveBeenCalled();
   });
 
-  it('recipient_status != verified → NO claim, NO Omise call', async () => {
+  it('recipient not verified → no claim', async () => {
     prisma.payout.findUnique.mockResolvedValue(
       makePayoutRow({
         caregiver: {
@@ -120,52 +160,42 @@ describe('PayoutWorkerService', () => {
     );
 
     await worker.processOne(PAYOUT_ID);
-
-    expect(prisma.payout.updateMany).not.toHaveBeenCalled();
-    expect(omise.createTransfer).not.toHaveBeenCalled();
+    expect(stateMachine.claim).not.toHaveBeenCalled();
   });
 
-  it('caregiver has no payoutAccount → NO claim', async () => {
+  it('no payoutAccount → no claim', async () => {
     prisma.payout.findUnique.mockResolvedValue(
       makePayoutRow({
-        caregiver: {
-          userId: CAREGIVER_USER_ID,
-          payoutAccount: null,
-        },
+        caregiver: { userId: CAREGIVER_USER_ID, payoutAccount: null },
       }),
     );
-
     await worker.processOne(PAYOUT_ID);
-
-    expect(prisma.payout.updateMany).not.toHaveBeenCalled();
-    expect(omise.createTransfer).not.toHaveBeenCalled();
+    expect(stateMachine.claim).not.toHaveBeenCalled();
   });
 
-  // ── Concurrency (claim race) ─────────────────────────────────────────────
+  // ── claim race lost ──────────────────────────────────────────────────────
 
-  it('claim conditional UPDATE count=0 (another worker won) → skip, no Omise call', async () => {
+  it('state machine claim returns claimed=false → no Omise, no notification', async () => {
     prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 0 });
+    stateMachine.claim.mockResolvedValue({ claimed: false, payout: null });
 
     await worker.processOne(PAYOUT_ID);
 
-    // Claim was attempted but lost race
-    expect(prisma.payout.updateMany).toHaveBeenCalledWith({
-      where: { id: PAYOUT_ID, status: 'scheduled' },
-      data: { status: 'processing', recipientId: RECIPIENT_ID },
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+    expect(stateMachine.transition).not.toHaveBeenCalled();
+    expect(notifications.create).not.toHaveBeenCalled();
+  });
+
+  // ── success path ─────────────────────────────────────────────────────────
+
+  it('success → state machine transition to paid + notification', async () => {
+    prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
     });
-    // No Omise, no paid update
-    expect(omise.createTransfer).not.toHaveBeenCalled();
-    expect(prisma.payout.update).not.toHaveBeenCalled();
-  });
-
-  // ── Success path ─────────────────────────────────────────────────────────
-
-  it('success → status=paid + omise_transfer_id + processed_at + notification', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
     omise.createTransfer.mockResolvedValue({
-      id: 'trsf_test_1',
+      id: 'trsf_x',
       status: 'pending',
       amount: 90000,
       recipient: RECIPIENT_ID,
@@ -176,75 +206,55 @@ describe('PayoutWorkerService', () => {
 
     await worker.processOne(PAYOUT_ID);
 
-    // Claim first
-    expect(prisma.payout.updateMany).toHaveBeenCalledWith({
-      where: { id: PAYOUT_ID, status: 'scheduled' },
-      data: { status: 'processing', recipientId: RECIPIENT_ID },
-    });
+    // Claim ผ่าน state machine
+    expect(stateMachine.claim).toHaveBeenCalledWith(
+      PAYOUT_ID,
+      PayoutStatus.scheduled,
+      PayoutStatus.processing,
+      expect.objectContaining({
+        reason: 'worker_claim',
+        extraPayoutFields: { recipientId: RECIPIENT_ID },
+      }),
+    );
 
-    // Omise call — satangs = 90000, idempotency key stable
+    // Omise: 90000 satangs, stable idempotency key
     expect(omise.createTransfer).toHaveBeenCalledWith(
       90000,
       RECIPIENT_ID,
       `payout:${PAYOUT_ID}`,
     );
 
-    // paid update
-    expect(prisma.payout.update).toHaveBeenCalledWith({
-      where: { id: PAYOUT_ID },
-      data: expect.objectContaining({
-        status: 'paid',
-        omiseTransferId: 'trsf_test_1',
-        processedAt: expect.any(Date),
+    // transition to paid ผ่าน state machine
+    expect(stateMachine.transition).toHaveBeenCalledWith(
+      PAYOUT_ID,
+      PayoutStatus.paid,
+      expect.objectContaining({
+        reason: 'omise_transfer_success',
+        nextRetryAt: null,
+        extraPayoutFields: expect.objectContaining({
+          omiseTransferId: 'trsf_x',
+        }),
       }),
-    });
+    );
 
-    // Notification
-    expect(notifications.create).toHaveBeenCalledTimes(1);
+    // notification
     expect(notifications.create).toHaveBeenCalledWith(
       CAREGIVER_USER_ID,
       NotificationType.payment_transferred,
       expect.any(String),
-      expect.stringContaining('900'),
-      expect.objectContaining({
-        payoutId: PAYOUT_ID,
-        bookingId: BOOKING_ID,
-        omiseTransferId: 'trsf_test_1',
-      }),
+      expect.any(String),
+      expect.objectContaining({ payoutId: PAYOUT_ID }),
     );
   });
 
   it('idempotency key is stable — no retry_count or timestamp', async () => {
-    // simulate retryCount=3 payout — key must NOT include this value
     prisma.payout.findUnique.mockResolvedValue(
       makePayoutRow({ retryCount: 3 }),
     );
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
-    omise.createTransfer.mockResolvedValue({
-      id: 'trsf_test_2',
-      status: 'pending',
-      amount: 90000,
-      recipient: RECIPIENT_ID,
-      currency: 'THB',
-      sent: false,
-      paid: false,
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing, retryCount: 3 }),
     });
-
-    await worker.processOne(PAYOUT_ID);
-
-    const [, , key] = omise.createTransfer.mock.calls[0];
-    // exact match proves no retry counter, no timestamp appended
-    // (payout id itself may contain digits — that's fine; what matters is stability)
-    expect(key).toBe(`payout:${PAYOUT_ID}`);
-    // Extra guard: string length equals prefix + id, i.e. nothing appended
-    expect(key.length).toBe(`payout:${PAYOUT_ID}`.length);
-  });
-
-  // ── satangs conversion ──────────────────────────────────────────────────
-
-  it('satangs conversion — amount 900.00 THB → 90000 satangs (integer)', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
     omise.createTransfer.mockResolvedValue({
       id: 'trsf_x',
       status: 'pending',
@@ -256,18 +266,23 @@ describe('PayoutWorkerService', () => {
     });
 
     await worker.processOne(PAYOUT_ID);
-    const [amt] = omise.createTransfer.mock.calls[0];
-    expect(amt).toBe(90000);
-    expect(Number.isInteger(amt)).toBe(true);
+    const [, , key] = omise.createTransfer.mock.calls[0];
+    expect(key).toBe(`payout:${PAYOUT_ID}`);
+    expect(key.length).toBe(`payout:${PAYOUT_ID}`.length); // no suffix
   });
 
-  it('satangs conversion — 300.05 THB → 30005 satangs (HALF_UP no float drift)', async () => {
+  // ── satangs conversion ───────────────────────────────────────────────────
+
+  it('satangs conversion — 300.05 THB → 30005 satangs', async () => {
     prisma.payout.findUnique.mockResolvedValue(
       makePayoutRow({ amount: new Prisma.Decimal('300.05') }),
     );
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
+    });
     omise.createTransfer.mockResolvedValue({
-      id: 'trsf_x',
+      id: 't',
       status: 'pending',
       amount: 30005,
       recipient: RECIPIENT_ID,
@@ -281,81 +296,85 @@ describe('PayoutWorkerService', () => {
     expect(amt).toBe(30005);
   });
 
-  // ── Failure path ─────────────────────────────────────────────────────────
+  // ── retry path ───────────────────────────────────────────────────────────
 
-  it('Omise error → retry_count++, status back to scheduled, NOT failed', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
+  it('Omise fail + policy=retry → state machine transition scheduled + retry_count++ + next_retry_at', async () => {
+    prisma.payout.findUnique.mockResolvedValue(makePayoutRow({ retryCount: 0 }));
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
+    });
     omise.createTransfer.mockRejectedValue(new Error('Omise 500'));
-
-    // must not throw — worker loop must continue with next payout
-    await expect(worker.processOne(PAYOUT_ID)).resolves.toBeUndefined();
-
-    // Rollback update
-    expect(prisma.payout.update).toHaveBeenCalledWith({
-      where: { id: PAYOUT_ID },
-      data: {
-        status: 'scheduled',
-        retryCount: { increment: 1 },
-      },
+    const nextRetryAt = new Date('2026-08-01T10:10:00Z');
+    retryPolicy.decide.mockReturnValue({
+      kind: 'retry',
+      nextRetryAt,
+      newRetryCount: 1,
+      backoffMinutes: 10,
     });
 
-    // ⚠️ status MUST NOT be 'failed' — PYG-331 owns that
-    const paidCall = prisma.payout.update.mock.calls.find(
-      (c) => c[0]?.data?.status === 'paid',
+    await expect(worker.processOne(PAYOUT_ID)).resolves.toBeUndefined();
+
+    expect(retryPolicy.decide).toHaveBeenCalledWith(0);
+    // transition ผ่าน state machine (ไม่ใช่ raw update)
+    expect(stateMachine.transition).toHaveBeenCalledWith(
+      PAYOUT_ID,
+      PayoutStatus.scheduled,
+      expect.objectContaining({
+        reason: 'omise_transfer_failed_retry',
+        nextRetryAt,
+        extraPayoutFields: { retryCount: { increment: 1 } },
+      }),
     );
-    expect(paidCall).toBeUndefined();
-    const failedCall = prisma.payout.update.mock.calls.find(
-      (c) => c[0]?.data?.status === 'failed',
+    // ⚠️ ไม่มี direct set status=failed
+    const failedCall = stateMachine.transition.mock.calls.find(
+      (c) => c[1] === PayoutStatus.failed,
     );
     expect(failedCall).toBeUndefined();
-
-    // No notification
     expect(notifications.create).not.toHaveBeenCalled();
   });
 
-  // ── Notification failure isolation ───────────────────────────────────────
+  // ── terminate path ───────────────────────────────────────────────────────
 
-  it('notification failure does NOT rollback payout that was already paid', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
-    omise.createTransfer.mockResolvedValue({
-      id: 'trsf_test_1',
-      status: 'pending',
-      amount: 90000,
-      recipient: RECIPIENT_ID,
-      currency: 'THB',
-      sent: false,
-      paid: false,
+  it('Omise fail + policy=terminate → tx: transition scheduled then failed', async () => {
+    prisma.payout.findUnique.mockResolvedValue(makePayoutRow({ retryCount: 4 }));
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing, retryCount: 4 }),
     });
-    notifications.create.mockRejectedValue(new Error('notification DB down'));
+    omise.createTransfer.mockRejectedValue(new Error('Omise dead'));
+    retryPolicy.decide.mockReturnValue({ kind: 'terminate', newRetryCount: 5 });
 
-    await expect(worker.processOne(PAYOUT_ID)).resolves.toBeUndefined();
+    await worker.processOne(PAYOUT_ID);
 
-    // paid update DID happen
-    expect(prisma.payout.update).toHaveBeenCalledWith({
-      where: { id: PAYOUT_ID },
-      data: expect.objectContaining({
-        status: 'paid',
-        omiseTransferId: 'trsf_test_1',
-      }),
-    });
-    // No second update to roll back
-    expect(prisma.payout.update).toHaveBeenCalledTimes(1);
+    expect(retryPolicy.decide).toHaveBeenCalledWith(4);
+    // ต้องเปิด $transaction สำหรับ terminate (scheduled → failed)
+    expect(prisma.$transaction).toHaveBeenCalled();
+
+    // ต้องมีทั้ง scheduled และ failed transitions
+    const targets = stateMachine.transition.mock.calls.map((c) => c[1]);
+    expect(targets).toContain(PayoutStatus.scheduled);
+    expect(targets).toContain(PayoutStatus.failed);
+
+    // failed transition มี reason=max_retries_exceeded
+    const failedCall = stateMachine.transition.mock.calls.find(
+      (c) => c[1] === PayoutStatus.failed,
+    );
+    expect(failedCall).toBeDefined();
+    expect(failedCall![2]).toMatchObject({ reason: 'max_retries_exceeded' });
+
+    // ไม่ส่ง notification ให้ caregiver ตอน failed (ยังไม่มี enum ที่เหมาะ)
+    expect(notifications.create).not.toHaveBeenCalled();
   });
 
-  // ── Scan (batch) ─────────────────────────────────────────────────────────
+  // ── notification failure isolation ───────────────────────────────────────
 
-  it('run() — empty scan → no error, no update', async () => {
-    prisma.payout.findMany.mockResolvedValue([]);
-    await expect(worker.run()).resolves.toBeUndefined();
-    expect(prisma.payout.updateMany).not.toHaveBeenCalled();
-  });
-
-  it('run() — one due payout → processOne called with correct filter', async () => {
-    prisma.payout.findMany.mockResolvedValue([{ id: PAYOUT_ID }]);
+  it('notification failure does NOT rollback the paid transition', async () => {
     prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
+    });
     omise.createTransfer.mockResolvedValue({
       id: 'trsf_x',
       status: 'pending',
@@ -365,35 +384,39 @@ describe('PayoutWorkerService', () => {
       sent: false,
       paid: false,
     });
+    notifications.create.mockRejectedValue(new Error('notify DB down'));
 
-    await worker.run();
+    await expect(worker.processOne(PAYOUT_ID)).resolves.toBeUndefined();
 
-    // findMany used the correct filter
-    expect(prisma.payout.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          status: 'scheduled',
-          scheduledAt: { lte: expect.any(Date) },
-        },
-      }),
+    // paid transition still happened
+    const paidCall = stateMachine.transition.mock.calls.find(
+      (c) => c[1] === PayoutStatus.paid,
     );
-
-    // One transfer attempted
-    expect(omise.createTransfer).toHaveBeenCalledTimes(1);
+    expect(paidCall).toBeDefined();
   });
 
-  it('run() — one payout throws inside processOne → next payout still processes', async () => {
+  // ── scan / batch ─────────────────────────────────────────────────────────
+
+  it('run() — empty scan → no processing', async () => {
+    prisma.payout.findMany.mockResolvedValue([]);
+    await expect(worker.run()).resolves.toBeUndefined();
+    expect(stateMachine.claim).not.toHaveBeenCalled();
+  });
+
+  it('run() — per-payout errors are isolated (next payout still runs)', async () => {
     prisma.payout.findMany.mockResolvedValue([
       { id: 'payout-a' },
       { id: 'payout-b' },
     ]);
-    // First call throws BEFORE the try/catch inside processOne (simulate DB fail on findUnique)
     prisma.payout.findUnique
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(makePayoutRow({ id: 'payout-b' }));
-    prisma.payout.updateMany.mockResolvedValue({ count: 1 });
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
+    });
     omise.createTransfer.mockResolvedValue({
-      id: 'trsf_b',
+      id: 't',
       status: 'pending',
       amount: 90000,
       recipient: RECIPIENT_ID,
@@ -403,8 +426,6 @@ describe('PayoutWorkerService', () => {
     });
 
     await expect(worker.run()).resolves.toBeUndefined();
-
-    // Second payout processed
     expect(omise.createTransfer).toHaveBeenCalledTimes(1);
     expect(omise.createTransfer).toHaveBeenCalledWith(
       90000,

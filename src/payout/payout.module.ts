@@ -17,11 +17,21 @@ import { NotificationModule } from '../notification/notification.module';
 import { PayoutService } from './payout.service';
 import { PayoutWorkerService } from './payout-worker.service';
 import { PayoutCreationListener } from './listeners/payout-creation.listener';
+import { PayoutStateMachine } from './payout-state-machine';
+import { PayoutRetryPolicy } from './payout-retry-policy';
+import { PayoutKillswitch } from './payout-killswitch';
+import { PayoutReaperService } from './payout-reaper.service';
 
 @Module({
   imports: [PaymentModule, NotificationModule],
   providers: [
     PrismaService,
+    // PYG-331: state machine + retry + kill-switch + reaper
+    PayoutStateMachine,
+    PayoutRetryPolicy,
+    PayoutKillswitch,
+    PayoutReaperService,
+    // Existing (PYG-330)
     PayoutService,
     PayoutWorkerService,
     PayoutCreationListener,

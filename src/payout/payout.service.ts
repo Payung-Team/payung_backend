@@ -20,6 +20,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { PayoutStateMachine } from './payout-state-machine';
+import { PayoutStatus } from './entities/payout-status.enum';
 
 @Injectable()
 export class PayoutService {
@@ -28,6 +30,8 @@ export class PayoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    // PYG-331: สร้าง payout + log initial history อยู่ใน tx เดียวกัน (atomic)
+    private readonly stateMachine: PayoutStateMachine,
   ) {}
 
   /**
@@ -113,23 +117,45 @@ export class PayoutService {
       booking.completedAt.getTime() + holdWindowDays * 24 * 60 * 60 * 1000,
     );
 
-    // ── 4. INSERT — booking_id UNIQUE = DB-level idempotency ──────────────
+    // ── 4. INSERT + initial history — atomic ($transaction เดียว) ─────────
+    // PYG-331: create + recordInitialStatus(null → scheduled) ต้องอยู่ tx เดียวกัน
+    // ไม่งั้นถ้า create สำเร็จแต่ history fail จะได้ payout ที่ไม่มี audit ตั้งแต่แรก
     try {
-      await this.prisma.payout.create({
-        data: {
-          bookingId,
-          caregiverId: booking.caregiverId,
-          grossAmount,
-          feeRate,
-          platformFee,
-          amount,
-          scheduledAt,
-          // status='scheduled', retryCount=0 มาจาก @default() ใน schema
-        },
+      const created = await this.prisma.$transaction(async (tx) => {
+        const p = await tx.payout.create({
+          data: {
+            bookingId,
+            caregiverId: booking.caregiverId!,
+            grossAmount,
+            feeRate,
+            platformFee,
+            amount,
+            scheduledAt,
+            // status='scheduled', retryCount=0 มาจาก @default() ใน schema
+          },
+        });
+
+        await this.stateMachine.recordInitialStatus(
+          p.id,
+          PayoutStatus.scheduled,
+          {
+            reason: 'created_from_booking_completed',
+            metadata: {
+              bookingId,
+              grossAmount: grossAmount.toString(),
+              platformFee: platformFee.toString(),
+              amount: amount.toString(),
+              feeRate: feeRate.toString(),
+            },
+          },
+          tx,
+        );
+
+        return p;
       });
 
       this.logger.log(
-        `[PayoutService] created payout for booking=${bookingId} caregiver=${booking.caregiverId} gross=${grossAmount.toString()} fee=${platformFee.toString()} net=${amount.toString()} scheduledAt=${scheduledAt.toISOString()}`,
+        `[PayoutService] created payout=${created.id} for booking=${bookingId} caregiver=${booking.caregiverId} gross=${grossAmount.toString()} fee=${platformFee.toString()} net=${amount.toString()} scheduledAt=${scheduledAt.toISOString()}`,
       );
     } catch (err) {
       if (
