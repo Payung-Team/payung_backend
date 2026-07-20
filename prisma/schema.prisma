@@ -297,6 +297,10 @@ model Booking {
   disputeStatus            String          @default("none") @map("dispute_status") @db.VarChar(20)
   disputeReason            String?         @map("dispute_reason")
   disputeResolvedAt        DateTime?       @map("dispute_resolved_at") @db.Timestamptz(6)
+  // PYG-316: when the dispute was filed (set on flag) — powers SLA calc, date filters & SLA sort
+  disputeFiledAt           DateTime?       @map("dispute_filed_at") @db.Timestamptz(6)
+  // PYG-316: who filed the dispute — 'customer' | 'caregiver' (only patients can file today)
+  disputeFiledBy           String?         @map("dispute_filed_by") @db.VarChar(20)
   patientName              String?         @map("patient_name")
   completedAt              DateTime?       @map("completed_at") @db.Timestamptz(6)
   booking_tasks            booking_tasks[]
@@ -312,6 +316,8 @@ model Booking {
   @@index([patientId], map: "idx_bookings_patient")
   @@index([status], map: "idx_bookings_status")
   @@index([disputeStatus], map: "idx_bookings_dispute_status")
+  // PYG-316: composite index for the admin dispute queue — filter by status + sort by SLA (filedAt)
+  @@index([disputeStatus, disputeFiledAt], map: "idx_bookings_dispute_queue")
   @@map("bookings")
 }
 

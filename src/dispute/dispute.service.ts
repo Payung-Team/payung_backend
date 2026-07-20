@@ -6,6 +6,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentService } from '../payment/payment.service';
 import { PaymentStatusEnum } from '../payment/dto/payment.type';
@@ -13,8 +14,14 @@ import { AuthUser } from '../common/decorators/current-user.decorator';
 import { DisputeBooking } from './entities/dispute-booking.entity';
 import { DisputeStatus } from './entities/dispute-status.enum';
 import { DisputeDecision } from './entities/dispute-decision.enum';
-import { DisputeConnection } from './dto/dispute-connection.type';
 import { AdminDisputesInput } from './dto/admin-disputes.input';
+import {
+  DisputeSummary,
+  DisputeSummaryConnection,
+} from './dto/dispute-summary.type';
+import { DisputeFiledBy } from './entities/dispute-filed-by.enum';
+import { DisputeSortBy } from './dto/dispute-sort.enum';
+import { DISPUTE_SLA_HOURS, DISPUTE_FILED_BY } from './dispute.constants';
 
 // shape ที่ Prisma คืนจาก findUnique/findMany พร้อม include
 type PrismaBookingWithRelations = {
@@ -30,6 +37,8 @@ type PrismaBookingWithRelations = {
   disputeStatus: string;
   disputeReason: string | null;
   disputeResolvedAt: Date | null;
+  disputeFiledAt: Date | null;
+  disputeFiledBy: string | null;
   createdAt: Date;
   updatedAt: Date;
   patient: { id: string; displayName: string | null; email: string };
@@ -82,7 +91,9 @@ export class DisputeService {
     }
     // length ≥ 20 — เซฟไว้ทั้งฝั่ง DTO (class-validator) และ service (กัน edge ที่บายพาส)
     if (reason.trim().length < 20) {
-      throw new BadRequestException('reason ต้องมีความยาวอย่างน้อย 20 ตัวอักษร');
+      throw new BadRequestException(
+        'reason ต้องมีความยาวอย่างน้อย 20 ตัวอักษร',
+      );
     }
 
     await this.prisma.booking.update({
@@ -90,6 +101,9 @@ export class DisputeService {
       data: {
         disputeStatus: DisputeStatus.flagged,
         disputeReason: reason,
+        // PYG-316: บันทึกเวลา + ผู้ยื่นตอน flag → ใช้คำนวณ SLA และ filter ใน admin queue
+        disputeFiledAt: new Date(),
+        disputeFiledBy: DISPUTE_FILED_BY.CUSTOMER, // ตอนนี้มีแต่ patient (customer) ที่ flag ได้
       },
     });
 
@@ -107,19 +121,69 @@ export class DisputeService {
 
   // ── 2. admin paginated dispute queue ────────────────────────────────────
 
-  async adminDisputes(input: AdminDisputesInput): Promise<DisputeConnection> {
+  async adminDisputes(
+    input: AdminDisputesInput,
+  ): Promise<DisputeSummaryConnection> {
     const page = Math.max(1, input.page ?? 1);
     const limit = Math.min(100, Math.max(1, input.limit ?? 20));
-    const status = input.disputeStatus ?? DisputeStatus.flagged;
     const offset = (page - 1) * limit;
 
-    const where = { disputeStatus: status };
+    // ── build WHERE จาก filter ต่าง ๆ ────────────────────────────────────
+    const where: Prisma.BookingWhereInput = {};
+
+    // status: ระบุมา → filter ตามนั้น; ไม่ระบุ → ทุก dispute (flagged + resolved, ยกเว้น 'none')
+    where.disputeStatus = input.disputeStatus
+      ? input.disputeStatus
+      : { not: DisputeStatus.none };
+
+    // filed_by: customer | caregiver
+    if (input.filedBy) {
+      where.disputeFiledBy = input.filedBy;
+    }
+
+    // date range บน filed_at (dispute_filed_at): date_from = ตั้งแต่, date_to = ถึง
+    if (input.dateFrom || input.dateTo) {
+      where.disputeFiledAt = {
+        ...(input.dateFrom ? { gte: input.dateFrom } : {}),
+        ...(input.dateTo ? { lte: input.dateTo } : {}),
+      };
+    }
+
+    // search q: dispute/booking id (UUID) หรือ ชื่อ/อีเมล ของ patient/caregiver
+    const q = input.q?.trim();
+    if (q) {
+      const or: Prisma.BookingWhereInput[] = [
+        { patient: { displayName: { contains: q, mode: 'insensitive' } } },
+        { patient: { email: { contains: q, mode: 'insensitive' } } },
+        {
+          caregiver: {
+            user: { displayName: { contains: q, mode: 'insensitive' } },
+          },
+        },
+        {
+          caregiver: { user: { email: { contains: q, mode: 'insensitive' } } },
+        },
+      ];
+      // id เป็น UUID column → LIKE ไม่ได้; ใส่ equals เฉพาะตอน q เป็น UUID ที่ถูกต้อง
+      // (กัน Postgres error "invalid input syntax for type uuid")
+      if (this.isUuid(q)) {
+        or.push({ id: q });
+      }
+      where.OR = or;
+    }
+
+    // ── sort: default sla_asc (ด่วนสุด = filed เก่าสุดก่อน) ─────────────────
+    // SLA = filed_at + ค่าคงที่ → เรียงตาม SLA = เรียงตาม filed_at
+    const sortBy = input.sortBy ?? DisputeSortBy.sla_asc;
+    const orderBy: Prisma.BookingOrderByWithRelationInput = {
+      disputeFiledAt: sortBy === DisputeSortBy.sla_desc ? 'desc' : 'asc',
+    };
 
     const [items, totalCount] = await Promise.all([
       this.prisma.booking.findMany({
         where,
         include: this.disputeInclude(),
-        orderBy: { createdAt: 'asc' }, // FIFO — เก่าสุดก่อน
+        orderBy,
         skip: offset,
         take: limit,
       }),
@@ -127,7 +191,9 @@ export class DisputeService {
     ]);
 
     return {
-      nodes: (items as unknown as PrismaBookingWithRelations[]).map((b) => this.toGql(b)),
+      nodes: (items as unknown as PrismaBookingWithRelations[]).map((b) =>
+        this.toSummary(b),
+      ),
       totalCount,
       page,
       limit,
@@ -181,7 +247,9 @@ export class DisputeService {
       );
     } else if (decision === DisputeDecision.refund_partial) {
       if (refundAmount == null) {
-        throw new BadRequestException('refundAmount จำเป็นสำหรับ refund_partial');
+        throw new BadRequestException(
+          'refundAmount จำเป็นสำหรับ refund_partial',
+        );
       }
       const fullAmount =
         typeof (booking.payment!.amount as any).toNumber === 'function'
@@ -241,6 +309,45 @@ export class DisputeService {
     };
   }
 
+  // PYG-316: sla_due_at = filed_at + DISPUTE_SLA_HOURS (undefined ถ้ายังไม่มี filed_at)
+  private computeSlaDueAt(filedAt: Date | null): Date | undefined {
+    if (!filedAt) return undefined;
+    return new Date(filedAt.getTime() + DISPUTE_SLA_HOURS * 60 * 60 * 1000);
+  }
+
+  // ตรวจว่า string เป็น UUID หรือไม่ — กัน Postgres error ตอน filter id (uuid) ด้วยค่าที่ไม่ใช่ UUID
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    );
+  }
+
+  // PYG-316: map booking row → DisputeSummary (1 แถวใน admin queue)
+  private toSummary(b: PrismaBookingWithRelations): DisputeSummary {
+    return {
+      id: b.id,
+      bookingId: b.id, // dispute id = booking id (dispute ผูกกับ booking 1:1)
+      filedBy: (b.disputeFiledBy as DisputeFiledBy) ?? undefined,
+      amount: b.payment ? b.payment.amount.toNumber() : undefined,
+      currency: b.payment?.currency,
+      status: b.disputeStatus as DisputeStatus,
+      filedAt: b.disputeFiledAt ?? undefined,
+      slaDueAt: this.computeSlaDueAt(b.disputeFiledAt),
+      patient: {
+        id: b.patient.id,
+        displayName: b.patient.displayName ?? undefined,
+        email: b.patient.email,
+      },
+      caregiver: b.caregiver
+        ? {
+            id: b.caregiver.user.id,
+            displayName: b.caregiver.user.displayName ?? undefined,
+            email: b.caregiver.user.email,
+          }
+        : undefined,
+    };
+  }
+
   private async getDisputeBooking(bookingId: string): Promise<DisputeBooking> {
     const row = await this.prisma.booking.findUnique({
       where: { id: bookingId },
@@ -261,7 +368,8 @@ export class DisputeService {
       serviceType: b.serviceType,
       timeSlot: b.timeSlot,
       locationAddress: b.locationAddress,
-      estimatedCost: b.estimatedCost != null ? b.estimatedCost.toNumber() : undefined,
+      estimatedCost:
+        b.estimatedCost != null ? b.estimatedCost.toNumber() : undefined,
       disputeStatus: b.disputeStatus as DisputeStatus,
       disputeReason: b.disputeReason ?? undefined,
       disputeResolvedAt: b.disputeResolvedAt ?? undefined,
