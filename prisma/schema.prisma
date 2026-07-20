@@ -179,6 +179,8 @@ model Payout {
   statusHistory PayoutStatusHistory[]
 
   @@index([status, scheduledAt])
+  // PYG-333: index รองรับ admin transactions list (default sort created_desc + date-range filter)
+  @@index([createdAt], map: "idx_payouts_created_at")
   @@map("payouts")
 }
 
@@ -493,6 +495,8 @@ model Payment {
 
   @@index([patientId], map: "idx_payments_patient")
   @@index([paymentStatus], map: "idx_payments_status")
+  // PYG-333: index รองรับ admin transactions list (default sort created_desc + date-range filter)
+  @@index([createdAt], map: "idx_payments_created_at")
   @@map("payments")
 }
 
