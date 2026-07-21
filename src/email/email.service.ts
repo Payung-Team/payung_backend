@@ -191,9 +191,9 @@ export class EmailService {
   }
 
   /**
-   * Booking lifecycle email (PYG-292) — ใช้กับทุก event ที่ต้องส่งอีเมล
+   * Booking lifecycle email — generic template (fallback เท่านั้น)
    *
-   * เรียกจาก BookingNotificationListener ด้วยเนื้อหาเดียวกับ in-app notification
+   * เรียกจาก BookingNotificationListener เมื่อ event ยังไม่มีใน BOOKING_EMAIL_TEMPLATES
    * - เช็ค emailPreferences ผ่าน fetchUser (ปิดรับ → ข้าม ไม่ throw)
    * - SMTP error ก็ไม่ throw (จัดการใน send) → ไม่ทำ business flow พัง
    *
@@ -222,6 +222,31 @@ export class EmailService {
       ctaLabel: params.ctaLabel,
     });
 
+    await this.send(user.email, tpl);
+  }
+
+  /**
+   * Booking lifecycle email — รับ per-event template builder closure
+   *
+   * เปิดให้ listener เลือก template เอง (knows event/role) — EmailService
+   * แค่จัดการ fetchUser + emailPreferences + SMTP เหมือนเดิม ไม่ bypass guardrail
+   *
+   * Build callback รับ {recipientName, frontendUrl} → return EmailTemplate
+   * เพื่อให้ template render ภายใน scope ของ EmailService (FE base URL คุมที่นี่)
+   */
+  async sendBookingEmail(
+    userId: string,
+    build: (params: {
+      recipientName: string | null;
+      frontendUrl: string;
+    }) => EmailTemplate,
+  ): Promise<void> {
+    const user = await this.fetchUser(userId);
+    if (!user) return;
+    const tpl = build({
+      recipientName: user.displayName,
+      frontendUrl: this.frontendUrl,
+    });
     await this.send(user.email, tpl);
   }
 
