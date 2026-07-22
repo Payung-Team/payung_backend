@@ -1079,6 +1079,7 @@ enum NotificationType {
   kyc_verified
   payment_captured
   payment_held
+  payment_transferred
   payment_voided
   refund_issued
 }
