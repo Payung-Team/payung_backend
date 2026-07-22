@@ -34,6 +34,8 @@ export const BOOKING_EVENTS = {
   REFUND_ISSUED: 'refund.issued',
   DISPUTE_CREATED: 'dispute.created',
   DISPUTE_RESOLVED: 'dispute.resolved',
+  // PYG-266: admin โอนเงินให้ caregiver ผ่าน Omise Transfer สำเร็จ
+  PAYMENT_TRANSFERRED: 'payment.transferred',
 } as const;
 
 /** union ของชื่อ event (derive จาก BOOKING_EVENTS — เพิ่มที่เดียวพอ) */

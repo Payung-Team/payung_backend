@@ -79,6 +79,21 @@ export type OmiseRefundResult = {
   voided: boolean;
 };
 
+/** PYG-266: ผลลัพธ์จาก POST/GET /recipients (เอาเฉพาะ field ที่ต้องใช้ต่อ) */
+export type OmiseRecipientResult = {
+  /** recipient id ของ Omise (เก็บใน caregiver_payout_accounts.omise_recipient_id) */
+  id: string;
+  /** Omise ยืนยันบัญชีนี้แล้วหรือยัง (recipient.verified webhook เปลี่ยนค่านี้) */
+  verified: boolean;
+  /** recipient พร้อมรับโอนไหม (Omise-side active flag) */
+  active: boolean;
+  bankAccount: {
+    brand: string;
+    lastDigits: string;
+    name: string;
+  };
+};
+
 /** ผลลัพธ์ที่ normalize แล้วจากการ capture (เอาเฉพาะ field ที่เราต้องใช้ต่อ) */
 export type OmiseCaptureResult = {
   /** charge id ของ Omise */
@@ -710,5 +725,138 @@ export class OmiseService {
       failure_message:
         typeof body.failure_message === 'string' ? body.failure_message : undefined,
     };
+  }
+
+  /** แปลง raw Omise recipient response object → OmiseRecipientResult ที่ normalize แล้ว */
+  private normalizeRecipient(body: Record<string, unknown>): OmiseRecipientResult {
+    const bankAccount = (body.bank_account ?? {}) as Record<string, unknown>;
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      verified: body.verified === true,
+      active: body.active === true,
+      bankAccount: {
+        brand: typeof bankAccount.brand === 'string' ? bankAccount.brand : '',
+        lastDigits: typeof bankAccount.last_digits === 'string' ? bankAccount.last_digits : '',
+        name: typeof bankAccount.name === 'string' ? bankAccount.name : '',
+      },
+    };
+  }
+
+  /**
+   * createRecipient — PYG-266: สร้าง Omise Recipient (type=individual) สำหรับ caregiver
+   *
+   * @param params.name          - ชื่อบัญชี (accountName ที่ caregiver กรอก)
+   * @param params.email         - อีเมลของ caregiver (Omise ต้องการสำหรับ type=individual)
+   * @param params.bankCode      - bank_account.brand (เช่น 'kbank', 'scb')
+   * @param params.accountNumber - เลขบัญชี (plaintext — decrypt แล้วก่อนเรียกฟังก์ชันนี้)
+   * @param params.accountName   - ชื่อเจ้าของบัญชี (bank_account.name)
+   * @throws PaymentError ถ้า Omise ปฏิเสธหรือ network ติดต่อไม่ได้
+   */
+  async createRecipient(params: {
+    name: string;
+    email: string;
+    bankCode: string;
+    accountNumber: string;
+    accountName: string;
+  }): Promise<OmiseRecipientResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+
+    const url = `${this.apiBase}/recipients`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          type: 'individual',
+          name: params.name,
+          email: params.email,
+          'bank_account[brand]': params.bankCode,
+          'bank_account[number]': params.accountNumber,
+          'bank_account[name]': params.accountName,
+        }),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] createRecipient network error: ${message}`);
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้างบัญชีรับเงิน', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createRecipient failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode ?? 'recipient_creation_failed', omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    return this.normalizeRecipient(body);
+  }
+
+  /**
+   * retrieveRecipient — PYG-266: GET /recipients/:id (read-only)
+   *
+   * ใช้ยืนยันสถานะ recipient ก่อนเชื่อ webhook body ตรง ๆ (defense in depth —
+   * เหมือน retrieveCharge ที่ captureFromWebhook ใช้)
+   */
+  async retrieveRecipient(recipientId: string): Promise<OmiseRecipientResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+    if (!recipientId) {
+      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถ retrieve ได้');
+    }
+
+    const url = `${this.apiBase}/recipients/${encodeURIComponent(recipientId)}`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: authHeader },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[Omise] retrieveRecipient network error recipientId=${recipientId}: ${message}`,
+      );
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะตรวจสอบบัญชีรับเงิน', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] retrieveRecipient failed recipientId=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode ?? 'recipient_retrieve_failed', omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    return this.normalizeRecipient(body);
   }
 }
