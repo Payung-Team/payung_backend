@@ -300,9 +300,11 @@ export class BookingNotificationListener {
 
       // per-event template — fallback ไป generic ถ้าไม่มีใน registry
       const perEventTemplate = BOOKING_EMAIL_TEMPLATES[event.eventType];
+      // ยอดรวมในอีเมล = ยอดที่เรียกเก็บจริง (payments.amount) ไม่ใช่ estimated_cost × 1.1
       const priceBreakdown = formatPriceBreakdown(
         booking.estimatedCost,
         booking.platformFee,
+        booking.payment?.amount,
       );
 
       for (const { userId, role } of recipients) {

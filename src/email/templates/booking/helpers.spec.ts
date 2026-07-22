@@ -61,26 +61,45 @@ describe('booking template helpers', () => {
   });
 
   describe('formatPriceBreakdown', () => {
-    it('ใช้ค่า platformFee ที่ส่งมาถ้ามี', () => {
-      expect(formatPriceBreakdown(1000, 100)).toEqual({
+    // 🔴 regression (booking-email-total-amount): ยอดรวมต้อง = ยอดที่เรียกเก็บจริง ห้าม ×1.1
+    it('platform_fee NULL → ไม่มี serviceCost/fee, ยอดรวม = estimated_cost (ไม่ ×1.1)', () => {
+      const r = formatPriceBreakdown(2200, null);
+      expect(r.totalText).toBe('฿2,200');
+      expect(r.totalText).not.toBe('฿2,420'); // 2,200 × 1.1 = bug เดิม
+      expect(r.serviceCostText).toBeUndefined();
+      expect(r.platformFeeText).toBeUndefined();
+    });
+
+    it('platform_fee NULL (ยอด 800) → "฿800" ไม่ใช่ "฿880"', () => {
+      const r = formatPriceBreakdown(800, null);
+      expect(r.totalText).toBe('฿800');
+      expect(r.totalText).not.toBe('฿880');
+    });
+
+    it('มี payment → ยอดรวม = payments.amount (override estimated_cost)', () => {
+      // estimated_cost 2,000 แต่เรียกเก็บจริง 2,200 → ต้องใช้ 2,200
+      const r = formatPriceBreakdown(2000, null, 2200);
+      expect(r.totalText).toBe('฿2,200');
+    });
+
+    it('ยังไม่มี payment → ยอดรวม = estimated_cost', () => {
+      const r = formatPriceBreakdown(1500, null, undefined);
+      expect(r.totalText).toBe('฿1,500');
+    });
+
+    it('มี platform_fee จริง (future) → แสดง serviceCost/fee จากค่าจริง ไม่คำนวณเอง', () => {
+      const r = formatPriceBreakdown(1000, 100);
+      expect(r).toEqual({
         serviceCostText: '฿1,000',
         platformFeeText: '฿100',
-        totalText: '฿1,100',
+        totalText: '฿1,000', // = estimated_cost (ไม่มี paidAmount) ไม่ใช่ service + fee
       });
     });
 
-    it('คำนวณ 10% ถ้า platformFee เป็น null', () => {
-      expect(formatPriceBreakdown(2000, null)).toEqual({
-        serviceCostText: '฿2,000',
-        platformFeeText: '฿200',
-        totalText: '฿2,200',
-      });
-    });
-
-    it('คืน "-" ถ้า estimatedCost null', () => {
+    it('คืน "-" ถ้าไม่มีทั้ง payment และ estimated_cost', () => {
       const r = formatPriceBreakdown(null, null);
-      expect(r.serviceCostText).toBe('-');
       expect(r.totalText).toBe('-');
+      expect(r.serviceCostText).toBeUndefined();
     });
   });
 

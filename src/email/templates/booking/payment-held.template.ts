@@ -3,7 +3,8 @@
  * Subject: "[Payung] ชำระเงินเรียบร้อย"
  *
  * payment_method: "บัตรเครดิต" + chargeId (ตัด Visa ••••/last4 — DB ไม่เก็บ)
- * แสดง breakdown: ค่าบริการ + ค่าดำเนินการ 10% + ยอดรวม
+ * แสดงยอดรวม (= ยอดที่เรียกเก็บจริง) เสมอ; บรรทัดค่าบริการ/ค่าธรรมเนียมแสดงเฉพาะเมื่อมี
+ * platform_fee จริง (ตอนนี้ NULL ทุกแถว → ซ่อน — ดู formatPriceBreakdown)
  */
 import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
@@ -29,8 +30,9 @@ export const paymentHeldTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
       summaryRow('การจอง', ctx.serviceText),
       summaryRow('วันที่', ctx.dateText),
       summaryRow('เวลา', ctx.timeText),
-      summaryRow('ค่าบริการ', ctx.serviceCostText),
-      summaryRow('ค่าดำเนินการ (10%)', ctx.platformFeeText),
+      // ค่าบริการ/ค่าธรรมเนียม: แสดงเฉพาะเมื่อมี platform_fee จริง (undefined = ซ่อน)
+      ctx.serviceCostText ? summaryRow('ค่าบริการ', ctx.serviceCostText) : '',
+      ctx.platformFeeText ? summaryRow('ค่าดำเนินการ', ctx.platformFeeText) : '',
       summaryRow('ยอดรวม', ctx.totalText, { bold: true }),
       summaryRow('วิธีชำระเงิน', paymentMethodText),
     ].join(''),
@@ -52,13 +54,15 @@ ${heading}
 กันวงเงิน ${ctx.paymentAmountText} สำหรับการจองกับคุณ${ctx.caregiverName}
 จะเรียกเก็บเมื่อบริการเสร็จสิ้น
 
-การจอง: ${ctx.serviceText}
-วันที่: ${ctx.dateText}
-เวลา: ${ctx.timeText}
-ค่าบริการ: ${ctx.serviceCostText}
-ค่าดำเนินการ (10%): ${ctx.platformFeeText}
-ยอดรวม: ${ctx.totalText}
-วิธีชำระเงิน: ${paymentMethodText}
+${[
+  `การจอง: ${ctx.serviceText}`,
+  `วันที่: ${ctx.dateText}`,
+  `เวลา: ${ctx.timeText}`,
+  ...(ctx.serviceCostText ? [`ค่าบริการ: ${ctx.serviceCostText}`] : []),
+  ...(ctx.platformFeeText ? [`ค่าดำเนินการ: ${ctx.platformFeeText}`] : []),
+  `ยอดรวม: ${ctx.totalText}`,
+  `วิธีชำระเงิน: ${paymentMethodText}`,
+].join('\n')}
 
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 
