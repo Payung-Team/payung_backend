@@ -13,11 +13,13 @@ import { Global, Module } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { PrismaService } from './prisma.service';
 import { ClockService } from './clock.service';
+import { PayoutEncryptionService } from './crypto/payout-encryption.service';
 
 @Global()
 @Module({
   // ClockService (PYG-369): ตัวจ่ายเวลาที่ inject ได้ — ทำให้ test คุมเวลาได้
-  providers: [SupabaseService, PrismaService, ClockService],
-  exports: [SupabaseService, PrismaService, ClockService],
+  // PayoutEncryptionService (PYG-307): AES-GCM ของเลขบัญชีรับเงิน
+  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
+  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
 })
 export class CommonModule {}

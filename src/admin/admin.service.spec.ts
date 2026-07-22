@@ -20,6 +20,7 @@ import { SupabaseService } from '../common/supabase.service';
 import { EmailService } from '../email/email.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
+import { PayoutAccountService } from '../payment/payout-account.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
 
@@ -82,6 +83,10 @@ const mockNotificationService = {
   create: jest.fn(),
 };
 
+const mockPayoutAccountService = {
+  createRecipientForCaregiver: jest.fn(),
+};
+
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
 const superAdmin: AuthUser = {
@@ -138,6 +143,7 @@ describe('AdminService — inviteAdmin', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -271,6 +277,7 @@ describe('AdminService — toggleAdminStatus', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -418,6 +425,7 @@ describe('AdminService — scheduleDeleteAdmin', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -585,6 +593,7 @@ describe('AdminService — cancelScheduledDelete', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -706,6 +715,7 @@ describe('AdminService — rejectKyc', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -840,6 +850,7 @@ describe('AdminService — editAdminInfo', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -1086,6 +1097,7 @@ describe('AdminService — toggleFieldLock', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 
@@ -1241,6 +1253,7 @@ describe('AdminService — getLockedFields', () => {
         { provide: EmailService, useValue: mockEmailService },
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
+        { provide: PayoutAccountService, useValue: mockPayoutAccountService },
       ],
     }).compile();
 

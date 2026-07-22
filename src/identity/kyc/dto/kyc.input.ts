@@ -36,9 +36,12 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ValidThaiId } from '../../../common/validators/valid-thai-id.validator';
 import { ValidThaiPhone } from '../../../common/validators/valid-thai-phone.validator';
+import { PayoutAccountInput } from './payout-account.input';
 
 @InputType()
 export class KycInput {
@@ -139,4 +142,17 @@ export class KycInput {
   @IsArray({ message: 'documentIds ต้องเป็น array' })
   @IsUUID('4', { each: true, message: 'document ID แต่ละตัวต้องเป็น UUID ที่ถูกต้อง' })
   documentIds!: string[];
+
+  /**
+   * บัญชีธนาคารรับเงิน (PYG-266) — optional (frontend เดิมยังไม่มีฟอร์มนี้)
+   * ถ้าส่งมาต้องกรอกครบทั้ง 3 field (all-or-nothing — ดู PayoutAccountInput)
+   */
+  @Field(() => PayoutAccountInput, {
+    nullable: true,
+    description: 'Payout bank account (optional)',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PayoutAccountInput)
+  payoutAccount?: PayoutAccountInput;
 }

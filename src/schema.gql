@@ -63,6 +63,9 @@ type AdminKycDetailPayload {
   """Edit history showing field changes, newest first"""
   editHistory: [CaregiverEditLog!]!
 
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: AdminPayoutAccountSummary
+
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
 
@@ -103,6 +106,16 @@ input AdminPaymentsInput {
   limit: Int
   page: Int
   status: PaymentStatus
+}
+
+"""Caregiver payout bank account summary for admin review"""
+type AdminPayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  hasOmiseRecipient: Boolean!
+  recipientStatus: String!
+  status: String!
 }
 
 input AdminTransactionsInput {
@@ -1123,6 +1136,9 @@ input KycInput {
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!
 
+  """Payout bank account (optional)"""
+  payoutAccount: PayoutAccountInput
+
   """Contact phone number (Thai format)"""
   phone: String!
 
@@ -1170,6 +1186,9 @@ type KycStatusPayload {
 
   """KYC documents with temporary signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
+
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: PayoutAccountSummary
 
   """When KYC was rejected by admin"""
   rejectedAt: DateTime
@@ -1443,6 +1462,9 @@ type Mutation {
   """
   updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
 
+  """Add or update payout bank account (verified caregiver only)"""
+  updatePayoutAccount(input: PayoutAccountInput!): PayoutAccountSummary!
+
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
 
@@ -1571,6 +1593,28 @@ type PaymentStatusHistory {
 
   """สถานะหลังเปลี่ยน"""
   toStatus: PaymentStatus!
+}
+
+input PayoutAccountInput {
+  """Account holder name"""
+  accountName: String!
+
+  """Bank account number (10 digits, Thai bank accounts)"""
+  accountNumber: String!
+
+  """Omise bank code (e.g. kbank, scb, bbl)"""
+  bankCode: String!
+}
+
+"""
+Caregiver payout bank account summary (masked — never the full account number)
+"""
+type PayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  recipientStatus: String!
+  status: String!
 }
 
 type ProofOfWorkSummary {

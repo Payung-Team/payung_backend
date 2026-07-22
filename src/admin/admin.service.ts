@@ -35,9 +35,10 @@ import { SupabaseService } from '../common/supabase.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { EmailService } from '../email/email.service';
+import { PayoutAccountService } from '../payment/payout-account.service';
 import { AdminKycListInput, KycStatusFilter } from './dto/admin-kyc-list.input';
 import { AdminKycListPayload, CaregiverKycSummary } from './dto/admin-kyc-list.payload';
-import { AdminKycDetailPayload } from './dto/admin-kyc-detail.payload';
+import { AdminKycDetailPayload, AdminPayoutAccountSummary } from './dto/admin-kyc-detail.payload';
 import {
   AdminDashboardPayload,
   DashboardSummary,
@@ -86,6 +87,7 @@ export class AdminService {
     private readonly caregiverService: CaregiverService,
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
+    private readonly payoutAccountService: PayoutAccountService,
   ) { }
 
   /**
@@ -372,6 +374,21 @@ export class AdminService {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
+    // ─── 6. Fetch payout bank account (masked — never accountNumberEnc/plaintext) ──
+    const payoutRow = await this.prismaService.caregiverPayoutAccount.findUnique({
+      where: { caregiverId },
+    });
+    const payoutAccount: AdminPayoutAccountSummary | undefined = payoutRow
+      ? {
+          bankCode: payoutRow.bankCode,
+          accountName: payoutRow.accountName,
+          accountNumberLast4: payoutRow.accountNumberLast4,
+          status: payoutRow.status,
+          recipientStatus: payoutRow.recipientStatus,
+          hasOmiseRecipient: !!payoutRow.omiseRecipientId,
+        }
+      : undefined;
+
     this.logger.log({
       event: 'admin.kyc_detail.queried',
       caregiverId,
@@ -386,6 +403,7 @@ export class AdminService {
       reviews,
       resubmitCount: raw.resubmitCount,
       editHistory: mergedHistory,
+      payoutAccount,
     };
   }
 
@@ -636,8 +654,10 @@ export class AdminService {
    */
   async approveKyc(caregiverId: string, admin: AuthUser): Promise<Caregiver> {
     // ─── 1. Fetch + guard ─────────────────────────────────────────────────
+    // include user.email — PYG-266: ต้องใช้เป็น email ตอนสร้าง Omise recipient
     const existing = await this.prismaService.caregiver.findUnique({
       where: { id: caregiverId },
+      include: { user: { select: { email: true } } },
     });
 
     if (!existing) {
@@ -676,6 +696,12 @@ export class AdminService {
 
     // ─── 3. Side-effects (fire-and-forget) ───────────────────────────────
     void this.triggerApproveNotify(updated.userId, caregiverId);
+    // PYG-266: สร้าง Omise recipient ถ้า caregiver เคยกรอกบัญชีรับเงินไว้ (no-op ถ้ายังไม่มี)
+    void this.payoutAccountService.createRecipientForCaregiver(
+      caregiverId,
+      updated.fullName ?? '',
+      existing.user.email,
+    );
 
     return this.mapToCaregiver(updated);
   }
