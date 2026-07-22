@@ -20,6 +20,7 @@ import { PaymentModule } from './payment/payment.module';
 import { PayoutModule } from './payout/payout.module';
 import { ReviewModule } from './review/review.module';
 import { DisputeModule } from './dispute/dispute.module';
+import { TransactionModule } from './transaction/transaction.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { DisputeModule } from './dispute/dispute.module';
     PayoutModule,        // PYG-330 ก้อน B: payout worker + Omise Transfer
     ReviewModule,        // PYG-297: post-service reviews (createReview/caregiverReviews/hideReview)
     DisputeModule,       // PYG-287: flag / adminDisputes / resolveDispute
+    TransactionModule,   // PYG-333: admin transactions list/detail/summary (read-only)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
