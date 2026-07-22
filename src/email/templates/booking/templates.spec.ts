@@ -31,9 +31,10 @@ const baseCtx: BookingEmailContext = {
   timeText: '09:00 - 13:00 น. (4 ชม.)',
   serviceText: 'ดูแลทั่วไป',
   locationAddress: '123 ถ.สุขุมวิท กรุงเทพฯ',
-  serviceCostText: '฿1,000',
-  platformFeeText: '฿100',
-  totalText: '฿1,100',
+  // platform_fee = NULL ในทุก booking ปัจจุบัน → ไม่มี breakdown ค่าบริการ/ค่าธรรมเนียม
+  serviceCostText: undefined,
+  platformFeeText: undefined,
+  totalText: '฿1,100', // ยอดที่เรียกเก็บจริง (= paymentAmountText) ไม่ใช่ estimated × 1.1
   paymentAmountText: '฿1,100',
   chargeId: 'chrg_test_abc123',
   bookingId: 'booking-uuid-1',
@@ -117,17 +118,31 @@ describe('Booking per-event templates', () => {
   });
 
   describe('payment.held', () => {
-    const tpl = paymentHeldTemplate(baseCtx);
+    const tpl = paymentHeldTemplate(baseCtx); // platform_fee NULL → ไม่มี breakdown
     it('subject', () => {
       expect(tpl.subject).toBe('[Payung] ชำระเงินเรียบร้อย');
     });
-    it('แสดง price breakdown 3 บรรทัด', () => {
-      expect(tpl.html).toContain('ค่าบริการ');
-      expect(tpl.html).toContain('ค่าดำเนินการ (10%)');
+    // 🔴 regression (booking-email-total-amount): platform_fee NULL → ซ่อนบรรทัดค่าธรรมเนียม
+    it('platform_fee NULL → ไม่มีบรรทัดค่าบริการ/ค่าธรรมเนียม (ไม่ ฿0.00) แต่มียอดรวมจริง', () => {
+      expect(tpl.html).not.toContain('ค่าบริการ');
+      expect(tpl.html).not.toContain('ค่าดำเนินการ');
+      expect(tpl.html).not.toContain('฿0.00');
+      expect(tpl.text).not.toContain('ค่าดำเนินการ');
       expect(tpl.html).toContain('ยอดรวม');
-      expect(tpl.html).toContain('฿1,000');
-      expect(tpl.html).toContain('฿100');
-      expect(tpl.html).toContain('฿1,100');
+      expect(tpl.html).toContain('฿1,100'); // ยอดที่เรียกเก็บจริง
+    });
+    it('มี platform_fee จริง (future) → แสดง breakdown แยกบรรทัด ไม่มี label "10%"', () => {
+      const withFee = paymentHeldTemplate({
+        ...baseCtx,
+        serviceCostText: '฿2,000',
+        platformFeeText: '฿200',
+        totalText: '฿2,000',
+      });
+      expect(withFee.html).toContain('ค่าบริการ');
+      expect(withFee.html).toContain('ค่าดำเนินการ');
+      expect(withFee.html).toContain('฿2,000');
+      expect(withFee.html).toContain('฿200');
+      expect(withFee.html).not.toContain('(10%)');
     });
     it('payment_method = บัตรเครดิต + chargeId (ไม่มี Visa/last4)', () => {
       expect(tpl.html).toContain('บัตรเครดิต (ref: chrg_test_abc123)');

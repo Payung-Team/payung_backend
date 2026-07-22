@@ -91,22 +91,39 @@ export function formatServiceType(serviceType: string): string {
 // ─── Composite ──────────────────────────────────────────────────────────
 
 /**
- * Price breakdown (10% platform fee)
- * - ถ้า platformFee มีค่า → ใช้ค่าจริง; ไม่งั้นคำนวณ 10% จาก service
- * - service = estimatedCost (ยังไม่หัก fee), total = service + fee
+ * Price breakdown สำหรับอีเมล
+ *
+ * ⚠️ ยอดรวม (totalText) = "ยอดที่เรียกเก็บจริง" เท่านั้น — ห้ามคำนวณ +10% จากสูตร
+ *   ลูกค้าจ่าย = estimated_cost (ตรวจ live DB: payments.amount = estimated_cost ratio 1.0000)
+ *   ค่าคอม 10% หักจากฝั่ง caregiver ตอน payout (PYG-330: gross − fee = net) ไม่ได้บวกจากลูกค้า
+ *   → paidAmount (payments.amount) ถ้ามี, ไม่งั้น estimated_cost (เช่น ตอน booking.created)
+ *
+ * ⚠️ ค่าบริการ/ค่าธรรมเนียม (serviceCostText/platformFeeText): แสดงเฉพาะเมื่อมี platform_fee จริง
+ *   ตอนนี้ bookings.platform_fee = NULL ทุกแถว (คอลัมน์ตาย จะเคลียร์ตอน PYG-341)
+ *   → คืน undefined เพื่อให้ template ซ่อนบรรทัดนั้น (ห้ามเดาค่า / ห้ามโชว์ ฿0.00)
+ *
+ * @param estimatedCost  ราคาบริการโดยประมาณ (บาท)
+ * @param platformFee    ค่าธรรมเนียมจาก DB — NULL = ไม่มีข้อมูลจริง → ไม่แสดง breakdown
+ * @param paidAmount     payments.amount ถ้ามี (ยอดที่เรียกเก็บจริง) — override ยอดรวม
  */
 export function formatPriceBreakdown(
   estimatedCost: Prisma.Decimal | number | null | undefined,
   platformFee: Prisma.Decimal | number | null | undefined,
-): { serviceCostText: string; platformFeeText: string; totalText: string } {
-  const service = toNumber(estimatedCost);
-  const feeRaw = toNumber(platformFee);
-  const fee = Number.isNaN(feeRaw) ? (Number.isNaN(service) ? NaN : service * 0.1) : feeRaw;
-  const total = Number.isNaN(service) || Number.isNaN(fee) ? NaN : service + fee;
+  paidAmount?: Prisma.Decimal | number | null | undefined,
+): { serviceCostText?: string; platformFeeText?: string; totalText: string } {
+  // ยอดรวม = ยอดที่เรียกเก็บจริง (ไม่ ×1.1) — payments.amount มาก่อน, fallback estimated_cost
+  const totalText = formatBaht(paidAmount ?? estimatedCost);
+
+  // ไม่มี platform_fee จริง → ไม่แสดงบรรทัดค่าบริการ/ค่าธรรมเนียม (ตอนนี้ NULL ทุกแถว)
+  if (Number.isNaN(toNumber(platformFee))) {
+    return { totalText };
+  }
+
+  // มี platform_fee จริง (future: หลัง PYG-341) → แสดงแยกบรรทัดจากค่าจริง
   return {
-    serviceCostText: formatBaht(service),
-    platformFeeText: formatBaht(fee),
-    totalText: formatBaht(total),
+    serviceCostText: formatBaht(estimatedCost),
+    platformFeeText: formatBaht(platformFee),
+    totalText,
   };
 }
 
