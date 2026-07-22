@@ -23,6 +23,8 @@ import { KycDocumentService } from './kyc-document.service';
 import { CaregiverService } from './caregiver.service';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
+import { PayoutAccountInput } from './dto/payout-account.input';
+import { PayoutAccountSummary } from './entities/payout-account.entity';
 import { UploadDocumentInput } from './dto/upload-document.input';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { Caregiver } from './entities/caregiver.entity';
@@ -32,6 +34,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { FieldLock } from '../../common/decorators/field-lock.decorator';
+import { ROLE_ID } from '../../common/constants/roles.constant';
 import {
   CurrentUser,
   AuthUser,
@@ -201,6 +204,21 @@ export class KycResolver {
       fileSize: input.fileSize,
       mimeType: input.mimeType,
     });
+  }
+
+  /**
+   * updatePayoutAccount mutation — PYG-266: caregiver ที่ verified แล้วเพิ่ม/แก้บัญชีรับเงินเอง
+   * (นอก flow submitKyc/resubmitKyc ที่ถูกบล็อกไว้เมื่อ kycStatus='verified')
+   */
+  @Mutation(() => PayoutAccountSummary, {
+    description: 'Add or update payout bank account (verified caregiver only)',
+  })
+  @Roles(ROLE_ID.CAREGIVER)
+  async updatePayoutAccount(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: PayoutAccountInput,
+  ): Promise<PayoutAccountSummary> {
+    return this.kycService.updatePayoutAccount(user, input);
   }
 }
 

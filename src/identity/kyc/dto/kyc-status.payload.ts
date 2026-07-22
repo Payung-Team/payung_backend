@@ -13,6 +13,7 @@
 import { ObjectType, Field } from '@nestjs/graphql';
 import { Caregiver } from '../entities/caregiver.entity';
 import { KycDocument } from '../entities/kyc-document.entity';
+import { PayoutAccountSummary } from '../entities/payout-account.entity';
 
 @ObjectType()
 export class KycStatusPayload {
@@ -57,4 +58,11 @@ export class KycStatusPayload {
     description: 'KYC documents with temporary signed URLs (1hr expiry)',
   })
   documents!: KycDocument[];
+
+  /** บัญชีธนาคารรับเงิน (masked) — undefined ถ้ายังไม่เคยส่ง */
+  @Field(() => PayoutAccountSummary, {
+    nullable: true,
+    description: 'Payout bank account summary (masked — never the full account number)',
+  })
+  payoutAccount?: PayoutAccountSummary;
 }

@@ -20,6 +20,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
@@ -87,6 +88,7 @@ describe('PaymentService.refundPayment (PYG-286)', () => {
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: emitter },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 
@@ -303,6 +305,7 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
         { provide: OmiseService, useValue: { createRefund: jest.fn() } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 
@@ -330,5 +333,245 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
 
     expect(prisma.payment.findUnique).toHaveBeenCalledWith({ where: { bookingId: BOOKING_ID } });
     expect(result).toBeNull();
+  });
+});
+
+// ─── PYG-266: transferPaymentToCaregiver ────────────────────────────────────
+
+describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
+  let service: PaymentService;
+
+  let prisma: {
+    payment: { findUnique: jest.Mock; update: jest.Mock };
+    caregiver: { findUnique: jest.Mock };
+    caregiverPayoutAccount: { findUnique: jest.Mock };
+    $transaction: jest.Mock;
+  };
+  let tx: { payment: { update: jest.Mock } };
+  let fsm: { transition: jest.Mock; recordCaptureFailure: jest.Mock };
+  let omise: { createTransfer: jest.Mock };
+  let emitter: { emit: jest.Mock };
+  let config: { get: jest.Mock };
+
+  const caregiverRow = () => ({
+    id: 'cgrow-1',
+    userId: CAREGIVER_ID,
+    fullName: 'สมชาย ใจดี',
+    user: { isActive: true, is_suspended: false, is_deleted: false },
+  });
+
+  const payoutAccount = (overrides: Record<string, unknown> = {}) => ({
+    id: 'payout-1',
+    caregiverId: 'cgrow-1',
+    status: 'active',
+    recipientStatus: 'verified',
+    omiseRecipientId: 'recp_test_1',
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    tx = { payment: { update: jest.fn() } };
+    prisma = {
+      payment: { findUnique: jest.fn(), update: jest.fn() },
+      caregiver: { findUnique: jest.fn() },
+      caregiverPayoutAccount: { findUnique: jest.fn() },
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    fsm = { transition: jest.fn(), recordCaptureFailure: jest.fn() };
+    omise = { createTransfer: jest.fn() };
+    emitter = { emit: jest.fn() };
+    // ConfigService.get<T>() ไม่ coerce ให้เป็นเลขจริง — จำลอง env จริงที่คืน string เสมอ
+    // เพื่อทดสอบว่า service ทำ Number() เอง (ไม่งั้น platformFeePercent จะเป็น "10" ไม่ใช่ 10)
+    config = { get: jest.fn().mockReturnValue('10') };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: fsm },
+        { provide: OmiseService, useValue: omise },
+        { provide: EventEmitter2, useValue: emitter },
+        { provide: ConfigService, useValue: config },
+      ],
+    }).compile();
+
+    service = moduleRef.get(PaymentService);
+  });
+
+  it('non-admin role → ForbiddenException', async () => {
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser('patient-x', ROLE_ID.PATIENT)),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.payment.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('ไม่พบ payment ของ booking นี้ → NotFoundException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('payment ไม่ใช่ captured → BadRequestException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(fakePayment({ paymentStatus: 'held' }));
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('payment.metadata มี omiseTransferId อยู่แล้ว (โอนไปแล้ว) → ConflictException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ metadata: { omiseTransferId: 'trsf_already' } }),
+    );
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('caregiver ถูกระงับบัญชี (is_suspended) → BadRequestException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(fakePayment());
+    prisma.caregiver.findUnique.mockResolvedValueOnce({
+      ...caregiverRow(),
+      user: { isActive: true, is_suspended: true, is_deleted: false },
+    });
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('ไม่มีบัญชีรับเงิน (payout account) → BadRequestException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(fakePayment());
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
+    prisma.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('recipientStatus ยังไม่ verified → BadRequestException', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(fakePayment());
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
+    prisma.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(
+      payoutAccount({ recipientStatus: 'unverified' }),
+    );
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('re-check ก่อนยิง Omise เจอว่า payout account ถูก webhook เปลี่ยนเป็น failed → ConflictException', async () => {
+    prisma.payment.findUnique
+      .mockResolvedValueOnce(fakePayment()) // pre-check
+      .mockResolvedValueOnce({ paymentStatus: 'captured', metadata: {} }); // re-check
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
+    prisma.caregiverPayoutAccount.findUnique
+      .mockResolvedValueOnce(payoutAccount()) // guard 5
+      .mockResolvedValueOnce({ status: 'active', recipientStatus: 'failed' }); // guard 6 re-check
+
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(omise.createTransfer).not.toHaveBeenCalled();
+  });
+
+  it('Omise createTransfer ล้มเหลว → ServiceUnavailableException, บันทึก audit, ไม่เปลี่ยนสถานะ', async () => {
+    prisma.payment.findUnique
+      .mockResolvedValueOnce(fakePayment())
+      .mockResolvedValueOnce({ paymentStatus: 'captured', metadata: {} });
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
+    prisma.caregiverPayoutAccount.findUnique
+      .mockResolvedValueOnce(payoutAccount())
+      .mockResolvedValueOnce({ status: 'active', recipientStatus: 'verified' });
+    omise.createTransfer.mockRejectedValueOnce(new Error('Omise down'));
+
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(fsm.transition).not.toHaveBeenCalled();
+    expect(fsm.recordCaptureFailure).toHaveBeenCalledWith(
+      PAYMENT_ID,
+      PaymentStatus.captured,
+      expect.objectContaining({ changedBy: ADMIN_ID }),
+    );
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('happy path: โอน 90% ของยอด captured (fee 10%), fsm.transition + emit ครั้งเดียว', async () => {
+    prisma.payment.findUnique
+      .mockResolvedValueOnce(fakePayment()) // amount = 1200
+      .mockResolvedValueOnce({ paymentStatus: 'captured', metadata: {} });
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
+    prisma.caregiverPayoutAccount.findUnique
+      .mockResolvedValueOnce(payoutAccount())
+      .mockResolvedValueOnce({ status: 'active', recipientStatus: 'verified' });
+    omise.createTransfer.mockResolvedValueOnce({
+      id: 'trsf_test_1',
+      amount: 108000,
+      recipient: 'recp_test_1',
+    });
+    fsm.transition.mockResolvedValueOnce(fakePayment({ paymentStatus: 'transferred', metadata: {} }));
+    tx.payment.update.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: 'transferred', metadata: { omiseTransferId: 'trsf_test_1' } }),
+    );
+
+    await service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN));
+
+    // 1200 THB = 120000 satangs; fee 10% → transfer 108000 satangs (90%)
+    expect(omise.createTransfer).toHaveBeenCalledWith(
+      'recp_test_1',
+      108000,
+      `transfer:${PAYMENT_ID}`,
+    );
+
+    expect(fsm.transition).toHaveBeenCalledWith(
+      PAYMENT_ID,
+      PaymentStatus.transferred,
+      expect.objectContaining({
+        changedBy: ADMIN_ID,
+        metadata: expect.objectContaining({
+          omiseTransferId: 'trsf_test_1',
+          platformFeePercent: 10,
+          transferAmountSatangs: 108000,
+        }),
+      }),
+      tx,
+    );
+
+    expect(emitter.emit).toHaveBeenCalledTimes(1);
+    expect(emitter.emit).toHaveBeenCalledWith(
+      BOOKING_EVENTS.PAYMENT_TRANSFERRED,
+      expect.objectContaining({
+        bookingId: BOOKING_ID,
+        caregiverId: CAREGIVER_ID,
+        metadata: expect.objectContaining({
+          transferAmountSatangs: 108000,
+          omiseTransferId: 'trsf_test_1',
+        }),
+      }),
+    );
+
+    // platformFeePercent เก็บเป็น number จริง ไม่ใช่ string "10" (ConfigService.get ไม่ coerce เอง)
+    const metadataArg = fsm.transition.mock.calls[0][2].metadata;
+    expect(typeof metadataArg.platformFeePercent).toBe('number');
+  });
+
+  it('กดโอนซ้ำ (double-submit): omiseTransferId ที่ metadata กันไม่ให้ยิง Omise ซ้ำ', async () => {
+    // ครั้งแรก: สำเร็จ (โอนแล้ว, metadata มี omiseTransferId)
+    // ครั้งที่สอง: pre-check เจอ omiseTransferId ใน metadata แล้ว → ConflictException ก่อนเรียก Omise เลย
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ metadata: { omiseTransferId: 'trsf_test_1' } }),
+    );
+
+    await expect(
+      service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN)),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(omise.createTransfer).not.toHaveBeenCalled();
   });
 });
