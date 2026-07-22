@@ -34,6 +34,7 @@ export enum NotificationType {
   refund_issued = 'refund_issued',              // คืนเงินเรียบร้อย (→ patient)
   dispute_created = 'dispute_created',           // แจ้งปัญหาใหม่ (→ admin)
   dispute_resolved = 'dispute_resolved',        // ผลตรวจสอบปัญหา (→ patient + caregiver)
+  payment_transferred = 'payment_transferred',  // PYG-266: admin โอนเงินให้ caregiver แล้ว (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

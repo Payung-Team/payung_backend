@@ -58,6 +58,9 @@ type AdminKycDetailPayload {
   """Edit history showing field changes, newest first"""
   editHistory: [CaregiverEditLog!]!
 
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: AdminPayoutAccountSummary
+
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
 
@@ -98,6 +101,16 @@ input AdminPaymentsInput {
   limit: Int
   page: Int
   status: PaymentStatus
+}
+
+"""Caregiver payout bank account summary for admin review"""
+type AdminPayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  hasOmiseRecipient: Boolean!
+  recipientStatus: String!
+  status: String!
 }
 
 input AdminUpdateCaregiverInfoInput {
@@ -251,11 +264,18 @@ type BookingSummary {
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
   createdAt: DateTime!
+  disputeReason: String
+  disputeStatus: String
   durationHours: Float
   estimatedCost: Float
   id: ID!
   locationAddress: String!
   notes: String
+
+  """
+  PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
+  """
+  payment: Payment
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String
@@ -730,6 +750,9 @@ input KycInput {
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!
 
+  """Payout bank account (optional)"""
+  payoutAccount: PayoutAccountInput
+
   """Contact phone number (Thai format)"""
   phone: String!
 
@@ -777,6 +800,9 @@ type KycStatusPayload {
 
   """KYC documents with temporary signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
+
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: PayoutAccountSummary
 
   """When KYC was rejected by admin"""
   rejectedAt: DateTime
@@ -917,11 +943,6 @@ type Mutation {
   markAsRead(id: String!): Notification!
 
   """
-  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
-  """
-  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
-
-  """
   Admin only: Refund a captured payment (full or partial). amount omitted = full refund. amount specified must be in (0, payment.amount]. Uses Omise-Idempotency-Key to prevent double-refund races.
   """
   refundPayment(input: RefundPaymentInput!): Payment!
@@ -976,6 +997,11 @@ type Mutation {
   """
   toggleFieldLock(input: ToggleFieldLockInput!): FieldLockResult!
 
+  """
+  Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.
+  """
+  transferPaymentToCaregiver(bookingId: ID!): Payment!
+
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
 
@@ -986,6 +1012,9 @@ type Mutation {
   Update the current user's password. Requires a valid session established via the password-reset magic link.
   """
   updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
+
+  """Add or update payout bank account (verified caregiver only)"""
+  updatePayoutAccount(input: PayoutAccountInput!): PayoutAccountSummary!
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
@@ -1042,6 +1071,7 @@ enum NotificationType {
   kyc_verified
   payment_captured
   payment_held
+  payment_transferred
   payment_voided
   refund_issued
 }
@@ -1114,6 +1144,28 @@ type PaymentStatusHistory {
 
   """สถานะหลังเปลี่ยน"""
   toStatus: PaymentStatus!
+}
+
+input PayoutAccountInput {
+  """Account holder name"""
+  accountName: String!
+
+  """Bank account number (10 digits, Thai bank accounts)"""
+  accountNumber: String!
+
+  """Omise bank code (e.g. kbank, scb, bbl)"""
+  bankCode: String!
+}
+
+"""
+Caregiver payout bank account summary (masked — never the full account number)
+"""
+type PayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  recipientStatus: String!
+  status: String!
 }
 
 type Query {

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/prisma.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -44,6 +45,7 @@ export class PaymentService {
     private readonly fsm: PaymentStateMachine,
     private readonly omiseService: OmiseService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly config: ConfigService,
   ) {}
 
   // ── PYG-277: audit history query ─────────────────────────────────────────
@@ -209,50 +211,180 @@ export class PaymentService {
     return this.toGql(payment);
   }
 
-  // ── PYG-282: admin transfer + payment list ───────────────────────────────
+  // ── PYG-266: admin transfer (real Omise Transfer, replaces PYG-282 manual mark) ──
 
-  async markPaymentTransferred(
-    paymentId: string,
-    transferRef: string,
-    notes: string | undefined,
-    adminId: string,
-  ): Promise<Payment> {
-    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
-    if (!payment) throw new NotFoundException('Payment not found');
-
-    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.captured) {
-      throw new BadRequestException('payment not in captured state');
+  /**
+   * transferPaymentToCaregiver — admin โอนเงินจริงให้ caregiver ผ่าน Omise Transfer
+   *
+   * Guard 6 ชั้น (เงินจริง — defense in depth), mirror ของ refundPayment:
+   *  1) Role: admin role check (resolver-level @Roles)
+   *  2) Status pre-check: payment ต้อง 'captured'
+   *  3) Idempotency pre-check: payment.metadata.omiseTransferId ต้องยังไม่มี
+   *  4) Caregiver account standing: ต้องไม่ถูก suspend/ลบ
+   *  5) Payout account: ต้อง status='active' + recipientStatus='verified' + มี omiseRecipientId
+   *  6) Re-check status + payout account RIGHT BEFORE Omise call: ปิด race window
+   *  + Omise-Idempotency-Key เพื่อกัน Omise ทำซ้ำถ้ายิง 2 ครั้งพร้อมกัน
+   *  + FSM transition: ปิด state machine — captured → transferred เท่านั้น (terminal state)
+   *
+   * ยอดที่โอน = capturedAmount * (1 - PLATFORM_FEE_PERCENT / 100) (default 10% → caregiver ได้ 90%)
+   */
+  async transferPaymentToCaregiver(bookingId: string, admin: AuthUser): Promise<Payment> {
+    // Guard 1: role — เผื่อ resolver ไม่ได้ guard
+    if (admin.role < ROLE_ID.ADMIN) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์โอนเงินให้ผู้ดูแล');
     }
 
-    // Use FSM — atomic: updates status + inserts history in one transaction
-    const updated = await this.fsm.transition(paymentId, PaymentStatus.transferred, {
-      changedBy: adminId,
-      reason: notes,
-      metadata: { transferRef, transferredAt: new Date().toISOString() },
-    });
+    const payment = await this.prisma.payment.findUnique({ where: { bookingId } });
+    if (!payment) throw new NotFoundException(`ไม่พบ payment สำหรับ booking "${bookingId}"`);
 
-    // Merge transferRef into payment.metadata for FE visibility
-    await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        metadata: {
-          ...(updated.metadata as object ?? {}),
-          transferRef,
-          adminId,
+    // Guard 2: status pre-check
+    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.captured) {
+      throw new BadRequestException(
+        `ไม่สามารถโอนเงินได้ — payment ต้องอยู่สถานะ "captured" (ปัจจุบัน: ${payment.paymentStatus})`,
+      );
+    }
+
+    // Guard 3: idempotency pre-check — omiseTransferId ถูกบันทึกแล้ว = โอนไปแล้ว
+    const existingMeta = (payment.metadata ?? {}) as Record<string, unknown>;
+    if (existingMeta.omiseTransferId) {
+      throw new ConflictException('payment นี้ถูกโอนเงินไปแล้ว');
+    }
+
+    // payment.caregiverId คือ USER id (caregiver.userId) — ไม่ใช่ Caregiver row id
+    // ที่ CaregiverPayoutAccount.caregiverId อ้างถึง ต้อง resolve ผ่าน userId ก่อนเสมอ
+    const caregiverRow = await this.prisma.caregiver.findUnique({
+      where: { userId: payment.caregiverId },
+      include: { user: { select: { isActive: true, is_suspended: true, is_deleted: true } } },
+    });
+    if (!caregiverRow) {
+      throw new NotFoundException('ไม่พบข้อมูลผู้ดูแลของ payment นี้');
+    }
+
+    // Guard 4: caregiver ต้องไม่ถูกระงับ/ลบบัญชี
+    if (
+      caregiverRow.user.is_suspended ||
+      caregiverRow.user.is_deleted ||
+      !caregiverRow.user.isActive
+    ) {
+      throw new BadRequestException('ไม่สามารถโอนเงินให้ผู้ดูแลที่ถูกระงับ/ลบบัญชีได้');
+    }
+
+    // Guard 5: payout account ต้องพร้อมรับโอน
+    const payoutAccount = await this.prisma.caregiverPayoutAccount.findUnique({
+      where: { caregiverId: caregiverRow.id },
+    });
+    if (
+      !payoutAccount ||
+      payoutAccount.status !== 'active' ||
+      payoutAccount.recipientStatus !== 'verified' ||
+      !payoutAccount.omiseRecipientId
+    ) {
+      throw new BadRequestException('บัญชีรับเงินของผู้ดูแลยังไม่พร้อมรับการโอนเงิน');
+    }
+
+    // คำนวณยอดโอน — ทำงานในหน่วย satangs ตลอดเพื่อกัน float precision error
+    // ConfigService.get<T>() เป็นแค่ type cast ไม่ได้ coerce runtime — ต้อง Number() เอง
+    // ไม่งั้น platformFeePercent จะเป็น string "10" ปนอยู่ใน metadata (JSON) แทนที่จะเป็น number
+    const platformFeePercent = Number(this.config.get<string>('PLATFORM_FEE_PERCENT', '10'));
+    const capturedAmountBaht = this.toBahtNumber(payment.amount);
+    const capturedAmountSatangs = Math.round(capturedAmountBaht * 100);
+    const transferAmountSatangs = Math.round(
+      capturedAmountSatangs * (1 - platformFeePercent / 100),
+    );
+
+    // Guard 6: re-check ทั้ง payment status และ payout account status ก่อนยิง Omise
+    // (ปิดช่องที่ webhook recipient.failed แทรกเข้ามาระหว่าง guard 5 กับตรงนี้)
+    const recheckPayment = await this.prisma.payment.findUnique({
+      where: { id: payment.id },
+      select: { paymentStatus: true, metadata: true },
+    });
+    const recheckPayout = await this.prisma.caregiverPayoutAccount.findUnique({
+      where: { caregiverId: caregiverRow.id },
+      select: { status: true, recipientStatus: true },
+    });
+    const recheckMeta = (recheckPayment?.metadata ?? {}) as Record<string, unknown>;
+    if (
+      !recheckPayment ||
+      (recheckPayment.paymentStatus as PaymentStatus) !== PaymentStatus.captured ||
+      recheckMeta.omiseTransferId ||
+      !recheckPayout ||
+      recheckPayout.status !== 'active' ||
+      recheckPayout.recipientStatus !== 'verified'
+    ) {
+      throw new ConflictException(
+        'payment หรือบัญชีรับเงินถูกเปลี่ยนสถานะระหว่างการตรวจสอบ — กรุณาลองใหม่',
+      );
+    }
+
+    // Omise call — outside tx, idempotency key เดียวต่อ payment (มี transfer เดียวเสมอ)
+    const idempotencyKey = `transfer:${payment.id}`;
+    let transfer;
+    try {
+      transfer = await this.omiseService.createTransfer(
+        payoutAccount.omiseRecipientId,
+        transferAmountSatangs,
+        idempotencyKey,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[transferPaymentToCaregiver] Omise createTransfer failed: ${msg}`);
+
+      // บันทึก audit ว่าเคยพยายามโอนแล้วไม่สำเร็จ — ไม่เปลี่ยนสถานะ (ยังคง captured, retry ได้)
+      await this.fsm.recordCaptureFailure(payment.id, PaymentStatus.captured, {
+        changedBy: admin.id,
+        reason: msg,
+        metadata: { attemptedTransferAmountSatangs: transferAmountSatangs },
+      });
+
+      throw new ServiceUnavailableException(
+        'ไม่สามารถโอนเงินให้ผู้ดูแลได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
+      );
+    }
+
+    const transferredAt = new Date().toISOString();
+    const transferMetadata = {
+      omiseTransferId: transfer.id,
+      platformFeePercent,
+      transferAmountSatangs,
+      transferredAt,
+      transferredBy: admin.id,
+    };
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await this.fsm.transition(
+        payment.id,
+        PaymentStatus.transferred,
+        { changedBy: admin.id, metadata: transferMetadata },
+        tx,
+      );
+
+      const uMeta = u.metadata === null || u.metadata === undefined
+        ? {}
+        : (u.metadata as Record<string, unknown>);
+
+      const merged = await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          metadata: {
+            ...uMeta,
+            ...transferMetadata,
+          } as Prisma.InputJsonValue,
         },
-      },
+      });
+      return merged;
     });
 
-    // TODO: PYG-268 — replace with EventEmitter2.emit('payment.transferred', payload)
-    this.logger.log(JSON.stringify({
-      event: 'payment.transferred',
-      payload: {
-        paymentId,
-        caregiverId: updated.caregiverId,
-        bookingId: updated.bookingId,
-        amount: Number(updated.amount),
+    // emit หลัง tx commit (listener อ่านข้อมูลล่าสุดได้)
+    this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_TRANSFERRED, {
+      bookingId,
+      eventType: BOOKING_EVENTS.PAYMENT_TRANSFERRED,
+      patientId: payment.patientId,
+      caregiverId: payment.caregiverId,
+      metadata: {
+        transferAmountSatangs,
+        omiseTransferId: transfer.id,
       },
-    }));
+    });
 
     return this.toGql(updated);
   }

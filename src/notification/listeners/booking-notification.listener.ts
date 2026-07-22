@@ -39,6 +39,8 @@ interface NotifyContext {
   serviceText: string;
   dateText: string;
   amountText: string;
+  /** PYG-266: ยอดสุทธิที่ caregiver ได้รับจริง (หลังหักค่าธรรมเนียมแพลตฟอร์ม) — ใช้เฉพาะ PAYMENT_TRANSFERRED */
+  netAmountText: string;
   reason?: string;
 }
 
@@ -169,6 +171,14 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     email: true,
     ctaLabel: 'ดูผลการตรวจสอบ',
   },
+  [BOOKING_EVENTS.PAYMENT_TRANSFERRED]: {
+    type: NotificationType.payment_transferred,
+    recipient: 'caregiver',
+    title: 'โอนเงินเรียบร้อย',
+    body: (c) => `เราได้โอนเงิน ${c.netAmountText} เข้าบัญชีของคุณเรียบร้อยแล้ว (หลังหักค่าธรรมเนียมแพลตฟอร์ม)`,
+    email: true,
+    ctaLabel: 'ดูรายละเอียด',
+  },
 };
 
 @Injectable()
@@ -195,6 +205,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.REFUND_ISSUED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_CREATED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_RESOLVED)
+  @OnEvent(BOOKING_EVENTS.PAYMENT_TRANSFERRED)
   async handleBookingEvent(event: BookingEvent): Promise<void> {
     try {
       const config = EVENT_CONFIG[event.eventType];
@@ -223,11 +234,21 @@ export class BookingNotificationListener {
         return;
       }
 
+      // PYG-266: transferAmountSatangs (ยอดสุทธิหลังหักค่าธรรมเนียม) มากับ event metadata
+      // เท่านั้น — event อื่นไม่มีค่านี้ จึง fallback ไปใช้ amountText เดิม (ไม่ถูกใช้จริงนอก
+      // PAYMENT_TRANSFERRED template แต่ต้องมีค่าเสมอเพราะ NotifyContext บังคับ field นี้)
+      const transferAmountSatangs = event.metadata?.transferAmountSatangs;
+      const netAmountText =
+        typeof transferAmountSatangs === 'number'
+          ? this.formatBaht(transferAmountSatangs / 100)
+          : this.formatBaht(booking.payment?.amount ?? booking.estimatedCost);
+
       const ctx: NotifyContext = {
         caregiverName: booking.caregiver?.fullName ?? 'ผู้ดูแล',
         serviceText: SERVICE_LABEL[booking.serviceType] ?? booking.serviceType,
         dateText: this.formatThaiDate(booking.bookingDate),
         amountText: this.formatBaht(booking.payment?.amount ?? booking.estimatedCost),
+        netAmountText,
         reason:
           typeof event.metadata?.reason === 'string'
             ? event.metadata.reason

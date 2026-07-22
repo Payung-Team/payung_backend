@@ -12,10 +12,11 @@
 import { Global, Module } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { PrismaService } from './prisma.service';
+import { PayoutEncryptionService } from './crypto/payout-encryption.service';
 
 @Global()
 @Module({
-  providers: [SupabaseService, PrismaService],
-  exports: [SupabaseService, PrismaService],
+  providers: [SupabaseService, PrismaService, PayoutEncryptionService],
+  exports: [SupabaseService, PrismaService, PayoutEncryptionService],
 })
 export class CommonModule {}
