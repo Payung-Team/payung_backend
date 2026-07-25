@@ -28,8 +28,11 @@ export interface BookingEmailContext {
   locationAddress: string;
 
   // ── ราคา (พรีแคลแล้ว) ──
-  serviceCostText: string;
-  platformFeeText: string;
+  /** ค่าบริการ — undefined เมื่อ bookings.platform_fee = NULL (ทุกแถวตอนนี้) → template ซ่อนบรรทัด */
+  serviceCostText?: string;
+  /** ค่าธรรมเนียม — undefined เมื่อ platform_fee = NULL → template ซ่อนบรรทัด (ห้ามเดา/ห้าม ฿0.00) */
+  platformFeeText?: string;
+  /** ยอดรวม = ยอดที่เรียกเก็บจริง (payments.amount ?? estimated_cost) — ไม่ ×1.1 */
   totalText: string;
 
   // ── refund / payment ──
