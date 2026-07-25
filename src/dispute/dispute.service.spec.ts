@@ -17,15 +17,19 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { SupabaseService } from '../common/supabase.service';
 import { PaymentService } from '../payment/payment.service';
 import { DisputeService } from './dispute.service';
 import { DisputeDecision } from './entities/dispute-decision.enum';
 import { DisputeStatus } from './entities/dispute-status.enum';
 import { DisputeFiledBy } from './entities/dispute-filed-by.enum';
 import { DisputeSortBy } from './dto/dispute-sort.enum';
+import { DISPUTE_AUDIT_ACTION } from './dispute.constants';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 
 const PATIENT_ID = 'pat-001';
 const ADMIN_ID = 'adm-001';
@@ -36,6 +40,7 @@ const PAYMENT_ID = '00000000-0000-0000-0000-000000000099';
 const ADMIN_AUTHUSER: AuthUser = {
   id: ADMIN_ID,
   role: ROLE_ID.ADMIN,
+  email: 'admin@payung.local',
 } as AuthUser;
 
 // reason ที่มี ≥ 20 ตัวอักษร (default ใช้ในเคสปกติ)
@@ -83,8 +88,15 @@ describe('DisputeService', () => {
       count: jest.Mock;
       update: jest.Mock;
     };
+    disputeAuditLog: { create: jest.Mock; findMany: jest.Mock };
+    disputeEvidence: { findMany: jest.Mock };
+    paymentStatusHistory: { findMany: jest.Mock };
+    user: { findMany: jest.Mock };
+    $transaction: jest.Mock;
   };
   let payments: { refundPayment: jest.Mock };
+  let eventEmitter: { emit: jest.Mock };
+  let supabase: { getAdminClient: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -94,16 +106,26 @@ describe('DisputeService', () => {
         count: jest.fn(),
         update: jest.fn(),
       },
+      disputeAuditLog: { create: jest.fn(), findMany: jest.fn() },
+      disputeEvidence: { findMany: jest.fn() },
+      paymentStatusHistory: { findMany: jest.fn() },
+      user: { findMany: jest.fn() },
+      // Prisma $transaction([...]) รับ array ของ promise ที่ถูกเรียกไปแล้ว → mock ด้วย Promise.all
+      $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
     };
     payments = {
       refundPayment: jest.fn(),
     };
+    eventEmitter = { emit: jest.fn() };
+    supabase = { getAdminClient: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         DisputeService,
         { provide: PrismaService, useValue: prisma },
         { provide: PaymentService, useValue: payments },
+        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: SupabaseService, useValue: supabase },
       ],
     }).compile();
 
@@ -113,10 +135,11 @@ describe('DisputeService', () => {
   // ─── flagBookingDispute ──────────────────────────────────────────────────
 
   describe('flagBookingDispute', () => {
-    it('Pass — completed + patient + reason≥20 → flagged + emits dispute.created', async () => {
+    it('Pass — completed + patient + reason≥20 → flagged + audit row + emits dispute.created', async () => {
       prisma.booking.findUnique
         .mockResolvedValueOnce({
           patientId: PATIENT_ID,
+          caregiverId: 'cg-001',
           status: 'completed',
           disputeStatus: 'none',
         })
@@ -127,6 +150,7 @@ describe('DisputeService', () => {
           }),
         );
       prisma.booking.update.mockResolvedValue({});
+      prisma.disputeAuditLog.create.mockResolvedValue({});
 
       const result = await service.flagBookingDispute(
         BOOKING_ID,
@@ -144,6 +168,28 @@ describe('DisputeService', () => {
           disputeFiledBy: 'customer',
         },
       });
+      // audit trail: บันทึก state change none → flagged อัตโนมัติ
+      expect(prisma.disputeAuditLog.create).toHaveBeenCalledWith({
+        data: {
+          bookingId: BOOKING_ID,
+          action: DISPUTE_AUDIT_ACTION.FILED,
+          fromStatus: DisputeStatus.none,
+          toStatus: DisputeStatus.flagged,
+          actorId: PATIENT_ID,
+          actorRole: 'patient',
+          note: REASON_LONG,
+        },
+      });
+      expect(prisma.$transaction).toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        BOOKING_EVENTS.DISPUTE_CREATED,
+        expect.objectContaining({
+          bookingId: BOOKING_ID,
+          eventType: BOOKING_EVENTS.DISPUTE_CREATED,
+          patientId: PATIENT_ID,
+          caregiverId: 'cg-001',
+        }),
+      );
       expect(result.disputeStatus).toBe(DisputeStatus.flagged);
       expect(result.disputeReason).toBe(REASON_LONG);
     });
@@ -346,7 +392,7 @@ describe('DisputeService', () => {
   // ─── resolveDispute ──────────────────────────────────────────────────────
 
   describe('resolveDispute', () => {
-    it('Pass — no_refund → booking resolved, refundPayment NOT called', async () => {
+    it('Pass — no_refund → booking resolved, audit row written, refundPayment NOT called', async () => {
       prisma.booking.findUnique
         .mockResolvedValueOnce({
           disputeStatus: 'flagged',
@@ -361,6 +407,7 @@ describe('DisputeService', () => {
           }),
         );
       prisma.booking.update.mockResolvedValue({});
+      prisma.disputeAuditLog.create.mockResolvedValue({});
 
       const result = await service.resolveDispute(
         BOOKING_ID,
@@ -375,10 +422,58 @@ describe('DisputeService', () => {
         where: { id: BOOKING_ID },
         data: expect.objectContaining({ disputeStatus: 'resolved' }),
       });
+      // audit trail: resolvedBy derive จาก actorId ของแถวนี้ (ไม่มี column disputeResolvedBy แยก)
+      expect(prisma.disputeAuditLog.create).toHaveBeenCalledWith({
+        data: {
+          bookingId: BOOKING_ID,
+          action: DISPUTE_AUDIT_ACTION.RESOLVED,
+          fromStatus: 'flagged',
+          toStatus: DisputeStatus.resolved,
+          actorId: ADMIN_ID,
+          actorRole: 'admin',
+          note: 'caregiver clarified the issue',
+          metadata: { decision: DisputeDecision.no_refund, refundAmount: null },
+        },
+      });
+      expect(prisma.$transaction).toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        BOOKING_EVENTS.DISPUTE_RESOLVED,
+        expect.objectContaining({
+          bookingId: BOOKING_ID,
+          eventType: BOOKING_EVENTS.DISPUTE_RESOLVED,
+          patientId: PATIENT_ID,
+          caregiverId: 'cg-001',
+        }),
+      );
       expect(result.disputeStatus).toBe(DisputeStatus.resolved);
     });
 
-    it('Fail — non-flagged booking → UnprocessableEntityException', async () => {
+    it('Pass — under_review status also accepted by resolve guard', async () => {
+      prisma.booking.findUnique
+        .mockResolvedValueOnce({
+          disputeStatus: 'under_review',
+          patientId: PATIENT_ID,
+          caregiverId: 'cg-001',
+          payment: { id: PAYMENT_ID, amount: { toNumber: () => 1500 } },
+        })
+        .mockResolvedValueOnce(
+          fakeBookingRow({ disputeStatus: 'resolved' }),
+        );
+      prisma.booking.update.mockResolvedValue({});
+      prisma.disputeAuditLog.create.mockResolvedValue({});
+
+      const result = await service.resolveDispute(
+        BOOKING_ID,
+        DisputeDecision.no_refund,
+        undefined,
+        'reviewed and rejected',
+        ADMIN_AUTHUSER,
+      );
+
+      expect(result.disputeStatus).toBe(DisputeStatus.resolved);
+    });
+
+    it('Fail — non-flagged/under_review booking → UnprocessableEntityException', async () => {
       prisma.booking.findUnique.mockResolvedValueOnce({
         disputeStatus: 'none',
         patientId: PATIENT_ID,
@@ -394,6 +489,25 @@ describe('DisputeService', () => {
           ADMIN_AUTHUSER,
         ),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it('Fail — idempotency: repeat resolve on already-resolved dispute → UnprocessableEntityException (422)', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce({
+        disputeStatus: 'resolved',
+        patientId: PATIENT_ID,
+        caregiverId: 'cg-001',
+        payment: { id: PAYMENT_ID, amount: { toNumber: () => 1500 } },
+      });
+      await expect(
+        service.resolveDispute(
+          BOOKING_ID,
+          DisputeDecision.no_refund,
+          undefined,
+          'note',
+          ADMIN_AUTHUSER,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(payments.refundPayment).not.toHaveBeenCalled();
     });
 
     it('Fail — booking not found → NotFoundException', async () => {
@@ -518,6 +632,197 @@ describe('DisputeService', () => {
         ADMIN_AUTHUSER,
       );
       expect(result.disputeStatus).toBe(DisputeStatus.resolved);
+    });
+  });
+
+  // ─── getDisputeDetail ────────────────────────────────────────────────────
+
+  describe('getDisputeDetail', () => {
+    const AUDIT_ROW_FILED = {
+      id: 'audit-001',
+      bookingId: BOOKING_ID,
+      action: DISPUTE_AUDIT_ACTION.FILED,
+      fromStatus: 'none',
+      toStatus: 'flagged',
+      actorId: PATIENT_ID,
+      actorRole: 'patient',
+      note: REASON_LONG,
+      metadata: null,
+      createdAt: new Date('2026-06-01T09:00:00Z'),
+    };
+    const AUDIT_ROW_NOTE = {
+      id: 'audit-002',
+      bookingId: BOOKING_ID,
+      action: DISPUTE_AUDIT_ACTION.NOTE_ADDED,
+      fromStatus: null,
+      toStatus: null,
+      actorId: ADMIN_ID,
+      actorRole: 'admin',
+      note: 'contacted patient',
+      metadata: null,
+      createdAt: new Date('2026-06-02T09:00:00Z'),
+    };
+    const AUDIT_ROW_RESOLVED = {
+      id: 'audit-003',
+      bookingId: BOOKING_ID,
+      action: DISPUTE_AUDIT_ACTION.RESOLVED,
+      fromStatus: 'flagged',
+      toStatus: 'resolved',
+      actorId: ADMIN_ID,
+      actorRole: 'admin',
+      note: 'refunded in full',
+      metadata: { decision: 'refund_full', refundAmount: null },
+      createdAt: new Date('2026-06-03T09:00:00Z'),
+    };
+    const EVIDENCE_ROW = {
+      id: 'evid-001',
+      bookingId: BOOKING_ID,
+      uploadedBy: PATIENT_ID,
+      uploaderRole: 'patient',
+      fileUrl:
+        'https://proj.supabase.co/storage/v1/object/dispute-evidence/abc.png',
+      fileName: 'proof.png',
+      fileSize: 1024,
+      mimeType: 'image/png',
+      note: null,
+      createdAt: new Date('2026-06-01T09:30:00Z'),
+    };
+    const USERS = [
+      { id: PATIENT_ID, displayName: 'Patient One', email: 'p1@x.test' },
+      { id: ADMIN_ID, displayName: 'Admin One', email: 'admin@payung.local' },
+    ];
+
+    it('Fail — booking not found → NotFoundException', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(null);
+      await expect(service.getDisputeDetail(BOOKING_ID)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('Pass — assembles booking + payment history + evidence (signed) + notes + audit + resolvedBy', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(fakeBookingRow());
+      prisma.paymentStatusHistory.findMany.mockResolvedValueOnce([
+        {
+          id: 'psh-001',
+          paymentId: PAYMENT_ID,
+          fromStatus: null,
+          toStatus: 'captured',
+          changedBy: null,
+          reason: null,
+          metadata: null,
+          createdAt: new Date('2026-06-01T08:30:00Z'),
+        },
+      ]);
+      prisma.disputeEvidence.findMany.mockResolvedValueOnce([EVIDENCE_ROW]);
+      prisma.disputeAuditLog.findMany.mockResolvedValueOnce([
+        AUDIT_ROW_RESOLVED,
+        AUDIT_ROW_NOTE,
+        AUDIT_ROW_FILED,
+      ]);
+      prisma.user.findMany.mockResolvedValueOnce(USERS);
+
+      const signedUrl = 'https://proj.supabase.co/storage/v1/object/sign/...';
+      const createSignedUrl = jest
+        .fn()
+        .mockResolvedValue({ data: { signedUrl }, error: null });
+      supabase.getAdminClient.mockReturnValue({
+        storage: { from: jest.fn().mockReturnValue({ createSignedUrl }) },
+      });
+
+      const detail = await service.getDisputeDetail(BOOKING_ID);
+
+      expect(detail.paymentHistory).toHaveLength(1);
+      expect(detail.evidence).toHaveLength(1);
+      expect(detail.evidence[0].fileUrl).toBe(signedUrl);
+      expect(detail.evidence[0].uploadedBy).toEqual(
+        expect.objectContaining({ id: PATIENT_ID }),
+      );
+      expect(detail.notes).toHaveLength(1);
+      expect(detail.notes[0].note).toBe('contacted patient');
+      expect(detail.audit).toHaveLength(3);
+      expect(detail.resolvedBy).toEqual(
+        expect.objectContaining({ id: ADMIN_ID }),
+      );
+    });
+
+    it('Pass — evidence signing failure falls back to raw fileUrl', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(fakeBookingRow());
+      prisma.paymentStatusHistory.findMany.mockResolvedValueOnce([]);
+      prisma.disputeEvidence.findMany.mockResolvedValueOnce([EVIDENCE_ROW]);
+      prisma.disputeAuditLog.findMany.mockResolvedValueOnce([]);
+      prisma.user.findMany.mockResolvedValueOnce(USERS);
+
+      const createSignedUrl = jest
+        .fn()
+        .mockResolvedValue({ data: null, error: new Error('sign failed') });
+      supabase.getAdminClient.mockReturnValue({
+        storage: { from: jest.fn().mockReturnValue({ createSignedUrl }) },
+      });
+
+      const detail = await service.getDisputeDetail(BOOKING_ID);
+
+      expect(detail.evidence[0].fileUrl).toBe(EVIDENCE_ROW.fileUrl);
+    });
+
+    it('Pass — no resolved audit row → resolvedBy is undefined', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(fakeBookingRow());
+      prisma.paymentStatusHistory.findMany.mockResolvedValueOnce([]);
+      prisma.disputeEvidence.findMany.mockResolvedValueOnce([]);
+      prisma.disputeAuditLog.findMany.mockResolvedValueOnce([AUDIT_ROW_FILED]);
+      prisma.user.findMany.mockResolvedValueOnce(USERS);
+
+      const detail = await service.getDisputeDetail(BOOKING_ID);
+
+      expect(detail.resolvedBy).toBeUndefined();
+    });
+  });
+
+  // ─── addNote ─────────────────────────────────────────────────────────────
+
+  describe('addNote', () => {
+    it('Fail — booking not found → NotFoundException', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(null);
+      await expect(
+        service.addNote(BOOKING_ID, 'a note', ADMIN_AUTHUSER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('Pass — creates exactly one dispute_audit_logs row with action=note_added', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce({ id: BOOKING_ID });
+      prisma.disputeAuditLog.create.mockResolvedValueOnce({
+        id: 'audit-100',
+        bookingId: BOOKING_ID,
+        action: DISPUTE_AUDIT_ACTION.NOTE_ADDED,
+        fromStatus: null,
+        toStatus: null,
+        actorId: ADMIN_ID,
+        actorRole: 'admin',
+        note: 'contacted patient for evidence',
+        metadata: null,
+        createdAt: new Date('2026-06-05T10:00:00Z'),
+      });
+
+      const result = await service.addNote(
+        BOOKING_ID,
+        'contacted patient for evidence',
+        ADMIN_AUTHUSER,
+      );
+
+      expect(prisma.disputeAuditLog.create).toHaveBeenCalledTimes(1);
+      expect(prisma.disputeAuditLog.create).toHaveBeenCalledWith({
+        data: {
+          bookingId: BOOKING_ID,
+          action: DISPUTE_AUDIT_ACTION.NOTE_ADDED,
+          actorId: ADMIN_ID,
+          actorRole: 'admin',
+          note: 'contacted patient for evidence',
+        },
+      });
+      expect(result.action).toBe(DISPUTE_AUDIT_ACTION.NOTE_ADDED);
+      expect(result.note).toBe('contacted patient for evidence');
+      expect(result.actor).toEqual(
+        expect.objectContaining({ id: ADMIN_ID, email: ADMIN_AUTHUSER.email }),
+      );
     });
   });
 });

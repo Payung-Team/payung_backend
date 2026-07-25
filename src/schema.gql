@@ -118,6 +118,17 @@ type AdminPayoutAccountSummary {
   status: String!
 }
 
+input AdminTransactionsInput {
+  dateFrom: DateTime
+  dateTo: DateTime
+  limit: Int
+  page: Int
+  q: String
+  sortBy: TransactionSortBy
+  status: String
+  type: TransactionType
+}
+
 input AdminUpdateCaregiverInfoInput {
   """UUID of the caregiver to edit"""
   caregiverId: ID!
@@ -1225,6 +1236,21 @@ type Query {
   adminPayments(input: AdminPaymentsInput): PaymentConnection!
 
   """
+  Admin only: รายละเอียด 1 transaction + status timeline + related links. id เป็น composite "payment:<uuid>" หรือ "payout:<uuid>" (PYG-333)
+  """
+  adminTransaction(id: ID!): TransactionDetail!
+
+  """
+  Admin only: ผลรวม aggregate ของ transactions ตาม filter เดียวกับ list (count/ยอดรวมของ payment/payout/refund + net) (PYG-333)
+  """
+  adminTransactionSummary(input: AdminTransactionsInput): TransactionTotals!
+
+  """
+  Admin only: รายการ transactions รวม (payment + payout + refund) filter: type, status, dateFrom/dateTo (created_at), q (booking id / omise id / ชื่อ / อีเมล). default: ทุกประเภท เรียง created_desc (ใหม่สุดก่อน) (PYG-333)
+  """
+  adminTransactions(input: AdminTransactionsInput): TransactionSummaryConnection!
+
+  """
   Admin only: Get full user detail including caregiver info, KYC status, suspension state, and audit log count.
   """
   adminUserDetail(
@@ -1544,6 +1570,91 @@ input ToggleFieldLockInput {
 
   """true = lock, false = unlock"""
   lock: Boolean!
+}
+
+type TransactionDetail {
+  amount: Float!
+  bookingId: ID!
+  counterparty: TransactionParty!
+  createdAt: DateTime!
+  currency: String!
+  id: ID!
+  method: String
+  relatedLinks: TransactionRelatedLinks!
+  status: String!
+  timeline: [TransactionTimelineEntry!]!
+  type: TransactionType!
+}
+
+type TransactionParty {
+  displayName: String
+  email: String!
+  id: ID!
+}
+
+type TransactionRelatedLinks {
+  bookingId: ID!
+  caregiverId: ID
+  patientId: ID
+  paymentId: ID
+  payoutId: ID
+}
+
+"""การเรียง transaction — default created_desc (ใหม่สุดก่อน) (PYG-333)"""
+enum TransactionSortBy {
+  amount_asc
+  amount_desc
+  created_asc
+  created_desc
+}
+
+type TransactionSummary {
+  amount: Float!
+  bookingId: ID!
+  counterparty: TransactionParty!
+  createdAt: DateTime!
+  currency: String!
+  id: ID!
+  method: String
+  status: String!
+  type: TransactionType!
+}
+
+type TransactionSummaryConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [TransactionSummary!]!
+  page: Int!
+  totalCount: Int!
+}
+
+type TransactionTimelineEntry {
+  changedBy: ID
+  createdAt: DateTime!
+  fromStatus: String
+  reason: String
+  toStatus: String!
+}
+
+type TransactionTotals {
+  currency: String!
+  netAmount: Float!
+  paymentCount: Int!
+  payoutCount: Int!
+  refundCount: Int!
+  totalCount: Int!
+  totalPaymentAmount: Float!
+  totalPayoutAmount: Float!
+  totalRefundAmount: Float!
+}
+
+"""
+ประเภท transaction: payment (เงินเข้า) | payout (เงินออกให้ caregiver) | refund (เงินคืน patient) (PYG-333)
+"""
+enum TransactionType {
+  payment
+  payout
+  refund
 }
 
 input UpdateCaregiverInput {

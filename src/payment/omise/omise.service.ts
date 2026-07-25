@@ -94,16 +94,6 @@ export type OmiseRecipientResult = {
   };
 };
 
-/** PYG-266: ผลลัพธ์จาก POST /transfers (เอาเฉพาะ field ที่ต้อง audit) */
-export type OmiseTransferResult = {
-  /** transfer id ของ Omise (เก็บใน payment.metadata.omiseTransferId) */
-  id: string;
-  /** จำนวนเงินที่โอน (หน่วย satangs ตามที่ Omise บันทึก) */
-  amount: number;
-  /** recipient id ที่โอนไป */
-  recipient: string;
-};
-
 /** ผลลัพธ์ที่ normalize แล้วจากการ capture (เอาเฉพาะ field ที่เราต้องใช้ต่อ) */
 export type OmiseCaptureResult = {
   /** charge id ของ Omise */
@@ -236,8 +226,12 @@ export class OmiseService {
       captured,
       paid,
       authorized: body.authorized === true,
-      failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
-      failure_message: typeof body.failure_message === 'string' ? body.failure_message : undefined,
+      failure_code:
+        typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message:
+        typeof body.failure_message === 'string'
+          ? body.failure_message
+          : undefined,
     };
   }
 
@@ -249,13 +243,17 @@ export class OmiseService {
    * @returns ข้อมูล charge ที่เพิ่งสร้าง
    * @throws PaymentError ถ้ากันวงเงินไม่สำเร็จ
    */
-  async createCharge(amount: number, token: string): Promise<OmiseCaptureResult> {
+  async createCharge(
+    amount: number,
+    token: string,
+  ): Promise<OmiseCaptureResult> {
     if (!this.secretKey) {
       throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
 
     const url = `${this.apiBase}/charges`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -275,16 +273,26 @@ export class OmiseService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Omise] createCharge network error: ${message}`);
-      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง charge', { omiseMessage: message });
+      throw mapOmiseError(
+        'network_error',
+        'ติดต่อ Omise ไม่สำเร็จขณะสร้าง charge',
+        { omiseMessage: message },
+      );
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     // กรณี HTTP ไม่สำเร็จ (เช่น token ผิด, invalid request)
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
-      this.logger.error(`[Omise] createCharge failed status=${res.status} code=${omiseCode} message=${omiseMessage}`);
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createCharge failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
       throw mapOmiseError(omiseCode, omiseMessage, {
         omiseCode,
         omiseMessage,
@@ -294,8 +302,12 @@ export class OmiseService {
 
     const status = typeof body.status === 'string' ? body.status : 'unknown';
     const authorized = body.authorized === true;
-    const failureCode = typeof body.failure_code === 'string' ? body.failure_code : undefined;
-    const failureMessage = typeof body.failure_message === 'string' ? body.failure_message : undefined;
+    const failureCode =
+      typeof body.failure_code === 'string' ? body.failure_code : undefined;
+    const failureMessage =
+      typeof body.failure_message === 'string'
+        ? body.failure_message
+        : undefined;
 
     // ตรวจสอบว่าสำเร็จไหม: สำหรับ capture=false, authorized ควรเป็น true หรือ status เป็น 'pending' / 'successful'
     // ถ้าระบุว่า failed ก็จัดการด้วย PaymentError
@@ -333,7 +345,8 @@ export class OmiseService {
     }
 
     const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}/reverse`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -343,15 +356,21 @@ export class OmiseService {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Omise] reverseCharge network error chargeId=${omiseChargeId}: ${message}`);
+      this.logger.error(
+        `[Omise] reverseCharge network error chargeId=${omiseChargeId}: ${message}`,
+      );
       throw new Error(`ติดต่อ Omise ไม่สำเร็จขณะ reverse เงิน: ${message}`);
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
       this.logger.error(
         `[Omise] reverseCharge failed chargeId=${omiseChargeId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
       );
@@ -365,8 +384,12 @@ export class OmiseService {
       captured: body.paid === true,
       paid: body.paid === true,
       authorized: body.authorized === true,
-      failure_code: typeof body.failure_code === 'string' ? body.failure_code : undefined,
-      failure_message: typeof body.failure_message === 'string' ? body.failure_message : undefined,
+      failure_code:
+        typeof body.failure_code === 'string' ? body.failure_code : undefined,
+      failure_message:
+        typeof body.failure_message === 'string'
+          ? body.failure_message
+          : undefined,
     };
   }
 
@@ -406,11 +429,15 @@ export class OmiseService {
       throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
     if (!omiseChargeId) {
-      throw mapOmiseError('invalid_request', 'ไม่มี omiseChargeId — ไม่สามารถคืนเงินได้');
+      throw mapOmiseError(
+        'invalid_request',
+        'ไม่มี omiseChargeId — ไม่สามารถคืนเงินได้',
+      );
     }
 
     const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}/refunds`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     const formBody = new URLSearchParams();
     if (amountSatangs !== undefined) {
@@ -443,7 +470,10 @@ export class OmiseService {
       });
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
@@ -482,13 +512,16 @@ export class OmiseService {
    * @returns charge ที่เพิ่งสร้าง (status='pending' จนกว่า user จะ scan + bank confirm)
    * @throws PaymentError ถ้าสร้าง charge ไม่สำเร็จ
    */
-  async createPromptPayCharge(amountSatangs: number): Promise<OmisePromptPayResult> {
+  async createPromptPayCharge(
+    amountSatangs: number,
+  ): Promise<OmisePromptPayResult> {
     if (!this.secretKey) {
       throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
 
     const url = `${this.apiBase}/charges`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -507,13 +540,22 @@ export class OmiseService {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Omise] createPromptPayCharge network error: ${message}`);
-      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง PromptPay charge', {
-        omiseMessage: message,
-      });
+      this.logger.error(
+        `[Omise] createPromptPayCharge network error: ${message}`,
+      );
+      throw mapOmiseError(
+        'network_error',
+        'ติดต่อ Omise ไม่สำเร็จขณะสร้าง PromptPay charge',
+        {
+          omiseMessage: message,
+        },
+      );
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
@@ -547,7 +589,9 @@ export class OmiseService {
       failure_code:
         typeof body.failure_code === 'string' ? body.failure_code : undefined,
       failure_message:
-        typeof body.failure_message === 'string' ? body.failure_message : undefined,
+        typeof body.failure_message === 'string'
+          ? body.failure_message
+          : undefined,
     };
   }
 
@@ -574,7 +618,8 @@ export class OmiseService {
     }
 
     const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -590,7 +635,10 @@ export class OmiseService {
       throw new Error(`ติดต่อ Omise ไม่สำเร็จขณะ retrieve charge: ${message}`);
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
@@ -612,12 +660,16 @@ export class OmiseService {
       failure_code:
         typeof body.failure_code === 'string' ? body.failure_code : undefined,
       failure_message:
-        typeof body.failure_message === 'string' ? body.failure_message : undefined,
+        typeof body.failure_message === 'string'
+          ? body.failure_message
+          : undefined,
     };
   }
 
   /** แปลง raw Omise recipient response object → OmiseRecipientResult ที่ normalize แล้ว */
-  private normalizeRecipient(body: Record<string, unknown>): OmiseRecipientResult {
+  private normalizeRecipient(
+    body: Record<string, unknown>,
+  ): OmiseRecipientResult {
     const bankAccount = (body.bank_account ?? {}) as Record<string, unknown>;
     return {
       id: typeof body.id === 'string' ? body.id : '',
@@ -625,7 +677,10 @@ export class OmiseService {
       active: body.active === true,
       bankAccount: {
         brand: typeof bankAccount.brand === 'string' ? bankAccount.brand : '',
-        lastDigits: typeof bankAccount.last_digits === 'string' ? bankAccount.last_digits : '',
+        lastDigits:
+          typeof bankAccount.last_digits === 'string'
+            ? bankAccount.last_digits
+            : '',
         name: typeof bankAccount.name === 'string' ? bankAccount.name : '',
       },
     };
@@ -653,7 +708,8 @@ export class OmiseService {
     }
 
     const url = `${this.apiBase}/recipients`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -675,24 +731,36 @@ export class OmiseService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Omise] createRecipient network error: ${message}`);
-      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้างบัญชีรับเงิน', {
-        omiseMessage: message,
-      });
+      throw mapOmiseError(
+        'network_error',
+        'ติดต่อ Omise ไม่สำเร็จขณะสร้างบัญชีรับเงิน',
+        {
+          omiseMessage: message,
+        },
+      );
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
       this.logger.error(
         `[Omise] createRecipient failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
       );
-      throw mapOmiseError(omiseCode ?? 'recipient_creation_failed', omiseMessage, {
-        omiseCode,
+      throw mapOmiseError(
+        omiseCode ?? 'recipient_creation_failed',
         omiseMessage,
-        httpStatus: res.status,
-      });
+        {
+          omiseCode,
+          omiseMessage,
+          httpStatus: res.status,
+        },
+      );
     }
 
     return this.normalizeRecipient(body);
@@ -709,11 +777,15 @@ export class OmiseService {
       throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
     if (!recipientId) {
-      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถ retrieve ได้');
+      throw mapOmiseError(
+        'invalid_request',
+        'ไม่มี recipientId — ไม่สามารถ retrieve ได้',
+      );
     }
 
     const url = `${this.apiBase}/recipients/${encodeURIComponent(recipientId)}`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     let res: Response;
     try {
@@ -726,50 +798,94 @@ export class OmiseService {
       this.logger.error(
         `[Omise] retrieveRecipient network error recipientId=${recipientId}: ${message}`,
       );
-      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะตรวจสอบบัญชีรับเงิน', {
-        omiseMessage: message,
-      });
+      throw mapOmiseError(
+        'network_error',
+        'ติดต่อ Omise ไม่สำเร็จขณะตรวจสอบบัญชีรับเงิน',
+        {
+          omiseMessage: message,
+        },
+      );
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
       this.logger.error(
         `[Omise] retrieveRecipient failed recipientId=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
       );
-      throw mapOmiseError(omiseCode ?? 'recipient_retrieve_failed', omiseMessage, {
-        omiseCode,
+      throw mapOmiseError(
+        omiseCode ?? 'recipient_retrieve_failed',
         omiseMessage,
-        httpStatus: res.status,
-      });
+        {
+          omiseCode,
+          omiseMessage,
+          httpStatus: res.status,
+        },
+      );
     }
 
     return this.normalizeRecipient(body);
   }
 
   /**
-   * createTransfer — PYG-266: POST /transfers โอนเงินไปยัง Omise recipient
+   * createTransfer — PYG-266 / PYG-330: POST /transfers โอนเงินไปยัง Omise recipient
    *
-   * @param recipientId    - Omise recipient id ปลายทาง
-   * @param amountSatangs  - จำนวนเงินที่โอน (หน่วย satangs, หลังหักค่าธรรมเนียมแพลตฟอร์มแล้ว)
-   * @param idempotencyKey - (recommended) กัน double-transfer race เหมือน createRefund
+   * มี 2 caller เดิมที่ implement แยกกันมาด้วยลำดับ argument และ return shape
+   * คนละแบบ รวมเป็น overload เดียวเพื่อไม่ต้องแก้ caller ทั้งสองฝั่ง:
+   *   - createTransfer(recipientId, amountSatangs, idempotencyKey?) — PaymentService
+   *     คืนผลลัพธ์แบบย่อ {id, amount, recipient}
+   *   - createTransfer(amountSatangs, recipientId, idempotencyKey) — PayoutWorkerService
+   *     คืนผลลัพธ์เต็ม {id, status, amount, recipient, currency, sent, paid, ...}
+   *
+   * Omise-Idempotency-Key = ค่าที่ caller ส่งมา (stable ต่อ payment/payout เดียว)
+   *   ถ้ายิงซ้ำด้วย key เดิม + params เดิม → Omise คืน response เดิม ไม่โอนซ้ำ
    */
   async createTransfer(
     recipientId: string,
     amountSatangs: number,
     idempotencyKey?: string,
-  ): Promise<OmiseTransferResult> {
+  ): Promise<{ id: string; amount: number; recipient: string }>;
+  async createTransfer(
+    amountSatangs: number,
+    recipientId: string,
+    idempotencyKey: string,
+  ): Promise<OmiseTransferResult>;
+  async createTransfer(
+    arg1: string | number,
+    arg2: string | number,
+    idempotencyKey?: string,
+  ): Promise<
+    OmiseTransferResult | { id: string; amount: number; recipient: string }
+  > {
+    const legacyOrder = typeof arg1 === 'string';
+    const recipientId = legacyOrder ? arg1 : (arg2 as string);
+    const amountSatangs = legacyOrder ? (arg2 as number) : arg1;
+
     if (!this.secretKey) {
       throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
     if (!recipientId) {
-      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถโอนเงินได้');
+      throw mapOmiseError(
+        'invalid_request',
+        'ไม่มี recipientId — ไม่สามารถโอนเงินได้',
+      );
+    }
+    if (!legacyOrder && !idempotencyKey) {
+      throw mapOmiseError(
+        'invalid_request',
+        'ต้องระบุ idempotencyKey ให้ createTransfer',
+      );
     }
 
     const url = `${this.apiBase}/transfers`;
-    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
     const headers: Record<string, string> = {
       Authorization: authHeader,
@@ -799,11 +915,15 @@ export class OmiseService {
       });
     }
 
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!res.ok || body.object === 'error') {
       const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
       this.logger.error(
         `[Omise] createTransfer failed recipientId=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
       );
@@ -814,99 +934,19 @@ export class OmiseService {
       });
     }
 
-    return {
-      id: typeof body.id === 'string' ? body.id : '',
-      amount: typeof body.amount === 'number' ? body.amount : amountSatangs,
-      recipient: typeof body.recipient === 'string' ? body.recipient : recipientId,
-    };
-  }
-
-  /**
-   * createTransfer — PYG-330 (ก้อน B): โอนเงินไปยัง Omise recipient
-   *
-   * ใช้ pattern เดียวกับ createRefund:
-   *   - REST + Basic auth ผ่าน OMISE_SECRET_KEY
-   *   - Omise-Idempotency-Key = `payout:<payout.id>` (stable ต่อ payout ใบเดียว)
-   *     ถ้ายิงซ้ำด้วย key เดิม + params เดิม → Omise คืน response เดิม ไม่โอนซ้ำ
-   *   - ห้ามใส่ retryCount / timestamp ใน key (จะเสียคุณสมบัติ "อย่าเผลอโอนซ้ำ")
-   *
-   * @param amountSatangs   จำนวนเงิน (satangs, integer)
-   * @param recipientId     Omise recipient id (`recp_*`) — ต้อง verified ก่อนเรียก
-   * @param idempotencyKey  ต้องคงที่ต่อ payout (`payout:${payout.id}`)
-   * @returns Transfer object (มี `id`, `status`, `sent`, `paid`)
-   * @throws PaymentError ถ้า Omise ปฏิเสธหรือ network ติดต่อไม่ได้
-   */
-  async createTransfer(
-    amountSatangs: number,
-    recipientId: string,
-    idempotencyKey: string,
-  ): Promise<OmiseTransferResult> {
-    if (!this.secretKey) {
-      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
-    }
-    if (!recipientId) {
-      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถโอนเงินได้');
-    }
-    if (!idempotencyKey) {
-      throw mapOmiseError('invalid_request', 'ต้องระบุ idempotencyKey ให้ createTransfer');
-    }
-    if (!Number.isInteger(amountSatangs) || amountSatangs <= 0) {
-      throw mapOmiseError(
-        'invalid_request',
-        `amountSatangs ต้องเป็น integer > 0 (ได้รับ ${amountSatangs})`,
-      );
-    }
-
-    const url = `${this.apiBase}/transfers`;
-    const authHeader =
-      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
-
-    const formBody = new URLSearchParams({
-      amount: String(amountSatangs),
-      recipient: recipientId,
-    });
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Omise-Idempotency-Key': idempotencyKey,
-        },
-        body: formBody,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `[Omise] createTransfer network error recipient=${recipientId}: ${message}`,
-      );
-      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะสร้าง transfer', {
-        omiseMessage: message,
-      });
-    }
-
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-
-    if (!res.ok || body.object === 'error') {
-      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
-      const omiseMessage =
-        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
-      this.logger.error(
-        `[Omise] createTransfer failed recipient=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
-      );
-      throw mapOmiseError(omiseCode ?? 'transfer_failed', omiseMessage, {
-        omiseCode,
-        omiseMessage,
-        httpStatus: res.status,
-      });
+    if (legacyOrder) {
+      return {
+        id: typeof body.id === 'string' ? body.id : '',
+        amount: typeof body.amount === 'number' ? body.amount : amountSatangs,
+        recipient:
+          typeof body.recipient === 'string' ? body.recipient : recipientId,
+      };
     }
 
     return {
       id: typeof body.id === 'string' ? body.id : '',
       status: typeof body.status === 'string' ? body.status : 'unknown',
-      amount: typeof body.amount === 'number' ? body.amount : 0,
+      amount: typeof body.amount === 'number' ? body.amount : amountSatangs,
       recipient:
         typeof body.recipient === 'string' ? body.recipient : recipientId,
       currency:
@@ -916,7 +956,9 @@ export class OmiseService {
       failure_code:
         typeof body.failure_code === 'string' ? body.failure_code : undefined,
       failure_message:
-        typeof body.failure_message === 'string' ? body.failure_message : undefined,
+        typeof body.failure_message === 'string'
+          ? body.failure_message
+          : undefined,
     };
   }
 }
