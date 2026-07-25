@@ -7,6 +7,8 @@
  *  - updatePayoutAccount: reject เมื่อ kycStatus !== 'verified'; happy path → upsert +
  *    createRecipientForCaregiver ถูกเรียก
  *  - getKycStatus: payoutAccount undefined เมื่อไม่มี, มี summary แบบ mask เมื่อมี
+ *  - accountName ต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชน (fullName) ทั้ง submitKyc และ
+ *    updatePayoutAccount — ไม่ตรง → BadRequestException, ไม่แตะ transaction
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
@@ -202,6 +204,50 @@ describe('KycService — payout account (PYG-266)', () => {
         }),
       );
     });
+
+    it('accountName ไม่ตรงกับ fullName → BadRequestException, ไม่แตะ transaction เลย', async () => {
+      const user: AuthUser = { id: USER_ID, email: 'x@y.com' } as AuthUser;
+
+      await expect(
+        service.submitKyc(
+          user,
+          baseKycInput({
+            fullName: 'สมชาย ใจดี',
+            payoutAccount: { bankCode: 'kbank', accountNumber: '1234566789', accountName: 'สมหญิง ใจร้าย' },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('accountName ตรงกับ fullName แค่ต่าง whitespace/ตัวพิมพ์ → ผ่าน (normalize ก่อนเทียบ)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+      tx.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(null);
+      tx.caregiverPayoutAccount.upsert.mockResolvedValueOnce({
+        id: 'payout-1',
+        caregiverId: CAREGIVER_ID,
+        bankCode: 'kbank',
+        accountName: '  สมชาย   ใจดี  ',
+        accountNumberEnc: 'iv:tag:ct',
+        accountNumberLast4: '6789',
+        status: 'pending',
+        recipientStatus: 'unverified',
+        omiseRecipientId: null,
+        verifiedAt: null,
+      });
+      const user: AuthUser = { id: USER_ID, email: 'x@y.com' } as AuthUser;
+
+      await expect(
+        service.submitKyc(
+          user,
+          baseKycInput({
+            fullName: 'สมชาย ใจดี',
+            payoutAccount: { bankCode: 'kbank', accountNumber: '1234566789', accountName: '  สมชาย   ใจดี  ' },
+          }),
+        ),
+      ).resolves.toBeDefined();
+      expect(tx.caregiverPayoutAccount.upsert).toHaveBeenCalled();
+    });
   });
 
   describe('updatePayoutAccount', () => {
@@ -277,6 +323,24 @@ describe('KycService — payout account (PYG-266)', () => {
       });
       // never leaks accountNumberEnc ใน summary ที่ return
       expect(result).not.toHaveProperty('accountNumberEnc');
+    });
+
+    it('accountName ไม่ตรงกับ fullName ของ caregiver → BadRequestException, ไม่แตะ transaction เลย', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce({
+        id: CAREGIVER_ID,
+        kycStatus: 'verified',
+        fullName: 'สมชาย ใจดี',
+      });
+      const user: AuthUser = { id: USER_ID, email: 'x@y.com' } as AuthUser;
+
+      await expect(
+        service.updatePayoutAccount(user, {
+          bankCode: 'kbank',
+          accountNumber: '1234566789',
+          accountName: 'ชื่ออื่นไม่ตรงบัตร',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
 

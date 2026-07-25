@@ -112,6 +112,14 @@ export class KycService {
       }
     }
 
+    // PYG-266: ชื่อบัญชีรับเงินต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ submit มาด้วยกัน
+    if (input.payoutAccount) {
+      this.assertAccountNameMatchesLegalName(
+        input.payoutAccount.accountName,
+        input.fullName,
+      );
+    }
+
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
       // Generate caregiverNumber เฉพาะ record ใหม่ (format: CG-YYMMDD-XXXX)
@@ -277,6 +285,9 @@ export class KycService {
         'ต้องผ่านการยืนยันตัวตน (KYC) ก่อนจึงจะแก้ไขบัญชีรับเงินได้ — กรุณาส่งหรือแก้ไข KYC ผ่านหน้ายืนยันตัวตนแทน',
       );
     }
+
+    // PYG-266: ชื่อบัญชีรับเงินต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ยืนยันไว้ตอน KYC
+    this.assertAccountNameMatchesLegalName(input.accountName, caregiver.fullName ?? '');
 
     const { account } = await this.prismaService.$transaction(async (tx) => {
       const result = await this.upsertPayoutAccountInTx(tx, caregiver.id, input);
@@ -506,6 +517,24 @@ export class KycService {
       `Failed to trigger ${action} for user ${userId}: ${error.message}`,
       error.stack,
     );
+  }
+
+  /**
+   * assertAccountNameMatchesLegalName — PYG-266: กันโอนเงินผิดบัญชี/ผิดคน โดยบังคับ
+   * ให้ชื่อบัญชีธนาคารที่ caregiver แจ้งตรงกับชื่อ-นามสกุลตามบัตรประชาชน (fullName)
+   * เทียบแบบ normalize (ตัด whitespace ซ้ำ/หัวท้าย, ไม่สนตัวพิมพ์เล็ก-ใหญ่) เพราะ
+   * เป็นการพิมพ์มือทั้งสองฝั่ง ไม่ควรเข้มงวดจนช่องว่างเกินต่างกันแล้ว false reject
+   */
+  private assertAccountNameMatchesLegalName(
+    accountName: string,
+    legalName: string,
+  ): void {
+    const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (normalize(accountName) !== normalize(legalName)) {
+      throw new BadRequestException(
+        'ชื่อบัญชีธนาคารต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ยืนยันตัวตนไว้',
+      );
+    }
   }
 
   /**

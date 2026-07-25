@@ -626,6 +626,7 @@ enum DisputeStatus {
   flagged
   none
   resolved
+  under_review
 }
 
 type DisputeSummary {

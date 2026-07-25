@@ -25,7 +25,7 @@ export class PayoutAccountInput {
   @Matches(/^\d{10}$/, { message: 'เลขบัญชีต้องเป็นตัวเลข 10 หลัก' })
   accountNumber!: string;
 
-  /** ชื่อบัญชี — ควรตรงกับชื่อในบัตรประชาชนของ caregiver */
+  /** ชื่อบัญชี — ต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนของ caregiver (บังคับใน KycService) */
   @Field({ description: 'Account holder name' })
   @IsString({ message: 'ชื่อบัญชีต้องเป็นข้อความ' })
   @MinLength(2, { message: 'ชื่อบัญชีต้องมีอย่างน้อย 2 ตัวอักษร' })
