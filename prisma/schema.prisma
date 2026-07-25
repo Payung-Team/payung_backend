@@ -209,6 +209,46 @@ model PayoutStatusHistory {
   @@map("payout_status_history")
 }
 
+/// Audit trail ของ dispute — mirror payout_status_history
+/// backend-only: RLS off, ไม่มี grant (ดู migration.sql)
+model DisputeAuditLog {
+  id         String   @id @default(uuid())
+  bookingId  String   @map("booking_id") @db.Uuid
+  action     String // dispute_filed | evidence_added | status_changed | resolved
+  fromStatus String?  @map("from_status")
+  toStatus   String?  @map("to_status")
+  actorId    String?  @map("actor_id") // null = system
+  actorRole  String?  @map("actor_role") // patient | caregiver | admin
+  note       String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId, createdAt])
+  @@map("dispute_audit_logs")
+}
+
+/// หลักฐานของ dispute — เก็บ metadata + url, ไฟล์จริงอยู่ Supabase Storage (แบบ kyc_documents)
+/// backend-only: RLS off, ไม่มี grant
+model DisputeEvidence {
+  id           String   @id @default(uuid())
+  bookingId    String   @map("booking_id") @db.Uuid
+  uploadedBy   String   @map("uploaded_by") // user id
+  uploaderRole String   @map("uploader_role") // patient | caregiver | admin
+  fileUrl      String   @map("file_url")
+  fileName     String   @map("file_name")
+  fileSize     Int      @map("file_size")
+  mimeType     String   @map("mime_type")
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId, createdAt])
+  @@map("dispute_evidence")
+}
+
 model CaregiverJobType {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   caregiverId String    @map("caregiver_id")
@@ -270,48 +310,50 @@ model Review {
 }
 
 model Booking {
-  id                       String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  patientId                String          @map("patient_id")
-  caregiverId              String?         @map("caregiver_id")
-  careRecipientId          String?         @map("care_recipient_id") @db.Uuid
-  serviceLocations         String[]        @map("service_locations")
-  serviceType              String          @map("service_type")
-  timeSlot                 String          @map("time_slot")
-  startTime                DateTime        @map("start_time") @db.Time(6)
-  durationHours            Decimal         @map("duration_hours") @db.Decimal
-  locationAddress          String          @map("location_address")
-  locationLat              Decimal?        @map("location_lat") @db.Decimal(10, 7)
-  locationLng              Decimal?        @map("location_lng") @db.Decimal(10, 7)
-  status                   String          @default("unmatched")
-  rejectionReason          String?         @map("rejection_reason")
-  estimatedCost            Decimal?        @map("estimated_cost") @db.Decimal(10, 2)
-  platformFee              Decimal?        @map("platform_fee") @db.Decimal(10, 2)
-  bookingDate              DateTime        @map("booking_date") @db.Date
-  dayOfContactName         String?         @map("day_of_contact_name")
-  dayOfContactPhone        String?         @map("day_of_contact_phone")
-  dayOfContactRelationship String?         @map("day_of_contact_relationship")
-  createdAt                DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
-  confirmedAt              DateTime?       @map("confirmed_at") @db.Timestamptz(6)
-  tasks                    String[]        @default([]) @map("tasks")
-  acceptedAt               DateTime?       @map("accepted_at") @db.Timestamptz(6)
-  notes                    String?         @map("notes")
-  disputeStatus            String          @default("none") @map("dispute_status") @db.VarChar(20)
-  disputeReason            String?         @map("dispute_reason")
-  disputeResolvedAt        DateTime?       @map("dispute_resolved_at") @db.Timestamptz(6)
+  id                       String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId                String            @map("patient_id")
+  caregiverId              String?           @map("caregiver_id")
+  careRecipientId          String?           @map("care_recipient_id") @db.Uuid
+  serviceLocations         String[]          @map("service_locations")
+  serviceType              String            @map("service_type")
+  timeSlot                 String            @map("time_slot")
+  startTime                DateTime          @map("start_time") @db.Time(6)
+  durationHours            Decimal           @map("duration_hours") @db.Decimal
+  locationAddress          String            @map("location_address")
+  locationLat              Decimal?          @map("location_lat") @db.Decimal(10, 7)
+  locationLng              Decimal?          @map("location_lng") @db.Decimal(10, 7)
+  status                   String            @default("unmatched")
+  rejectionReason          String?           @map("rejection_reason")
+  estimatedCost            Decimal?          @map("estimated_cost") @db.Decimal(10, 2)
+  platformFee              Decimal?          @map("platform_fee") @db.Decimal(10, 2)
+  bookingDate              DateTime          @map("booking_date") @db.Date
+  dayOfContactName         String?           @map("day_of_contact_name")
+  dayOfContactPhone        String?           @map("day_of_contact_phone")
+  dayOfContactRelationship String?           @map("day_of_contact_relationship")
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  confirmedAt              DateTime?         @map("confirmed_at") @db.Timestamptz(6)
+  tasks                    String[]          @default([]) @map("tasks")
+  acceptedAt               DateTime?         @map("accepted_at") @db.Timestamptz(6)
+  notes                    String?           @map("notes")
+  disputeStatus            String            @default("none") @map("dispute_status") @db.VarChar(20)
+  disputeReason            String?           @map("dispute_reason")
+  disputeResolvedAt        DateTime?         @map("dispute_resolved_at") @db.Timestamptz(6)
   // PYG-316: when the dispute was filed (set on flag) — powers SLA calc, date filters & SLA sort
-  disputeFiledAt           DateTime?       @map("dispute_filed_at") @db.Timestamptz(6)
+  disputeFiledAt           DateTime?         @map("dispute_filed_at") @db.Timestamptz(6)
   // PYG-316: who filed the dispute — 'customer' | 'caregiver' (only patients can file today)
-  disputeFiledBy           String?         @map("dispute_filed_by") @db.VarChar(20)
-  patientName              String?         @map("patient_name")
-  completedAt              DateTime?       @map("completed_at") @db.Timestamptz(6)
+  disputeFiledBy           String?           @map("dispute_filed_by") @db.VarChar(20)
+  patientName              String?           @map("patient_name")
+  completedAt              DateTime?         @map("completed_at") @db.Timestamptz(6)
   booking_tasks            booking_tasks[]
-  careRecipient            CareRecipient?  @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
-  caregiver                Caregiver?      @relation(fields: [caregiverId], references: [id])
-  patient                  User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
+  caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
+  patient                  User              @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   payment                  Payment?
   payout                   Payout?
   review                   Review?
+  disputeAuditLogs         DisputeAuditLog[]
+  disputeEvidence          DisputeEvidence[]
 
   @@index([caregiverId], map: "idx_bookings_caregiver")
   @@index([bookingDate], map: "idx_bookings_date")
