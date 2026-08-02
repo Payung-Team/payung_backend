@@ -76,6 +76,9 @@ describe('PaymentStateMachine', () => {
       [PaymentStatus.captured, PaymentStatus.transferred],
       [PaymentStatus.captured, PaymentStatus.refunded],
       [PaymentStatus.captured, PaymentStatus.partially_refunded],
+      // PYG-374: partial refund หลายครั้งจนครบ (partially_refunded ไม่ terminal แล้ว)
+      [PaymentStatus.partially_refunded, PaymentStatus.partially_refunded],
+      [PaymentStatus.partially_refunded, PaymentStatus.refunded],
     ])('อนุญาต %s → %s', (from, to) => {
       expect(machine.canTransition(from, to)).toBe(true);
     });
