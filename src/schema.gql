@@ -1281,8 +1281,8 @@ input RefundPaymentInput {
   """UUID ของ payment ที่ต้องการคืนเงิน"""
   paymentId: ID!
 
-  """เหตุผลการคืนเงิน (audit)"""
-  reason: String
+  """เหตุผลการคืนเงิน (audit) — ต้องมีอย่างน้อย 10 ตัวอักษร"""
+  reason: String!
 }
 
 input RegisterInput {

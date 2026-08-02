@@ -316,7 +316,7 @@ export class PaymentService {
     const updated = await this.refundService.refund({
       paymentId: input.paymentId,
       amount: input.amount,
-      reason: input.reason ?? '',
+      reason: input.reason,
       source: 'admin_manual',
       actorId: admin.id,
     });
