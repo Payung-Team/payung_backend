@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
-import { PaymentService } from '../payment/payment.service';
+import { RefundService } from '../payment/refund.service';
 import { PaymentStatusEnum } from '../payment/dto/payment.type';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { DisputeBooking } from './entities/dispute-booking.entity';
@@ -60,7 +60,7 @@ export class DisputeService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly paymentService: PaymentService,
+    private readonly refundService: RefundService,
   ) {}
 
   // ── 1. patient flag dispute ─────────────────────────────────────────────
@@ -241,10 +241,12 @@ export class DisputeService {
     // PYG-286: refundPayment ของจริง — รับ DTO + AuthUser (ไม่ใช่ 4 positional แบบ stub เดิม)
     // ส่วน guard amount/range PaymentService ตรวจให้อีกชั้น (defense in depth)
     if (decision === DisputeDecision.refund_full) {
-      await this.paymentService.refundPayment(
-        { paymentId: booking.payment!.id, reason },
-        admin,
-      );
+      await this.refundService.refund({
+        paymentId: booking.payment!.id,
+        reason,
+        source: 'dispute',
+        actorId: admin.id,
+      });
     } else if (decision === DisputeDecision.refund_partial) {
       if (refundAmount == null) {
         throw new BadRequestException(
@@ -260,10 +262,13 @@ export class DisputeService {
           `refundAmount ต้องอยู่ในช่วง (0, ${fullAmount}] — ได้รับ ${refundAmount}`,
         );
       }
-      await this.paymentService.refundPayment(
-        { paymentId: booking.payment!.id, amount: refundAmount, reason },
-        admin,
-      );
+      await this.refundService.refund({
+        paymentId: booking.payment!.id,
+        amount: refundAmount,
+        reason,
+        source: 'dispute',
+        actorId: admin.id,
+      });
     }
     // no_refund → ไม่แตะ payment เลย
 

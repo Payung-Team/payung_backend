@@ -18,7 +18,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
-import { PaymentService } from '../payment/payment.service';
+import { RefundService } from '../payment/refund.service';
 import { DisputeService } from './dispute.service';
 import { DisputeDecision } from './entities/dispute-decision.enum';
 import { DisputeStatus } from './entities/dispute-status.enum';
@@ -84,7 +84,7 @@ describe('DisputeService', () => {
       update: jest.Mock;
     };
   };
-  let payments: { refundPayment: jest.Mock };
+  let refundSvc: { refund: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -95,15 +95,15 @@ describe('DisputeService', () => {
         update: jest.fn(),
       },
     };
-    payments = {
-      refundPayment: jest.fn(),
+    refundSvc = {
+      refund: jest.fn(),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         DisputeService,
         { provide: PrismaService, useValue: prisma },
-        { provide: PaymentService, useValue: payments },
+        { provide: RefundService, useValue: refundSvc },
       ],
     }).compile();
 
@@ -370,7 +370,7 @@ describe('DisputeService', () => {
         ADMIN_AUTHUSER,
       );
 
-      expect(payments.refundPayment).not.toHaveBeenCalled();
+      expect(refundSvc.refund).not.toHaveBeenCalled();
       expect(prisma.booking.update).toHaveBeenCalledWith({
         where: { id: BOOKING_ID },
         data: expect.objectContaining({ disputeStatus: 'resolved' }),
@@ -445,9 +445,9 @@ describe('DisputeService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    // PYG-286 merged: refund_full / refund_partial → calls real refundPayment
+    // PYG-374: refund_full / refund_partial → calls RefundService.refund (source=dispute)
 
-    it('refund_full → calls PaymentService.refundPayment with DTO (no amount = full) + admin AuthUser', async () => {
+    it('refund_full → calls RefundService.refund (no amount = full, source=dispute, actorId)', async () => {
       prisma.booking.findUnique
         .mockResolvedValueOnce({
           disputeStatus: 'flagged',
@@ -462,7 +462,7 @@ describe('DisputeService', () => {
             disputeResolvedAt: new Date('2026-06-28T10:00:00Z'),
           }),
         );
-      payments.refundPayment.mockResolvedValue({});
+      refundSvc.refund.mockResolvedValue({});
       prisma.booking.update.mockResolvedValue({});
 
       const result = await service.resolveDispute(
@@ -473,18 +473,17 @@ describe('DisputeService', () => {
         ADMIN_AUTHUSER,
       );
 
-      // signature ใหม่: { paymentId, reason } + admin AuthUser (no amount = full refund)
-      expect(payments.refundPayment).toHaveBeenCalledWith(
-        {
-          paymentId: PAYMENT_ID,
-          reason: expect.stringContaining('full refund'),
-        },
-        ADMIN_AUTHUSER,
-      );
+      // PYG-374: refund({ paymentId, reason, source:'dispute', actorId }) — no amount = full
+      expect(refundSvc.refund).toHaveBeenCalledWith({
+        paymentId: PAYMENT_ID,
+        reason: expect.stringContaining('full refund'),
+        source: 'dispute',
+        actorId: ADMIN_ID,
+      });
       expect(result.disputeStatus).toBe(DisputeStatus.resolved);
     });
 
-    it('refund_partial → calls PaymentService.refundPayment with amount + admin AuthUser', async () => {
+    it('refund_partial → calls RefundService.refund with amount + source=dispute + actorId', async () => {
       prisma.booking.findUnique
         .mockResolvedValueOnce({
           disputeStatus: 'flagged',
@@ -498,7 +497,7 @@ describe('DisputeService', () => {
             disputeResolvedAt: new Date('2026-06-28T10:00:00Z'),
           }),
         );
-      payments.refundPayment.mockResolvedValue({});
+      refundSvc.refund.mockResolvedValue({});
       prisma.booking.update.mockResolvedValue({});
 
       const result = await service.resolveDispute(
@@ -509,14 +508,13 @@ describe('DisputeService', () => {
         ADMIN_AUTHUSER,
       );
 
-      expect(payments.refundPayment).toHaveBeenCalledWith(
-        {
-          paymentId: PAYMENT_ID,
-          amount: 500,
-          reason: expect.stringContaining('partial refund 500'),
-        },
-        ADMIN_AUTHUSER,
-      );
+      expect(refundSvc.refund).toHaveBeenCalledWith({
+        paymentId: PAYMENT_ID,
+        amount: 500,
+        reason: expect.stringContaining('partial refund 500'),
+        source: 'dispute',
+        actorId: ADMIN_ID,
+      });
       expect(result.disputeStatus).toBe(DisputeStatus.resolved);
     });
   });

@@ -520,6 +520,8 @@ model Payment {
   patientId      String                 @map("patient_id")
   caregiverId    String                 @map("caregiver_id")
   amount         Decimal                @db.Decimal(10, 2)
+  capturedAmount Decimal?               @map("captured_amount") @db.Decimal(10, 2)
+  refundedAmount Decimal                @default(0) @map("refunded_amount") @db.Decimal(10, 2)
   currency       String                 @default("THB") @db.VarChar(3)
   omiseChargeId  String?                @map("omise_charge_id")
   omiseToken     String?                @map("omise_token")

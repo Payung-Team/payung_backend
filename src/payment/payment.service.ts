@@ -21,6 +21,7 @@ import { Payment, PaymentStatusEnum } from './dto/payment.type';
 import { PaymentConnection } from './dto/payment-connection.type';
 import { AdminPaymentsInput } from './dto/admin-payments.input';
 import { OmiseService } from './omise/omise.service';
+import { RefundService } from './refund.service';
 import { CreatePaymentInput } from './dto/create-payment.input';
 import { RefundPaymentInput } from './dto/refund-payment.input';
 
@@ -44,6 +45,7 @@ export class PaymentService {
     private readonly fsm: PaymentStateMachine,
     private readonly omiseService: OmiseService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly refundService: RefundService,
   ) {}
 
   // ── PYG-277: audit history query ─────────────────────────────────────────
@@ -308,130 +310,16 @@ export class PaymentService {
       throw new ForbiddenException('คุณไม่มีสิทธิ์คืนเงิน');
     }
 
-    // Guard 2: status pre-check
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: input.paymentId },
+    // PYG-374: refund logic ถูกรวมศูนย์ไว้ที่ RefundService (จุดเดียวที่เรียก Omise + คุมกฎเงิน)
+    // guard เดิม (status/amount/race) ย้ายเข้า RefundService ทั้งหมด — wrapper บาง ๆ นี้คงไว้
+    // เพื่อไม่ให้ GraphQL schema / FE เดิมพัง (source = admin_manual)
+    const updated = await this.refundService.refund({
+      paymentId: input.paymentId,
+      amount: input.amount,
+      reason: input.reason ?? '',
+      source: 'admin_manual',
+      actorId: admin.id,
     });
-    if (!payment) throw new NotFoundException(`ไม่พบ payment "${input.paymentId}"`);
-
-    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.captured) {
-      throw new BadRequestException(
-        `ไม่สามารถคืนเงินได้ — payment ต้องอยู่สถานะ "captured" (ปัจจุบัน: ${payment.paymentStatus})`,
-      );
-    }
-    if (!payment.omiseChargeId) {
-      throw new BadRequestException('payment ไม่มี omiseChargeId — ไม่สามารถคืนเงินได้');
-    }
-
-    // Guard 3: amount range — ทำงานในหน่วย satangs ตลอด เพื่อกัน float precision error
-    const paymentAmountBaht = this.toBahtNumber(payment.amount);
-    const paymentAmountSatangs = Math.round(paymentAmountBaht * 100);
-    const isPartial = input.amount !== undefined;
-    const refundAmountBaht = input.amount ?? paymentAmountBaht;
-    const refundAmountSatangs = Math.round(refundAmountBaht * 100);
-
-    if (refundAmountSatangs <= 0) {
-      throw new BadRequestException('จำนวนเงินที่คืนต้องมากกว่า 0');
-    }
-    if (refundAmountSatangs > paymentAmountSatangs) {
-      throw new BadRequestException(
-        `จำนวนเงินที่คืน (${refundAmountBaht} THB) ต้องไม่เกินยอด payment (${paymentAmountBaht} THB)`,
-      );
-    }
-
-    // Guard 4: re-check status RIGHT BEFORE Omise call — ปิด race window
-    // (ถ้ามี admin คนอื่น refund คั่นกลางจาก step 2 → step นี้, status จะเปลี่ยนไป)
-    const recheck = await this.prisma.payment.findUnique({
-      where: { id: input.paymentId },
-      select: { paymentStatus: true },
-    });
-    if (
-      !recheck ||
-      (recheck.paymentStatus as PaymentStatus) !== PaymentStatus.captured
-    ) {
-      throw new ConflictException(
-        `payment ถูกเปลี่ยนสถานะระหว่างการตรวจสอบ (ปัจจุบัน: ${recheck?.paymentStatus ?? 'unknown'}) — กรุณาลองใหม่`,
-      );
-    }
-
-    // Omise call — outside tx, with idempotency key
-    // key รวม paymentId + amount: ยิงซ้ำด้วย amount เดียวกัน = Omise return cached, ไม่ refund 2 ครั้ง
-    const idempotencyKey = `refund:${payment.id}:${refundAmountSatangs}`;
-    let refund;
-    try {
-      refund = await this.omiseService.createRefund(
-        payment.omiseChargeId,
-        // ส่ง amount เฉพาะ partial — full ปล่อย undefined ให้ Omise ตี refund ส่วนที่เหลือ
-        isPartial ? refundAmountSatangs : undefined,
-        idempotencyKey,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[refundPayment] Omise createRefund failed: ${msg}`);
-      throw new ServiceUnavailableException(
-        'ไม่สามารถดำเนินการคืนเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
-      );
-    }
-
-    // FSM transition + payment.metadata update — atomic
-    const targetStatus = isPartial
-      ? PaymentStatus.partially_refunded
-      : PaymentStatus.refunded;
-
-    const refundedAt = new Date().toISOString();
-    const refundMetadata = {
-      omiseRefundId: refund.id,
-      refundAmount: refundAmountBaht,
-      refundReason: input.reason ?? null,
-      refundedBy: admin.id,
-      refundedAt,
-      isPartial,
-    };
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // FSM ตรวจกฎ + เขียน status + history ในก้อนเดียว (รับ tx ภายนอก)
-      const u = await this.fsm.transition(
-        input.paymentId,
-        targetStatus,
-        {
-          changedBy: admin.id,
-          reason: input.reason,
-          metadata: refundMetadata,
-        },
-        tx,
-      );
-
-      // merge refund fields เข้า payment.metadata (สำหรับ FE visibility)
-      const existingMeta =
-        u.metadata === null || u.metadata === undefined
-          ? {}
-          : (u.metadata as Record<string, unknown>);
-
-      const merged = await tx.payment.update({
-        where: { id: input.paymentId },
-        data: {
-          metadata: {
-            ...existingMeta,
-            ...refundMetadata,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      return merged;
-    });
-
-    // emit หลัง tx commit (listener อ่านข้อมูลล่าสุดได้)
-    this.eventEmitter.emit(BOOKING_EVENTS.REFUND_ISSUED, {
-      bookingId: payment.bookingId,
-      eventType: BOOKING_EVENTS.REFUND_ISSUED,
-      patientId: payment.patientId,
-      caregiverId: payment.caregiverId,
-      metadata: {
-        amount: refundAmountBaht,
-        omiseRefundId: refund.id,
-        isPartial,
-      },
-    });
-
     return this.toGql(updated);
   }
 
