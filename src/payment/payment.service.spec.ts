@@ -126,6 +126,95 @@ describe('PaymentService.refundPayment (PYG-374 — thin wrapper over RefundServ
   });
 });
 
+// ─── createPayment — duplicate-payment guard (retry after failed attempt) ───
+
+describe('PaymentService.createPayment — duplicate guard', () => {
+  let service: PaymentService;
+  let prisma: {
+    booking: { findUnique: jest.Mock };
+    payment: { findUnique: jest.Mock };
+  };
+  let omise: { createCharge: jest.Mock };
+
+  const acceptedBooking = {
+    id: BOOKING_ID,
+    patientId: PATIENT_ID,
+    status: 'accepted',
+    durationHours: 2,
+    caregiverId: CAREGIVER_ID,
+    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+  };
+
+  // sentinel error thrown by createCharge — reaching it proves the guard let us through
+  const CHARGE_REACHED = new Error('__charge_reached__');
+
+  const cardInput = {
+    bookingId: BOOKING_ID,
+    paymentMethod: 'credit_card',
+    omiseToken: 'tokn_test_1',
+  };
+
+  beforeEach(async () => {
+    prisma = {
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      payment: { findUnique: jest.fn() },
+    };
+    omise = { createCharge: jest.fn().mockRejectedValue(CHARGE_REACHED) };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        { provide: OmiseService, useValue: omise },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
+      ],
+    }).compile();
+
+    service = moduleRef.get(PaymentService);
+  });
+
+  const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
+
+  it('no existing payment → passes guard (reaches createCharge)', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
+  });
+
+  // Retryable states — a payment that never actually secured funds must not block a new attempt
+  it.each([
+    PaymentStatus.failed,
+    PaymentStatus.expired,
+    PaymentStatus.voided,
+  ])('existing payment in %s → allows retry (reaches createCharge)', async (status) => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: status }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
+  });
+
+  // Valid/in-progress states — block to prevent double payment / duplicate Omise charge
+  it.each([
+    PaymentStatus.pending,
+    PaymentStatus.held,
+    PaymentStatus.captured,
+    PaymentStatus.transferred,
+    PaymentStatus.refunded,
+    PaymentStatus.partially_refunded,
+  ])('existing payment in %s → ConflictException (never reaches createCharge)', async (status) => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: status }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+});
+
 // ─── PYG-278: findByBookingId ───────────────────────────────────────────────
 
 describe('PaymentService.findByBookingId (PYG-278)', () => {
