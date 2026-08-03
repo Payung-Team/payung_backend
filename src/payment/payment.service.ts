@@ -25,6 +25,28 @@ import { RefundService } from './refund.service';
 import { CreatePaymentInput } from './dto/create-payment.input';
 import { RefundPaymentInput } from './dto/refund-payment.input';
 
+/**
+ * Statuses ที่ถือว่า "มี payment ที่ยัง valid อยู่จริง" → บล็อกไม่ให้สร้าง payment ใหม่ซ้ำ
+ * (กันจ่ายซ้ำ / กัน Omise charge ซ้อน)
+ *
+ * ทำไมต้อง whitelist แบบนี้แทนที่จะเช็ค `!== failed`:
+ *   - flow บัตร fail จะ throw ตั้งแต่ createCharge ก่อนเขียน record → ไม่มี record 'failed' เกิดจริง
+ *     ทำให้ guard เดิม (`!== failed`) เผลอบล็อก 'expired'/'voided' ที่ควร retry ได้
+ *
+ * ที่ "ไม่" อยู่ในนี้ = ให้ลองใหม่ได้ (retry ทับ record เดิม):
+ *   - failed   → authorize ไม่ผ่าน
+ *   - expired  → hold หมดอายุ (เกิน PAYMENT_HOLD_DAYS)
+ *   - voided   → ยกเลิกการกันวงเงินแล้ว
+ */
+const BLOCKING_PAYMENT_STATUSES: ReadonlySet<PaymentStatus> = new Set([
+  PaymentStatus.pending,
+  PaymentStatus.held,
+  PaymentStatus.captured,
+  PaymentStatus.transferred,
+  PaymentStatus.refunded,
+  PaymentStatus.partially_refunded,
+]);
+
 type PrismaHistoryRow = {
   id: string;
   paymentId: string;
@@ -101,7 +123,10 @@ export class PaymentService {
       where: { bookingId: booking.id },
     });
 
-    if (existingPayment && existingPayment.paymentStatus !== PaymentStatus.failed) {
+    if (
+      existingPayment &&
+      BLOCKING_PAYMENT_STATUSES.has(existingPayment.paymentStatus as PaymentStatus)
+    ) {
       throw new ConflictException('A valid payment already exists for this booking');
     }
 
