@@ -134,6 +134,23 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
+  [BOOKING_EVENTS.JOB_CHECKED_OUT]: {
+    // PYG-358: ผู้ดูแลปิดงานเอง — ผู้รับบริการ "ไม่ต้อง" กดยืนยันอะไรอีกแล้ว
+    //
+    // ★ ข้อความต้องบอก "เวลาที่เหลือให้ทักท้วง" ให้ชัด
+    //   เพราะเดิมลูกค้าเป็นคนกดยืนยันเอง จึงคุมจังหวะเงินออกได้เอง
+    //   ตอนนี้เงินจะออกอัตโนมัติ ถ้าไม่บอกกรอบเวลา ลูกค้าจะไม่รู้ว่าต้องรีบแค่ไหน
+    //
+    // ใช้ NotificationType.booking_completed ที่มีอยู่แล้ว — ไม่ต้องเพิ่มค่า enum ใหม่
+    // (การ์ดนี้ไม่ได้แตะ schema และ FE มี handler ของ type นี้อยู่แล้ว)
+    type: NotificationType.booking_completed,
+    recipient: 'patient',
+    title: 'ผู้ดูแลปิดงานแล้ว',
+    body: () =>
+      'ผู้ดูแลปิดงานแล้ว ระบบจะโอนเงินให้ผู้ดูแลภายใน 24 ชม. หากมีปัญหากรุณาแจ้งภายในเวลานี้',
+    email: true,
+    ctaLabel: 'ดูรายละเอียดงาน',
+  },
   [BOOKING_EVENTS.CANCELLED]: {
     type: NotificationType.booking_cancelled,
     recipient: 'caregiver',
@@ -214,6 +231,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.DECLINED)
   @OnEvent(BOOKING_EVENTS.CONFIRMED)
   @OnEvent(BOOKING_EVENTS.COMPLETED)
+  @OnEvent(BOOKING_EVENTS.JOB_CHECKED_OUT) // PYG-358
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)
   @OnEvent(BOOKING_EVENTS.PAYMENT_CAPTURED)

@@ -15,11 +15,13 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MonitoringService } from './monitoring.service';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
-import { REVIEW_REASON } from './monitoring.constants';
+import { BOOKING_STATUS, REVIEW_REASON, VERDICT } from './monitoring.constants';
 
 const USER_ID = 'user-cg-0001';
 const PATIENT_ID = 'user-pt-0001';
@@ -31,6 +33,9 @@ const EVENT_ID = 'evt-0001';
 // จุดงาน: ห้วยขวาง กรุงเทพฯ (พิกัดชุดเดียวกับที่ prototype ใน Figma ใช้)
 const JOB_LAT = 13.7768;
 const JOB_LNG = 100.5793;
+
+/** โปรเจกต์ Supabase สมมติ — ใช้ตรวจว่า URL ของไฟล์แนบมาจากบ้านเราจริง */
+const SUPABASE_URL = 'https://abcdefgh.supabase.co';
 
 /** เลื่อนละติจูดไปทางเหนือ ~N เมตร (1 องศาละติจูด ≈ 111,320 ม.) */
 function latMetersNorth(meters: number): number {
@@ -123,6 +128,12 @@ describe('MonitoringService', () => {
         MonitoringService,
         { provide: PrismaService, useValue: prisma },
         { provide: SupabaseService, useValue: { getClient: jest.fn() } },
+        {
+          // ใช้ตรวจ host ของไฟล์แนบ (PYG-358 STEP 2)
+          provide: ConfigService,
+          useValue: { get: () => SUPABASE_URL },
+        },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         {
           provide: ClockService,
           useValue: { now: () => NOW, nowMs: () => NOW.getTime() },
@@ -379,6 +390,435 @@ describe('MonitoringService', () => {
       // ★ สำคัญ: ต้องไม่มีการเขียนอะไรเพิ่มเลย
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(prisma.jobEvent.create).not.toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // C. computeVerdict — กฎตัดสินที่เงินทั้งระบบพึ่งพา (PYG-358)
+  // ══════════════════════════════════════════════════════════════════
+  describe('computeVerdict() — ครบทุกคอมบิเนชัน', () => {
+    const CG = 'caregiver';
+    const SYS = 'system';
+
+    it('ไม่มีเช็คอิน → incomplete', () => {
+      expect(service.computeVerdict([], false, CG, 'none')).toBe(
+        VERDICT.INCOMPLETE,
+      );
+    });
+
+    it('ไม่มีเช็คเอาท์ → incomplete', () => {
+      expect(service.computeVerdict([], true, null, 'none')).toBe(
+        VERDICT.INCOMPLETE,
+      );
+    });
+
+    it('ครบทุกอย่าง ไม่มีธง ไม่มีข้อพิพาท → valid', () => {
+      expect(service.computeVerdict([], true, CG, 'none')).toBe(VERDICT.VALID);
+    });
+
+    it('มีธงแม้แต่ตัวเดียว → needs_review', () => {
+      expect(
+        service.computeVerdict(
+          [REVIEW_REASON.SHORT_DURATION],
+          true,
+          CG,
+          'none',
+        ),
+      ).toBe(VERDICT.NEEDS_REVIEW);
+    });
+
+    it('★ ระบบปิดงานให้เอง (source=system) → needs_review เสมอ แม้ไม่มีธงเลย', () => {
+      // นี่คือกันไม่ให้งานที่ผู้ดูแลลืมปิด ถูกปล่อยเงินอัตโนมัติ
+      expect(service.computeVerdict([], true, SYS, 'none')).toBe(
+        VERDICT.NEEDS_REVIEW,
+      );
+    });
+
+    it('มีข้อพิพาทค้างอยู่ → needs_review แม้ไม่มีธงและผู้ดูแลปิดเอง', () => {
+      expect(service.computeVerdict([], true, CG, 'open')).toBe(
+        VERDICT.NEEDS_REVIEW,
+      );
+    });
+
+    it('มีทั้งธง ทั้ง system ทั้งข้อพิพาท → needs_review', () => {
+      expect(
+        service.computeVerdict([REVIEW_REASON.NO_CHECKOUT], true, SYS, 'open'),
+      ).toBe(VERDICT.NEEDS_REVIEW);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // D. checkOutBooking
+  // ══════════════════════════════════════════════════════════════════
+  describe('checkOutBooking()', () => {
+    /** แถวเช็คอินที่เกิดขึ้นเมื่อ N นาทีก่อน (ตามเวลาเซิร์ฟเวอร์) */
+    function checkInRow(minutesAgo: number) {
+      return fakeEventRow({
+        id: 'evt-in',
+        eventType: 'check_in',
+        serverTs: new Date(NOW.getTime() - minutesAgo * 60000),
+      });
+    }
+
+    beforeEach(() => {
+      prisma.$transaction.mockResolvedValue([
+        fakeEventRow({ id: 'evt-out', eventType: 'check_out' }),
+        {},
+      ]);
+    });
+
+    it('ยังไม่ได้เช็คอิน → "ยังไม่ได้เช็คอิน จึงเช็คเอาท์ไม่ได้"', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ jobEvents: [] }),
+      );
+
+      await expect(
+        service.checkOutBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).rejects.toThrow(
+        new BadRequestException('ยังไม่ได้เช็คอิน จึงเช็คเอาท์ไม่ได้'),
+      );
+    });
+
+    it('ไม่ใช่งานของผู้ดูแลคนนี้ → "งานนี้ไม่ใช่ของคุณ"', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ caregiverId: OTHER_CAREGIVER_ID }),
+      );
+
+      await expect(
+        service.checkOutBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).rejects.toThrow(new ForbiddenException('งานนี้ไม่ใช่ของคุณ'));
+    });
+
+    it('ทำงานครบเวลา (170 จาก 180 นาที) → ไม่มีธง + awaiting_release', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress', jobEvents: [checkInRow(170)] }),
+      );
+
+      await service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+        lat: JOB_LAT,
+        lng: JOB_LNG,
+      });
+
+      expect(createArgData(prisma.booking.update)).toMatchObject({
+        status: BOOKING_STATUS.AWAITING_RELEASE,
+        reviewReasons: { set: [] },
+      });
+    });
+
+    it('ทำงาน 70% ของเวลาที่จอง → short_duration + needs_review', async () => {
+      // จอง 180 นาที ทำจริง 126 นาที = 70% ซึ่งต่ำกว่าเกณฑ์ 80%
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress', jobEvents: [checkInRow(126)] }),
+      );
+
+      await service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+        lat: JOB_LAT,
+        lng: JOB_LNG,
+      });
+
+      expect(createArgData(prisma.booking.update)).toMatchObject({
+        status: BOOKING_STATUS.NEEDS_REVIEW,
+        reviewReasons: { set: [REVIEW_REASON.SHORT_DURATION] },
+      });
+    });
+
+    it('★ ระยะเวลาคำนวณจาก server_ts เท่านั้น — device_ts ที่โกหกไม่มีผล', async () => {
+      // เช็คอินจริง 30 นาทีที่แล้ว (สั้นกว่าเกณฑ์แน่นอน)
+      // แต่เครื่อง client อ้างว่าตอนนี้คือ 5 ชม. ข้างหน้า เพื่อให้ดูเหมือนทำงานครบ
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress', jobEvents: [checkInRow(30)] }),
+      );
+
+      await service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+        deviceTs: new Date(NOW.getTime() + 5 * 60 * 60 * 1000).toISOString(),
+      });
+
+      // ยังติดธงอยู่ดี = การโกหกนาฬิกาไม่ช่วยอะไร
+      expect(createArgData(prisma.booking.update)).toMatchObject({
+        reviewReasons: { set: [REVIEW_REASON.SHORT_DURATION] },
+      });
+    });
+
+    it('★ ธงจากตอนเช็คอินต้องยังอยู่ ไม่ถูกเขียนทับ', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          status: 'in_progress',
+          reviewReasons: [REVIEW_REASON.OUT_OF_WINDOW], // ติดมาตั้งแต่เช็คอิน
+          jobEvents: [checkInRow(170)],
+        }),
+      );
+
+      await service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+        lat: JOB_LAT,
+        lng: JOB_LNG,
+      });
+
+      const data = createArgData(prisma.booking.update);
+      expect(data.reviewReasons).toEqual({
+        set: [REVIEW_REASON.OUT_OF_WINDOW],
+      });
+      expect(data.status).toBe(BOOKING_STATUS.NEEDS_REVIEW);
+    });
+
+    it('ปิดงานซ้ำ → คืนแถวเดิม ไม่เขียนอะไรเพิ่ม', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          status: 'awaiting_release',
+          jobEvents: [
+            checkInRow(170),
+            fakeEventRow({ id: 'evt-out', eventType: 'check_out' }),
+          ],
+        }),
+      );
+
+      const result = await service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+      });
+
+      expect(result.id).toBe('evt-out');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // E. ตรวจไฟล์แนบ (PYG-358 STEP 2)
+  // ══════════════════════════════════════════════════════════════════
+  describe('checkOutBooking() — ไฟล์แนบ', () => {
+    beforeEach(() => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          status: 'in_progress',
+          jobEvents: [
+            fakeEventRow({
+              id: 'evt-in',
+              eventType: 'check_in',
+              serverTs: new Date(NOW.getTime() - 170 * 60000),
+            }),
+          ],
+        }),
+      );
+      prisma.$transaction.mockResolvedValue([
+        fakeEventRow({ id: 'evt-out', eventType: 'check_out' }),
+        {},
+      ]);
+    });
+
+    /** เรียก checkOut พร้อมแนบไฟล์ */
+    function checkOutWithPhoto(photoUrl: string) {
+      return service.checkOutBooking(USER_ID, {
+        bookingId: BOOKING_ID,
+        photoUrl,
+      });
+    }
+
+    it('★ URL จากโดเมนอื่น → ปฏิเสธ "ไฟล์แนบไม่ถูกต้อง"', async () => {
+      await expect(checkOutWithPhoto('https://evil.com/x.jpg')).rejects.toThrow(
+        new BadRequestException('ไฟล์แนบไม่ถูกต้อง'),
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('★ URL บ้านเราแต่เป็นของ booking อื่น → ปฏิเสธ', async () => {
+      // host ถูก bucket ถูก แต่โฟลเดอร์เป็นของงานอื่น
+      await expect(
+        checkOutWithPhoto(
+          `${SUPABASE_URL}/storage/v1/object/sign/job-evidence/book-9999/check-out-1.jpg`,
+        ),
+      ).rejects.toThrow(new BadRequestException('ไฟล์แนบไม่ถูกต้อง'));
+    });
+
+    it('URL บ้านเราแต่ผิด bucket → ปฏิเสธ', async () => {
+      await expect(
+        checkOutWithPhoto(
+          `${SUPABASE_URL}/storage/v1/object/sign/kyc-documents/${BOOKING_ID}/x.jpg`,
+        ),
+      ).rejects.toThrow(new BadRequestException('ไฟล์แนบไม่ถูกต้อง'));
+    });
+
+    it('path ที่มี ../ → ปฏิเสธ (กันหลุดออกนอกโฟลเดอร์)', async () => {
+      await expect(
+        checkOutWithPhoto(`${BOOKING_ID}/../book-9999/x.jpg`),
+      ).rejects.toThrow(new BadRequestException('ไฟล์แนบไม่ถูกต้อง'));
+    });
+
+    it('URL ที่ถูกต้อง → ผ่าน และเก็บเป็น "path" ไม่ใช่ URL', async () => {
+      await checkOutWithPhoto(
+        `${SUPABASE_URL}/storage/v1/object/sign/job-evidence/${BOOKING_ID}/check-out-1.jpg`,
+      );
+
+      // ★ สิ่งที่ลงฐานข้อมูลต้องเป็น path เปล่า ๆ เพื่อให้ sign ใหม่ได้ทุกครั้งที่อ่าน
+      expect(createArgData(prisma.jobEvent.create)).toMatchObject({
+        photoUrl: `${BOOKING_ID}/check-out-1.jpg`,
+      });
+    });
+
+    it('ส่ง path เปล่าของ booking ตัวเอง → ผ่าน', async () => {
+      await checkOutWithPhoto(`${BOOKING_ID}/check-out-2.jpg`);
+
+      expect(createArgData(prisma.jobEvent.create)).toMatchObject({
+        photoUrl: `${BOOKING_ID}/check-out-2.jpg`,
+      });
+    });
+
+    it('ไม่แนบรูป → ผ่าน และเก็บ null', async () => {
+      await service.checkOutBooking(USER_ID, { bookingId: BOOKING_ID });
+
+      expect(createArgData(prisma.jobEvent.create)).toMatchObject({
+        photoUrl: null,
+      });
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // F. proofOfWork
+  // ══════════════════════════════════════════════════════════════════
+  describe('proofOfWork()', () => {
+    const ADMIN_ROLE = 3;
+    const CAREGIVER_ROLE = 2;
+
+    function bookingWithBothEvents(overrides: Record<string, unknown> = {}) {
+      return fakeBooking({
+        status: 'awaiting_release',
+        jobEvents: [
+          fakeEventRow({
+            id: 'evt-in',
+            eventType: 'check_in',
+            distanceM: 150,
+            serverTs: new Date(NOW.getTime() - 170 * 60000),
+          }),
+          fakeEventRow({
+            id: 'evt-out',
+            eventType: 'check_out',
+            distanceM: 180,
+            serverTs: NOW,
+          }),
+        ],
+        ...overrides,
+      });
+    }
+
+    it('งานปกติ → verdict valid, ระยะทางเป็นตัวเลขดิบ, actualMinutes ถูกต้อง', async () => {
+      prisma.booking.findUnique.mockResolvedValue(bookingWithBothEvents());
+
+      const result = await service.proofOfWork(
+        USER_ID,
+        CAREGIVER_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.verdict).toBe(VERDICT.VALID);
+      expect(result.actualMinutes).toBe(170);
+      expect(result.bookedMinutes).toBe(180);
+      expect(result.distanceInM).toBe(150); // ค่าดิบ ไม่ใช่ boolean
+      expect(result.distanceOutM).toBe(180);
+      expect(result.durationOk).toBe(true);
+      expect(result.noCheckout).toBe(false);
+      expect(result.disputed).toBe(false);
+    });
+
+    it('ยังไม่ปิดงาน → verdict incomplete และ actualMinutes เป็น null', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          status: 'in_progress',
+          jobEvents: [fakeEventRow({ id: 'evt-in', eventType: 'check_in' })],
+        }),
+      );
+
+      const result = await service.proofOfWork(
+        USER_ID,
+        CAREGIVER_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.verdict).toBe(VERDICT.INCOMPLETE);
+      expect(result.actualMinutes).toBeUndefined();
+      expect(result.noCheckout).toBe(true);
+    });
+
+    it('★ ระบบปิดให้เอง → ไม่คำนวณระยะเวลา + noCheckout + needs_review', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        bookingWithBothEvents({
+          reviewReasons: [REVIEW_REASON.NO_CHECKOUT],
+          jobEvents: [
+            fakeEventRow({
+              id: 'evt-in',
+              eventType: 'check_in',
+              serverTs: new Date(NOW.getTime() - 170 * 60000),
+            }),
+            fakeEventRow({
+              id: 'evt-out',
+              eventType: 'check_out',
+              source: 'system',
+              distanceM: null,
+              serverTs: NOW,
+            }),
+          ],
+        }),
+      );
+
+      const result = await service.proofOfWork(
+        USER_ID,
+        CAREGIVER_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.actualMinutes).toBeUndefined(); // ไม่มีใครรู้ว่าออกจริงตอนไหน
+      expect(result.noCheckout).toBe(true);
+      expect(result.verdict).toBe(VERDICT.NEEDS_REVIEW);
+    });
+
+    it('มีข้อพิพาท → disputed = true และ verdict needs_review', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        bookingWithBothEvents({ disputeStatus: 'open' }),
+      );
+
+      const result = await service.proofOfWork(
+        USER_ID,
+        CAREGIVER_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.disputed).toBe(true);
+      expect(result.verdict).toBe(VERDICT.NEEDS_REVIEW);
+    });
+
+    it('booking ไม่มีพิกัด → jobCoordsMissing = true แต่ verdict ยัง valid', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        bookingWithBothEvents({ locationLat: null, locationLng: null }),
+      );
+
+      const result = await service.proofOfWork(
+        USER_ID,
+        CAREGIVER_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.jobCoordsMissing).toBe(true);
+      expect(result.verdict).toBe(VERDICT.VALID); // ข้อมูลเราขาด ไม่ใช่ความผิดผู้ดูแล
+    });
+
+    it('คนนอกที่ไม่ใช่คู่กรณี → ForbiddenException', async () => {
+      prisma.booking.findUnique.mockResolvedValue(bookingWithBothEvents());
+
+      await expect(
+        service.proofOfWork('user-stranger', CAREGIVER_ROLE, BOOKING_ID),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('แอดมินดูได้ทุกงาน แม้ไม่ใช่คู่กรณี', async () => {
+      prisma.booking.findUnique.mockResolvedValue(bookingWithBothEvents());
+
+      const result = await service.proofOfWork(
+        'user-admin',
+        ADMIN_ROLE,
+        BOOKING_ID,
+      );
+
+      expect(result.verdict).toBe(VERDICT.VALID);
     });
   });
 });

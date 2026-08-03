@@ -49,6 +49,19 @@ export const CLOCK_ANOMALY_TOLERANCE_MIN = envInt(
   10,
 );
 
+/**
+ * ทำงานจริงน้อยกว่ากี่ส่วนของเวลาที่จอง ถึงจะติดธง 'short_duration' (PYG-358)
+ * 0.8 = จอง 4 ชม. ต้องทำงานอย่างน้อย 3 ชม. 12 นาที
+ *
+ * ⚠ ค่านี้ต้องอ่านเป็น "ทศนิยม" ไม่ใช่จำนวนเต็ม จึงมี parser แยกจาก envInt
+ */
+export const MIN_DURATION_RATIO = (() => {
+  const raw = process.env.MIN_DURATION_RATIO;
+  if (raw === undefined || raw === '') return 0.8;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0.8;
+})();
+
 /** ชื่อ bucket สำหรับรูปหลักฐาน (private) — path: {bookingId}/{eventType}-{timestamp}.jpg */
 export const JOB_EVIDENCE_BUCKET = 'job-evidence';
 
@@ -66,6 +79,10 @@ export const REVIEW_REASON = {
   OUT_OF_WINDOW: 'out_of_window',
   /** นาฬิกาเครื่อง client ต่างจากเซิร์ฟเวอร์มากผิดปกติ */
   CLOCK_ANOMALY: 'clock_anomaly',
+  /** ทำงานจริงสั้นกว่าเวลาที่จองมาก (PYG-358) */
+  SHORT_DURATION: 'short_duration',
+  /** ผู้ดูแลลืมเช็คเอาท์ ระบบปิดให้เอง (PYG-359 เป็นคนเขียนธงนี้) */
+  NO_CHECKOUT: 'no_checkout',
 } as const;
 
 export type ReviewReason = (typeof REVIEW_REASON)[keyof typeof REVIEW_REASON];
@@ -76,11 +93,35 @@ export const JOB_EVENT_TYPE = {
   CHECK_OUT: 'check_out',
 } as const;
 
+/**
+ * คำตัดสินของงาน 1 ใบ (PYG-358)
+ *
+ * ★ กฎเดียวที่ใช้ตัดสิน — เขียนไว้ที่นี่ที่เดียว ห้ามเขียนซ้ำที่อื่น:
+ *   valid  ⟺  review_reasons ว่าง  และ  check_out.source = 'caregiver'  และ  ไม่มีข้อพิพาท
+ *
+ * เงื่อนไขเรื่องรัศมี/เวลา/ระยะเวลาทำงาน ถูกแปลงเป็น "ธง" ไปตั้งแต่ตอนเขียนแล้ว
+ * ถ้าไปคำนวณซ้ำในฟังก์ชันตัดสิน จะกลายเป็นกฎสองชุด แล้ววันหนึ่งมันจะขัดกันเอง
+ */
+export const VERDICT = {
+  /** ผ่านทุกอย่าง — ปล่อยเงินอัตโนมัติได้ */
+  VALID: 'valid',
+  /** มีบางอย่างต้องให้แอดมินดู — ห้ามปล่อยเงินอัตโนมัติ */
+  NEEDS_REVIEW: 'needs_review',
+  /** ยังปิดงานไม่ครบ (ขาดเช็คอินหรือเช็คเอาท์) */
+  INCOMPLETE: 'incomplete',
+} as const;
+
+export type Verdict = (typeof VERDICT)[keyof typeof VERDICT];
+
 /** สถานะ booking ที่โมดูลนี้เกี่ยวข้อง (bookings.status เป็น TEXT) */
 export const BOOKING_STATUS = {
   CONFIRMED: 'confirmed',
   /** กำลังปฏิบัติงาน — ตั้งตอนเช็คอิน */
   IN_PROGRESS: 'in_progress',
+  /** ปิดงานแล้ว รอระบบโอนเงิน — ตั้งตอนเช็คเอาท์เมื่อ verdict = valid */
+  AWAITING_RELEASE: 'awaiting_release',
+  /** ปิดงานแล้วแต่ติดธง — เข้าคิวแอดมิน ห้ามปล่อยเงินอัตโนมัติ */
+  NEEDS_REVIEW: 'needs_review',
 } as const;
 
 /** ที่มาของ job event */
