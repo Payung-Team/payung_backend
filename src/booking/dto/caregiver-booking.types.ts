@@ -44,6 +44,13 @@ export class CaregiverBookingSummary {
   @Field(() => Float, { nullable: true }) estimatedCost?: number; // ราคาประมาณการ (฿)
 
   @Field({ nullable: true }) locationAddress?: string;
+
+  // PYG-352: พิกัดจุดงาน — หน้าเช็คอินของผู้ดูแลใช้ปักหมุด "จุดงาน"
+  // และวาดวงรัศมี 200 ม. / 500 ม. รอบหมุดนั้น (ดีไซน์วาดวงไว้ตั้งแต่ก่อนเช็คอิน)
+  // null = ไม่มีพิกัด → ไม่คำนวณระยะ ไม่ติดธง ไม่ลงโทษผู้ดูแล
+  @Field(() => Float, { nullable: true }) locationLat?: number;
+  @Field(() => Float, { nullable: true }) locationLng?: number;
+
   @Field({ nullable: true }) notes?: string; // บันทึกเพิ่มเติมจากผู้ป่วย
 
   @Field(() => PatientBriefDto) patient: PatientBriefDto; // ผู้จอง (ลูกค้า)

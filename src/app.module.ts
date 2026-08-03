@@ -21,6 +21,7 @@ import { PayoutModule } from './payout/payout.module';
 import { ReviewModule } from './review/review.module';
 import { DisputeModule } from './dispute/dispute.module';
 import { TransactionModule } from './transaction/transaction.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { TransactionModule } from './transaction/transaction.module';
     ReviewModule,        // PYG-297: post-service reviews (createReview/caregiverReviews/hideReview)
     DisputeModule,       // PYG-287: flag / adminDisputes / resolveDispute
     TransactionModule,   // PYG-333: admin transactions list/detail/summary (read-only)
+    MonitoringModule,    // PYG-352: proof-of-work — checkInBooking + job_events
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

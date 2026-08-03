@@ -12,10 +12,12 @@
 import { Global, Module } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { PrismaService } from './prisma.service';
+import { ClockService } from './clock.service';
 
 @Global()
 @Module({
-  providers: [SupabaseService, PrismaService],
-  exports: [SupabaseService, PrismaService],
+  // ClockService (PYG-369): ตัวจ่ายเวลาที่ inject ได้ — ทำให้ test คุมเวลาได้
+  providers: [SupabaseService, PrismaService, ClockService],
+  exports: [SupabaseService, PrismaService, ClockService],
 })
 export class CommonModule {}

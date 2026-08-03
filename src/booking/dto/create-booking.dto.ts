@@ -1,6 +1,8 @@
 import {
   IsArray,
   IsDateString,
+  IsLatitude,
+  IsLongitude,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -72,6 +74,29 @@ export class CreateBookingDto {
   @IsNotEmpty()
   @MaxLength(500)
   locationAddress!: string;
+
+  /**
+   * PYG-352 — พิกัดจุดงาน (จาก MapPicker ที่ลูกค้าปักหมุดตอนจอง)
+   *
+   * ทำไมเพิ่งมามีตอนนี้: ฝั่ง FE ประกอบค่า at_home:{address,lat,lng} มานานแล้ว
+   * (BookingStep1.tsx) แต่ DTO ฝั่งนี้ไม่เคยมีช่องรับ → พิกัดถูกทิ้งที่ API boundary
+   * ทุกครั้ง ทำให้ bookings.location_lat/lng เป็น NULL ทั้งตาราง
+   *
+   * optional เพราะ: booking แบบพาไปข้างนอกหรือเคสที่ลูกค้าไม่ปักหมุดยังต้องจองได้
+   * ถ้าเป็น NULL ระบบเช็คอินจะ "ไม่คำนวณระยะ และไม่ติดธง" — ไม่ลงโทษผู้ดูแล
+   * เพราะข้อมูลที่ขาดเป็นความผิดของเราเอง
+   */
+  @IsOptional()
+  @IsNumber()
+  @IsLatitude()
+  @Type(() => Number)
+  lat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsLongitude()
+  @Type(() => Number)
+  lng?: number;
 
   /** วันที่ให้บริการ รูปแบบ ISO: "2026-07-15" */
   @IsDateString()
