@@ -196,7 +196,8 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     expect(omise.createCharge).toHaveBeenCalledTimes(1);
   });
 
-  // Valid/in-progress states — block to prevent double payment / duplicate Omise charge
+  // Valid/in-progress states — block to prevent double payment / duplicate Omise charge.
+  // (pending here uses fakePayment's fresh updatedAt → treated as an in-flight QR)
   it.each([
     PaymentStatus.pending,
     PaymentStatus.held,
@@ -212,6 +213,25 @@ describe('PaymentService.createPayment — duplicate guard', () => {
       ConflictException,
     );
     expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+
+  it('fresh pending (just created) → blocks (guards double-charge with in-flight QR)', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: PaymentStatus.pending, updatedAt: new Date() }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+
+  it('stale pending (abandoned QR, >15m old) → allows retry (reaches createCharge)', async () => {
+    const staleUpdatedAt = new Date(Date.now() - 16 * 60 * 1000); // 16 min ago
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: PaymentStatus.pending, updatedAt: staleUpdatedAt }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
   });
 });
 

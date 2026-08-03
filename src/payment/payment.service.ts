@@ -47,6 +47,16 @@ const BLOCKING_PAYMENT_STATUSES: ReadonlySet<PaymentStatus> = new Set([
   PaymentStatus.partially_refunded,
 ]);
 
+/**
+ * PromptPay `pending` ที่เก่ากว่านี้ = ถือว่า QR ถูกทิ้ง (user ไม่สแกน) → ปลดบล็อกให้จ่ายใหม่ได้
+ *
+ * ทำไมต้องมี window นี้แทนที่จะปลดบล็อก pending ทั้งหมด:
+ *   - pending สดๆ = อาจมี QR ที่ user กำลังจะสแกน → ถ้าให้ overwrite ทันทีจะเสี่ยง double-charge
+ *     (จ่าย QR เก่า + จ่ายรอบใหม่พร้อมกัน) → กันด้วย time window
+ *   - Omise PromptPay QR หมดอายุในหลักนาที; 15 นาทีเผื่อ clock skew + เวลาสแกนจริง
+ */
+const PROMPTPAY_PENDING_STALE_MS = 15 * 60 * 1000;
+
 type PrismaHistoryRow = {
   id: string;
   paymentId: string;
@@ -97,6 +107,27 @@ export class PaymentService {
     return rows.map((row) => this.mapHistoryRow(row as PrismaHistoryRow));
   }
 
+  /**
+   * isPaymentBlocking — มี payment ที่ยัง valid อยู่จริงไหม (→ บล็อกไม่ให้จ่ายซ้ำ กัน Omise charge ซ้อน)
+   *
+   *   - failed / expired / voided        → ไม่บล็อก (ให้ retry ได้)
+   *   - pending ที่เก่าเกิน stale window  → ไม่บล็อก (QR ถูกทิ้ง → ให้ overwrite จ่ายใหม่)
+   *   - pending สดๆ, held, captured, ...  → บล็อก
+   *
+   * ใช้ `updatedAt` (ไม่ใช่ createdAt) วัดอายุ pending — QR ที่ถูกสร้างใหม่ทับ record เดิมจะ
+   * bump updatedAt ทำให้ถูก "ป้องกัน" ใหม่อีกรอบ กัน double-charge กับ QR ที่เพิ่ง regenerate
+   */
+  private isPaymentBlocking(payment: { paymentStatus: string; updatedAt: Date }): boolean {
+    const status = payment.paymentStatus as PaymentStatus;
+    if (!BLOCKING_PAYMENT_STATUSES.has(status)) return false;
+
+    if (status === PaymentStatus.pending) {
+      const ageMs = Date.now() - new Date(payment.updatedAt).getTime();
+      if (ageMs >= PROMPTPAY_PENDING_STALE_MS) return false; // stale QR → allow retry
+    }
+    return true;
+  }
+
   // ── PYG-281: Authorize Payment ───────────────────────────────────────────
 
   async createPayment(input: CreatePaymentInput, user: AuthUser): Promise<Payment> {
@@ -123,10 +154,7 @@ export class PaymentService {
       where: { bookingId: booking.id },
     });
 
-    if (
-      existingPayment &&
-      BLOCKING_PAYMENT_STATUSES.has(existingPayment.paymentStatus as PaymentStatus)
-    ) {
+    if (existingPayment && this.isPaymentBlocking(existingPayment)) {
       throw new ConflictException('A valid payment already exists for this booking');
     }
 
