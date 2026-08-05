@@ -51,6 +51,8 @@ const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
     PaymentStatus.held,
     PaymentStatus.failed,
     PaymentStatus.captured,
+    // PYG-375: abandoned PromptPay (pending) ที่ retrieveCharge แล้วยืนยันว่าไม่จ่าย → expired
+    PaymentStatus.expired,
   ],
   [PaymentStatus.held]: [
     PaymentStatus.captured,
@@ -70,12 +72,12 @@ const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
     PaymentStatus.partially_refunded,
     PaymentStatus.refunded,
   ],
-  // ── terminal states: เปลี่ยนต่อไม่ได้ ─────────────────────────────────────
   [PaymentStatus.transferred]: [],
-  [PaymentStatus.voided]: [],
+  // PYG-375: voided/expired ไม่ terminal — ลูกค้าจ่ายใหม่ได้ (PYG-309 retry) → re-authorize → held
+  [PaymentStatus.voided]: [PaymentStatus.held],
   [PaymentStatus.refunded]: [],
   [PaymentStatus.failed]: [PaymentStatus.held],
-  [PaymentStatus.expired]: [],
+  [PaymentStatus.expired]: [PaymentStatus.held],
 };
 
 @Injectable()

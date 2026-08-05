@@ -19,6 +19,7 @@ import { CompleteBookingService } from './complete-booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
+import { IdempotencyService } from './idempotency.service';
 import { CaptureFailedError } from './errors/capture-failed.error';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
@@ -66,27 +67,63 @@ const asUser = (id: string, role: number): AuthUser =>
 describe('CompleteBookingService', () => {
   let service: CompleteBookingService;
 
-  let tx: { booking: { update: jest.Mock } };
+  let tx: {
+    booking: { update: jest.Mock };
+    payment: { findUnique: jest.Mock; update: jest.Mock };
+    $queryRaw: jest.Mock;
+  };
   let prisma: {
-    booking: { findUnique: jest.Mock };
+    booking: { findUnique: jest.Mock; update: jest.Mock };
     payment: { update: jest.Mock };
     $transaction: jest.Mock;
   };
   let fsm: { transition: jest.Mock; recordCaptureFailure: jest.Mock };
   let omise: { captureCharge: jest.Mock };
   let emitter: { emit: jest.Mock };
+  // PYG-375: runOnce ที่เรียก fn(key) ตรง ๆ (ทดสอบ idempotency table แยกใน idempotency.service.spec)
+  let idempotency: { runOnce: jest.Mock };
 
   beforeEach(async () => {
-    tx = { booking: { update: jest.fn() } };
+    tx = {
+      booking: { update: jest.fn() },
+      // lock re-read: default = ยัง held (ยังไม่มีใคร capture)
+      payment: {
+        findUnique: jest.fn().mockResolvedValue({
+          paymentStatus: 'held',
+          omiseChargeId: 'chrg_test_1',
+        }),
+        update: jest.fn(),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
+    // default booking.update result (tests may override completedAt)
+    tx.booking.update.mockResolvedValue({
+      id: BOOKING_ID,
+      status: 'completed',
+      completedAt: new Date('2026-06-22T10:00:00Z'),
+    });
     prisma = {
-      booking: { findUnique: jest.fn() },
+      booking: {
+        findUnique: jest.fn(),
+        // PYG-375: PromptPay flow ปิด booking ผ่าน prisma.booking.update ตรง ๆ (ไม่ capture)
+        update: jest.fn().mockResolvedValue({
+          id: BOOKING_ID,
+          status: 'completed',
+          completedAt: new Date('2026-06-22T10:00:00Z'),
+        }),
+      },
       payment: { update: jest.fn() },
-      // จำลอง $transaction: เรียก callback ด้วย tx mock
+      // จำลอง $transaction: เรียก callback ด้วย tx mock (รับ opts ตัวที่ 2 ได้)
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     fsm = { transition: jest.fn(), recordCaptureFailure: jest.fn() };
     omise = { captureCharge: jest.fn() };
     emitter = { emit: jest.fn() };
+    idempotency = {
+      runOnce: jest.fn((params: { key: string; fn: (k: string) => unknown }) =>
+        params.fn(params.key),
+      ),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -96,6 +133,7 @@ describe('CompleteBookingService', () => {
         { provide: OmiseService, useValue: omise },
         // PYG-292: completeBooking ยิง booking.completed/payment.captured — mock EventEmitter2
         { provide: EventEmitter2, useValue: emitter },
+        { provide: IdempotencyService, useValue: idempotency },
       ],
     }).compile();
 
@@ -121,7 +159,8 @@ describe('CompleteBookingService', () => {
     );
 
     // capture ถูกยิงด้วย charge id ของ payment
-    expect(omise.captureCharge).toHaveBeenCalledWith('chrg_test_1');
+    // PYG-375: capture ส่ง idempotency key (capture:{bookingId}) เป็น Omise header ด้วย
+    expect(omise.captureCharge).toHaveBeenCalledWith('chrg_test_1', 'capture:book-0001');
 
     // payment held → captured ผ่าน FSM และส่ง tx เดียวกันเข้าไป (atomic)
     expect(fsm.transition).toHaveBeenCalledWith(
@@ -249,9 +288,10 @@ describe('CompleteBookingService', () => {
       expect.objectContaining({ changedBy: PATIENT_ID }),
     );
 
-    // ต้องไม่ transition/ปิด booking เมื่อ capture พัง
+    // ต้องไม่ transition/ปิด booking เมื่อ capture พัง (PYG-375: capture อยู่ใน tx แล้ว
+    // แต่ Omise พังก่อน → ไม่ถึง fsm.transition และ booking ไม่ถูกปิด — tx rollback)
     expect(fsm.transition).not.toHaveBeenCalled();
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.booking.update).not.toHaveBeenCalled();
   });
 
   // ─── PromptPay flow (PYG-278) ──────────────────────────────────────────────
@@ -289,8 +329,8 @@ describe('CompleteBookingService', () => {
       expect(omise.captureCharge).not.toHaveBeenCalled();
       // ❌ skip FSM transition (payment เป็น captured อยู่แล้ว)
       expect(fsm.transition).not.toHaveBeenCalled();
-      // ✅ booking confirmed → completed ตามปกติ
-      expect(tx.booking.update).toHaveBeenCalledWith(
+      // ✅ booking confirmed → completed (PYG-375: PromptPay ปิดผ่าน prisma.booking.update ตรง ๆ)
+      expect(prisma.booking.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: BOOKING_ID },
           data: expect.objectContaining({ status: 'completed' }),

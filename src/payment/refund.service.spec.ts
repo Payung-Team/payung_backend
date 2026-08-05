@@ -30,6 +30,7 @@ describe('RefundService', () => {
   let fsm: { transition: AnyMock };
   let omise: { createRefund: AnyMock };
   let events: { emit: AnyMock };
+  let idempotency: { runOnce: AnyMock };
 
   const REASON = 'dispute resolved: caregiver no-show'; // >= 10 chars
 
@@ -63,12 +64,34 @@ describe('RefundService', () => {
     fsm = { transition: jest.fn().mockResolvedValue({}) };
     omise = { createRefund: jest.fn().mockResolvedValue({ id: 'rfnd_1' }) };
     events = { emit: jest.fn() };
+    // PYG-375: default runOnce calls fn(key) directly (idempotency table tested separately)
+    idempotency = {
+      runOnce: jest.fn((params: { key: string; fn: (k: string) => unknown }) =>
+        params.fn(params.key),
+      ),
+    };
 
     service = new RefundService(
       prisma as never,
       fsm as never,
       omise as never,
       events as never,
+      idempotency as never,
+    );
+  });
+
+  it('PYG-375: replay same key → stored Omise result, createRefund NOT called again', async () => {
+    tx.payment.findUnique.mockResolvedValue(makePayment());
+    // idempotency returns the stored result instead of running fn (simulates PK replay)
+    idempotency.runOnce.mockResolvedValueOnce({ id: 'rfnd_stored' });
+
+    await service.refund({ paymentId: 'pay-1', reason: REASON, source: 'admin_manual' });
+
+    expect(omise.createRefund).not.toHaveBeenCalled();
+    // key reused, not redefined
+    expect(idempotency.runOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'refund:pay-1:0', action: 'refund' }),
+      expect.anything(),
     );
   });
 

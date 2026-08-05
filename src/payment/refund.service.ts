@@ -26,6 +26,7 @@ import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { OmiseService } from './omise/omise.service';
+import { IdempotencyService } from './idempotency.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { PayoutStatus } from '../payout/entities/payout-status.enum';
 
@@ -69,6 +70,7 @@ export class RefundService {
     private readonly fsm: PaymentStateMachine,
     private readonly omise: OmiseService,
     private readonly events: EventEmitter2,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   async refund(params: RefundParams): Promise<Payment> {
@@ -151,12 +153,24 @@ export class RefundService {
         const idempotencyKey = `refund:${paymentId}:${refundedBeforeSatangs}`;
         let omiseRefund: { id: string };
         try {
-          omiseRefund = await this.omise.createRefund(
-            payment.omiseChargeId,
-            isFull ? undefined : refundSatangs,
-            idempotencyKey,
+          // PYG-375: INSERT key ก่อน (PK ชนกัน → คืน stored result, ไม่ refund ซ้ำ) +
+          // ส่ง key เป็น Omise header ด้วย. อยู่ใน tx เดียวกับ FOR UPDATE → rollback = ปลดคีย์
+          omiseRefund = await this.idempotency.runOnce(
+            {
+              key: idempotencyKey,
+              action: 'refund',
+              bookingId: payment.bookingId,
+              fn: (k) =>
+                this.omise.createRefund(
+                  payment.omiseChargeId!,
+                  isFull ? undefined : refundSatangs,
+                  k,
+                ),
+            },
+            tx,
           );
         } catch (err) {
+          if (err instanceof ConflictException) throw err; // in-flight → บอกให้ลองใหม่
           const msg = err instanceof Error ? err.message : String(err);
           this.logger.error(
             `[refund] Omise createRefund failed payment=${paymentId}: ${msg}`,

@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, Payment as PrismaPayment } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
@@ -128,6 +128,124 @@ export class PaymentService {
     return true;
   }
 
+  /**
+   * reconcileStalePromptPay (PYG-309/375) — ask Omise the truth about a stale pending PromptPay.
+   * retrieveCharge FIRST (never guess from elapsed time):
+   *   paid      → captured (webhook was lost — repair, don't double-charge)
+   *   not paid  → expired  (prefer expires_at when Omise provides it)
+   *   not found → failed
+   * All transitions go through the FSM (pending → captured/expired/failed are valid edges).
+   */
+  private async reconcileStalePromptPay(payment: PrismaPayment): Promise<PrismaPayment> {
+    if (!payment.omiseChargeId) {
+      return this.fsm.transition(payment.id, PaymentStatus.failed, {
+        reason: 'PromptPay ไม่มี charge id — ยืนยันการจ่ายไม่ได้',
+      });
+    }
+
+    let charge;
+    try {
+      charge = await this.omiseService.retrieveCharge(payment.omiseChargeId);
+    } catch {
+      return this.fsm.transition(payment.id, PaymentStatus.failed, {
+        reason: 'PromptPay charge ไม่พบบน Omise — ถือว่าล้มเหลว',
+        metadata: { omiseChargeId: payment.omiseChargeId },
+      });
+    }
+
+    if (charge.paid) {
+      return this.fsm.transition(payment.id, PaymentStatus.captured, {
+        reason: 'PromptPay จ่ายแล้ว (webhook หาย) — reconcile เป็น captured',
+        metadata: {
+          omiseChargeId: payment.omiseChargeId,
+          reconciledAt: new Date().toISOString(),
+        },
+      });
+    }
+
+    return this.fsm.transition(payment.id, PaymentStatus.expired, {
+      reason: charge.expiresAt
+        ? `PromptPay หมดอายุ (expires_at=${charge.expiresAt})`
+        : 'PromptPay ยังไม่จ่าย — reconcile เป็น expired',
+      metadata: {
+        omiseChargeId: payment.omiseChargeId,
+        expiresAt: charge.expiresAt ?? null,
+      },
+    });
+  }
+
+  /**
+   * recordFailedAuthorize (PYG-309/375) — write a `failed` payment row when the card is declined.
+   * booking_id is UNIQUE → upsert the single row (never a 2nd). New row → recordInitialStatus
+   * (FSM's from=null init), existing row → update + a direct history row (mirrors the authorize
+   * outcome path used for `held`). Any write failure is swallowed + logged so it never masks the
+   * original Omise error the caller rethrows.
+   */
+  private async recordFailedAuthorize(
+    bookingId: string,
+    existingPayment: PrismaPayment | null,
+    actorId: string,
+    err: unknown,
+    ctx: { patientId: string; caregiverId: string; amountBaht: number; omiseToken: string },
+  ): Promise<void> {
+    const e = err as {
+      code?: string;
+      message?: string;
+      details?: { omiseCode?: string; omiseMessage?: string };
+    };
+    const failureCode = e.details?.omiseCode ?? e.code ?? 'authorize_failed';
+    const failureMessage =
+      e.details?.omiseMessage ?? (err instanceof Error ? err.message : String(err));
+
+    try {
+      if (existingPayment) {
+        await this.prisma.payment.update({
+          where: { id: existingPayment.id },
+          data: {
+            paymentStatus: PaymentStatus.failed,
+            failureCode,
+            failureMessage,
+            omiseToken: ctx.omiseToken,
+          },
+        });
+        await this.prisma.paymentStatusHistory.create({
+          data: {
+            paymentId: existingPayment.id,
+            fromStatus: existingPayment.paymentStatus as PaymentStatus,
+            toStatus: PaymentStatus.failed,
+            changedBy: actorId,
+            reason: 'บัตรถูกปฏิเสธ — authorize ไม่สำเร็จ',
+            metadata: { failureCode, failureMessage },
+          },
+        });
+      } else {
+        const created = await this.prisma.payment.create({
+          data: {
+            bookingId,
+            patientId: ctx.patientId,
+            caregiverId: ctx.caregiverId,
+            amount: ctx.amountBaht,
+            paymentStatus: PaymentStatus.failed,
+            paymentMethod: 'credit_card',
+            omiseToken: ctx.omiseToken,
+            failureCode,
+            failureMessage,
+          },
+        });
+        await this.fsm.recordInitialStatus(created.id, PaymentStatus.failed, {
+          changedBy: actorId,
+          reason: 'บัตรถูกปฏิเสธ — authorize ไม่สำเร็จ',
+          metadata: { failureCode, failureMessage },
+        });
+      }
+    } catch (writeErr) {
+      const m = writeErr instanceof Error ? writeErr.message : String(writeErr);
+      this.logger.error(
+        `[recordFailedAuthorize] persist failed-payment ไม่สำเร็จ booking=${bookingId}: ${m}`,
+      );
+    }
+  }
+
   // ── PYG-281: Authorize Payment ───────────────────────────────────────────
 
   async createPayment(input: CreatePaymentInput, user: AuthUser): Promise<Payment> {
@@ -150,9 +268,26 @@ export class PaymentService {
     // into closures, but it does keep a narrowed const — so use this everywhere.
     const caregiver = booking.caregiver;
 
-    const existingPayment = await this.prisma.payment.findUnique({
+    let existingPayment = await this.prisma.payment.findUnique({
       where: { bookingId: booking.id },
     });
+
+    // PYG-309/375: a stale PromptPay `pending` must not lock the customer out. Ask Omise FIRST
+    // (retrieveCharge) — a paid-but-webhook-lost charge is repaired to captured (no 2nd payment);
+    // a genuinely dead charge goes terminal (expired/failed) so this new attempt can proceed.
+    // Never mark expired on elapsed time alone.
+    if (
+      existingPayment &&
+      existingPayment.paymentMethod === 'promptpay' &&
+      (existingPayment.paymentStatus as PaymentStatus) === PaymentStatus.pending
+    ) {
+      const reconciled = await this.reconcileStalePromptPay(existingPayment);
+      if ((reconciled.paymentStatus as PaymentStatus) === PaymentStatus.captured) {
+        // paid all along — webhook was lost. Return the repaired payment, do NOT charge again.
+        return this.toGql(reconciled);
+      }
+      existingPayment = reconciled; // now expired/failed → non-blocking, retry proceeds below
+    }
 
     if (existingPayment && this.isPaymentBlocking(existingPayment)) {
       throw new ConflictException('A valid payment already exists for this booking');
@@ -193,7 +328,22 @@ export class PaymentService {
     }
     const omiseToken = input.omiseToken;
 
-    const chargeResult = await this.omiseService.createCharge(amountSatangs, omiseToken);
+    // PYG-309/375: card declined → createCharge throws BEFORE the success tx. Record a `failed`
+    // payment row (FE try-again button + audit) then rethrow the SAME user-facing error.
+    // Booking stays `accepted` (the confirm/held tx below never runs). Retry itself already
+    // works via the non-blocking guard; this write is for the failed-state record.
+    let chargeResult;
+    try {
+      chargeResult = await this.omiseService.createCharge(amountSatangs, omiseToken);
+    } catch (err) {
+      await this.recordFailedAuthorize(booking.id, existingPayment, user.id, err, {
+        patientId: user.id,
+        caregiverId: caregiver.userId,
+        amountBaht,
+        omiseToken,
+      });
+      throw err;
+    }
 
     // Atomic: update booking status and upsert payment, plus initial history row
     const payment = await this.prisma.$transaction(async (tx) => {
