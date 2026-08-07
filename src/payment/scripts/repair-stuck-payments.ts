@@ -39,6 +39,19 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const stuckHours = Number(process.env.STUCK_HOURS ?? 24);
   const log = new Logger('RepairStuckPayments');
+  // human-facing output via console.* so it is NEVER suppressed by the Nest logger level
+  const out = (m: string) => process.stdout.write(m + '\n');
+
+  // Money-safety: without Omise creds every retrieveCharge fails → every row would be
+  // misclassified as `failed`. Refuse to run (dry-run OR apply) so no one reviews/acts on
+  // a bogus plan. Run this in an environment that has OMISE_SECRET_KEY (staging/prod).
+  if (!process.env.OMISE_SECRET_KEY) {
+    out(
+      '✋ OMISE_SECRET_KEY is not set — aborting. retrieveCharge cannot verify charges, so the ' +
+        'plan would misclassify every row. Run this where Omise credentials are configured.',
+    );
+    process.exit(2);
+  }
 
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error', 'warn'] });
   const prisma = app.get(PrismaService);
@@ -50,8 +63,8 @@ async function main() {
     where: { paymentStatus: PaymentStatus.pending, createdAt: { lt: cutoff } },
   });
 
-  log.log(`Found ${stuck.length} payment(s) stuck 'pending' > ${stuckHours}h`);
-  log.log(apply ? '⚠️  APPLY MODE — changes WILL be written' : '🔎 DRY-RUN — nothing will change');
+  out(`Found ${stuck.length} payment(s) stuck 'pending' > ${stuckHours}h`);
+  out(apply ? '⚠️  APPLY MODE — changes WILL be written' : '🔎 DRY-RUN — nothing will change');
 
   const plans: Plan[] = [];
   for (const p of stuck) {
@@ -86,13 +99,13 @@ async function main() {
 
   // print the plan (this is the dry-run output a human reviews)
   for (const plan of plans) {
-    log.log(
+    out(
       `payment=${plan.paymentId} booking=${plan.bookingId} ${plan.from} → ${plan.to}  (${plan.reason})`,
     );
   }
 
   if (!apply) {
-    log.log(`DRY-RUN complete: ${plans.length} row(s) WOULD change. Re-run with --apply to execute.`);
+    out(`DRY-RUN complete: ${plans.length} row(s) WOULD change. Re-run with --apply to execute.`);
     await app.close();
     return;
   }
@@ -105,13 +118,13 @@ async function main() {
         metadata: { repairedAt: new Date().toISOString(), omiseChargeId: plan.omiseChargeId },
       });
       changed += 1;
-      log.log(`✔ repaired payment=${plan.paymentId} → ${plan.to}`);
+      out(`✔ repaired payment=${plan.paymentId} → ${plan.to}`);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       log.error(`x failed payment=${plan.paymentId}: ${m}`);
     }
   }
-  log.log(`APPLY complete: ${changed}/${plans.length} row(s) changed`);
+  out(`APPLY complete: ${changed}/${plans.length} row(s) changed`);
   await app.close();
 }
 
