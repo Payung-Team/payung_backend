@@ -239,9 +239,18 @@ export class PaymentService {
         });
       }
     } catch (writeErr) {
+      // ห้ามกลบ error เดิมจาก Omise — แต่ต้อง log ให้ครบ (paymentId/bookingId + failureCode +
+      // สาเหตุการเขียนพัง) ไม่งั้น declined payment ที่บันทึกไม่ลง = ไม่มี row + ไม่มี log =
+      // มองไม่เห็นตอน reconcile (PYG-376). structured log เพื่อให้ค้น/alert ได้
       const m = writeErr instanceof Error ? writeErr.message : String(writeErr);
       this.logger.error(
-        `[recordFailedAuthorize] persist failed-payment ไม่สำเร็จ booking=${bookingId}: ${m}`,
+        JSON.stringify({
+          alert: 'payment.failed_record_not_persisted',
+          bookingId,
+          paymentId: existingPayment?.id ?? null,
+          failureCode,
+          writeError: m,
+        }),
       );
     }
   }

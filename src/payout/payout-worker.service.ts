@@ -173,6 +173,14 @@ export class PayoutWorkerService {
       .toNumber();
 
     // idempotency key คงที่ต่อ payout — retry ยิงซ้ำ Omise dedup ได้
+    //
+    // PYG-375: payout/transfer จงใจ "ไม่" เดินผ่าน idempotency_keys table (ต่างจาก capture/refund)
+    //   once-only ของ payout ถูกกันด้วย 3 ชั้นที่มีอยู่แล้ว + ผ่าน test (PYG-330/331):
+    //     1) idempotencyKey `payout:${id}` คงที่ → ส่งเป็น Omise-Idempotency-Key (Omise dedup)
+    //     2) payouts.booking_id UNIQUE → กันสร้าง payout ซ้ำระดับ DB
+    //     3) P2002 catch + payout state machine (backoff/retry + kill-switch)
+    //   เพิ่ม table เป็นชั้นที่ 4 = redundant บนเส้นเงินที่ทำงานดีอยู่ = regression risk เปล่า ๆ
+    //   → ห้าม "แก้" ด้วยการห่อ runOnce ตรงนี้ (ดู IdempotencyService docblock)
     const idempotencyKey = `payout:${payout.id}`;
 
     let transfer: Awaited<ReturnType<typeof this.omise.createTransfer>>;

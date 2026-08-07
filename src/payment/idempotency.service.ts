@@ -14,8 +14,14 @@
  * otherwise the whole mechanism is pointless:
  *   capture  : capture:{bookingId}
  *   refund   : refund:{paymentId}:{refunded_amount_before}
- *   payout   : payout:{payoutId}
- *   transfer : transfer:{payoutId}:{attempt}
+ *
+ * ⚠️ Scope (PYG-375): capture + refund go through this table. payout/transfer deliberately
+ *    do NOT — their once-only is already guaranteed by three tested layers (PYG-330/331):
+ *      1) stable Omise-Idempotency-Key `payout:{payoutId}` (Omise dedup)
+ *      2) payouts.booking_id UNIQUE (DB-level guard)
+ *      3) P2002 catch + payout state machine (backoff/retry + kill-switch)
+ *    A 4th redundant layer on that working money path adds no guarantee, only regression
+ *    risk — do not wrap createTransfer with runOnce. (See payout-worker.service.ts.)
  */
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
