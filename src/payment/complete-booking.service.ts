@@ -30,6 +30,7 @@ import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService, OmiseCaptureResult } from './omise/omise.service';
 import { CaptureFailedError } from './errors/capture-failed.error';
 import { CompleteBookingResult } from './dto/complete-booking-result.type';
+import { IdempotencyService } from './idempotency.service';
 
 /** Decimal ของ Prisma มี .toNumber(); รองรับ number/string เผื่อ map มาแล้ว */
 type DecimalLike = { toNumber(): number } | number | string;
@@ -43,6 +44,7 @@ export class CompleteBookingService {
     private readonly fsm: PaymentStateMachine,
     private readonly omise: OmiseService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   /**
@@ -119,43 +121,31 @@ export class CompleteBookingService {
       );
     }
 
-    // 5) capture: card → Omise capture; PromptPay → skip (จ่ายเสร็จตั้งแต่ webhook)
-    // omiseChargeId เก็บไว้ใช้ใน response (ทั้งสอง flow มี chargeId อยู่แล้ว)
-    const omiseChargeIdForResponse = isPromptPayCaptured
-      ? (payment.omiseChargeId ?? '')
-      : (
-          await this.capture(payment.id, payment.omiseChargeId ?? '', user)
-        ).id;
-
-    // 6) atomic: (card) payment held→captured + booking confirmed→completed
-    //            (PromptPay) booking confirmed→completed เท่านั้น (payment เป็น captured อยู่แล้ว)
+    // 5+6) capture + close booking
+    //   Card: capture atomically (FOR UPDATE lock + idempotency:capture:{bookingId}) → held→captured → booking completed
+    //   PromptPay: เงินอยู่ในมือแล้ว — แค่ปิด booking
     const completedAt = new Date();
-    const updatedBooking = await this.prisma.$transaction(async (tx) => {
-      // 6a) card flow เท่านั้น: payment held → captured (ผ่าน FSM)
-      if (!isPromptPayCaptured) {
-        await this.fsm.transition(
-          payment.id,
-          PaymentStatus.captured,
-          {
-            changedBy: user.id,
-            reason: 'งานเสร็จสมบูรณ์ — capture เงินจากวงเงินที่กันไว้',
-            metadata: {
-              omiseChargeId: omiseChargeIdForResponse,
-              capturedAt: completedAt.toISOString(),
-              completedBy: isPatient ? 'patient' : 'caregiver',
-            },
-          },
-          tx,
-        );
-      }
+    let omiseChargeIdForResponse: string;
+    let updatedBooking: { id: string; status: string; completedAt: Date | null };
 
-      // 6b) booking confirmed → completed + completed_at (ทั้งสอง flow ทำเหมือนกัน)
-      return tx.booking.update({
+    if (isPromptPayCaptured) {
+      omiseChargeIdForResponse = payment.omiseChargeId ?? '';
+      updatedBooking = await this.prisma.booking.update({
         where: { id: bookingId },
         data: { status: 'completed', completedAt },
         select: { id: true, status: true, completedAt: true },
       });
-    });
+    } else {
+      const captured = await this.captureCardPayment(
+        bookingId,
+        payment,
+        user,
+        completedAt,
+        isPatient,
+      );
+      omiseChargeIdForResponse = captured.chargeId;
+      updatedBooking = captured.updatedBooking;
+    }
 
     // 7) emit events (PYG-292) — listener สร้าง in-app notification + อีเมล
     //    booking.completed   → แจ้ง patient (พร้อม prompt ให้รีวิว)
@@ -194,19 +184,88 @@ export class CompleteBookingService {
   // ── private helpers ─────────────────────────────────────────────────────
 
   /**
-   * capture — ห่อการเรียก Omise capture: ถ้าพังให้บันทึก audit + แจ้ง admin แล้วโยนต่อ
-   * แยกออกมาเพื่อให้ completeBooking อ่านง่าย และ TS มั่นใจว่าได้ผลลัพธ์เมื่อผ่านบรรทัดนี้
+   * captureCardPayment (PYG-375) — capture การ์ดแบบ atomic + idempotent + serialized
+   *
+   * ทั้งหมดอยู่ใน $transaction เดียวที่ถือ SELECT … FOR UPDATE บนแถว payment →
+   * completeBooking ที่ยิงพร้อมกัน (เช่น กดปุ่มซ้ำ) ถูก serialize:
+   *   - ตัวที่ 2 รอ lock → อ่านเจอ status=captured แล้ว → ข้าม Omise (ไม่ capture ซ้ำ)
+   *   - idempotency:capture:{bookingId} เป็น layer ที่ 2 (กันข้าม process + ส่ง Omise header)
+   * Omise capture fail → tx rollback (ปลด lock + คืน idempotency key) → บันทึก audit นอก tx → โยนต่อ
    */
-  private async capture(
-    paymentId: string,
-    omiseChargeId: string,
+  private async captureCardPayment(
+    bookingId: string,
+    payment: { id: string; omiseChargeId: string | null; amount: DecimalLike },
     user: AuthUser,
-  ): Promise<OmiseCaptureResult> {
+    completedAt: Date,
+    isPatient: boolean,
+  ): Promise<{
+    chargeId: string;
+    updatedBooking: { id: string; status: string; completedAt: Date | null };
+  }> {
     try {
-      return await this.omise.captureCharge(omiseChargeId);
+      return await this.prisma.$transaction(
+        async (tx) => {
+          // lock the payment row — serialize concurrent captures
+          await tx.$queryRaw`SELECT 1 FROM "payments" WHERE "id" = ${payment.id}::uuid FOR UPDATE`;
+          const locked = await tx.payment.findUnique({
+            where: { id: payment.id },
+            select: { paymentStatus: true, omiseChargeId: true },
+          });
+
+          let chargeId: string;
+          if ((locked?.paymentStatus as PaymentStatus) === PaymentStatus.captured) {
+            // a concurrent request already captured — do NOT call Omise again
+            chargeId = locked?.omiseChargeId ?? payment.omiseChargeId ?? '';
+          } else {
+            const captured = await this.idempotency.runOnce(
+              {
+                key: `capture:${bookingId}`,
+                action: 'capture',
+                bookingId,
+                fn: (idemKey) =>
+                  this.omise.captureCharge(payment.omiseChargeId ?? '', idemKey),
+              },
+              tx,
+            );
+            chargeId = captured.id;
+
+            await this.fsm.transition(
+              payment.id,
+              PaymentStatus.captured,
+              {
+                changedBy: user.id,
+                reason: 'งานเสร็จสมบูรณ์ — capture เงินจากวงเงินที่กันไว้',
+                metadata: {
+                  omiseChargeId: chargeId,
+                  capturedAt: completedAt.toISOString(),
+                  completedBy: isPatient ? 'patient' : 'caregiver',
+                },
+              },
+              tx,
+            );
+            // PYG-374: capture เต็มจำนวนเสมอ → set captured_amount ให้ RefundService ใช้
+            await tx.payment.update({
+              where: { id: payment.id },
+              data: { capturedAmount: this.toNumber(payment.amount) },
+            });
+          }
+
+          const updatedBooking = await tx.booking.update({
+            where: { id: bookingId },
+            data: { status: 'completed', completedAt },
+            select: { id: true, status: true, completedAt: true },
+          });
+
+          return { chargeId, updatedBooking };
+        },
+        { timeout: 20000 },
+      );
     } catch (err) {
-      await this.handleCaptureFailure(paymentId, user, err);
-      throw err; // โยน CaptureFailedError ต่อให้ resolver แปลงเป็น error response
+      // เฉพาะ Omise capture ที่พังจริง → บันทึก audit (lock ถูกปลดจาก rollback แล้ว)
+      if (err instanceof CaptureFailedError) {
+        await this.handleCaptureFailure(payment.id, user, err);
+      }
+      throw err;
     }
   }
 

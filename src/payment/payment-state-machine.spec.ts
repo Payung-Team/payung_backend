@@ -79,6 +79,10 @@ describe('PaymentStateMachine', () => {
       // PYG-374: partial refund หลายครั้งจนครบ (partially_refunded ไม่ terminal แล้ว)
       [PaymentStatus.partially_refunded, PaymentStatus.partially_refunded],
       [PaymentStatus.partially_refunded, PaymentStatus.refunded],
+      // PYG-375: abandoned PromptPay pending → expired; ลูกค้าจ่ายใหม่ได้ (expired/voided → held)
+      [PaymentStatus.pending, PaymentStatus.expired],
+      [PaymentStatus.expired, PaymentStatus.held],
+      [PaymentStatus.voided, PaymentStatus.held],
     ])('อนุญาต %s → %s', (from, to) => {
       expect(machine.canTransition(from, to)).toBe(true);
     });

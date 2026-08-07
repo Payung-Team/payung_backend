@@ -563,6 +563,20 @@ model PaymentStatusHistory {
   @@map("payment_status_history")
 }
 
+/// PYG-375: deterministic once-only execution for money commands (capture/refund/payout/transfer).
+/// key is INSERTed before the Omise call; a PK collision → return stored `result` (no 2nd call).
+/// Same key is also sent as the Omise-Idempotency-Key header (two layers). Cron prunes > 30 days.
+model IdempotencyKey {
+  key       String   @id
+  action    String
+  bookingId String?  @map("booking_id") @db.Uuid
+  result    Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
+
 enum NotificationType {
   kyc_submitted
   kyc_verified

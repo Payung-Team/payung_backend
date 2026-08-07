@@ -281,3 +281,105 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
     expect(result).toBeNull();
   });
 });
+
+// ─── createPayment — PYG-309/375: reconcile stale PromptPay + failed-record on decline ───
+
+describe('PaymentService.createPayment — PYG-309 reconcile + failed record', () => {
+  let service: PaymentService;
+  let prisma: {
+    booking: { findUnique: jest.Mock };
+    payment: { findUnique: jest.Mock; create: jest.Mock; update: jest.Mock };
+    paymentStatusHistory: { create: jest.Mock };
+    $transaction: jest.Mock;
+  };
+  let omise: { createCharge: jest.Mock; retrieveCharge: jest.Mock };
+  let fsm: { transition: jest.Mock; recordInitialStatus: jest.Mock };
+
+  const acceptedBooking = {
+    id: BOOKING_ID,
+    patientId: PATIENT_ID,
+    status: 'accepted',
+    durationHours: 2,
+    caregiverId: CAREGIVER_ID,
+    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+  };
+  const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
+  const cardInput = { bookingId: BOOKING_ID, paymentMethod: 'credit_card', omiseToken: 'tokn_1' };
+
+  beforeEach(async () => {
+    prisma = {
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      payment: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
+      paymentStatusHistory: { create: jest.fn() },
+      $transaction: jest.fn(),
+    };
+    omise = { createCharge: jest.fn(), retrieveCharge: jest.fn() };
+    fsm = { transition: jest.fn(), recordInitialStatus: jest.fn() };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: fsm },
+        { provide: OmiseService, useValue: omise },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(PaymentService);
+  });
+
+  it('PromptPay pending + Omise says paid (webhook lost) → captured, NO second charge', async () => {
+    prisma.payment.findUnique.mockResolvedValue(
+      fakePayment({ paymentStatus: 'pending', paymentMethod: 'promptpay' }),
+    );
+    omise.retrieveCharge.mockResolvedValue({ paid: true });
+    fsm.transition.mockResolvedValue(fakePayment({ paymentStatus: 'captured' }));
+
+    const result = await service.createPayment(cardInput, patient);
+
+    expect(omise.retrieveCharge).toHaveBeenCalledTimes(1); // asked Omise FIRST
+    expect(fsm.transition).toHaveBeenCalledWith(PAYMENT_ID, PaymentStatus.captured, expect.anything());
+    expect(omise.createCharge).not.toHaveBeenCalled(); // did NOT charge again
+    expect(result.paymentStatus).toBe('captured');
+  });
+
+  it('PromptPay pending + Omise says not paid → expired, then retry proceeds to createCharge', async () => {
+    prisma.payment.findUnique.mockResolvedValue(
+      fakePayment({ paymentStatus: 'pending', paymentMethod: 'promptpay' }),
+    );
+    omise.retrieveCharge.mockResolvedValue({ paid: false, expiresAt: '2026-08-01T00:00:00Z' });
+    fsm.transition.mockResolvedValue(fakePayment({ paymentStatus: 'expired' }));
+    const CHARGE_REACHED = new Error('__charge_reached__');
+    omise.createCharge.mockRejectedValue(CHARGE_REACHED);
+
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(fsm.transition).toHaveBeenCalledWith(PAYMENT_ID, PaymentStatus.expired, expect.anything());
+    expect(omise.createCharge).toHaveBeenCalledTimes(1); // not blocked → retry proceeded
+  });
+
+  it('declined card (no existing) → writes a `failed` row + rethrows the same error', async () => {
+    prisma.payment.findUnique.mockResolvedValue(null);
+    const declined = Object.assign(new Error('card was declined'), {
+      details: { omiseCode: 'insufficient_fund', omiseMessage: 'insufficient funds' },
+    });
+    omise.createCharge.mockRejectedValue(declined);
+    prisma.payment.create.mockResolvedValue({ id: 'pay-new' });
+
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(declined);
+
+    expect(prisma.payment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          paymentStatus: PaymentStatus.failed,
+          failureCode: 'insufficient_fund',
+        }),
+      }),
+    );
+    expect(fsm.recordInitialStatus).toHaveBeenCalledWith(
+      'pay-new',
+      PaymentStatus.failed,
+      expect.anything(),
+    );
+  });
+});
