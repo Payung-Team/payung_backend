@@ -35,6 +35,9 @@ type CaregiverBookingRow = {
   startTime: Date;
   durationHours: { toNumber(): number } | number;
   locationAddress: string;
+  // PYG-352: พิกัดจุดงาน — null ได้ (booking เก่าทุกใบเป็น null)
+  locationLat: { toNumber(): number } | null;
+  locationLng: { toNumber(): number } | null;
   notes: string | null;
   estimatedCost: { toNumber(): number } | number | null;
   acceptedAt: Date | null;
@@ -385,6 +388,9 @@ export class CaregiverBookingService {
       durationHours: this.toNumber(b.durationHours),
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
       locationAddress: b.locationAddress ?? undefined,
+      // PYG-352: หน้าเช็คอินต้องใช้พิกัดคู่นี้วาดหมุดจุดงาน + วงรัศมี
+      locationLat: b.locationLat != null ? this.toNumber(b.locationLat) : undefined,
+      locationLng: b.locationLng != null ? this.toNumber(b.locationLng) : undefined,
       notes: b.notes ?? undefined,
       patient: {
         id: b.patient.id,

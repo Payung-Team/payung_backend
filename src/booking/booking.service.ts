@@ -89,6 +89,9 @@ type BookingWithIncludes = {
   tasks: string[];
   serviceLocations: string[];
   locationAddress: string;
+  // PYG-352: พิกัดจุดงาน — null ได้ (booking เก่าทุกใบเป็น null)
+  locationLat: { toNumber(): number } | null;
+  locationLng: { toNumber(): number } | null;
   bookingDate: Date;
   notes: string | null;
   estimatedCost: { toNumber(): number } | null;
@@ -201,6 +204,10 @@ export class BookingService {
         startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
         durationHours:    dto.durationHours,
         locationAddress:  dto.locationAddress,
+        // PYG-352: เก็บพิกัดจุดงานที่ลูกค้าปักหมุดไว้ — ก่อนหน้านี้ค่านี้ถูกทิ้งทุกครั้ง
+        // ระบบเช็คอินใช้พิกัดคู่นี้คำนวณระยะ ถ้าไม่มีก็ไม่คำนวณและไม่ติดธง
+        locationLat:      dto.lat ?? null,
+        locationLng:      dto.lng ?? null,
         bookingDate:      new Date(dto.bookingDate),
         notes:            dto.notes ?? null,
         patientName:              dto.patientName              ?? null,
@@ -653,6 +660,9 @@ export class BookingService {
       confirmedAt:      booking.confirmedAt   ?? undefined,
       disputeStatus:    booking.disputeStatus ?? 'none',
       disputeReason:    booking.disputeReason ?? undefined,
+      // PYG-352: พิกัดจุดงาน — FE ใช้ปักหมุด "จุดงาน" และวาดวงรัศมีสองวงบนแผนที่
+      locationLat:      booking.locationLat != null ? booking.locationLat.toNumber() : undefined,
+      locationLng:      booking.locationLng != null ? booking.locationLng.toNumber() : undefined,
       createdAt:        booking.createdAt,
     };
   }
