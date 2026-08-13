@@ -286,4 +286,24 @@ export class EmailService {
       this.logger.error(`Failed to send email to ${to}: ${msg}`);
     }
   }
+
+  /**
+   * PYG-376 — plain operational alert to admins (reconciliation, etc.).
+   * Reuses the same SMTP transporter as every other mail; text-only is fine for internal alerts.
+   */
+  async sendAdminAlert(
+    recipients: string[],
+    subject: string,
+    textBody: string,
+  ): Promise<void> {
+    if (recipients.length === 0) {
+      this.logger.warn(`No admin recipients for alert "${subject}" — skipping send`);
+      return;
+    }
+    await this.send(recipients.join(', '), {
+      subject,
+      text: textBody,
+      html: `<pre style="font-family:monospace;white-space:pre-wrap">${textBody}</pre>`,
+    });
+  }
 }
