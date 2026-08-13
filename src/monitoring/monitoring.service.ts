@@ -186,6 +186,23 @@ export class MonitoringService {
         reviewReasons: evaluation.reviewReasons,
       });
 
+      // ── แจ้งผู้รับบริการว่าผู้ดูแลมาถึงแล้ว ──────────────────────────
+      // fire-and-forget เหมือน booking events ตัวอื่น ๆ (ดู checkOutBooking)
+      // ⚠ BookingNotificationListener ยังไม่มี case ให้ event นี้ (รอ data engineer
+      //   เพิ่ม NotificationType.job_checked_in ใน Prisma schema ก่อน) — emit ไว้ก่อน
+      //   เพื่อไม่ให้ต้องแก้จุดนี้อีกครั้งตอน listener พร้อม
+      this.eventEmitter.emit(BOOKING_EVENTS.JOB_CHECKED_IN, {
+        bookingId: booking.id,
+        eventType: BOOKING_EVENTS.JOB_CHECKED_IN,
+        patientId: booking.patientId,
+        caregiverId: userId,
+        metadata: {
+          distanceM: evaluation.distanceM,
+          gpsAccuracyLow: evaluation.gpsAccuracyLow,
+          reviewReasons: evaluation.reviewReasons,
+        },
+      });
+
       return this.toEntity(
         created,
         evaluation.jobCoordsMissing,

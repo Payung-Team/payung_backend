@@ -134,6 +134,18 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
+  [BOOKING_EVENTS.JOB_CHECKED_IN]: {
+    // PYG-352: ผู้ดูแลเช็คอินเริ่มงาน — แจ้งผู้รับบริการว่าผู้ดูแลมาถึงแล้ว
+    // ใช้ NotificationType.booking_completed ที่มีอยู่แล้ว (เหมือน JOB_CHECKED_OUT ด้านล่าง)
+    // — ไม่ต้องเพิ่มค่า enum ใหม่ที่ต้องแก้ schema.prisma + migration
+    // email: false — เป็นแค่ FYI เรียลไทม์ ไม่ใช่เหตุการณ์ที่ต้องรีบดำเนินการเหมือน checkout
+    type: NotificationType.booking_completed,
+    recipient: 'patient',
+    title: 'ผู้ดูแลมาถึงแล้ว',
+    body: (c) => `${c.caregiverName} เช็คอินเริ่มงานให้คุณแล้ว`,
+    email: false,
+    ctaLabel: 'ดูรายละเอียด',
+  },
   [BOOKING_EVENTS.JOB_CHECKED_OUT]: {
     // PYG-358: ผู้ดูแลปิดงานเอง — ผู้รับบริการ "ไม่ต้อง" กดยืนยันอะไรอีกแล้ว
     //
@@ -231,6 +243,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.DECLINED)
   @OnEvent(BOOKING_EVENTS.CONFIRMED)
   @OnEvent(BOOKING_EVENTS.COMPLETED)
+  @OnEvent(BOOKING_EVENTS.JOB_CHECKED_IN) // PYG-352
   @OnEvent(BOOKING_EVENTS.JOB_CHECKED_OUT) // PYG-358
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)
