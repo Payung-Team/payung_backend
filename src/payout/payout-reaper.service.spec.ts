@@ -10,6 +10,7 @@ import { PayoutStatus } from './entities/payout-status.enum';
 import { InvalidPayoutTransitionError } from './errors/invalid-payout-transition.error';
 import { PayoutRetryPolicy } from './payout-retry-policy';
 import { PayoutKillswitch } from './payout-killswitch';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 const PAYOUT_ID = 'payout-1';
 
@@ -29,10 +30,11 @@ describe('PayoutReaperService', () => {
     payout: { findMany: jest.Mock };
     $transaction: jest.Mock;
   };
-  let stateMachine: { transition: jest.Mock };
+  let stateMachine: { transition: jest.Mock; claim: jest.Mock };
   let retryPolicy: { decide: jest.Mock };
   let killswitch: { gate: jest.Mock };
   let config: { getOrThrow: jest.Mock };
+  let eligibility: { check: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -41,9 +43,22 @@ describe('PayoutReaperService', () => {
         cb({}),
       ),
     };
-    stateMachine = { transition: jest.fn().mockResolvedValue({}) };
+    stateMachine = {
+      transition: jest.fn().mockResolvedValue({}),
+      claim: jest.fn().mockResolvedValue({ claimed: true, payout: {} }),
+    };
     retryPolicy = { decide: jest.fn() };
     killswitch = { gate: jest.fn().mockReturnValue(false) };
+    // default: ทุก booking ยังจ่ายได้ → eligibility sweep ไม่ทำอะไร
+    eligibility = {
+      check: jest
+        .fn()
+        .mockResolvedValue({
+          kind: 'eligible',
+          reason: 'no_dispute',
+          evidence: {},
+        }),
+    };
     config = {
       getOrThrow: jest.fn(
         (k: string) =>
@@ -62,10 +77,109 @@ describe('PayoutReaperService', () => {
         { provide: PayoutStateMachine, useValue: stateMachine },
         { provide: PayoutRetryPolicy, useValue: retryPolicy },
         { provide: PayoutKillswitch, useValue: killswitch },
+        { provide: PayoutEligibilityService, useValue: eligibility },
       ],
     }).compile();
 
     reaper = mod.get(PayoutReaperService);
+  });
+
+  // ── eligibility sweep (booking กลายเป็น "ไม่ควรจ่าย" หลัง payout ถูกสร้าง) ──
+
+  describe('eligibility sweep', () => {
+    const scheduledRow = { id: 'p-sched', bookingId: 'booking-9' };
+
+    it('payout ที่ยังไม่โอน + booking โดน deny → cancel ผ่าน state machine', async () => {
+      prisma.payout.findMany
+        .mockResolvedValueOnce([]) // stale-processing pass
+        .mockResolvedValueOnce([scheduledRow]); // eligibility pass
+      eligibility.check.mockResolvedValue({
+        kind: 'deny',
+        reason: 'payment_refunded',
+        evidence: { verdict: 'valid', refundedAmount: 1000 },
+      });
+
+      await reaper.run();
+
+      expect(stateMachine.claim).toHaveBeenCalledWith(
+        'p-sched',
+        PayoutStatus.scheduled,
+        PayoutStatus.cancelled,
+        expect.objectContaining({
+          reason: 'payout_gate_denied:payment_refunded',
+        }),
+      );
+    });
+
+    it('dispute ยังเปิดอยู่ (hold) → ห้าม cancel (กู้คืนไม่ได้ถ้ายกเลิกผิด)', async () => {
+      prisma.payout.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([scheduledRow]);
+      eligibility.check.mockResolvedValue({
+        kind: 'hold',
+        reason: 'proof_needs_review',
+        evidence: {},
+      });
+
+      await reaper.run();
+
+      expect(stateMachine.claim).not.toHaveBeenCalled();
+    });
+
+    it('eligible → ไม่แตะ', async () => {
+      prisma.payout.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([scheduledRow]);
+
+      await reaper.run();
+
+      expect(stateMachine.claim).not.toHaveBeenCalled();
+    });
+
+    it('sweep ดูเฉพาะ scheduled (processing = worker ถือ lock อยู่)', async () => {
+      prisma.payout.findMany.mockResolvedValue([]);
+
+      await reaper.run();
+
+      expect(prisma.payout.findMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: { status: PayoutStatus.scheduled },
+        }),
+      );
+    });
+
+    it('kill-switch on → sweep ไม่ทำงาน', async () => {
+      killswitch.gate.mockReturnValue(true);
+
+      await reaper.run();
+
+      expect(eligibility.check).not.toHaveBeenCalled();
+      expect(stateMachine.claim).not.toHaveBeenCalled();
+    });
+
+    it('1 ใบพัง → ใบอื่นยังถูกกวาดต่อ', async () => {
+      prisma.payout.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+        { id: 'p-a', bookingId: 'b-a' },
+        { id: 'p-b', bookingId: 'b-b' },
+      ]);
+      eligibility.check
+        .mockRejectedValueOnce(new Error('db down'))
+        .mockResolvedValueOnce({
+          kind: 'deny',
+          reason: 'payment_refunded',
+          evidence: {},
+        });
+
+      await expect(reaper.run()).resolves.toBeUndefined();
+      expect(stateMachine.claim).toHaveBeenCalledTimes(1);
+      expect(stateMachine.claim).toHaveBeenCalledWith(
+        'p-b',
+        PayoutStatus.scheduled,
+        PayoutStatus.cancelled,
+        expect.anything(),
+      );
+    });
   });
 
   // ── kill-switch ──────────────────────────────────────────────────────────

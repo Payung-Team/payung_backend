@@ -35,6 +35,11 @@ import {
   type Verdict,
 } from './monitoring.constants';
 
+/** booking ที่โหลด jobEvents มาครบแล้ว — อินพุตของ summarize() */
+type BookingWithProof = Prisma.BookingGetPayload<{
+  include: { jobEvents: true; caregiver: { select: { userId: true } } };
+}>;
+
 /** ผลลัพธ์ของการประเมิน 1 เหตุการณ์ ก่อนเขียนลงฐานข้อมูล */
 interface EvaluationResult {
   distanceM: number | null;
@@ -414,6 +419,39 @@ export class MonitoringService {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูข้อมูลงานนี้');
     }
 
+    return this.summarize(booking);
+  }
+
+  /**
+   * proofOfWorkForSystem — ทางเข้าสำหรับ "ระบบ" (ไม่มี user เป็นเจ้าของคำขอ)
+   *
+   * ใช้โดย payout gate (PYG-366/367): worker/reaper/cron ไม่มี JWT จะเอา userId+role
+   * ที่ไหนมาใส่ — ถ้าบังคับให้ส่ง role=3 ปลอม ๆ วันหนึ่งจะมีคนก็อปแพตเทิร์นนั้น
+   * ไปใช้บน path ที่มี user จริงแล้วกลายเป็นช่องโหว่สิทธิ์
+   *
+   * ★ กฎการตัดสินใช้ร่วมกับ proofOfWork() ตัวเดียวกัน (summarize) — ห้ามแยกกฎ
+   */
+  async proofOfWorkForSystem(bookingId: string): Promise<ProofOfWorkSummary> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        jobEvents: true,
+        caregiver: { select: { userId: true } },
+      },
+    });
+
+    if (!booking) {
+      throw new NotFoundException('ไม่พบงานนี้');
+    }
+
+    return this.summarize(booking);
+  }
+
+  /**
+   * summarize — ประกอบ ProofOfWorkSummary จาก booking ที่โหลด jobEvents มาแล้ว
+   * (แยกจาก proofOfWork เพื่อให้ system path ใช้กฎชุดเดียวกันโดยไม่ต้องผ่าน auth)
+   */
+  private summarize(booking: BookingWithProof): ProofOfWorkSummary {
     const checkIn = booking.jobEvents.find(
       (e) => e.eventType === JOB_EVENT_TYPE.CHECK_IN,
     );
