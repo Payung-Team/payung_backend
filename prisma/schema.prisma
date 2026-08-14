@@ -648,6 +648,7 @@ enum NotificationType {
   payment_refunded
   payment_voided
   payment_transferred
+  job_checked_in // PYG-353
 }
 
 enum booking_service_type {
