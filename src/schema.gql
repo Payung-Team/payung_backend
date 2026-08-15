@@ -1452,6 +1452,16 @@ type Query {
   proofOfWork(bookingId: ID!): ProofOfWorkSummary!
 
   """
+  Admin only: reconciliation report (payments vs Omise vs payouts) for a date window.
+  """
+  reconciliationReport(input: ReconciliationReportInput!): ReconReport!
+
+  """
+  Admin only: the same reconciliation report as a UTF-8-with-BOM CSV string.
+  """
+  reconciliationReportCsv(input: ReconciliationReportInput!): String!
+
+  """
   Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
   """
   searchCaregivers(input: SearchCaregiverInput = {}): SearchCaregiverPayload!
@@ -1475,6 +1485,49 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
+}
+
+enum ReconFlag {
+  AMOUNT_MISMATCH
+  CAPTURE_WITHOUT_PROOF
+  PAYOUT_WITHOUT_CAPTURE
+  REFUND_EXCEEDS_CAPTURED
+  STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
+  STATUS_MISMATCH_OMISE_PAID_DB_PENDING
+}
+
+type ReconReport {
+  dateFrom: String!
+  dateTo: String!
+  flaggedRows: Float!
+  rows: [ReconRow!]!
+  totalRows: Float!
+  unreachableRows: Float!
+}
+
+type ReconRow {
+  amount: Float!
+  bookingId: ID!
+  capturedAmount: Float
+  date: String!
+  flags: [ReconFlag!]!
+  grossAmount: Float
+  netAmount: Float
+  omiseStatus: String
+  omiseUnreachable: Boolean!
+  paymentId: String!
+  paymentStatus: String!
+  payoutStatus: String
+  platformFee: Float
+  primaryFlag: ReconFlag
+  refundedAmount: Float!
+  reviewReasons: [String!]!
+  verdict: String!
+}
+
+input ReconciliationReportInput {
+  dateFrom: String!
+  dateTo: String!
 }
 
 input RefundPaymentInput {
