@@ -26,8 +26,10 @@ import {
 const CAPTURED_STATUSES = new Set(['captured', 'transferred']);
 /** payouts.status value that means money actually left (PYG-330/331: processing → paid). */
 const PAYOUT_SUCCESS_STATUS = 'paid';
-/** verdict value that permits auto-release (MonitoringService VERDICT.VALID). */
+/** verdict values (MonitoringService VERDICT.*) — consumed, never recomputed here. */
 const VERDICT_VALID = 'valid';
+const VERDICT_NEEDS_REVIEW = 'needs_review';
+const VERDICT_INCOMPLETE = 'incomplete';
 
 /** Omise rate-limit friendliness: N charges per batch, pause between batches. */
 const OMISE_BATCH_SIZE = 20;
@@ -186,10 +188,25 @@ export class ReconciliationService {
     const { payment: p, verdict, hasAdminOverride, payoutStatus, charge } = ctx;
     const flags: ReconFlag[] = [];
     const isCaptured = CAPTURED_STATUSES.has(p.paymentStatus);
+    const payoutReleased = payoutStatus === PAYOUT_SUCCESS_STATUS;
 
-    // 1. CAPTURE_WITHOUT_PROOF — captured but verdict != valid and no admin override
-    if (isCaptured && verdict !== VERDICT_VALID && !hasAdminOverride) {
-      flags.push(ReconFlag.CAPTURE_WITHOUT_PROOF);
+    // 1. CAPTURE_WITHOUT_PROOF — money-at-risk semantics (PYG-376 refinement).
+    //    Fires only when money is genuinely exposed WITHOUT valid proof:
+    //      captured/transferred + no override + NOT valid + (payout RELEASED  → money left = leak
+    //                                                        OR verdict=needs_review → serviced-but-flagged)
+    //    captured + incomplete + NOT paid out = held escrow awaiting service → INFO marker below,
+    //    NOT a leak (verdict is `incomplete` for 100% of pre-proof-of-work data; a needs_review-only
+    //    gate would silence Flag 1 entirely, and firing on every held capture is a false positive).
+    //    NOTE: the signed-off condition omitted `verdict !== valid`; I keep it so a correctly-paid,
+    //    fully-proven booking (payout released + verdict=valid) does NOT raise a false alert.
+    //    On current data (0 valid verdicts, 0 payouts) the two are identical. Flagged in the PR.
+    if (isCaptured && !hasAdminOverride && verdict !== VERDICT_VALID) {
+      if (payoutReleased || verdict === VERDICT_NEEDS_REVIEW) {
+        flags.push(ReconFlag.CAPTURE_WITHOUT_PROOF);
+      } else if (verdict === VERDICT_INCOMPLETE) {
+        // held escrow — visible, but INFO-tier (never emails). See ReconFlag.HELD_AWAITING_PROOF.
+        flags.push(ReconFlag.HELD_AWAITING_PROOF);
+      }
     }
 
     // 2. PAYOUT_WITHOUT_CAPTURE — payout paid but payment never captured
