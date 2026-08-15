@@ -143,6 +143,58 @@ describe('ReconciliationService — flags', () => {
     expect(row.flags).toContain(ReconFlag.CAPTURE_WITHOUT_PROOF);
   });
 
+  // ── PYG-376 Flag 1 refinement: money-at-risk semantics ──
+  it('Flag 1 FIRES — captured + verdict=incomplete + payout RELEASED (paid) + no override (payout-without-proof leak)', async () => {
+    const { service } = makeService({
+      payments: [payment({ paymentStatus: 'captured' })],
+      verdict: 'incomplete', // no proof-of-work…
+      payout: { status: 'paid' }, // …but money already left → real leak
+      charge: omiseCharge(),
+    });
+    const { row } = await firstRow(service);
+    expect(row.flags).toContain(ReconFlag.CAPTURE_WITHOUT_PROOF);
+    expect(row.flags).not.toContain(ReconFlag.HELD_AWAITING_PROOF);
+  });
+
+  it('HELD_AWAITING_PROOF (INFO) — captured + incomplete + NO payout + no override → NOT Flag 1, still visible', async () => {
+    const { service } = makeService({
+      payments: [payment({ paymentStatus: 'captured' })],
+      verdict: 'incomplete',
+      payout: null, // nothing released → held escrow, not a leak
+      charge: omiseCharge(),
+    });
+    const { row } = await firstRow(service);
+    expect(row.flags).not.toContain(ReconFlag.CAPTURE_WITHOUT_PROOF);
+    expect(row.flags).toContain(ReconFlag.HELD_AWAITING_PROOF); // downgraded, still in report/CSV
+    expect(row.primaryFlag).toBe(ReconFlag.HELD_AWAITING_PROOF);
+  });
+
+  it('happy path — captured + verdict=valid + payout paid → NO Flag 1, NO HELD (guard beyond signed-off condition)', async () => {
+    const { service } = makeService({
+      payments: [payment({ paymentStatus: 'captured' })],
+      verdict: 'valid',
+      payout: { status: 'paid' },
+      charge: omiseCharge(),
+    });
+    const { row } = await firstRow(service);
+    expect(row.flags).not.toContain(ReconFlag.CAPTURE_WITHOUT_PROOF);
+    expect(row.flags).not.toContain(ReconFlag.HELD_AWAITING_PROOF);
+  });
+
+  it('held escrow with admin override → neither Flag 1 nor HELD (override accounts for it)', async () => {
+    const { service } = makeService({
+      payments: [payment({ paymentStatus: 'captured' })],
+      verdict: 'incomplete',
+      payout: null,
+      charge: omiseCharge(),
+      overrideHistoryRows: [{ paymentId: 'pay-1', changedBy: 'admin-9' }],
+      adminIds: ['admin-9'],
+    });
+    const { row } = await firstRow(service);
+    expect(row.flags).not.toContain(ReconFlag.CAPTURE_WITHOUT_PROOF);
+    expect(row.flags).not.toContain(ReconFlag.HELD_AWAITING_PROOF);
+  });
+
   it('Flag 2 PAYOUT_WITHOUT_CAPTURE — payout paid but payment not captured', async () => {
     const { service } = makeService({
       payments: [payment({ paymentStatus: 'pending' })],
