@@ -4,7 +4,7 @@
  * Read-only: this module compares payments (+payouts) vs Omise vs the proof/verdict
  * side and flags disagreements. It NEVER mutates a row.
  */
-import { Field, ID, InputType, ObjectType, registerEnumType } from '@nestjs/graphql';
+import { Field, Float, ID, Int, InputType, ObjectType, registerEnumType } from '@nestjs/graphql';
 import { IsDateString } from 'class-validator';
 
 /**
@@ -51,10 +51,10 @@ export class ReconRow {
   /** payment.created_at ISO */
   @Field() date!: string;
 
-  // ── amounts (baht, for display) ──
-  @Field(() => Number) amount!: number;
-  @Field(() => Number, { nullable: true }) capturedAmount?: number | null;
-  @Field(() => Number) refundedAmount!: number;
+  // ── amounts (baht, for display — Float like transaction.types money fields) ──
+  @Field(() => Float) amount!: number;
+  @Field(() => Float, { nullable: true }) capturedAmount?: number | null;
+  @Field(() => Float) refundedAmount!: number;
 
   @Field() paymentStatus!: string;
   /** Omise charge.status, or null when no charge id / unreachable */
@@ -65,9 +65,9 @@ export class ReconRow {
   @Field(() => [String]) reviewReasons!: string[];
 
   // ── payout money columns for the CSV (baht) ──
-  @Field(() => Number, { nullable: true }) grossAmount?: number | null;
-  @Field(() => Number, { nullable: true }) platformFee?: number | null;
-  @Field(() => Number, { nullable: true }) netAmount?: number | null;
+  @Field(() => Float, { nullable: true }) grossAmount?: number | null;
+  @Field(() => Float, { nullable: true }) platformFee?: number | null;
+  @Field(() => Float, { nullable: true }) netAmount?: number | null;
 
   /** Omise charge couldn't be fetched — flags 3/4/5 are NOT evaluated for this row. */
   @Field() omiseUnreachable!: boolean;
@@ -81,9 +81,9 @@ export class ReconRow {
 export class ReconReport {
   @Field() dateFrom!: string;
   @Field() dateTo!: string;
-  @Field(() => Number) totalRows!: number;
-  @Field(() => Number) flaggedRows!: number;
-  @Field(() => Number) unreachableRows!: number;
+  @Field(() => Int) totalRows!: number;
+  @Field(() => Int) flaggedRows!: number;
+  @Field(() => Int) unreachableRows!: number;
   @Field(() => [ReconRow]) rows!: ReconRow[];
 }
 

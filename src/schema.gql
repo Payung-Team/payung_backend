@@ -1499,10 +1499,10 @@ enum ReconFlag {
 type ReconReport {
   dateFrom: String!
   dateTo: String!
-  flaggedRows: Float!
+  flaggedRows: Int!
   rows: [ReconRow!]!
-  totalRows: Float!
-  unreachableRows: Float!
+  totalRows: Int!
+  unreachableRows: Int!
 }
 
 type ReconRow {
