@@ -160,3 +160,69 @@ describe('PYG-363 Check-out — guards / duration / flags', () => {
     expect(upd.status).toBe('needs_review');
   });
 });
+
+// ── Sweeper cases (TC_09/10/14) — verified against dev after PYG-359 (PR #28) merged ──
+import { NoCheckoutSweeperService } from './no-checkout-sweeper.service';
+import { PayoutEligibilityService } from '../payout/payout-eligibility.service';
+import { VERDICT } from './monitoring.constants';
+
+describe('PYG-363 Check-out — sweeper (PYG-359, now on dev)', () => {
+  const SWEEP_BOOKING = {
+    id: 'bk-sweep',
+    caregiverId: CAREGIVER_ID,
+    bookingDate: new Date('2026-08-20T00:00:00.000Z'),
+    startTime: new Date('1970-01-01T09:00:00.000Z'), // 09:00 ICT, 3h → end 12:00 ICT = 05:00Z
+    durationHours: 3,
+    reviewReasons: [] as string[],
+    caregiver: { userId: 'cg-user-1' },
+  };
+  const DUE_NOW = '2026-08-20T12:00:00.000Z'; // end 05:00Z + 6h cutoff = 11:00Z → due
+
+  function makeSweeper() {
+    const prisma = {
+      booking: { findMany: jest.fn().mockResolvedValue([SWEEP_BOOKING]), update: jest.fn() },
+      jobEvent: { create: jest.fn() },
+      user: { findMany: jest.fn().mockResolvedValue([{ id: 'admin-1' }]) },
+      $transaction: jest.fn().mockResolvedValue([{}, {}]),
+    };
+    const clock = { now: () => new Date(DUE_NOW) };
+    const notifications = { create: jest.fn().mockResolvedValue({}) };
+    const svc = new NoCheckoutSweeperService(prisma as never, clock as never, notifications as never);
+    return { svc, prisma };
+  }
+
+  it('TC_09 sweeper → SYSTEM check_out (NULL coords, no duration), no_checkout, needs_review, no money touched', async () => {
+    const { svc, prisma } = makeSweeper();
+    await svc.run();
+    const je = prisma.jobEvent.create.mock.calls[0][0].data;
+    expect(je.source).toBe('system');
+    expect(je.lat).toBeNull();
+    expect(je.lng).toBeNull();
+    expect(je.distanceM).toBeNull();
+    expect(je).not.toHaveProperty('actualDuration');
+    const upd = prisma.booking.update.mock.calls[0][0].data;
+    expect(upd.status).toBe('needs_review');
+    expect(upd.reviewReasons).toEqual({ set: ['no_checkout'] });
+    expect(prisma).not.toHaveProperty('payment'); // sweeper never touches payment
+  });
+
+  it('TC_10 release gate: PayoutEligibility does NOT release a swept (needs_review) booking', () => {
+    const elig = new PayoutEligibilityService({} as never, {} as never);
+    const proof = {
+      checkIn: { id: 'ci' }, checkOut: { id: 'co', source: 'system' },
+      verdict: VERDICT.NEEDS_REVIEW, reviewReasons: ['no_checkout'],
+      noCheckout: true, disputed: false,
+    };
+    const res = elig.evaluate(proof as never, { refundedAmount: 0 } as never);
+    expect(res.kind).not.toBe('eligible'); // no Omise transfer; payment stays held
+    expect(res.kind).toBe('hold');
+  });
+
+  it('TC_14 verdict differs by source: caregiver → valid, system → needs_review', () => {
+    const m: MonitoringServiceT = new MonitoringService(
+      {} as never, {} as never, {} as never, {} as never, {} as never,
+    );
+    expect(m.computeVerdict([], true, 'caregiver', 'none')).toBe(VERDICT.VALID);
+    expect(m.computeVerdict([], true, 'system', 'none')).toBe(VERDICT.NEEDS_REVIEW);
+  });
+});
