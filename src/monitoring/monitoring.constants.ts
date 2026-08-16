@@ -62,6 +62,12 @@ export const MIN_DURATION_RATIO = (() => {
   return Number.isFinite(parsed) ? parsed : 0.8;
 })();
 
+/**
+ * ผู้ดูแลลืมเช็คเอาท์เกินกี่ชั่วโมงหลังงานควรจบ ระบบถึงจะปิดให้เอง (PYG-359 sweeper)
+ * นับจาก end_ts = (booking_date + start_time) + duration_hours (เวลาไทย)
+ */
+export const CHECKOUT_SWEEP_HOURS = envInt('CHECKOUT_SWEEP_HOURS', 6);
+
 /** ชื่อ bucket สำหรับรูปหลักฐาน (private) — path: {bookingId}/{eventType}-{timestamp}.jpg */
 export const JOB_EVIDENCE_BUCKET = 'job-evidence';
 
