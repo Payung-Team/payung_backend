@@ -34,6 +34,7 @@ import {
   WARN_RADIUS_M,
   type Verdict,
 } from './monitoring.constants';
+import { PaymentStatus } from '../payment/entities/payment-status.enum';
 
 /** ผลลัพธ์ของการประเมิน 1 เหตุการณ์ ก่อนเขียนลงฐานข้อมูล */
 interface EvaluationResult {
@@ -117,7 +118,14 @@ export class MonitoringService {
     }
 
     // ─── ด่านที่ 5: ลูกค้าจ่ายเงินเข้า escrow แล้วหรือยัง ──────────────
-    if (booking.payment?.paymentStatus !== 'held') {
+    // 'held' = บัตรเครดิต (authorize-then-capture-later ยังไม่ capture)
+    // 'captured' = PromptPay (จ่ายเต็มจำนวนทันทีตอน scan — ไม่มีสถานะ 'held' เลยสำหรับ flow นี้)
+    // เดิมเช็คแค่ 'held' อย่างเดียว → booking ที่จ่ายด้วย PromptPay เช็คอินไม่ได้เลยแม้จ่ายแล้วจริง
+    const paymentStatus = booking.payment?.paymentStatus;
+    if (
+      paymentStatus !== PaymentStatus.held &&
+      paymentStatus !== PaymentStatus.captured
+    ) {
       throw new BadRequestException('ยังไม่ได้รับการชำระเงิน');
     }
 

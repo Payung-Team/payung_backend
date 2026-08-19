@@ -35,7 +35,9 @@ export type RefundSource =
   | 'dispute'
   | 'payout_exception'
   | 'admin_manual'
-  | 'admin_override';
+  | 'admin_override'
+  // refund.create webhook: คืนเงินที่ทำนอกแอป เช่น admin กด refund ตรงบน Omise dashboard
+  | 'omise_dashboard';
 
 export interface RefundParams {
   paymentId: string;
@@ -245,6 +247,120 @@ export class RefundService {
     });
 
     return result.updated;
+  }
+
+  /**
+   * reconcileFromWebhook — PYG-278: sync refund ที่ทำ "นอกแอป" กลับเข้า DB
+   * (Omise ส่ง refund.create webhook เช่นตอน admin กด refund ตรงบน Omise dashboard)
+   *
+   * ต่างจาก refund() ตรงที่ handler นี้ "ไม่" เรียก omise.createRefund ซ้ำ — refund เกิดขึ้น
+   * ที่ Omise ไปแล้วจริง ๆ ก่อนหน้านี้ หน้าที่ของ method นี้คือ re-fetch charge จาก Omise
+   * (defense-in-depth กัน webhook body ปลอม/ไม่ครบ เหมือน captureFromWebhook) แล้วปรับ
+   * payment ในระบบให้ตรงกับยอด refunded ล่าสุดที่ Omise บันทึกไว้จริง
+   *
+   * Idempotent: เทียบ refunded ที่ retrieve ได้กับ payment.refundedAmount เดิม —
+   * ถ้าไม่มากขึ้น (เท่ากันหรือน้อยกว่า) → skip (webhook ซ้ำ, หรือ refund() ของเรา sync ไปแล้ว)
+   *
+   * หมายเหตุ payout guard: ต่างจาก refund() (Guard 4) เคสนี้ "ไม่บล็อก" แม้ payout จ่ายไปแล้ว
+   * เพราะเงินถูกคืนที่ Omise ไปแล้วจริง ๆ (แก้ไขไม่ได้จากฝั่งเรา) — แค่ log เตือนไว้ให้ admin
+   * ตรวจสอบ double-payment ต่อเอง
+   */
+  async reconcileFromWebhook(omiseChargeId: string): Promise<void> {
+    if (!omiseChargeId) {
+      this.logger.warn('[refund/webhook] missing omiseChargeId — skipping');
+      return;
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: { omiseChargeId },
+    });
+    if (!payment) {
+      this.logger.warn(
+        `[refund/webhook] no payment found for chargeId=${omiseChargeId} — skipping`,
+      );
+      return;
+    }
+
+    const status = payment.paymentStatus as PaymentStatus;
+    if (!REFUNDABLE_STATUSES.includes(status)) {
+      this.logger.log(
+        `[refund/webhook] payment ${payment.id} is '${status}' (ไม่ใช่ captured/partially_refunded) — skipping`,
+      );
+      return;
+    }
+
+    const omiseCharge = await this.omise.retrieveCharge(omiseChargeId);
+    const refundedAtOmiseSatangs = omiseCharge.refunded ?? 0;
+    const refundedBeforeSatangs = this.toSatangs(payment.refundedAmount);
+
+    if (refundedAtOmiseSatangs <= refundedBeforeSatangs) {
+      this.logger.log(
+        `[refund/webhook] payment ${payment.id} already reflects refunded=${refundedBeforeSatangs}sth — skipping`,
+      );
+      return;
+    }
+
+    const capturedSatangs = this.toSatangs(
+      payment.capturedAmount ?? payment.amount,
+    );
+    const target =
+      refundedAtOmiseSatangs >= capturedSatangs
+        ? PaymentStatus.refunded
+        : PaymentStatus.partially_refunded;
+
+    const deltaBaht = (refundedAtOmiseSatangs - refundedBeforeSatangs) / 100;
+    const reason =
+      'refund.create webhook — refunded outside app (e.g. Omise dashboard)';
+    const metadata = {
+      source: 'omise_dashboard' as RefundSource,
+      reason,
+      amount: deltaBaht,
+      omiseChargeId,
+    };
+
+    // flag ไว้เฉย ๆ — refund เกิดที่ Omise ไปแล้ว บล็อกไม่ได้ แค่ให้ admin ตามตรวจ
+    const payout = await this.prisma.payout.findUnique({
+      where: { bookingId: payment.bookingId },
+      select: { status: true },
+    });
+    if (payout && PAYOUT_BLOCKING.includes(payout.status as PayoutStatus)) {
+      this.logger.warn(
+        `[refund/webhook] payment ${payment.id} refunded on Omise dashboard AFTER payout status='${payout.status}' — ` +
+          `possible double payment, needs admin review`,
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.fsm.transition(payment.id, target, { reason, metadata }, tx);
+
+      const existingMeta =
+        payment.metadata &&
+        typeof payment.metadata === 'object' &&
+        !Array.isArray(payment.metadata)
+          ? (payment.metadata as Record<string, unknown>)
+          : {};
+
+      return tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          capturedAmount: payment.capturedAmount ?? payment.amount,
+          refundedAmount: refundedAtOmiseSatangs / 100,
+          metadata: { ...existingMeta, ...metadata } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    this.events.emit(BOOKING_EVENTS.REFUND_ISSUED, {
+      bookingId: payment.bookingId,
+      eventType: BOOKING_EVENTS.REFUND_ISSUED,
+      patientId: payment.patientId,
+      caregiverId: payment.caregiverId,
+      metadata: { amount: deltaBaht, source: 'omise_dashboard' },
+    });
+
+    this.logger.log(
+      `[refund/webhook] payment ${payment.id} → ${target} (chargeId=${omiseChargeId}, +${deltaBaht} THB from dashboard)`,
+    );
   }
 
   /** Decimal | number | string (THB) → satangs (int) กัน float precision */

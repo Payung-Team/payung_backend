@@ -58,8 +58,8 @@ export class ReconRow {
 
   @Field() paymentStatus!: string;
   /** Omise charge.status, or null when no charge id / unreachable */
-  @Field({ nullable: true }) omiseStatus?: string | null;
-  @Field({ nullable: true }) payoutStatus?: string | null;
+  @Field(() => String, { nullable: true }) omiseStatus?: string | null;
+  @Field(() => String, { nullable: true }) payoutStatus?: string | null;
 
   @Field() verdict!: string;
   @Field(() => [String]) reviewReasons!: string[];
