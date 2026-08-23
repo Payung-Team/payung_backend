@@ -39,6 +39,10 @@ type CaregiverBookingRow = {
   locationLat: { toNumber(): number } | null;
   locationLng: { toNumber(): number } | null;
   notes: string | null;
+  // ผู้ติดต่อในวันนัดหมาย — null ได้ (ผู้จองไม่บังคับกรอก)
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
   estimatedCost: { toNumber(): number } | number | null;
   acceptedAt: Date | null;
   confirmedAt: Date | null;
@@ -75,6 +79,31 @@ export class CaregiverBookingService {
   // ════════════════════════════════════════════════════════════════════════
   //  QUERIES (อ่านข้อมูล)
   // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * booking ใบเดียวของ caregiver — หน้ารายละเอียดงานใช้ดึงสถานะล่าสุด
+   *
+   * ★ ต้อง findFirst โดยผูก caregiverId เสมอ ห้ามใช้ findUnique({ id }) เฉย ๆ
+   *   ไม่งั้นผู้ดูแลคนอื่นเดา id แล้วเปิดดูงานที่ไม่ใช่ของตัวเองได้
+   *
+   * คืน null เมื่อไม่พบ/ไม่ใช่งานของคนนี้ — resolver ประกาศ nullable ไว้
+   * ให้ฝั่ง client แสดง "ไม่พบข้อมูลการจอง" แทนที่จะโยน error
+   */
+  async caregiverBooking(
+    userId: string,
+    id: string,
+  ): Promise<CaregiverBookingSummary | null> {
+    const caregiverId = await this.resolveCaregiverId(userId);
+
+    const booking = await this.prisma.booking.findFirst({
+      where: { id, caregiverId },
+      include: BOOKING_INCLUDE,
+    });
+
+    if (!booking) return null;
+
+    return this.toSummary(booking as unknown as CaregiverBookingRow);
+  }
 
   /**
    * รายการ booking ของ caregiver ตามสถานะ (ticket #1, #2, #5)
@@ -398,6 +427,9 @@ export class CaregiverBookingService {
         avatarUrl: b.patient.avatarUrl ?? undefined,
       },
       careRecipientName: b.careRecipient?.name ?? undefined,
+      dayOfContactName: b.dayOfContactName ?? undefined,
+      dayOfContactPhone: b.dayOfContactPhone ?? undefined,
+      dayOfContactRelationship: b.dayOfContactRelationship ?? undefined,
       acceptedAt: b.acceptedAt ?? undefined,
       confirmedAt: b.confirmedAt ?? undefined,
       rejectionReason: b.rejectionReason ?? undefined,
