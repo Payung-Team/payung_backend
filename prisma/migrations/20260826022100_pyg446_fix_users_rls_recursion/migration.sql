@@ -25,7 +25,7 @@
 --   บาง environment (local postgres ที่ไม่ใช่ Supabase) ไม่มี schema auth/storage
 --   ถ้าไม่ห่อ migration จะล้มทั้งไฟล์ — ห่อไว้ให้ข้ามอย่างปลอดภัยพร้อม NOTICE
 --
--- ⚠ ตั้งใจดักแค่ undefined_schema / undefined_table / undefined_function เท่านั้น
+-- ⚠ ตั้งใจดักแค่ invalid_schema_name / undefined_table / undefined_function เท่านั้น
 --   (เคส local ไม่มี auth/storage schema จริง) — ไม่ดัก insufficient_privilege
 --   เพราะ fix นี้ "ต้อง" รันด้วย role postgres (owner ของ public.users) เท่านั้น
 --   ถ้ารันด้วย role อื่น permission error ต้องทะลุขึ้นมา fail ทั้งไฟล์ ไม่งั้น
@@ -60,7 +60,7 @@ BEGIN
 
     RAISE NOTICE 'PYG-446: สร้าง public.auth_user_role() (SECURITY DEFINER) เรียบร้อย';
 EXCEPTION
-    WHEN undefined_function OR undefined_schema OR undefined_table THEN
+    WHEN undefined_function OR invalid_schema_name OR undefined_table THEN
         RAISE NOTICE 'PYG-446: สร้าง auth_user_role() ไม่ได้ใน environment นี้ (ไม่มี auth/storage) — ข้าม';
 END $do$;
 
@@ -107,7 +107,7 @@ BEGIN
 
     RAISE NOTICE 'PYG-446: เขียน policy public.users ใหม่ (admin_select/admin_update/super_admin) เรียบร้อย';
 EXCEPTION
-    WHEN undefined_function OR undefined_schema OR undefined_table THEN
+    WHEN undefined_function OR invalid_schema_name OR undefined_table THEN
         RAISE NOTICE 'PYG-446: ตั้ง policy public.users ไม่ได้ใน environment นี้ — ข้าม';
 END $do$;
 
@@ -143,7 +143,7 @@ BEGIN
 
     RAISE NOTICE 'PYG-446: สร้าง public.job_evidence_can_read() (SECURITY DEFINER) เรียบร้อย';
 EXCEPTION
-    WHEN undefined_function OR undefined_schema OR undefined_table THEN
+    WHEN undefined_function OR invalid_schema_name OR undefined_table THEN
         RAISE NOTICE 'PYG-446: สร้าง job_evidence_can_read() ไม่ได้ใน environment นี้ — ข้าม';
 END $do$;
 
@@ -163,7 +163,7 @@ BEGIN
 
     RAISE NOTICE 'PYG-446: เขียน storage policy job_evidence_select_participants ใหม่เรียบร้อย';
 EXCEPTION
-    WHEN undefined_table OR undefined_function OR undefined_schema THEN
+    WHEN undefined_table OR undefined_function OR invalid_schema_name THEN
         RAISE NOTICE 'PYG-446: ตั้ง storage policy ไม่ได้ใน environment นี้ — ให้ Sam ตั้งด้วยมือ';
 END $do$;
 
@@ -174,16 +174,16 @@ END $do$;
 --       ไม่ใช่ตัวเดิมที่ recursive (EXISTS ... FROM users)
 -- ถ้าเงื่อนไขไหนไม่ผ่าน → RAISE EXCEPTION (P0001, ไม่อยู่ใน guard) → fail ทั้งไฟล์
 --
--- ครอบ guard undefined_schema/table/function เดียวกับ A/B: เริ่ม block ด้วยการ
+-- ครอบ guard invalid_schema_name/table/function เดียวกับ A/B: เริ่ม block ด้วยการ
 -- แตะ auth + storage ก่อน — ถ้า environment ไม่มี schema เหล่านี้ (local ที่ fix
--- ถูกข้ามไปแล้ว) จะโยน undefined_schema/table แล้วถูก guard จับ → ข้าม assertion
+-- ถูกข้ามไปแล้ว) จะโยน invalid_schema_name/table แล้วถูก guard จับ → ข้าม assertion
 -- พร้อมกับที่ fix ถูกข้าม (สอดคล้องกัน: ไม่มี fix ก็ไม่ assert)
 DO $do$
 DECLARE
     v_qual TEXT;
 BEGIN
     -- ยามหน้าประตู: บังคับให้ environment ที่ไม่มี auth/storage ตกลง EXCEPTION guard
-    PERFORM auth.uid();                       -- ไม่มี schema auth → undefined_schema/function
+    PERFORM auth.uid();                       -- ไม่มี schema auth → invalid_schema_name/undefined_function
     PERFORM 'storage.objects'::regclass;      -- ไม่มี schema storage → undefined_table
 
     -- (1) helper functions ต้องมีจริง
@@ -212,7 +212,7 @@ BEGIN
 
     RAISE NOTICE 'PYG-446: post-migration assertion ผ่าน — functions + policy ลงจริง (recursion fix ยืนยันแล้ว)';
 EXCEPTION
-    WHEN undefined_function OR undefined_schema OR undefined_table THEN
+    WHEN undefined_function OR invalid_schema_name OR undefined_table THEN
         RAISE NOTICE 'PYG-446: ข้าม assertion ใน environment นี้ (ไม่มี auth/storage) — สอดคล้องกับที่ fix ถูกข้าม';
 END $do$;
 
