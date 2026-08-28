@@ -20,5 +20,8 @@ import { PaymentModule } from '../payment/payment.module';
     CaregiverBookingService,
     CaregiverBookingResolver,
   ],
+  // PYG-424: FamilyGroupModule เรียก createBookingOnBehalf ต่อจากที่นี่
+  // (ทิศทางเดียว BookingModule ไม่รู้จัก FamilyGroupModule → ไม่มี circular dependency)
+  exports: [BookingService],
 })
 export class BookingModule {}

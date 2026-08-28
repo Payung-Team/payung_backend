@@ -3,6 +3,8 @@ import { CommonModule } from '../common/common.module';
 import { FamilyGroupService } from './family-group.service';
 import { FamilyGroupResolver } from './family-group.resolver';
 import { FamilyGroupGuard } from './guards/family-group.guard';
+import { FamilyBookingResolver } from './family-booking.resolver';
+import { BookingModule } from '../booking/booking.module';
 
 /**
  * FamilyGroupModule (PYG-412) — Epic PYG-381 "กลุ่มครอบครัว & จองแทน"
@@ -19,8 +21,15 @@ import { FamilyGroupGuard } from './guards/family-group.guard';
  *   คุมสิทธิ์ในกลุ่ม และเรียก service เพื่ออ่านสมาชิกภาพ
  */
 @Module({
-  imports: [CommonModule],
-  providers: [FamilyGroupResolver, FamilyGroupService, FamilyGroupGuard],
+  // PYG-424: BookingModule ให้ BookingService สำหรับ mutation createBookingOnBehalf
+  imports: [CommonModule, BookingModule],
+  providers: [
+    FamilyGroupResolver,
+    // PYG-424: จองแทน + ลิสต์ผู้รับบริการของกลุ่ม
+    FamilyBookingResolver,
+    FamilyGroupService,
+    FamilyGroupGuard,
+  ],
   exports: [FamilyGroupService, FamilyGroupGuard],
 })
 export class FamilyGroupModule {}

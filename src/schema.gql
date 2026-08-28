@@ -561,6 +561,71 @@ type CompleteBookingResult {
   status: String!
 }
 
+input CreateBookingOnBehalfInput {
+  """
+  วันที่ให้บริการ รูปแบบ ISO: "2026-09-15"
+  """
+  bookingDate: String!
+
+  """
+  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ
+  """
+  careRecipientId: ID!
+
+  """
+  ผู้ดูแลที่เลือกไว้ — ส่งมา = booking เป็น pending ทันที, ไม่ส่ง = unmatched รอ matching
+  """
+  caregiverId: ID
+
+  """ชื่อผู้ติดต่อวันให้บริการ"""
+  dayOfContactName: String
+
+  """เบอร์ผู้ติดต่อวันให้บริการ"""
+  dayOfContactPhone: String
+
+  """ความสัมพันธ์ของผู้ติดต่อกับผู้รับบริการ"""
+  dayOfContactRelationship: String
+
+  """จำนวนชั่วโมง (ขั้นต่ำ 0.5)"""
+  durationHours: Float!
+
+  """กลุ่มครอบครัวที่ใช้จอง — ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้"""
+  groupId: ID!
+
+  """ละติจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lat: Float
+
+  """ลองจิจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lng: Float
+
+  """ที่อยู่จุดให้บริการ"""
+  locationAddress: String!
+
+  """บันทึกเพิ่มเติมถึงผู้ดูแล"""
+  notes: String
+
+  """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
+  serviceLocations: [String!]!
+
+  """
+  ประเภทบริการ เช่น "elderly_care"
+  """
+  serviceType: String!
+
+  """
+  เวลาเริ่ม รูปแบบ "09:00:00"
+  """
+  startTime: String!
+
+  """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
+  tasks: [String!]!
+
+  """
+  ช่วงเวลา: "morning" | "afternoon" | "evening"
+  """
+  timeSlot: String!
+}
+
 input CreateFamilyGroupInput {
   """ชื่อกลุ่ม 1–80 ตัวอักษร (ตัดช่องว่างหัวท้ายให้อัตโนมัติ)"""
   name: String!
@@ -817,6 +882,21 @@ type FieldLockResult {
 input FlagDisputeInput {
   bookingId: ID!
   reason: String!
+}
+
+type GroupCareRecipient {
+  id: ID!
+
+  """ชื่อ-นามสกุลของผู้รับบริการ"""
+  name: String!
+
+  """ชื่อเล่น (ถ้ามี) — FE ใช้โชว์ในลิสต์ให้อ่านง่าย"""
+  nickname: String
+
+  """
+  users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"
+  """
+  ownerUserId: ID!
 }
 
 type HealthStatus {
@@ -1127,6 +1207,11 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
+  """
+  createBookingOnBehalf(input: CreateBookingOnBehalfInput!): BookingSummary!
 
   """
   สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
@@ -1518,6 +1603,11 @@ type Query {
   รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
   """
   familyGroup(groupId: ID!): FamilyGroup!
+
+  """
+  โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้ (เรียงตามชื่อ) — ใช้เติมตัวเลือก "จองให้ใคร". กลุ่มที่ยังไม่มีใครแชร์โปรไฟล์ = array ว่าง ไม่ใช่ error.
+  """
+  groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
 
   """Health check - API & DB Status"""
   health: HealthStatus!

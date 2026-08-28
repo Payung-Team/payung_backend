@@ -33,6 +33,15 @@ export const FG_ERROR = {
   ALREADY_OWNER: 'ALREADY_OWNER',
   /** ชื่อกลุ่มว่างหลัง trim หรือยาวเกิน 80 ตัวอักษร */
   GROUP_NAME_INVALID: 'GROUP_NAME_INVALID',
+  /**
+   * PYG-424 — โปรไฟล์ผู้รับบริการที่อ้างถึง ไม่ได้ถูกแชร์อยู่ในกลุ่มนี้
+   *
+   * ★ ใช้ค่าเดียวกันนี้กับเคส "ไม่มีโปรไฟล์นั้นอยู่จริง" ด้วย — ตั้งใจ ไม่ใช่ความมักง่าย
+   *   เหตุผลเดียวกับ NOT_A_MEMBER ด้านบน: ถ้าแยกเป็น RECIPIENT_NOT_FOUND
+   *   สมาชิกกลุ่มหนึ่งจะยิง id มั่ว ๆ แล้วเดาได้ว่าโปรไฟล์ไหนมีอยู่ในระบบบ้าง
+   *   ซึ่งเป็นข้อมูลสุขภาพของคนอื่น (PDPA) → ตอบเหมือนกันหมดปลอดภัยกว่า
+   */
+  RECIPIENT_NOT_IN_GROUP: 'RECIPIENT_NOT_IN_GROUP',
 } as const;
 
 export type FgErrorCode = (typeof FG_ERROR)[keyof typeof FG_ERROR];
@@ -106,6 +115,21 @@ export class GroupNameInvalidError extends FamilyGroupError {
       `ชื่อกลุ่มต้องไม่เว้นว่าง และยาวไม่เกิน ${maxLength} ตัวอักษร`,
       FG_ERROR.GROUP_NAME_INVALID,
       { maxLength },
+    );
+  }
+}
+
+/**
+ * PYG-424 — จองแทนโดยอ้างโปรไฟล์ที่ไม่ได้อยู่ในกลุ่ม
+ *
+ * ข้อความไม่บอกว่า "ไม่มีโปรไฟล์นี้" หรือ "มีแต่ไม่ได้อยู่ในกลุ่ม" เพราะสองเคสนี้
+ * ต้องแยกไม่ออกจากฝั่ง client (ดูเหตุผลที่ FG_ERROR.RECIPIENT_NOT_IN_GROUP)
+ */
+export class RecipientNotInGroupError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ไม่พบโปรไฟล์ผู้รับบริการนี้ในกลุ่มของคุณ',
+      FG_ERROR.RECIPIENT_NOT_IN_GROUP,
     );
   }
 }
