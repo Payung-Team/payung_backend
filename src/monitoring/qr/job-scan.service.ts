@@ -8,6 +8,7 @@ import { JobQrService } from './job-qr.service';
 import { ScanJobQrInput } from './dto/scan-job-qr.input';
 import { JobScanResult } from './entities/job-scan-result.entity';
 import { ScanAction, ScanResult } from './entities/scan-result.enum';
+import { toJobSessionStatus } from './entities/job-session-status.enum';
 import {
   JOB_SESSION_STATUS,
   QR_DEAD_BOOKING_STATUSES,
@@ -410,7 +411,11 @@ export class JobScanService {
       action: outcome.action,
       message,
       bookingId: outcome.bookingId ?? undefined,
-      sessionStatus: outcome.sessionStatus ?? undefined,
+      // PYG-436: แปลงเป็น enum ตรงทางออกที่เดียว (ค่าที่นี่มาจากดีบีหรือจาก
+      // JOB_SESSION_STATUS ซึ่งตรงกันอยู่แล้ว — แปลงเพื่อให้ type ตรงกับ schema)
+      sessionStatus: outcome.sessionStatus
+        ? toJobSessionStatus(outcome.sessionStatus)
+        : undefined,
       scannedAt: now,
       jobEvent: outcome.jobEvent,
     };

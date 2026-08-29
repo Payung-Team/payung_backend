@@ -26,6 +26,10 @@ import { JobQrService } from './job-qr.service';
 import { JobScanService } from './job-scan.service';
 import { ScanAction, ScanResult } from './entities/scan-result.enum';
 import {
+  JobSessionStatus,
+  toJobSessionStatus,
+} from './entities/job-session-status.enum';
+import {
   JOB_SESSION_STATUS,
   SCAN_ACTION,
   SCAN_RESULT,
@@ -572,6 +576,28 @@ describe('JobScanService (PYG-435)', () => {
     it('enum ที่ GraphQL ใช้ ตรงกับ SCAN_ACTION ใน constants ทุกค่า', () => {
       expect(Object.keys(ScanAction).sort()).toEqual(
         Object.keys(SCAN_ACTION).sort(),
+      );
+    });
+
+    it('enum JobSessionStatus ตรงกับ JOB_SESSION_STATUS ใน constants ทุกค่า (PYG-436)', () => {
+      // สถานะของใบ QR อยู่ 3 ที่: constants / GraphQL enum / CHECK ในดีบี
+      // เทสนี้จับสองที่แรก ที่สาม (ดีบี) ตรวจด้วย runbook ของ PYG-436
+      expect(Object.keys(JobSessionStatus).sort()).toEqual(
+        Object.keys(JOB_SESSION_STATUS).sort(),
+      );
+      expect(Object.values(JobSessionStatus).sort()).toEqual(
+        Object.values(JOB_SESSION_STATUS).sort(),
+      );
+    });
+
+    it('ค่าที่ดีบีให้มาแปลกปลอม → ตกไปที่ PENDING ไม่ทำให้ทั้งหน้าพัง (PYG-436)', () => {
+      // ดีบีมี CHECK กันไว้แล้ว เคสนี้เกิดได้ก็ต่อเมื่อมีคนแก้ดีบีด้วยมือ
+      // PENDING = "ยังไม่เริ่ม" ซึ่งปลอดภัยที่สุด — อย่างมากก็แค่ให้สแกนเช็คอินใหม่
+      expect(toJobSessionStatus('CHECKED_IN')).toBe(
+        JobSessionStatus.CHECKED_IN,
+      );
+      expect(toJobSessionStatus('ค่าที่ไม่มีจริง')).toBe(
+        JobSessionStatus.PENDING,
       );
     });
 

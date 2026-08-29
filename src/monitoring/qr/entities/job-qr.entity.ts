@@ -1,4 +1,6 @@
 import { Field, ID, ObjectType } from '@nestjs/graphql';
+import { JobSessionStatus } from './job-session-status.enum';
+import { ScanAction } from './scan-result.enum';
 
 /**
  * JobQr — ใบ QR ของงาน 1 ใบ ที่ส่งกลับให้ฝั่ง patient เอาไปวาดเป็นรูป QR (PYG-434)
@@ -23,11 +25,11 @@ export class JobQr {
   })
   token: string;
 
-  @Field({
+  @Field(() => JobSessionStatus, {
     description:
-      "'PENDING' = ยังไม่เช็คอิน | 'CHECKED_IN' = กำลังทำงาน | 'CHECKED_OUT' = ปิดงานแล้ว",
+      'PENDING = ยังไม่เช็คอิน | CHECKED_IN = กำลังทำงาน | CHECKED_OUT = ปิดงานแล้ว',
   })
-  status: string;
+  status: JobSessionStatus;
 
   @Field({
     description: 'สแกนได้ตั้งแต่เมื่อไหร่ (ก่อนเวลานัดได้ตามค่า config)',
@@ -49,10 +51,10 @@ export class JobQr {
   })
   isActive: boolean;
 
-  @Field({
+  @Field(() => ScanAction, {
     nullable: true,
     description:
-      "สแกนครั้งต่อไปจะเป็น action อะไร: 'CHECK_IN' | 'CHECK_OUT' | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ",
+      'สแกนครั้งต่อไปจะเป็น action อะไร: CHECK_IN | CHECK_OUT | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ. ★ ใช้ enum ตัวเดียวกับที่ scanJobQr คืนกลับมา จะได้ไม่ต้องมีคำศัพท์สองชุด',
   })
-  nextAction?: string;
+  nextAction?: ScanAction;
 }

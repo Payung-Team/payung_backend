@@ -996,14 +996,14 @@ type JobQr {
   isActive: Boolean!
 
   """
-  สแกนครั้งต่อไปจะเป็น action อะไร: 'CHECK_IN' | 'CHECK_OUT' | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ
+  สแกนครั้งต่อไปจะเป็น action อะไร: CHECK_IN | CHECK_OUT | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ. ★ ใช้ enum ตัวเดียวกับที่ scanJobQr คืนกลับมา จะได้ไม่ต้องมีคำศัพท์สองชุด
   """
-  nextAction: String
+  nextAction: ScanAction
 
   """
-  'PENDING' = ยังไม่เช็คอิน | 'CHECKED_IN' = กำลังทำงาน | 'CHECKED_OUT' = ปิดงานแล้ว
+  PENDING = ยังไม่เช็คอิน | CHECKED_IN = กำลังทำงาน | CHECKED_OUT = ปิดงานแล้ว
   """
-  status: String!
+  status: JobSessionStatus!
 
   """
   ★ ข้อความลับที่เอาไปวาดเป็น QR — วาดตรง ๆ ทั้งสตริง ห้ามเติม prefix/URL. เฉพาะ patient เจ้าของงานเท่านั้นที่ขอค่านี้ได้
@@ -1048,9 +1048,18 @@ type JobScanResult {
   scannedAt: DateTime!
 
   """
-  สถานะของ QR 'หลัง' การสแกนครั้งนี้: 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT'. null เมื่อหา QR ไม่เจอ
+  สถานะของ QR 'หลัง' การสแกนครั้งนี้. null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นใบไหน)
   """
-  sessionStatus: String
+  sessionStatus: JobSessionStatus
+}
+
+"""
+สถานะของใบ QR — เดินหน้าทางเดียว PENDING → CHECKED_IN → CHECKED_OUT. ไม่มีสถานะ "ยกเลิก" เพราะเรื่องนั้นอ่านจากสถานะของ booking
+"""
+enum JobSessionStatus {
+  CHECKED_IN
+  CHECKED_OUT
+  PENDING
 }
 
 type KycDocument {

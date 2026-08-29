@@ -1,6 +1,7 @@
 import { Field, ID, ObjectType } from '@nestjs/graphql';
 import { JobEvent } from '../../entities/job-event.entity';
 import { ScanAction, ScanResult } from './scan-result.enum';
+import { JobSessionStatus } from './job-session-status.enum';
 
 /**
  * JobScanResult — ผลของการสแกน QR 1 ครั้ง (PYG-435)
@@ -59,12 +60,12 @@ export class JobScanResult {
   })
   bookingId?: string;
 
-  @Field({
+  @Field(() => JobSessionStatus, {
     nullable: true,
     description:
-      "สถานะของ QR 'หลัง' การสแกนครั้งนี้: 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT'. null เมื่อหา QR ไม่เจอ",
+      "สถานะของ QR 'หลัง' การสแกนครั้งนี้. null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นใบไหน)",
   })
-  sessionStatus?: string;
+  sessionStatus?: JobSessionStatus;
 
   @Field({
     description:

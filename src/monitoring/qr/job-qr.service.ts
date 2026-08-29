@@ -11,6 +11,8 @@ import { PrismaService } from '../../common/prisma.service';
 import { ClockService } from '../../common/clock.service';
 import { scheduledEndOf, scheduledStartOf } from '../booking-schedule.util';
 import { JobQr } from './entities/job-qr.entity';
+import { toJobSessionStatus } from './entities/job-session-status.enum';
+import { ScanAction } from './entities/scan-result.enum';
 import {
   JOB_SESSION_STATUS,
   QR_DEAD_BOOKING_STATUSES,
@@ -324,15 +326,16 @@ export class JobQrService {
     // (หลักการของการ์ดแม่ PYG-433: "action ตัดสินจากสถานะ ไม่ใช่จากตัว QR")
     const nextAction =
       session.status === JOB_SESSION_STATUS.PENDING
-        ? 'CHECK_IN'
+        ? ScanAction.CHECK_IN
         : session.status === JOB_SESSION_STATUS.CHECKED_IN
-          ? 'CHECK_OUT'
+          ? ScanAction.CHECK_OUT
           : null; // CHECKED_OUT = ปิดงานแล้ว ไม่เหลือ action
 
     return {
       bookingId: session.bookingId,
       token: this.deriveToken(session.id),
-      status: session.status,
+      // PYG-436: แปลงเป็น enum ตรงนี้ที่เดียว — Prisma คืน status มาเป็น string
+      status: toJobSessionStatus(session.status),
       validFrom: session.validFrom,
       validUntil: session.validUntil,
       isActive:
