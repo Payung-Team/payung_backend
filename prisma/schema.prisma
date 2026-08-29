@@ -105,6 +105,7 @@ model Caregiver {
   payoutAccount       CaregiverPayoutAccount?
   payouts             Payout[]
   savedByPatients     SavedCaregiver[]
+  jobEvents           JobEvent[] // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ที่ผู้ดูแลคนนี้สร้าง
 
   @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
   @@map("caregivers")
@@ -345,7 +346,12 @@ model Booking {
   disputeFiledBy           String?           @map("dispute_filed_by") @db.VarChar(20)
   patientName              String?           @map("patient_name")
   completedAt              DateTime?         @map("completed_at") @db.Timestamptz(6)
+  // PYG-352: ธงที่บอกว่าทำไมงานนี้ต้องให้แอดมินดู เช่น {'out_of_radius','clock_anomaly'}
+  // array ว่าง = ไม่มีปัญหา ซึ่งเป็นเงื่อนไขหนึ่งของ verdict='valid'
+  reviewReasons            String[]          @default([]) @map("review_reasons")
   booking_tasks            booking_tasks[]
+  // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
+  jobEvents                JobEvent[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
   patient                  User              @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -363,6 +369,52 @@ model Booking {
   // PYG-316: composite index for the admin dispute queue — filter by status + sort by SLA (filedAt)
   @@index([disputeStatus, disputeFiledAt], map: "idx_bookings_dispute_queue")
   @@map("bookings")
+}
+
+/// PYG-352 — หลักฐานการทำงาน (proof of work) ของ 1 booking
+///
+/// 1 booking มีได้อย่างมาก 2 แถว: check_in หนึ่งแถว + check_out หนึ่งแถว
+/// บังคับด้วย @@unique([bookingId, eventType]) → กดปุ่มซ้ำก็ยังได้แถวเดียว
+///
+/// ⚠ ตั้งใจไม่มีคอลัมน์ withinRadius:
+///    เก็บแค่ distanceM ดิบ ๆ แล้วค่อยตัดสินตอนอ่าน โดยเทียบกับ threshold ใน ENV
+///    ถ้าเก็บ boolean ไว้ตอนเขียน วันหนึ่งที่ threshold เปลี่ยน ข้อมูลเก่าจะโกหกทันที
+model JobEvent {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String    @map("booking_id") @db.Uuid
+  caregiverId String    @map("caregiver_id")
+
+  /// 'check_in' | 'check_out' (บังคับด้วย CHECK constraint ฝั่ง DB)
+  eventType   String    @map("event_type")
+  /// 'caregiver' = ผู้ดูแลกดเอง | 'system' = cron ปิดให้ (PYG-359)
+  /// verdict='valid' บังคับว่า check_out ต้องเป็น 'caregiver' เท่านั้น
+  source      String
+
+  /// NULL ได้ — ผู้ดูแลปฏิเสธสิทธิ์ตำแหน่งแล้วยังต้องเช็คอินได้
+  lat         Decimal?  @db.Decimal(10, 7)
+  lng         Decimal?  @db.Decimal(10, 7)
+  /// ระยะจากจุดงาน (เมตร) — ค่าดิบ. NULL = คำนวณไม่ได้ ห้ามตีความว่าผิด
+  distanceM   Int?      @map("distance_m")
+  /// ความแม่นยำจาก position.coords.accuracy (เมตร) — ตัวชี้ขาดว่า distanceM เชื่อได้ไหม
+  accuracyM   Int?      @map("accuracy_m")
+
+  /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
+  serverTs    DateTime  @default(now()) @map("server_ts") @db.Timestamptz(6)
+  /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น ใช้จับ clock_anomaly
+  deviceTs    DateTime? @map("device_ts") @db.Timestamptz(6)
+
+  /// ใช้ตอน check_out (PYG-358) — check_in ปล่อย NULL
+  note        String?
+  photoUrl    String?   @map("photo_url")
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id])
+
+  @@unique([bookingId, eventType], map: "job_events_booking_id_event_type_key")
+  @@index([bookingId], map: "job_events_booking_id_idx")
+  @@map("job_events")
 }
 
 model CareRecipient {
@@ -520,6 +572,8 @@ model Payment {
   patientId      String                 @map("patient_id")
   caregiverId    String                 @map("caregiver_id")
   amount         Decimal                @db.Decimal(10, 2)
+  capturedAmount Decimal?               @map("captured_amount") @db.Decimal(10, 2)
+  refundedAmount Decimal                @default(0) @map("refunded_amount") @db.Decimal(10, 2)
   currency       String                 @default("THB") @db.VarChar(3)
   omiseChargeId  String?                @map("omise_charge_id")
   omiseToken     String?                @map("omise_token")
@@ -561,6 +615,20 @@ model PaymentStatusHistory {
   @@map("payment_status_history")
 }
 
+/// PYG-375: deterministic once-only execution for money commands (capture/refund/payout/transfer).
+/// key is INSERTed before the Omise call; a PK collision → return stored `result` (no 2nd call).
+/// Same key is also sent as the Omise-Idempotency-Key header (two layers). Cron prunes > 30 days.
+model IdempotencyKey {
+  key       String   @id
+  action    String
+  bookingId String?  @map("booking_id") @db.Uuid
+  result    Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
+
 enum NotificationType {
   kyc_submitted
   kyc_verified
@@ -580,6 +648,7 @@ enum NotificationType {
   payment_refunded
   payment_voided
   payment_transferred
+  job_checked_in // PYG-353
 }
 
 enum booking_service_type {

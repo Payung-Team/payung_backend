@@ -111,6 +111,11 @@ export type OmiseCaptureResult = {
   /** ข้อมูล error ถ้าการจ่ายเงินล้มเหลว */
   failure_code?: string;
   failure_message?: string;
+  /**
+   * PYG-375: charge หมดอายุเมื่อไหร่ (ISO string) — Omise ส่งมากับ PromptPay/source charges
+   * ใช้ตัดสิน "charge ตายจริง" (expiresAt < now && !paid) แทนการเดาจากอายุ wall-clock
+   */
+  expiresAt?: string | null;
 };
 
 @Injectable()
@@ -137,7 +142,10 @@ export class OmiseService {
    * @returns ข้อมูล charge หลัง capture (normalize แล้ว)
    * @throws CaptureFailedError ถ้า capture ไม่สำเร็จไม่ว่าด้วยเหตุใด
    */
-  async captureCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
+  async captureCharge(
+    omiseChargeId: string,
+    idempotencyKey?: string,
+  ): Promise<OmiseCaptureResult> {
     // 0) ยังไม่ตั้งค่า secret key → fail ชัดเจน (ไม่เงียบ ไม่แกล้งสำเร็จ)
     if (!this.secretKey) {
       throw new CaptureFailedError(
@@ -158,11 +166,17 @@ export class OmiseService {
     const authHeader =
       'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
 
+    // PYG-375: ส่ง Omise-Idempotency-Key เพื่อกัน capture ซ้ำ (layer ที่ 2 ต่อจาก idempotency_keys)
+    const captureHeaders: Record<string, string> = { Authorization: authHeader };
+    if (idempotencyKey) {
+      captureHeaders['Omise-Idempotency-Key'] = idempotencyKey;
+    }
+
     let res: Response;
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: authHeader },
+        headers: captureHeaders,
       });
     } catch (err) {
       // network error / DNS / timeout — Omise ติดต่อไม่ได้
@@ -683,6 +697,8 @@ export class OmiseService {
             : '',
         name: typeof bankAccount.name === 'string' ? bankAccount.name : '',
       },
+      // PYG-375: expires_at ใช้ยืนยันว่า PromptPay charge ตายจริงก่อน mark expired
+      expiresAt: typeof body.expires_at === 'string' ? body.expires_at : null,
     };
   }
 

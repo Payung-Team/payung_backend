@@ -14,6 +14,8 @@ import { Module } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentModule } from '../payment/payment.module';
 import { NotificationModule } from '../notification/notification.module';
+// PYG-366: payout gate ต้องอ่านหลักฐานการทำงาน (proofOfWork) ก่อนปล่อยเงิน
+import { MonitoringModule } from '../monitoring/monitoring.module';
 import { PayoutService } from './payout.service';
 import { PayoutWorkerService } from './payout-worker.service';
 import { PayoutCreationListener } from './listeners/payout-creation.listener';
@@ -21,9 +23,10 @@ import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutRetryPolicy } from './payout-retry-policy';
 import { PayoutKillswitch } from './payout-killswitch';
 import { PayoutReaperService } from './payout-reaper.service';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 @Module({
-  imports: [PaymentModule, NotificationModule],
+  imports: [PaymentModule, NotificationModule, MonitoringModule],
   providers: [
     PrismaService,
     // PYG-331: state machine + retry + kill-switch + reaper
@@ -31,6 +34,8 @@ import { PayoutReaperService } from './payout-reaper.service';
     PayoutRetryPolicy,
     PayoutKillswitch,
     PayoutReaperService,
+    // ประตูเดียวที่ตัดสิน "จ่ายได้ไหม" — ใช้ร่วมกัน 3 จุด (create / worker / reaper)
+    PayoutEligibilityService,
     // Existing (PYG-330)
     PayoutService,
     PayoutWorkerService,

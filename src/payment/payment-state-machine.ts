@@ -51,6 +51,8 @@ const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
     PaymentStatus.held,
     PaymentStatus.failed,
     PaymentStatus.captured,
+    // PYG-375: abandoned PromptPay (pending) ที่ retrieveCharge แล้วยืนยันว่าไม่จ่าย → expired
+    PaymentStatus.expired,
   ],
   [PaymentStatus.held]: [
     PaymentStatus.captured,
@@ -62,13 +64,20 @@ const VALID_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
     PaymentStatus.refunded,
     PaymentStatus.partially_refunded,
   ],
-  // ── terminal states: เปลี่ยนต่อไม่ได้ ─────────────────────────────────────
+  // PYG-374: partially_refunded ไม่ใช่ terminal อีกต่อไป — refund หลายครั้งจนครบ
+  //   - partially_refunded → partially_refunded : partial refund ครั้งถัดไป (ยังไม่ครบยอด)
+  //   - partially_refunded → refunded           : refund ครั้งที่ทำให้ยอดคืนครบ 100%
+  //   (เพดานยอดคุมโดย RefundService: refunded_amount <= captured_amount เท่านั้น)
+  [PaymentStatus.partially_refunded]: [
+    PaymentStatus.partially_refunded,
+    PaymentStatus.refunded,
+  ],
   [PaymentStatus.transferred]: [],
-  [PaymentStatus.voided]: [],
+  // PYG-375: voided/expired ไม่ terminal — ลูกค้าจ่ายใหม่ได้ (PYG-309 retry) → re-authorize → held
+  [PaymentStatus.voided]: [PaymentStatus.held],
   [PaymentStatus.refunded]: [],
-  [PaymentStatus.partially_refunded]: [],
   [PaymentStatus.failed]: [PaymentStatus.held],
-  [PaymentStatus.expired]: [],
+  [PaymentStatus.expired]: [PaymentStatus.held],
 };
 
 @Injectable()

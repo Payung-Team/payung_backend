@@ -15,6 +15,7 @@ import { ForbiddenException, UnprocessableEntityException } from '@nestjs/common
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
+import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
@@ -125,6 +126,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: emitter },
         { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();
 

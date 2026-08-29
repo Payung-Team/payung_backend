@@ -89,8 +89,13 @@ const SERVICE_LABEL: Record<booking_service_type, string> = {
 /**
  * Recipient matrix + เนื้อหา ของทุก event
  * (อ้างอิง Figma anatomy + ทิศทางการนำทางของ FE: booking_new/confirmed/cancelled → caregiver)
+ *
+ * Partial: บาง event ไม่ได้ให้ listener นี้จัดการ (เช่น PYG-359 'job.no_checkout' — sweeper
+ * แจ้ง caregiver+admin เองโดยตรง เพราะ recipient matrix นี้รองรับได้แค่ patient/caregiver/both/admin
+ * ไม่ใช่ "caregiver+admin"). handleBookingEvent มี null-guard ข้าม event ที่ไม่มี config อยู่แล้ว
+ * — และเราไม่ผูก @OnEvent ของ event พวกนั้นด้วย จึงไม่มีทางถูกเรียก
  */
-const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
+const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
   [BOOKING_EVENTS.CREATED]: {
     type: NotificationType.booking_new,
     recipient: 'caregiver',
@@ -135,6 +140,23 @@ const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
     body: (c) => `บริการ${c.serviceText} เสร็จสมบูรณ์แล้ว ขอบคุณที่ใช้บริการ`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
+  },
+  [BOOKING_EVENTS.JOB_CHECKED_OUT]: {
+    // PYG-358: ผู้ดูแลปิดงานเอง — ผู้รับบริการ "ไม่ต้อง" กดยืนยันอะไรอีกแล้ว
+    //
+    // ★ ข้อความต้องบอก "เวลาที่เหลือให้ทักท้วง" ให้ชัด
+    //   เพราะเดิมลูกค้าเป็นคนกดยืนยันเอง จึงคุมจังหวะเงินออกได้เอง
+    //   ตอนนี้เงินจะออกอัตโนมัติ ถ้าไม่บอกกรอบเวลา ลูกค้าจะไม่รู้ว่าต้องรีบแค่ไหน
+    //
+    // ใช้ NotificationType.booking_completed ที่มีอยู่แล้ว — ไม่ต้องเพิ่มค่า enum ใหม่
+    // (การ์ดนี้ไม่ได้แตะ schema และ FE มี handler ของ type นี้อยู่แล้ว)
+    type: NotificationType.booking_completed,
+    recipient: 'patient',
+    title: 'ผู้ดูแลปิดงานแล้ว',
+    body: () =>
+      'ผู้ดูแลปิดงานแล้ว ระบบจะโอนเงินให้ผู้ดูแลภายใน 24 ชม. หากมีปัญหากรุณาแจ้งภายในเวลานี้',
+    email: true,
+    ctaLabel: 'ดูรายละเอียดงาน',
   },
   [BOOKING_EVENTS.CANCELLED]: {
     type: NotificationType.booking_cancelled,
@@ -224,6 +246,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.DECLINED)
   @OnEvent(BOOKING_EVENTS.CONFIRMED)
   @OnEvent(BOOKING_EVENTS.COMPLETED)
+  @OnEvent(BOOKING_EVENTS.JOB_CHECKED_OUT) // PYG-358
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)
   @OnEvent(BOOKING_EVENTS.PAYMENT_CAPTURED)

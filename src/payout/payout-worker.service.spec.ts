@@ -23,6 +23,7 @@ import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
 import { PayoutRetryPolicy } from './payout-retry-policy';
 import { PayoutKillswitch } from './payout-killswitch';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 const PAYOUT_ID = 'payout-1';
 const BOOKING_ID = 'booking-1';
@@ -60,6 +61,7 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
   let stateMachine: { claim: jest.Mock; transition: jest.Mock };
   let retryPolicy: { decide: jest.Mock };
   let killswitch: { gate: jest.Mock };
+  let eligibility: { check: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -76,6 +78,18 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
     };
     retryPolicy = { decide: jest.fn() };
     killswitch = { gate: jest.fn().mockReturnValue(false) };
+    // default: ไม่มี dispute → จ่ายได้ (เทสต์ที่สนใจ gate จะ override เอง)
+    eligibility = {
+      check: jest.fn().mockResolvedValue({
+        kind: 'eligible',
+        reason: 'no_dispute',
+        evidence: {
+          verdict: 'valid',
+          checkInId: 'evt-in-1',
+          checkOutId: 'evt-out-1',
+        },
+      }),
+    };
 
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
@@ -86,10 +100,109 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
         { provide: PayoutStateMachine, useValue: stateMachine },
         { provide: PayoutRetryPolicy, useValue: retryPolicy },
         { provide: PayoutKillswitch, useValue: killswitch },
+        { provide: PayoutEligibilityService, useValue: eligibility },
       ],
     }).compile();
 
     worker = mod.get(PayoutWorkerService);
+  });
+
+  // ── re-check ตอนจะโอนจริง (dispute ยื่นหลังสร้าง payout) ────────────────────
+
+  describe('payout gate re-check ก่อนโอน', () => {
+    it('dispute ยื่นหลัง payout ถูกสร้าง → worker ไม่โอน', async () => {
+      prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
+      eligibility.check.mockResolvedValue({
+        kind: 'hold',
+        reason: 'proof_needs_review',
+        evidence: { verdict: 'needs_review', disputed: true },
+      });
+
+      await worker.processOne(PAYOUT_ID);
+
+      expect(omise.createTransfer).not.toHaveBeenCalled();
+      expect(stateMachine.claim).not.toHaveBeenCalled();
+    });
+
+    it('hold → ไม่แตะ row เลย (payout ยังอยู่ scheduled รอ admin ตัดสิน)', async () => {
+      prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
+      eligibility.check.mockResolvedValue({
+        kind: 'hold',
+        reason: 'proof_needs_review',
+        evidence: {},
+      });
+
+      await worker.processOne(PAYOUT_ID);
+
+      // ห้าม cancel — cancelled เป็น terminal + booking_id UNIQUE = กู้คืนไม่ได้
+      expect(stateMachine.claim).not.toHaveBeenCalled();
+      expect(stateMachine.transition).not.toHaveBeenCalled();
+    });
+
+    it('deny (คืนเงินลูกค้าไปแล้ว) → cancel ผ่าน state machine ไม่โอน', async () => {
+      prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
+      eligibility.check.mockResolvedValue({
+        kind: 'deny',
+        reason: 'payment_refunded',
+        evidence: { verdict: 'valid', refundedAmount: 1000 },
+      });
+      stateMachine.claim.mockResolvedValue({ claimed: true, payout: {} });
+
+      await worker.processOne(PAYOUT_ID);
+
+      expect(omise.createTransfer).not.toHaveBeenCalled();
+      expect(stateMachine.claim).toHaveBeenCalledWith(
+        PAYOUT_ID,
+        PayoutStatus.scheduled,
+        PayoutStatus.cancelled,
+        expect.objectContaining({
+          reason: 'payout_gate_denied:payment_refunded',
+        }),
+      );
+    });
+
+    it('gate ถูกเช็คก่อนอ่าน recipient — recipient ไม่พร้อมก็ยังต้อง cancel ได้', async () => {
+      prisma.payout.findUnique.mockResolvedValue(
+        makePayoutRow({
+          caregiver: {
+            userId: CAREGIVER_USER_ID,
+            payoutAccount: { omiseRecipientId: null, recipientStatus: null },
+          },
+        }),
+      );
+      eligibility.check.mockResolvedValue({
+        kind: 'deny',
+        reason: 'payment_refunded',
+        evidence: {},
+      });
+      stateMachine.claim.mockResolvedValue({ claimed: true, payout: {} });
+
+      await worker.processOne(PAYOUT_ID);
+
+      expect(stateMachine.claim).toHaveBeenCalledWith(
+        PAYOUT_ID,
+        PayoutStatus.scheduled,
+        PayoutStatus.cancelled,
+        expect.anything(),
+      );
+    });
+
+    it('eligible → เดินหน้าโอนตามปกติ', async () => {
+      prisma.payout.findUnique.mockResolvedValue(makePayoutRow());
+      stateMachine.claim.mockResolvedValue({
+        claimed: true,
+        payout: makePayoutRow(),
+      });
+      omise.createTransfer.mockResolvedValue({
+        id: 'trsf_1',
+        status: 'pending',
+      });
+
+      await worker.processOne(PAYOUT_ID);
+
+      expect(eligibility.check).toHaveBeenCalledWith(BOOKING_ID);
+      expect(omise.createTransfer).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ── kill-switch ──────────────────────────────────────────────────────────
@@ -299,7 +412,9 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
   // ── retry path ───────────────────────────────────────────────────────────
 
   it('Omise fail + policy=retry → state machine transition scheduled + retry_count++ + next_retry_at', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow({ retryCount: 0 }));
+    prisma.payout.findUnique.mockResolvedValue(
+      makePayoutRow({ retryCount: 0 }),
+    );
     stateMachine.claim.mockResolvedValue({
       claimed: true,
       payout: makePayoutRow({ status: PayoutStatus.processing }),
@@ -337,7 +452,9 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
   // ── terminate path ───────────────────────────────────────────────────────
 
   it('Omise fail + policy=terminate → tx: transition scheduled then failed', async () => {
-    prisma.payout.findUnique.mockResolvedValue(makePayoutRow({ retryCount: 4 }));
+    prisma.payout.findUnique.mockResolvedValue(
+      makePayoutRow({ retryCount: 4 }),
+    );
     stateMachine.claim.mockResolvedValue({
       claimed: true,
       payout: makePayoutRow({ status: PayoutStatus.processing, retryCount: 4 }),

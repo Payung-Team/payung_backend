@@ -108,6 +108,17 @@ input AdminPaymentsInput {
   status: PaymentStatus
 }
 
+input AdminTransactionsInput {
+  dateFrom: DateTime
+  dateTo: DateTime
+  limit: Int
+  page: Int
+  q: String
+  sortBy: TransactionSortBy
+  status: String
+  type: TransactionType
+}
+
 """Caregiver payout bank account summary for admin review"""
 type AdminPayoutAccountSummary {
   accountName: String!
@@ -286,6 +297,8 @@ type BookingSummary {
   estimatedCost: Float
   id: ID!
   locationAddress: String!
+  locationLat: Float
+  locationLng: Float
   notes: String
 
   """
@@ -383,6 +396,8 @@ type CaregiverBookingSummary {
   estimatedCost: Float
   id: ID!
   locationAddress: String
+  locationLat: Float
+  locationLng: Float
   notes: String
   patient: PatientBriefDto!
   rejectionReason: String
@@ -507,6 +522,58 @@ input ChangeUserRoleInput {
 
   """UUID of the user to change role"""
   userId: ID!
+}
+
+input CheckInInput {
+  """
+  position.coords.accuracy หน่วยเมตร — ยิ่งมากยิ่งมั่ว. เกิน GPS_ACCURACY_TRUST_M แล้วระบบจะไม่ติดธงใด ๆ
+  """
+  accuracyM: Int
+
+  """booking ที่จะเช็คอิน — ต้องเป็นงานของผู้ดูแลคนนี้"""
+  bookingId: ID!
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — เก็บเป็น metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """ละติจูดจาก browser (null ได้ ถ้าผู้ใช้ไม่อนุญาตสิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดจาก browser (null ได้ ถ้าผู้ใช้ไม่อนุญาตสิทธิ์ตำแหน่ง)"""
+  lng: Float
+}
+
+input CheckOutInput {
+  """
+  position.coords.accuracy หน่วยเมตร — เกินค่าที่เชื่อได้ ระบบจะไม่ติดธงระยะทาง
+  """
+  accuracyM: Int
+
+  """booking ที่จะปิดงาน — ต้องเช็คอินไปแล้ว"""
+  bookingId: ID!
+
+  """
+  เวลาที่เครื่อง client อ้าง — เก็บเป็น metadata เท่านั้น ห้ามใช้คำนวณระยะเวลาทำงาน
+  """
+  deviceTs: String
+
+  """ละติจูดตอนปิดงาน (null ได้)"""
+  lat: Float
+
+  """ลองจิจูดตอนปิดงาน (null ได้)"""
+  lng: Float
+
+  """
+  บันทึกปิดงาน (ไม่บังคับ) ยาวไม่เกิน 500 ตัวอักษร — ดีไซน์โชว์ตัวนับ 0/500
+  """
+  note: String
+
+  """
+  รูปหลักฐาน 1 รูป (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
+  """
+  photoUrl: String
 }
 
 type CompleteBookingResult {
@@ -737,6 +804,67 @@ type InviteAdminPayload {
   user: User!
 }
 
+type JobEvent {
+  """ความแม่นยำของตำแหน่ง (เมตร)"""
+  accuracyM: Int
+
+  """
+  true = แถวนี้มีอยู่ก่อนแล้ว ระบบคืนของเดิมให้ ไม่ได้สร้างใหม่ (กดปุ่มซ้ำ) — FE ไม่ต้องขึ้น error
+  """
+  alreadyCheckedIn: Boolean!
+  bookingId: ID!
+
+  """เวลาที่เครื่อง client อ้าง — metadata เท่านั้น"""
+  deviceTs: DateTime
+
+  """ระยะจากจุดงาน (เมตร). null = คำนวณไม่ได้ — ไม่ได้แปลว่าทำผิด"""
+  distanceM: Int
+
+  """'check_in' | 'check_out'"""
+  eventType: String!
+
+  """
+  true = สัญญาณตำแหน่งไม่แม่นพอที่จะเชื่อ distanceM → ระบบจะไม่ติดธงใด ๆ เลย. FE เอาไปโชว์ชิป "สัญญาณอ่อน"
+  """
+  gpsAccuracyLow: Boolean!
+  id: ID!
+
+  """
+  true = booking ใบนี้ไม่มีพิกัดจุดงาน (booking เก่าทุกใบเป็นแบบนี้) → คำนวณระยะไม่ได้ และไม่ติดธง
+  """
+  jobCoordsMissing: Boolean!
+
+  """ละติจูดที่บันทึกไว้ (null = ไม่ได้ให้สิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดที่บันทึกไว้"""
+  lng: Float
+
+  """บันทึกปิดงาน (ใช้ตอน check_out)"""
+  note: String
+
+  """signed URL ของรูปหลักฐาน — หมดอายุใน 1 ชม."""
+  photoUrl: String
+
+  """
+  ธงที่เหตุการณ์นี้ทำให้เกิดขึ้น (array ว่าง = ไม่มีปัญหา) เช่น out_of_radius / out_of_window / clock_anomaly
+  """
+  reviewReasons: [String!]!
+
+  """เวลาที่เซิร์ฟเวอร์บันทึก — เวลาที่ถือเป็นทางการ"""
+  serverTs: DateTime!
+
+  """
+  'caregiver' = ผู้ดูแลกดเอง | 'system' = ระบบปิดให้อัตโนมัติ (งานที่ระบบปิดให้ ไม่นับว่า valid)
+  """
+  source: String!
+
+  """
+  true = อยู่ในรัศมีปกติ (≤ WARN_RADIUS_M). false = นอกรัศมีแนะนำ แต่ยังไม่ถึงขั้นติดธง. null = ตัดสินไม่ได้
+  """
+  withinWarnRadius: Boolean
+}
+
 type KycDocument {
   """Caregiver ID (null before KYC submit)"""
   caregiverId: String
@@ -928,6 +1056,16 @@ type Mutation {
   Admin only: Change a user role. Only patient (1) ↔ caregiver (2) allowed. Cannot change own role or escalate to admin/super_admin. Records audit log.
   """
   changeUserRole(input: ChangeUserRoleInput!): User!
+
+  """
+  ผู้ดูแลเช็คอินเพื่อเริ่มงาน (confirmed → in_progress). ★ GPS ไม่เคยทำให้ล้มเหลว — พิกัดเพี้ยนหรือไม่มีพิกัดเลยก็เช็คอินได้ ระบบแค่ติดธงไว้ให้แอดมินดู. กดซ้ำได้ ไม่ error และไม่เกิดแถวใหม่.
+  """
+  checkInBooking(input: CheckInInput!): JobEvent!
+
+  """
+  ผู้ดูแลเช็คเอาท์เพื่อ "ปิดงาน" (in_progress → awaiting_release ถ้าไม่มีธง, → needs_review ถ้ามี). ★ ผู้รับบริการไม่ต้องกดยืนยันอะไรอีก. แนบบันทึกและรูปได้ 1 รูป (ต้องเป็นไฟล์ใน bucket ของเราเท่านั้น). การ์ดนี้ไม่แตะเงิน — การ capture เป็นงานของ Epic 2.
+  """
+  checkOutBooking(input: CheckOutInput!): JobEvent!
 
   """
   Patient or caregiver completes a confirmed booking: captures the held charge (payment held → captured) and marks the booking completed (confirmed → completed).
@@ -1188,6 +1326,50 @@ type PaymentStatusHistory {
   toStatus: PaymentStatus!
 }
 
+type ProofOfWorkSummary {
+  """
+  เวลาทำงานจริง (นาที) คำนวณจาก server_ts ทั้งสองฝั่ง. null เมื่อยังไม่ปิดงาน หรือเมื่อระบบปิดให้เอง
+  """
+  actualMinutes: Int
+
+  """เวลาที่จองไว้ (นาที) = duration_hours × 60"""
+  bookedMinutes: Int!
+
+  """แถวเช็คอิน (null = ยังไม่เช็คอิน)"""
+  checkIn: JobEvent
+
+  """แถวเช็คเอาท์ (null = ยังไม่ปิดงาน)"""
+  checkOut: JobEvent
+
+  """true = มีข้อพิพาทค้างอยู่ (dispute_status != none)"""
+  disputed: Boolean!
+
+  """ระยะห่างตอนเช็คอิน (เมตร) — ค่าดิบ"""
+  distanceInM: Int
+
+  """ระยะห่างตอนเช็คเอาท์ (เมตร) — ค่าดิบ"""
+  distanceOutM: Int
+
+  """
+  ★ สำหรับ "แสดงผล" เท่านั้น ห้ามใช้ตัดสิน — ตัวตัดสินจริงคือธง short_duration ใน reviewReasons
+  """
+  durationOk: Boolean!
+
+  """
+  true = booking ใบนี้ไม่มีพิกัดจุดงาน — เป็นช่องว่างของข้อมูลเรา ไม่ใช่ความผิดผู้ดูแล
+  """
+  jobCoordsMissing: Boolean!
+
+  """true = ไม่มีการเช็คเอาท์จากผู้ดูแล (ระบบปิดให้เอง หรือยังไม่ปิด)"""
+  noCheckout: Boolean!
+
+  """★ ตัวตัดสินจริง — ธงทั้งหมดที่สะสมจากทั้งเช็คอินและเช็คเอาท์"""
+  reviewReasons: [String!]!
+
+  """'valid' | 'needs_review' | 'incomplete'"""
+  verdict: String!
+}
+
 input PayoutAccountInput {
   """Account holder name"""
   accountName: String!
@@ -1321,6 +1503,21 @@ type Query {
   paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
 
   """
+  สรุปหลักฐานการทำงานของงาน 1 ใบ — เป็น "แหล่งความจริงเดียว" ที่ระบบเงินอ่านก่อนตัดสินใจโอน. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
+  """
+  proofOfWork(bookingId: ID!): ProofOfWorkSummary!
+
+  """
+  Admin only: reconciliation report (payments vs Omise vs payouts) for a date window.
+  """
+  reconciliationReport(input: ReconciliationReportInput!): ReconReport!
+
+  """
+  Admin only: the same reconciliation report as a UTF-8-with-BOM CSV string.
+  """
+  reconciliationReportCsv(input: ReconciliationReportInput!): String!
+
+  """
   Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
   """
   searchCaregivers(input: SearchCaregiverInput = {}): SearchCaregiverPayload!
@@ -1346,6 +1543,50 @@ type RecentActivity {
   type: String!
 }
 
+enum ReconFlag {
+  AMOUNT_MISMATCH
+  CAPTURE_WITHOUT_PROOF
+  HELD_AWAITING_PROOF
+  PAYOUT_WITHOUT_CAPTURE
+  REFUND_EXCEEDS_CAPTURED
+  STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
+  STATUS_MISMATCH_OMISE_PAID_DB_PENDING
+}
+
+type ReconReport {
+  dateFrom: String!
+  dateTo: String!
+  flaggedRows: Int!
+  rows: [ReconRow!]!
+  totalRows: Int!
+  unreachableRows: Int!
+}
+
+type ReconRow {
+  amount: Float!
+  bookingId: ID!
+  capturedAmount: Float
+  date: String!
+  flags: [ReconFlag!]!
+  grossAmount: Float
+  netAmount: Float
+  omiseStatus: String
+  omiseUnreachable: Boolean!
+  paymentId: String!
+  paymentStatus: String!
+  payoutStatus: String
+  platformFee: Float
+  primaryFlag: ReconFlag
+  refundedAmount: Float!
+  reviewReasons: [String!]!
+  verdict: String!
+}
+
+input ReconciliationReportInput {
+  dateFrom: String!
+  dateTo: String!
+}
+
 input RefundPaymentInput {
   """จำนวนเงินที่คืน (THB) — ไม่ระบุ = คืนเต็มจำนวน, ระบุ = partial refund"""
   amount: Float
@@ -1353,8 +1594,8 @@ input RefundPaymentInput {
   """UUID ของ payment ที่ต้องการคืนเงิน"""
   paymentId: ID!
 
-  """เหตุผลการคืนเงิน (audit)"""
-  reason: String
+  """เหตุผลการคืนเงิน (audit) — ต้องมีอย่างน้อย 10 ตัวอักษร"""
+  reason: String!
 }
 
 input RegisterInput {

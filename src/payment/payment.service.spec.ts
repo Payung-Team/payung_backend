@@ -22,6 +22,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
+import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
@@ -59,35 +60,28 @@ function fakePayment(overrides: Record<string, unknown> = {}) {
 
 const asUser = (id: string, role: number): AuthUser => ({ id, role } as AuthUser);
 
-describe('PaymentService.refundPayment (PYG-286)', () => {
+describe('PaymentService.refundPayment (PYG-374 — thin wrapper over RefundService)', () => {
   let service: PaymentService;
-
-  let prisma: {
-    payment: { findUnique: jest.Mock; update: jest.Mock };
-    $transaction: jest.Mock;
-  };
-  let tx: { payment: { update: jest.Mock } };
-  let fsm: { transition: jest.Mock };
-  let omise: { createRefund: jest.Mock };
-  let emitter: { emit: jest.Mock };
+  let refundService: { refund: jest.Mock };
 
   beforeEach(async () => {
-    tx = { payment: { update: jest.fn() } };
-    prisma = {
-      payment: { findUnique: jest.fn(), update: jest.fn() },
-      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    // PYG-374: refund core moved to RefundService. Guard behaviour is tested in
+    // refund.service.spec.ts — here we only assert the wrapper's role guard + delegation.
+    refundService = {
+      refund: jest.fn().mockResolvedValue(fakePayment({ paymentStatus: 'refunded' })),
     };
-    fsm = { transition: jest.fn() };
-    omise = { createRefund: jest.fn() };
-    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentService,
-        { provide: PrismaService, useValue: prisma },
-        { provide: PaymentStateMachine, useValue: fsm },
-        { provide: OmiseService, useValue: omise },
-        { provide: EventEmitter2, useValue: emitter },
+        {
+          provide: PrismaService,
+          useValue: { payment: { findUnique: jest.fn(), update: jest.fn() } },
+        },
+        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        { provide: OmiseService, useValue: { createRefund: jest.fn() } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: refundService },
         { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
@@ -95,197 +89,151 @@ describe('PaymentService.refundPayment (PYG-286)', () => {
     service = moduleRef.get(PaymentService);
   });
 
-  // ─── Guards ────────────────────────────────────────────────────────────────
-
-  it('non-admin role → ForbiddenException', async () => {
+  it('non-admin role → ForbiddenException (ไม่แตะ RefundService)', async () => {
     await expect(
       service.refundPayment(
-        { paymentId: PAYMENT_ID },
+        { paymentId: PAYMENT_ID, reason: 'valid refund reason' },
         asUser('patient-x', ROLE_ID.PATIENT),
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.payment.findUnique).not.toHaveBeenCalled();
+    expect(refundService.refund).not.toHaveBeenCalled();
   });
 
-  it('payment ไม่พบ → NotFoundException', async () => {
-    prisma.payment.findUnique.mockResolvedValueOnce(null);
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    expect(omise.createRefund).not.toHaveBeenCalled();
-  });
-
-  it('payment ไม่ใช่ captured → BadRequestException (ไม่เรียก Omise)', async () => {
-    prisma.payment.findUnique.mockResolvedValueOnce(
-      fakePayment({ paymentStatus: 'held' }),
+  it('admin partial → delegates to RefundService (source=admin_manual + actorId + amount + reason)', async () => {
+    await service.refundPayment(
+      { paymentId: PAYMENT_ID, amount: 500, reason: 'service not delivered' },
+      asUser(ADMIN_ID, ROLE_ID.ADMIN),
     );
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(omise.createRefund).not.toHaveBeenCalled();
-  });
-
-  it('payment ไม่มี omiseChargeId → BadRequestException', async () => {
-    prisma.payment.findUnique.mockResolvedValueOnce(
-      fakePayment({ omiseChargeId: null }),
-    );
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(omise.createRefund).not.toHaveBeenCalled();
-  });
-
-  it('amount > payment.amount → BadRequestException', async () => {
-    prisma.payment.findUnique.mockResolvedValueOnce(fakePayment());
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID, amount: 1500 },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(omise.createRefund).not.toHaveBeenCalled();
-  });
-
-  it('status เปลี่ยนระหว่าง pre-check + re-check (double-refund race) → ConflictException', async () => {
-    prisma.payment.findUnique
-      // pre-check ผ่าน
-      .mockResolvedValueOnce(fakePayment())
-      // re-check: เปลี่ยนเป็น refunded แล้ว (admin คนอื่น refund ก่อน)
-      .mockResolvedValueOnce({ paymentStatus: 'refunded' });
-
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(omise.createRefund).not.toHaveBeenCalled();
-  });
-
-  it('Omise refund fail → ServiceUnavailableException (status ไม่เปลี่ยน, ไม่ emit)', async () => {
-    prisma.payment.findUnique
-      .mockResolvedValueOnce(fakePayment())
-      .mockResolvedValueOnce({ paymentStatus: 'captured' });
-    omise.createRefund.mockRejectedValueOnce(new Error('Omise 503'));
-
-    await expect(
-      service.refundPayment(
-        { paymentId: PAYMENT_ID },
-        asUser(ADMIN_ID, ROLE_ID.ADMIN),
-      ),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(fsm.transition).not.toHaveBeenCalled();
-    expect(emitter.emit).not.toHaveBeenCalled();
-  });
-
-  // ─── Happy paths ───────────────────────────────────────────────────────────
-
-  it('full refund: captured → refunded, ไม่ส่ง amount ไปให้ Omise, ส่ง idempotency key', async () => {
-    prisma.payment.findUnique
-      .mockResolvedValueOnce(fakePayment())
-      .mockResolvedValueOnce({ paymentStatus: 'captured' });
-    omise.createRefund.mockResolvedValueOnce({
-      id: 'rfnd_test_1',
-      amount: 120000,
-      charge: CHARGE_ID,
-      currency: 'THB',
-      voided: false,
+    expect(refundService.refund).toHaveBeenCalledWith({
+      paymentId: PAYMENT_ID,
+      amount: 500,
+      reason: 'service not delivered',
+      source: 'admin_manual',
+      actorId: ADMIN_ID,
     });
-    fsm.transition.mockResolvedValueOnce(fakePayment({ paymentStatus: 'refunded' }));
-    tx.payment.update.mockResolvedValueOnce(
-      fakePayment({ paymentStatus: 'refunded', metadata: { omiseRefundId: 'rfnd_test_1' } }),
-    );
+  });
 
+  it('admin full refund (no amount) → delegates with amount undefined', async () => {
     await service.refundPayment(
       { paymentId: PAYMENT_ID, reason: 'service not delivered' },
       asUser(ADMIN_ID, ROLE_ID.ADMIN),
     );
-
-    // Omise: full = undefined amount, key = refund:{paymentId}:{satangs}
-    expect(omise.createRefund).toHaveBeenCalledWith(
-      CHARGE_ID,
-      undefined,
-      `refund:${PAYMENT_ID}:120000`, // 1200 THB = 120000 satangs
-    );
-
-    // FSM: captured → refunded ใน tx เดียวกัน
-    expect(fsm.transition).toHaveBeenCalledWith(
-      PAYMENT_ID,
-      PaymentStatus.refunded,
+    expect(refundService.refund).toHaveBeenCalledWith(
       expect.objectContaining({
-        changedBy: ADMIN_ID,
-        reason: 'service not delivered',
-        metadata: expect.objectContaining({
-          omiseRefundId: 'rfnd_test_1',
-          isPartial: false,
-        }),
-      }),
-      tx,
-    );
-
-    // emit REFUND_ISSUED ครั้งเดียว (ไม่ bypass listener)
-    expect(emitter.emit).toHaveBeenCalledTimes(1);
-    expect(emitter.emit).toHaveBeenCalledWith(
-      BOOKING_EVENTS.REFUND_ISSUED,
-      expect.objectContaining({
-        bookingId: BOOKING_ID,
-        patientId: PATIENT_ID,
-        metadata: expect.objectContaining({ isPartial: false }),
+        paymentId: PAYMENT_ID,
+        amount: undefined,
+        source: 'admin_manual',
       }),
     );
   });
+});
 
-  it('partial refund: amount=500 → partially_refunded, ส่ง amount satangs ไปให้ Omise', async () => {
-    prisma.payment.findUnique
-      .mockResolvedValueOnce(fakePayment())
-      .mockResolvedValueOnce({ paymentStatus: 'captured' });
-    omise.createRefund.mockResolvedValueOnce({
-      id: 'rfnd_test_2',
-      amount: 50000,
-      charge: CHARGE_ID,
-      currency: 'THB',
-      voided: false,
-    });
-    fsm.transition.mockResolvedValueOnce(
-      fakePayment({ paymentStatus: 'partially_refunded' }),
-    );
-    tx.payment.update.mockResolvedValueOnce(
-      fakePayment({ paymentStatus: 'partially_refunded' }),
-    );
+// ─── createPayment — duplicate-payment guard (retry after failed attempt) ───
 
-    await service.refundPayment(
-      { paymentId: PAYMENT_ID, amount: 500 },
-      asUser(ADMIN_ID, ROLE_ID.ADMIN),
-    );
+describe('PaymentService.createPayment — duplicate guard', () => {
+  let service: PaymentService;
+  let prisma: {
+    booking: { findUnique: jest.Mock };
+    payment: { findUnique: jest.Mock };
+  };
+  let omise: { createCharge: jest.Mock };
 
-    expect(omise.createRefund).toHaveBeenCalledWith(
-      CHARGE_ID,
-      50000, // 500 THB = 50000 satangs
-      `refund:${PAYMENT_ID}:50000`,
+  const acceptedBooking = {
+    id: BOOKING_ID,
+    patientId: PATIENT_ID,
+    status: 'accepted',
+    durationHours: 2,
+    caregiverId: CAREGIVER_ID,
+    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+  };
+
+  // sentinel error thrown by createCharge — reaching it proves the guard let us through
+  const CHARGE_REACHED = new Error('__charge_reached__');
+
+  const cardInput = {
+    bookingId: BOOKING_ID,
+    paymentMethod: 'credit_card',
+    omiseToken: 'tokn_test_1',
+  };
+
+  beforeEach(async () => {
+    prisma = {
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      payment: { findUnique: jest.fn() },
+    };
+    omise = { createCharge: jest.fn().mockRejectedValue(CHARGE_REACHED) };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        { provide: OmiseService, useValue: omise },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
+      ],
+    }).compile();
+
+    service = moduleRef.get(PaymentService);
+  });
+
+  const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
+
+  it('no existing payment → passes guard (reaches createCharge)', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
+  });
+
+  // Retryable states — a payment that never actually secured funds must not block a new attempt
+  it.each([
+    PaymentStatus.failed,
+    PaymentStatus.expired,
+    PaymentStatus.voided,
+  ])('existing payment in %s → allows retry (reaches createCharge)', async (status) => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: status }),
     );
-    expect(fsm.transition).toHaveBeenCalledWith(
-      PAYMENT_ID,
-      PaymentStatus.partially_refunded,
-      expect.objectContaining({
-        metadata: expect.objectContaining({ isPartial: true, refundAmount: 500 }),
-      }),
-      tx,
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
+  });
+
+  // Valid/in-progress states — block to prevent double payment / duplicate Omise charge.
+  // (pending here uses fakePayment's fresh updatedAt → treated as an in-flight QR)
+  it.each([
+    PaymentStatus.pending,
+    PaymentStatus.held,
+    PaymentStatus.captured,
+    PaymentStatus.transferred,
+    PaymentStatus.refunded,
+    PaymentStatus.partially_refunded,
+  ])('existing payment in %s → ConflictException (never reaches createCharge)', async (status) => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: status }),
     );
-    expect(emitter.emit).toHaveBeenCalledWith(
-      BOOKING_EVENTS.REFUND_ISSUED,
-      expect.objectContaining({
-        metadata: expect.objectContaining({ isPartial: true, amount: 500 }),
-      }),
+    await expect(service.createPayment(cardInput, patient)).rejects.toBeInstanceOf(
+      ConflictException,
     );
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+
+  it('fresh pending (just created) → blocks (guards double-charge with in-flight QR)', async () => {
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: PaymentStatus.pending, updatedAt: new Date() }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+
+  it('stale pending (abandoned QR, >15m old) → allows retry (reaches createCharge)', async () => {
+    const staleUpdatedAt = new Date(Date.now() - 16 * 60 * 1000); // 16 min ago
+    prisma.payment.findUnique.mockResolvedValueOnce(
+      fakePayment({ paymentStatus: PaymentStatus.pending, updatedAt: staleUpdatedAt }),
+    );
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -305,6 +253,7 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
         { provide: OmiseService, useValue: { createRefund: jest.fn() } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
@@ -333,6 +282,108 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
 
     expect(prisma.payment.findUnique).toHaveBeenCalledWith({ where: { bookingId: BOOKING_ID } });
     expect(result).toBeNull();
+  });
+});
+
+// ─── createPayment — PYG-309/375: reconcile stale PromptPay + failed-record on decline ───
+
+describe('PaymentService.createPayment — PYG-309 reconcile + failed record', () => {
+  let service: PaymentService;
+  let prisma: {
+    booking: { findUnique: jest.Mock };
+    payment: { findUnique: jest.Mock; create: jest.Mock; update: jest.Mock };
+    paymentStatusHistory: { create: jest.Mock };
+    $transaction: jest.Mock;
+  };
+  let omise: { createCharge: jest.Mock; retrieveCharge: jest.Mock };
+  let fsm: { transition: jest.Mock; recordInitialStatus: jest.Mock };
+
+  const acceptedBooking = {
+    id: BOOKING_ID,
+    patientId: PATIENT_ID,
+    status: 'accepted',
+    durationHours: 2,
+    caregiverId: CAREGIVER_ID,
+    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+  };
+  const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
+  const cardInput = { bookingId: BOOKING_ID, paymentMethod: 'credit_card', omiseToken: 'tokn_1' };
+
+  beforeEach(async () => {
+    prisma = {
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      payment: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
+      paymentStatusHistory: { create: jest.fn() },
+      $transaction: jest.fn(),
+    };
+    omise = { createCharge: jest.fn(), retrieveCharge: jest.fn() };
+    fsm = { transition: jest.fn(), recordInitialStatus: jest.fn() };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaymentStateMachine, useValue: fsm },
+        { provide: OmiseService, useValue: omise },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: RefundService, useValue: { refund: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(PaymentService);
+  });
+
+  it('PromptPay pending + Omise says paid (webhook lost) → captured, NO second charge', async () => {
+    prisma.payment.findUnique.mockResolvedValue(
+      fakePayment({ paymentStatus: 'pending', paymentMethod: 'promptpay' }),
+    );
+    omise.retrieveCharge.mockResolvedValue({ paid: true });
+    fsm.transition.mockResolvedValue(fakePayment({ paymentStatus: 'captured' }));
+
+    const result = await service.createPayment(cardInput, patient);
+
+    expect(omise.retrieveCharge).toHaveBeenCalledTimes(1); // asked Omise FIRST
+    expect(fsm.transition).toHaveBeenCalledWith(PAYMENT_ID, PaymentStatus.captured, expect.anything());
+    expect(omise.createCharge).not.toHaveBeenCalled(); // did NOT charge again
+    expect(result.paymentStatus).toBe('captured');
+  });
+
+  it('PromptPay pending + Omise says not paid → expired, then retry proceeds to createCharge', async () => {
+    prisma.payment.findUnique.mockResolvedValue(
+      fakePayment({ paymentStatus: 'pending', paymentMethod: 'promptpay' }),
+    );
+    omise.retrieveCharge.mockResolvedValue({ paid: false, expiresAt: '2026-08-01T00:00:00Z' });
+    fsm.transition.mockResolvedValue(fakePayment({ paymentStatus: 'expired' }));
+    const CHARGE_REACHED = new Error('__charge_reached__');
+    omise.createCharge.mockRejectedValue(CHARGE_REACHED);
+
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(fsm.transition).toHaveBeenCalledWith(PAYMENT_ID, PaymentStatus.expired, expect.anything());
+    expect(omise.createCharge).toHaveBeenCalledTimes(1); // not blocked → retry proceeded
+  });
+
+  it('declined card (no existing) → writes a `failed` row + rethrows the same error', async () => {
+    prisma.payment.findUnique.mockResolvedValue(null);
+    const declined = Object.assign(new Error('card was declined'), {
+      details: { omiseCode: 'insufficient_fund', omiseMessage: 'insufficient funds' },
+    });
+    omise.createCharge.mockRejectedValue(declined);
+    prisma.payment.create.mockResolvedValue({ id: 'pay-new' });
+
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(declined);
+
+    expect(prisma.payment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          paymentStatus: PaymentStatus.failed,
+          failureCode: 'insufficient_fund',
+        }),
+      }),
+    );
+    expect(fsm.recordInitialStatus).toHaveBeenCalledWith(
+      'pay-new',
+      PaymentStatus.failed,
+      expect.anything(),
+    );
   });
 });
 

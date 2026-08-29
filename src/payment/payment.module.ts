@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { PaymentStateMachine } from './payment-state-machine';
 import { PaymentService } from './payment.service';
+import { RefundService } from './refund.service';
+import { IdempotencyService } from './idempotency.service';
 import { PaymentResolver } from './payment.resolver';
 import { OmiseService } from './omise/omise.service';
 import { CompleteBookingService } from './complete-booking.service';
@@ -16,6 +18,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
   providers: [
     PaymentStateMachine,
     PaymentService,
+    RefundService,
+    IdempotencyService,
     PaymentResolver,
     // PYG-281: capture charge + completeBooking (patient/caregiver)
     OmiseService,
@@ -27,6 +31,6 @@ import { RolesGuard } from '../common/guards/roles.guard';
     SupabaseAuthGuard,
     RolesGuard,
   ],
-  exports: [PaymentStateMachine, OmiseService, PaymentService, PayoutAccountService],
+  exports: [PaymentStateMachine, OmiseService, PaymentService, RefundService, PayoutAccountService],
 })
 export class PaymentModule {}

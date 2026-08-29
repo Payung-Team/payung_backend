@@ -34,6 +34,10 @@ export class BookingSummary {
   @Field(() => [String])                              tasks: string[];
   @Field(() => [String])                              serviceLocations: string[];
   @Field()                                            locationAddress: string;
+  // PYG-352: พิกัดจุดงานที่ลูกค้าปักหมุดตอนจอง — FE ใช้วาดหมุด "จุดงาน" + วงรัศมี 200/500 ม.
+  // null = booking ใบนี้ไม่มีพิกัด (ใบเก่าทั้งหมด) → ระบบจะไม่คำนวณระยะและไม่ติดธง
+  @Field(() => Float, { nullable: true })             locationLat?: number;
+  @Field(() => Float, { nullable: true })             locationLng?: number;
   @Field({ nullable: true })                          notes?: string;
   @Field(() => Float, { nullable: true })             estimatedCost?: number;
   @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
