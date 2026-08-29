@@ -101,3 +101,104 @@ export type JobSessionStatus =
  * ให้ TypeScript ช่วยจับคำสะกดผิดแทนที่จะไปเจอตอน runtime
  */
 export const QR_DEAD_BOOKING_STATUSES = ['cancelled', 'rejected'] as const;
+
+// ─── 4. การสแกน (PYG-435) ───────────────────────────────────────────────────
+
+/**
+ * เว้นระยะขั้นต่ำระหว่างสอง action (วินาที) — ยาแก้ "สแกนรัว 2 ครั้ง"
+ *
+ * ปัญหาจริงที่ค่านี้แก้: ผู้ดูแลจ่อกล้องค้างไว้ที่ QR แล้ว scanner ของ browser
+ * ยิง mutation ซ้ำติด ๆ กัน ครั้งแรกได้ CHECK_IN ครั้งที่สองเห็นสถานะเป็น
+ * CHECKED_IN แล้ว จึงกลายเป็น CHECK_OUT ทันที = งานเปิดแล้วปิดใน 1 วินาที
+ * (ระบบเดิมไม่กันเคสนี้ มันแค่ติดธง short_duration แล้วปิดงานให้จริง ๆ)
+ *
+ * 60 วินาทีเลือกจาก: ไม่มีงานดูแลผู้สูงอายุใบไหนใช้เวลาน้อยกว่านี้
+ * แต่ก็สั้นพอที่คนสแกนพลาดจริง ๆ จะรอไหว
+ *
+ * ⚠ QA (PYG-440) ตั้งเป็น 0 ได้ เพื่อรันเทสเช็คอิน→เช็คเอาท์รวดเดียว
+ */
+export const QR_MIN_SECONDS_BETWEEN_ACTIONS = envInt(
+  'QR_MIN_SECONDS_BETWEEN_ACTIONS',
+  60,
+);
+
+/**
+ * action ที่การสแกนครั้งนั้น "พยายามจะทำ"
+ *
+ * ★ ตัว QR ไม่ได้บอกว่าจะทำอะไร — สถานะปัจจุบันของ session เป็นตัวตัดสิน
+ *   PENDING → CHECK_IN, CHECKED_IN → CHECK_OUT, CHECKED_OUT → ไม่เหลือ action
+ *   (หลักการนี้มาจากการ์ดแม่ PYG-433 ตรง ๆ)
+ *
+ * ⚠ ค่าต้องตรงกับ CHECK "job_scan_events_action_check" ในไฟล์ migration เป๊ะ ๆ
+ */
+export const SCAN_ACTION = {
+  CHECK_IN: 'CHECK_IN',
+  CHECK_OUT: 'CHECK_OUT',
+  /** ยังไม่ทันรู้ว่าจะทำอะไร (หา session ไม่เจอ / งานถูกยกเลิก) */
+  NONE: 'NONE',
+} as const;
+
+export type ScanActionCode = (typeof SCAN_ACTION)[keyof typeof SCAN_ACTION];
+
+/**
+ * รหัสผลลัพธ์ของการสแกน 1 ครั้ง
+ *
+ * ★★ นี่คือ "สัญญา" ระหว่าง BE ↔ FE (PYG-438) ↔ QA (PYG-440) ★★
+ *    FE แปลงรหัสพวกนี้เป็นหน้าจอคนละแบบ (ลองใหม่ / ติดต่อแอดมิน / กลับหน้างาน)
+ *    ห้ามเปลี่ยนชื่อรหัสเดิมโดยไม่บอกทั้งสองฝ่าย และห้ามเพิ่มรหัสใหม่
+ *    โดยไม่แก้ CHECK "job_scan_events_result_check" ในดีบีพร้อมกัน
+ */
+export const SCAN_RESULT = {
+  /** สแกนผ่าน เช็คอิน/เช็คเอาท์สำเร็จ */
+  SUCCESS: 'SUCCESS',
+  /** token ไม่ตรงกับ session ใดเลย — QR ปลอม, QR ของระบบอื่น, หรืออ่านผิด */
+  TOKEN_NOT_FOUND: 'TOKEN_NOT_FOUND',
+  /** บัญชีที่สแกนไม่มีโปรไฟล์ผู้ดูแล (ข้อมูลผิดปกติ — role ผ่าน guard มาแล้ว) */
+  NOT_A_CAREGIVER: 'NOT_A_CAREGIVER',
+  /** เป็นผู้ดูแล แต่ไม่ใช่คนที่รับงานใบนี้ — ครอบคลุม "caregiver ถูกเปลี่ยนกลางคัน" ด้วย */
+  WRONG_CAREGIVER: 'WRONG_CAREGIVER',
+  /** งานถูกยกเลิก / ถูกปฏิเสธไปแล้ว */
+  BOOKING_INACTIVE: 'BOOKING_INACTIVE',
+  /** สแกนนอกช่วง valid_from..valid_until */
+  OUT_OF_WINDOW: 'OUT_OF_WINDOW',
+  /** session เป็น CHECKED_OUT แล้ว = สแกนครั้งที่สาม */
+  ALREADY_COMPLETED: 'ALREADY_COMPLETED',
+  /** สแกนถี่เกิน QR_MIN_SECONDS_BETWEEN_ACTIONS */
+  TOO_SOON: 'TOO_SOON',
+  /** สแกนพร้อมกันสองครั้ง แล้วครั้งนี้เป็นฝ่ายแพ้ (งานถูกทำไปแล้วโดยอีกรีเควสต์) */
+  DUPLICATE: 'DUPLICATE',
+  /** ลำดับไม่ถูกต้อง เช่น จะเช็คเอาท์ทั้งที่ยังไม่มีหลักฐานเช็คอิน */
+  WRONG_SEQUENCE: 'WRONG_SEQUENCE',
+  /** งานยังไม่พร้อม — ยังไม่ถึงวัน / ยังไม่จ่ายเงิน / สถานะไม่ใช่ confirmed */
+  JOB_NOT_READY: 'JOB_NOT_READY',
+} as const;
+
+export type ScanResultCode = (typeof SCAN_RESULT)[keyof typeof SCAN_RESULT];
+
+/**
+ * ข้อความภาษาไทยที่ผู้ดูแลเห็นบนหน้าจอ — ที่เดียวในระบบ
+ *
+ * ทำไมต้องรวมไว้ที่นี่แทนที่จะเขียนกระจายในโค้ด:
+ *   1. ข้อความเดียวกันถูกเก็บลง job_scan_events.reason ด้วย (แอดมินอ่านย้อนหลังได้)
+ *   2. Design (PYG-439) ระบุ TH/EN — พอถึงวันทำ EN จะเพิ่มอีกชุดที่นี่ที่เดียว
+ *
+ * ★ ห้ามใส่ศัพท์เทคนิคหรือรหัสลงในข้อความ — ผู้ดูแลไม่ได้อ่านโค้ด
+ *   ทุกข้อความต้องบอก "ต้องทำอะไรต่อ" ไม่ใช่แค่ "อะไรผิด"
+ *
+ * ★ JOB_NOT_READY / WRONG_SEQUENCE เป็น null โดยตั้งใจ
+ *   สองเคสนี้ข้อความจริงมาจากระบบเช็คอินเดิม (เช่น "ยังไม่ได้รับการชำระเงิน")
+ *   ซึ่งเจาะจงกว่าข้อความกลาง ๆ ที่เราจะเขียนที่นี่มาก
+ */
+export const SCAN_RESULT_MESSAGE: Record<ScanResultCode, string | null> = {
+  SUCCESS: 'สแกนสำเร็จ',
+  TOKEN_NOT_FOUND: 'QR นี้ใช้ไม่ได้ กรุณาให้ผู้รับบริการเปิด QR จากแอปอีกครั้ง',
+  NOT_A_CAREGIVER: 'บัญชีนี้ยังไม่มีโปรไฟล์ผู้ดูแล กรุณาติดต่อผู้ดูแลระบบ',
+  WRONG_CAREGIVER: 'QR นี้เป็นของงานที่ไม่ใช่ของคุณ',
+  BOOKING_INACTIVE: 'งานนี้ถูกยกเลิกแล้ว QR จึงใช้ไม่ได้',
+  OUT_OF_WINDOW: 'ยังไม่ถึงเวลาที่สแกนได้ หรือเลยเวลามาแล้ว',
+  ALREADY_COMPLETED: 'งานนี้ปิดเรียบร้อยแล้ว ไม่ต้องสแกนอีก',
+  TOO_SOON: 'เพิ่งสแกนไปเมื่อครู่ กรุณารอสักครู่แล้วลองใหม่',
+  DUPLICATE: 'ระบบบันทึกการสแกนครั้งนี้ไปแล้ว',
+  WRONG_SEQUENCE: null,
+  JOB_NOT_READY: null,
+};

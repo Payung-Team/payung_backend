@@ -1017,6 +1017,42 @@ type JobQr {
   validUntil: DateTime!
 }
 
+type JobScanResult {
+  """
+  สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ) — ตัดสินจากสถานะของ QR ไม่ใช่จากตัว QR เอง
+  """
+  action: ScanAction!
+
+  """งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)"""
+  bookingId: ID
+
+  """
+  หลักฐานการทำงานที่เพิ่งถูกบันทึก (มีเฉพาะตอน ok = true) — เอาไปโชว์ระยะทาง/ธงต่อได้เลย โดยไม่ต้องยิง proofOfWork ซ้ำ
+  """
+  jobEvent: JobEvent
+
+  """
+  ข้อความภาษาไทยที่แสดงให้ผู้ดูแลอ่านได้ทันที (แสดงตรง ๆ ได้เลย ไม่ต้องแปลง)
+  """
+  message: String!
+
+  """
+  true = งานขยับจริง (เช็คอินหรือเช็คเอาท์สำเร็จ). false = ถูกปฏิเสธ ดูสาเหตุที่ result
+  """
+  ok: Boolean!
+
+  """รหัสผลลัพธ์ — ใช้ค่านี้เลือกหน้าจอ ไม่ใช่ message"""
+  result: ScanResult!
+
+  """เวลาที่เซิร์ฟเวอร์บันทึกการสแกนครั้งนี้ — เวลาที่ถือเป็นทางการ"""
+  scannedAt: DateTime!
+
+  """
+  สถานะของ QR 'หลัง' การสแกนครั้งนี้: 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT'. null เมื่อหา QR ไม่เจอ
+  """
+  sessionStatus: String
+}
+
 type KycDocument {
   """Caregiver ID (null before KYC submit)"""
   caregiverId: String
@@ -1341,6 +1377,11 @@ type Mutation {
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
+
+  """
+  ผู้ดูแลสแกน QR ของงานเพื่อเริ่มหรือจบงาน. ★ สแกนครั้งแรก = เช็คอิน, ครั้งที่สอง = เช็คเอาท์ — ผู้เรียก "ไม่ได้เลือก" ว่าจะทำอะไร สถานะของ QR เป็นตัวตัดสิน. ★ การสแกนที่ถูกปฏิเสธจะ "ไม่ throw error" แต่คืน ok=false พร้อมรหัสเหตุผลใน result (ทุกครั้งถูกบันทึกไว้เสมอ ทั้งสำเร็จและล้มเหลว).
+  """
+  scanJobQr(input: ScanJobQrInput!): JobScanResult!
 
   """
   Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
@@ -1854,6 +1895,63 @@ enum RoleFilter {
 
   """Role 4: Super Admin"""
   super_admin
+}
+
+"""
+สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ). NONE = ยังไม่ทันรู้ว่าจะทำอะไร เช่น หา QR ไม่เจอ
+"""
+enum ScanAction {
+  CHECK_IN
+  CHECK_OUT
+  NONE
+}
+
+input ScanJobQrInput {
+  """position.coords.accuracy หน่วยเมตร — ยิ่งมากยิ่งมั่ว"""
+  accuracyM: Int
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """ละติจูดตอนสแกน (null ได้ ถ้าไม่ได้ให้สิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดตอนสแกน"""
+  lng: Float
+
+  """
+  บันทึกปิดงาน — ใช้เฉพาะเมื่อการสแกนนี้กลายเป็นเช็คเอาท์ ยาวไม่เกิน 500 ตัวอักษร
+  """
+  note: String
+
+  """
+  รูปหลักฐาน 1 รูป — ใช้เฉพาะตอนเช็คเอาท์ ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของงานใบนั้น
+  """
+  photoUrl: String
+
+  """
+  ข้อความดิบที่อ่านได้จาก QR — ส่งมาตามที่อ่านได้เป๊ะ ๆ ห้ามตัด/เติม/แปลงตัวพิมพ์
+  """
+  token: String!
+}
+
+"""
+ผลของการสแกน. SUCCESS เท่านั้นที่แปลว่างานขยับจริง ค่าอื่นทั้งหมดคือถูกปฏิเสธ (แต่ถูกบันทึกไว้ทุกครั้ง)
+"""
+enum ScanResult {
+  ALREADY_COMPLETED
+  BOOKING_INACTIVE
+  DUPLICATE
+  JOB_NOT_READY
+  NOT_A_CAREGIVER
+  OUT_OF_WINDOW
+  SUCCESS
+  TOKEN_NOT_FOUND
+  TOO_SOON
+  WRONG_CAREGIVER
+  WRONG_SEQUENCE
 }
 
 input ScheduleDeleteAdminInput {

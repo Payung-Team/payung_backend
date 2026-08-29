@@ -373,6 +373,8 @@ model Booking {
   // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
   // optional (?) เพราะ booking เก่าทุกใบที่มีอยู่ก่อน migration นี้ยังไม่มี session
   jobSession               JobSession?
+  // PYG-435: บันทึกการสแกน QR ทุกครั้ง (สำเร็จและล้มเหลว) — ไม่จำกัดจำนวนแถว
+  jobScanEvents            JobScanEvent[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -492,9 +494,68 @@ model JobSession {
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  /// PYG-435: ประวัติการสแกนของใบนี้ (สำเร็จ + ล้มเหลว)
+  scanEvents JobScanEvent[]
+
   /// PYG-435 จะกวาดหา session ที่ "ยังไม่ปิด" ในช่วงเวลาหนึ่ง ๆ
   @@index([status, validUntil], map: "job_sessions_status_valid_until_idx")
   @@map("job_sessions")
+}
+
+/// PYG-435 — บันทึก "ทุกครั้งที่มีการสแกน QR" ทั้งที่สำเร็จและล้มเหลว (การ์ดแม่ PYG-433)
+///
+/// ★ ตารางนี้เป็น audit log เท่านั้น — ไม่มีตรรกะใดในระบบอ่านค่าจากที่นี่ไปตัดสินใจ
+///   ความจริงเรื่อง "งานถึงไหนแล้ว" อยู่ที่ job_sessions.status + job_events
+///   ถ้าวันหนึ่งมีโค้ดอ่านตารางนี้ไปตัดสินใจ แปลว่าออกแบบผิดแล้ว
+///
+/// ทำไมต้องบันทึกครั้งที่ "ล้มเหลว" ด้วย: เพราะการสแกนที่ล้มเหลวคือสัญญาณความปลอดภัย
+/// (คนถ่ายรูป QR ของคนอื่นไปลอง / ผู้ดูแลที่ถูกเปลี่ยนกลางคันยังถือ QR เก่า /
+///  สแกนตอนดึกนอกช่วงเวลางาน) ถ้าเก็บแต่ครั้งที่สำเร็จ เราจะมองไม่เห็นอะไรเลย
+///
+/// ⚠ ทุกคอลัมน์ที่ชี้ไปตารางอื่นเป็น NULL ได้หมด โดยตั้งใจ
+///   เพราะการสแกนด้วย token มั่ว ๆ ก็ต้องถูกบันทึก ทั้งที่ยังไม่รู้ด้วยซ้ำว่าเป็นงานใบไหน
+model JobScanEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// NULL = token ที่สแกนมาไม่ตรงกับ session ใดเลย (QR ปลอม / QR ของระบบอื่น)
+  sessionId String? @map("session_id") @db.Uuid
+  /// คัดลอกมาจาก session ตอนสแกน เพื่อให้ query "งานใบนี้ถูกสแกนกี่ครั้ง" ได้ตรง ๆ
+  bookingId String? @map("booking_id") @db.Uuid
+
+  /// users.id ของคนที่กดสแกน — รู้เสมอ เพราะผ่าน SupabaseAuthGuard มาแล้ว
+  /// ไม่มี FK โดยตั้งใจ: audit ต้องอยู่รอดแม้บัญชีจะถูกลบตามคำขอ PDPA
+  scannedBy   String  @map("scanned_by")
+  /// caregivers.id ถ้าบัญชีนั้นมีโปรไฟล์ผู้ดูแล — NULL ได้ถ้าไม่มี
+  caregiverId String? @map("caregiver_id")
+
+  /// sha256 ของ token ที่สแกนมา (hex 64) — เก็บแม้ token จะผิด
+  /// ★ เก็บ "hash" ไม่ใช่ token ดิบ ด้วยเหตุผลเดียวกับ job_sessions.token_hash
+  ///   ประโยชน์: เห็นได้ว่ามีคนเอา QR ใบเดิมมาลองซ้ำ ๆ กี่ครั้ง โดยไม่ต้องเก็บของลับไว้
+  tokenHash String @map("token_hash")
+
+  /// 'CHECK_IN' | 'CHECK_OUT' | 'NONE' — action ที่ "พยายามจะทำ"
+  /// NONE = ยังไม่ทันรู้ว่าจะทำอะไร (หา session ไม่เจอ / งานถูกยกเลิก)
+  action String
+  /// รหัสผลลัพธ์ เช่น 'SUCCESS' | 'WRONG_CAREGIVER' | 'OUT_OF_WINDOW'
+  /// ค่าทั้งหมดอยู่ที่ SCAN_RESULT ใน src/monitoring/qr/qr.constants.ts
+  result String
+  /// ข้อความภาษาไทยที่ผู้สแกนเห็นบนหน้าจอ — เก็บไว้ให้แอดมินอ่านย้อนหลังได้ว่า
+  /// "ตอนนั้นระบบบอกผู้ดูแลว่าอะไร" ซึ่งสำคัญมากเวลามีข้อพิพาท
+  reason String?
+
+  /// เวลาของเซิร์ฟเวอร์เท่านั้น (ClockService) — ไม่รับเวลาจากเครื่อง client
+  /// ไม่มีคอลัมน์ created_at เพราะจะเป็นค่าเดียวกันเป๊ะ ๆ ซ้ำซ้อนเปล่า ๆ
+  scannedAt DateTime @default(now()) @map("scanned_at") @db.Timestamptz(6)
+
+  /// SetNull ไม่ใช่ Cascade โดยตั้งใจ — audit log ต้องไม่หายไปพร้อมของที่มันบันทึกไว้
+  session JobSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  booking Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  /// การ์ด PYG-436 ระบุ index bookingId ไว้ตรง ๆ
+  @@index([bookingId], map: "job_scan_events_booking_id_idx")
+  /// ไทม์ไลน์การสแกนของ session หนึ่ง ๆ (หน้าแอดมิน / การสอบสวนข้อพิพาท)
+  @@index([sessionId, scannedAt], map: "job_scan_events_session_id_scanned_at_idx")
+  @@map("job_scan_events")
 }
 
 model CareRecipient {

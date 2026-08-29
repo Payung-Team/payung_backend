@@ -3,6 +3,8 @@ import { MonitoringService } from './monitoring.service';
 import { MonitoringResolver } from './monitoring.resolver';
 import { JobQrService } from './qr/job-qr.service';
 import { JobQrResolver } from './qr/job-qr.resolver';
+import { JobScanService } from './qr/job-scan.service';
+import { JobScanResolver } from './qr/job-scan.resolver';
 import { CommonModule } from '../common/common.module';
 
 /**
@@ -23,7 +25,11 @@ import { CommonModule } from '../common/common.module';
  *   exports JobQrService เพราะ BookingModule ต้องเรียกตอนสร้าง booking
  *   ⚠ ทิศทางเดียว: BookingModule → MonitoringModule
  *     ห้ามให้ MonitoringModule import BookingModule กลับ ไม่งั้นเกิด circular dependency
-
+ *
+ * PYG-435: เพิ่ม JobScanService/JobScanResolver (สแกน QR แล้วเริ่ม/จบงาน)
+ *   JobScanService เรียก MonitoringService ต่อ — อยู่ module เดียวกันจึงไม่ต้อง import ข้าม
+ *   ★ ไม่ได้ export ออกไปโดยตั้งใจ: ไม่มีโมดูลอื่นควรสแกนแทนผู้ดูแลได้
+ *     (ต่างจาก JobQrService ที่ BookingModule ต้องใช้จริง ๆ ตอนสร้าง booking)
  */
 @Module({
   imports: [CommonModule],
@@ -33,6 +39,9 @@ import { CommonModule } from '../common/common.module';
     // PYG-434: สร้าง/อ่านใบ QR ของงาน
     JobQrResolver,
     JobQrService,
+    // PYG-435: สแกน QR → เช็คอิน/เช็คเอาท์
+    JobScanResolver,
+    JobScanService,
   ],
   exports: [MonitoringService, JobQrService],
 })
