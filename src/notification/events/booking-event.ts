@@ -20,6 +20,8 @@ export const BOOKING_EVENTS = {
   CONFIRMED: 'booking.confirmed',
   COMPLETED: 'booking.completed',
   CANCELLED: 'booking.cancelled',
+  // PYG-352: ผู้ดูแลเช็คอินเริ่มงาน — แจ้งผู้รับบริการว่าผู้ดูแลมาถึงแล้ว
+  JOB_CHECKED_IN: 'job.checked_in',
   // PYG-358: ผู้ดูแลเช็คเอาท์ = ปิดงาน (ผู้รับบริการไม่ต้องยืนยันอีกแล้ว)
   // ต่างจาก COMPLETED ตรงที่ตอนนี้ "ยังไม่ได้เก็บเงิน" — รอ cron ปล่อยเงินอีกที
   JOB_CHECKED_OUT: 'job.checked_out',

@@ -44,6 +44,18 @@ export class CaregiverBookingResolver {
     return this.service.caregiverBookings(user.id, input);
   }
 
+  @Query(() => CaregiverBookingSummary, {
+    nullable: true,
+    description:
+      "A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).",
+  })
+  async caregiverBooking(
+    @Args('id', { type: () => ID }) id: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<CaregiverBookingSummary | null> {
+    return this.service.caregiverBooking(user.id, id);
+  }
+
   @Query(() => CaregiverBookingListResponse, {
     description:
       "Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.",

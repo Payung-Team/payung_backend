@@ -22,6 +22,7 @@ import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
 import { BOOKING_STATUS, REVIEW_REASON, VERDICT } from './monitoring.constants';
+import { BOOKING_EVENTS } from '../notification/events/booking-event';
 
 const USER_ID = 'user-cg-0001';
 const PATIENT_ID = 'user-pt-0001';
@@ -111,6 +112,7 @@ describe('MonitoringService', () => {
     jobEvent: { create: jest.Mock; findFirst: jest.Mock };
     $transaction: jest.Mock;
   };
+  let eventEmitter: { emit: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -122,6 +124,7 @@ describe('MonitoringService', () => {
       // $transaction รับ array ของ promise → คืน array ของผลลัพธ์
       $transaction: jest.fn().mockResolvedValue([fakeEventRow(), {}]),
     };
+    eventEmitter = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -133,7 +136,7 @@ describe('MonitoringService', () => {
           provide: ConfigService,
           useValue: { get: () => SUPABASE_URL },
         },
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: eventEmitter },
         {
           provide: ClockService,
           useValue: { now: () => NOW, nowMs: () => NOW.getTime() },
@@ -369,6 +372,32 @@ describe('MonitoringService', () => {
 
       expect(result).toBeDefined();
       expect(result.reviewReasons).toEqual([]);
+    });
+
+    it('เช็คอินสำเร็จ → ยิง event JOB_CHECKED_IN ให้ผู้รับบริการ', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+
+      await service.checkInBooking(USER_ID, { bookingId: BOOKING_ID });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        BOOKING_EVENTS.JOB_CHECKED_IN,
+        expect.objectContaining({
+          bookingId: BOOKING_ID,
+          eventType: BOOKING_EVENTS.JOB_CHECKED_IN,
+          patientId: PATIENT_ID,
+          caregiverId: USER_ID,
+        }),
+      );
+    });
+
+    it('กดเช็คอินซ้ำ (idempotent) → ไม่ยิง event ซ้ำ', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress', jobEvents: [fakeEventRow()] }),
+      );
+
+      await service.checkInBooking(USER_ID, { bookingId: BOOKING_ID });
+
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 

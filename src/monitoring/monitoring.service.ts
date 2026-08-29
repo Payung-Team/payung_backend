@@ -34,6 +34,7 @@ import {
   WARN_RADIUS_M,
   type Verdict,
 } from './monitoring.constants';
+import { PaymentStatus } from '../payment/entities/payment-status.enum';
 
 /** booking ที่โหลด jobEvents มาครบแล้ว — อินพุตของ summarize() */
 type BookingWithProof = Prisma.BookingGetPayload<{
@@ -122,7 +123,14 @@ export class MonitoringService {
     }
 
     // ─── ด่านที่ 5: ลูกค้าจ่ายเงินเข้า escrow แล้วหรือยัง ──────────────
-    if (booking.payment?.paymentStatus !== 'held') {
+    // 'held' = บัตรเครดิต (authorize-then-capture-later ยังไม่ capture)
+    // 'captured' = PromptPay (จ่ายเต็มจำนวนทันทีตอน scan — ไม่มีสถานะ 'held' เลยสำหรับ flow นี้)
+    // เดิมเช็คแค่ 'held' อย่างเดียว → booking ที่จ่ายด้วย PromptPay เช็คอินไม่ได้เลยแม้จ่ายแล้วจริง
+    const paymentStatus = booking.payment?.paymentStatus;
+    if (
+      paymentStatus !== PaymentStatus.held &&
+      paymentStatus !== PaymentStatus.captured
+    ) {
       throw new BadRequestException('ยังไม่ได้รับการชำระเงิน');
     }
 
@@ -189,6 +197,23 @@ export class MonitoringService {
         accuracyM: input.accuracyM ?? null,
         gpsAccuracyLow: evaluation.gpsAccuracyLow,
         reviewReasons: evaluation.reviewReasons,
+      });
+
+      // ── แจ้งผู้รับบริการว่าผู้ดูแลมาถึงแล้ว ──────────────────────────
+      // fire-and-forget เหมือน booking events ตัวอื่น ๆ (ดู checkOutBooking)
+      // ⚠ BookingNotificationListener ยังไม่มี case ให้ event นี้ (รอ data engineer
+      //   เพิ่ม NotificationType.job_checked_in ใน Prisma schema ก่อน) — emit ไว้ก่อน
+      //   เพื่อไม่ให้ต้องแก้จุดนี้อีกครั้งตอน listener พร้อม
+      this.eventEmitter.emit(BOOKING_EVENTS.JOB_CHECKED_IN, {
+        bookingId: booking.id,
+        eventType: BOOKING_EVENTS.JOB_CHECKED_IN,
+        patientId: booking.patientId,
+        caregiverId: userId,
+        metadata: {
+          distanceM: evaluation.distanceM,
+          gpsAccuracyLow: evaluation.gpsAccuracyLow,
+          reviewReasons: evaluation.reviewReasons,
+        },
       });
 
       return this.toEntity(

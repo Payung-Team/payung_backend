@@ -5,6 +5,13 @@ export enum BookingStatusEnum {
   PENDING   = 'pending',   // caregiver assigned by matching engine, awaiting acceptance
   ACCEPTED  = 'accepted',
   CONFIRMED = 'confirmed',
+  // PYG-352/358: monitoring module lifecycle, added after the enum's original 7 values shipped —
+  // Booking.status is plain TEXT (no DB enum) and monitoring.constants.ts's BOOKING_STATUS already
+  // writes these; this enum just never caught up, so caregiverBookings(status: IN_PROGRESS) etc.
+  // failed GraphQL validation and a checked-in job had no query that could ever fetch it again.
+  IN_PROGRESS      = 'in_progress',
+  AWAITING_RELEASE = 'awaiting_release',
+  NEEDS_REVIEW     = 'needs_review',
   REJECTED  = 'rejected',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled', // patient cancelled

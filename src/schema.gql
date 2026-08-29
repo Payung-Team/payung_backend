@@ -277,9 +277,12 @@ type BookingPagination {
 
 enum BookingStatus {
   ACCEPTED
+  AWAITING_RELEASE
   CANCELLED
   COMPLETED
   CONFIRMED
+  IN_PROGRESS
+  NEEDS_REVIEW
   PENDING
   REJECTED
   UNMATCHED
@@ -392,6 +395,9 @@ type CaregiverBookingSummary {
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
   durationHours: Float!
   estimatedCost: Float
   id: ID!
@@ -1447,6 +1453,11 @@ type Query {
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
 
   """
+  A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
+  """
+  caregiverBooking(id: ID!): CaregiverBookingSummary
+
+  """
   Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.
   """
   caregiverBookingHistory(input: CaregiverBookingHistoryInput = {}): CaregiverBookingListResponse!
@@ -1541,50 +1552,6 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
-}
-
-enum ReconFlag {
-  AMOUNT_MISMATCH
-  CAPTURE_WITHOUT_PROOF
-  HELD_AWAITING_PROOF
-  PAYOUT_WITHOUT_CAPTURE
-  REFUND_EXCEEDS_CAPTURED
-  STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
-  STATUS_MISMATCH_OMISE_PAID_DB_PENDING
-}
-
-type ReconReport {
-  dateFrom: String!
-  dateTo: String!
-  flaggedRows: Int!
-  rows: [ReconRow!]!
-  totalRows: Int!
-  unreachableRows: Int!
-}
-
-type ReconRow {
-  amount: Float!
-  bookingId: ID!
-  capturedAmount: Float
-  date: String!
-  flags: [ReconFlag!]!
-  grossAmount: Float
-  netAmount: Float
-  omiseStatus: String
-  omiseUnreachable: Boolean!
-  paymentId: String!
-  paymentStatus: String!
-  payoutStatus: String
-  platformFee: Float
-  primaryFlag: ReconFlag
-  refundedAmount: Float!
-  reviewReasons: [String!]!
-  verdict: String!
-}
-
-input ReconciliationReportInput {
-  dateFrom: String!
-  dateTo: String!
 }
 
 input RefundPaymentInput {
