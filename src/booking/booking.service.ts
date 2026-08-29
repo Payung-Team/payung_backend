@@ -37,6 +37,8 @@ import {
   ACTIVITY_TARGET,
 } from '../family-group/family-group.constants';
 import { RecipientNotInGroupError } from '../family-group/family-group.errors';
+// PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
+import { JobQrService } from '../monitoring/qr/job-qr.service';
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -142,6 +144,8 @@ export class BookingService {
     // PYG-286: ใช้ใน cancelBooking auto-void เท่านั้น (held payment → reverse charge + FSM)
     private readonly omiseService: OmiseService,
     private readonly fsm: PaymentStateMachine,
+    // PYG-434: สร้างใบ QR เช็คอิน/เช็คเอาท์ พร้อมกับ booking ใน transaction เดียวกัน
+    private readonly jobQrService: JobQrService,
   ) {}
 
   /**
@@ -341,36 +345,51 @@ export class BookingService {
     };
 
     /**
-     * จองแทน = ต้องเขียนฟีดกิจกรรมของกลุ่มใน transaction เดียวกับตัว booking
-     * (กติกาข้อ 2 ของโมดูล family group — ดูหัวไฟล์ family-group.service.ts)
+     * ทุกอย่างที่ "ต้องเกิดพร้อม booking" อยู่ใน transaction เดียวกันหมด
      *
-     * ถ้าเขียนแยกกันแล้วอันใดอันหนึ่งพัง จะได้ฟีดที่โกหกว่ามีการจองที่ไม่เคยเกิดขึ้น
-     * หรือมีการจองที่ไม่โผล่ในฟีดเลย ซึ่งทั้งสองแบบตรวจสอบย้อนหลังไม่ได้
+     * ① ตัว booking เอง
+     * ② PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
+     *    กติกาข้อ 2 ของโมดูล family group (ดูหัวไฟล์ family-group.service.ts)
+     *    ถ้าเขียนแยกกันแล้วอันใดอันหนึ่งพัง จะได้ฟีดที่โกหกว่ามีการจองที่ไม่เคยเกิดขึ้น
+     *    หรือมีการจองที่ไม่โผล่ในฟีดเลย ซึ่งทั้งสองแบบตรวจสอบย้อนหลังไม่ได้
+     * ③ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
      *
-     * จองปกติไม่มีกลุ่มให้บันทึก → ใช้ create เดี่ยว ๆ เหมือนเดิม ไม่จ่ายค่า transaction ฟรี ๆ
+     * ⚠ ก่อนหน้านี้ "จองปกติ" ใช้ create เดี่ยว ๆ เพื่อไม่จ่ายค่า transaction ฟรี ๆ
+     *   PYG-434 เปลี่ยนให้ใช้ transaction ทุกเส้นทาง เพราะ AC เขียนว่า
+     *   "ทุก booking ใหม่มี JobSession PENDING + token" — คำว่า "ทุก" จะเป็นจริงได้
+     *   ก็ต่อเมื่อ booking กับ QR เกิดหรือไม่เกิดพร้อมกันเท่านั้น
+     *   ถ้าสร้างแยกกันแล้วขั้นที่สองพัง จะเหลือ booking ที่เช็คอินไม่ได้ตลอดไป
+     *   และไม่มีอะไรในระบบคอยตามซ่อมให้ — ค่า transaction หนึ่งครั้งถูกกว่ามาก
      */
-    const booking = onBehalf
-      ? await this.prisma.$transaction(async (tx) => {
-          const created = await tx.booking.create({ data, include });
-          await tx.familyGroupActivity.create({
-            data: {
-              groupId:    onBehalf.familyGroupId,
-              actorId:    onBehalf.bookedBy,
-              action:     ACTIVITY_ACTION.BOOKING_ON_BEHALF,
-              targetType: ACTIVITY_TARGET.BOOKING,
-              targetId:   created.id,
-              // เก็บชื่อผู้รับบริการลงฟีดไปเลย เพราะฟีดต้องอ่านออกแม้ภายหลัง
-              // โปรไฟล์จะถูกลบหรือถูกย้ายออกจากกลุ่มไปแล้ว
-              metadata: {
-                recipientName: onBehalf.recipientName,
-                bookingDate:   dto.bookingDate,
-                startTime:     dto.startTime,
-              },
+    const booking = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.booking.create({ data, include });
+
+      // ② จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
+      if (onBehalf) {
+        await tx.familyGroupActivity.create({
+          data: {
+            groupId:    onBehalf.familyGroupId,
+            actorId:    onBehalf.bookedBy,
+            action:     ACTIVITY_ACTION.BOOKING_ON_BEHALF,
+            targetType: ACTIVITY_TARGET.BOOKING,
+            targetId:   created.id,
+            // เก็บชื่อผู้รับบริการลงฟีดไปเลย เพราะฟีดต้องอ่านออกแม้ภายหลัง
+            // โปรไฟล์จะถูกลบหรือถูกย้ายออกจากกลุ่มไปแล้ว
+            metadata: {
+              recipientName: onBehalf.recipientName,
+              bookingDate:   dto.bookingDate,
+              startTime:     dto.startTime,
             },
-          });
-          return created;
-        })
-      : await this.prisma.booking.create({ data, include });
+          },
+        });
+      }
+
+      // ③ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
+      //    ส่ง tx เข้าไปเพื่อให้อยู่ใน transaction เดียวกัน (service บังคับรับ tx)
+      await this.jobQrService.createForBooking(tx, created);
+
+      return created;
+    });
 
     this.logger.log({
       event: 'booking.created',

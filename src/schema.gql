@@ -986,6 +986,37 @@ type JobEvent {
   withinWarnRadius: Boolean
 }
 
+type JobQr {
+  """booking ที่ QR ใบนี้ผูกอยู่"""
+  bookingId: ID!
+
+  """
+  true = ตอนนี้สแกนได้จริง (อยู่ในช่วงเวลา + ยังไม่ปิดงาน). FE เอาไปตัดสินว่าจะโชว์ QR หรือโชว์ข้อความ "ยังไม่ถึงเวลา / หมดเวลาแล้ว"
+  """
+  isActive: Boolean!
+
+  """
+  สแกนครั้งต่อไปจะเป็น action อะไร: 'CHECK_IN' | 'CHECK_OUT' | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ
+  """
+  nextAction: String
+
+  """
+  'PENDING' = ยังไม่เช็คอิน | 'CHECKED_IN' = กำลังทำงาน | 'CHECKED_OUT' = ปิดงานแล้ว
+  """
+  status: String!
+
+  """
+  ★ ข้อความลับที่เอาไปวาดเป็น QR — วาดตรง ๆ ทั้งสตริง ห้ามเติม prefix/URL. เฉพาะ patient เจ้าของงานเท่านั้นที่ขอค่านี้ได้
+  """
+  token: String!
+
+  """สแกนได้ตั้งแต่เมื่อไหร่ (ก่อนเวลานัดได้ตามค่า config)"""
+  validFrom: DateTime!
+
+  """สแกนได้ถึงเมื่อไหร่ (เลยเวลาเลิกงานได้ตามค่า config)"""
+  validUntil: DateTime!
+}
+
 type KycDocument {
   """Caregiver ID (null before KYC submit)"""
   caregiverId: String
@@ -1611,6 +1642,11 @@ type Query {
 
   """Health check - API & DB Status"""
   health: HealthStatus!
+
+  """
+  QR ของงาน 1 ใบ สำหรับให้ผู้รับบริการเปิดโชว์ให้ผู้ดูแลสแกน. ★ คืน token ดิบ จึงเปิดให้เฉพาะ patient เจ้าของ booking เท่านั้น — ผู้ดูแลเรียก query นี้ไม่ได้. QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ระบบดูจากสถานะปัจจุบันว่าสแกนครั้งต่อไปคือ action ไหน.
+  """
+  jobQr(bookingId: ID!): JobQr!
 
   """Get KYC status with full details for the Status Page"""
   kycStatus: KycStatusPayload!

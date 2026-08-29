@@ -370,6 +370,9 @@ model Booking {
   booking_tasks            booking_tasks[]
   // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
   jobEvents                JobEvent[]
+  // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
+  // optional (?) เพราะ booking เก่าทุกใบที่มีอยู่ก่อน migration นี้ยังไม่มี session
+  jobSession               JobSession?
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -438,6 +441,60 @@ model JobEvent {
   @@unique([bookingId, eventType], map: "job_events_booking_id_event_type_key")
   @@index([bookingId], map: "job_events_booking_id_idx")
   @@map("job_events")
+}
+
+/// PYG-434 — "ใบงาน QR" ของ booking 1 ใบ (การ์ดแม่ PYG-433)
+///
+/// 1 booking = 1 แถวเท่านั้น (บังคับด้วย @unique บน bookingId)
+/// QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ — ตัว QR ไม่ได้บอกว่าจะทำ action ไหน
+/// action ตัดสินจาก `status` ปัจจุบัน: PENDING→เช็คอิน, CHECKED_IN→เช็คเอาท์ (PYG-435)
+///
+/// ★★ เรื่องสำคัญที่สุดของตารางนี้: ★★
+///    คอลัมน์ token_hash เก็บ "ลายนิ้วมือ" ของ token เท่านั้น (sha256 hex 64 ตัว)
+///    ตัว token จริงไม่เคยถูกเขียนลงดีบีเลยแม้แต่ครั้งเดียว
+///    → ใครขโมยดีบีไปทั้งก้อนก็สร้าง QR ปลอมไม่ได้ เพราะขาด QR_TOKEN_SECRET
+///    (วิธีคำนวณ token กลับมา ดู src/monitoring/qr/job-qr.service.ts)
+///
+/// ⚠ ตั้งใจ "ไม่มี" สถานะ CANCELLED:
+///    booking ถูกยกเลิกแล้ว QR ต้องใช้ไม่ได้ทันที — แต่ความจริงข้อนั้นอยู่ที่
+///    bookings.status อยู่แล้ว ถ้าคัดลอกมาไว้ที่นี่อีกที่ วันที่อัปเดตไม่ครบทั้งสองที่
+///    จะได้ QR ที่ยังสแกนผ่านทั้งที่งานถูกยกเลิกไปแล้ว → อ่าน booking.status ตอนสแกนแทน
+///    (เหตุผลเดียวกับที่ job_events ไม่เก็บ within_radius — ดูคอมเมนต์ด้านบน)
+model JobSession {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId String @unique @map("booking_id") @db.Uuid
+
+  /// ★ sha256(token) เป็น hex 64 ตัว — ห้ามเก็บ token ดิบ
+  ///   ดีบีมี CHECK char_length = 64 กันเผลอเขียน token ดิบลงมา
+  ///   unique เพราะ PYG-435 ค้นหา session จากค่านี้ตรง ๆ (scanJobQr)
+  tokenHash String @unique @map("token_hash")
+
+  /// 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT' (บังคับด้วย CHECK ฝั่งดีบี)
+  /// เดินหน้าทางเดียวเสมอ ถอยหลังไม่ได้ (PYG-435 เป็นคนบังคับลำดับ)
+  status String @default("PENDING")
+
+  /// ช่วงเวลาที่ QR ใบนี้ใช้ได้ — คำนวณตอนสร้างจากตารางงานของ booking
+  ///   valid_from  = เวลานัดเริ่ม − QR_VALID_FROM_OFFSET_MIN
+  ///   valid_until = เวลานัดจบ   + QR_VALID_UNTIL_GRACE_MIN
+  /// เก็บเป็นคอลัมน์จริง ไม่คำนวณตอนอ่าน เพราะถ้างานถูกเลื่อนแล้วออกใบใหม่
+  /// เราต้องรู้ว่า "ตอนนั้นตกลงกันว่าช่วงไหน" ไม่ใช่ค่าที่เปลี่ยนตามตารางล่าสุด
+  validFrom  DateTime @map("valid_from") @db.Timestamptz(6)
+  validUntil DateTime @map("valid_until") @db.Timestamptz(6)
+
+  /// เวลาที่สแกนสำเร็จแต่ละ action — NULL = ยังไม่เกิด (PYG-435 เป็นคนเขียน)
+  /// ซ้ำกับ job_events.server_ts โดยตั้งใจ: ที่นี่คือ "สถานะของ QR"
+  /// ส่วน job_events คือ "หลักฐานการทำงาน" ซึ่งคนละเรื่องกันและอาจถูกเขียนโดย cron
+  checkedInAt  DateTime? @map("checked_in_at") @db.Timestamptz(6)
+  checkedOutAt DateTime? @map("checked_out_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  /// PYG-435 จะกวาดหา session ที่ "ยังไม่ปิด" ในช่วงเวลาหนึ่ง ๆ
+  @@index([status, validUntil], map: "job_sessions_status_valid_until_idx")
+  @@map("job_sessions")
 }
 
 model CareRecipient {

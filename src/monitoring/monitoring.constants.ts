@@ -11,8 +11,13 @@
  *   อย่ารวมสองค่านี้เป็นตัวเดียวกันเด็ดขาด เพราะวันหนึ่งมันจะต้องแยกกันเดิน
  */
 
-/** อ่านตัวเลขจาก ENV ถ้าไม่มีหรือไม่ใช่ตัวเลข → ใช้ค่า default */
-function envInt(key: string, fallback: number): number {
+/**
+ * อ่านตัวเลขจาก ENV ถ้าไม่มีหรือไม่ใช่ตัวเลข → ใช้ค่า default
+ *
+ * PYG-434: เปลี่ยนเป็น export เพื่อให้ qr.constants.ts เรียกใช้ตัวเดียวกันได้
+ * (ไฟล์นั้นต้องอ่าน ENV แบบเดียวกันเป๊ะ ๆ — ก๊อปไปอีกชุดแล้วพฤติกรรมจะแตกกันวันหนึ่ง)
+ */
+export function envInt(key: string, fallback: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);

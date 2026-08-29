@@ -12,6 +12,8 @@ import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
+// PYG-434: สูตรคำนวณ "เวลานัด" ที่ระบบ QR กับระบบเช็คอินต้องใช้ร่วมกัน
+import { scheduledStartOf } from './booking-schedule.util';
 import { CheckInInput } from './dto/check-in.input';
 import { CheckOutInput } from './dto/check-out.input';
 import { JobEvent } from './entities/job-event.entity';
@@ -641,22 +643,14 @@ export class MonitoringService {
   /**
    * รวม bookingDate (คอลัมน์ DATE) กับ startTime (คอลัมน์ TIME) ให้เป็นเวลาจริง 1 จุด
    *
-   * ทั้งสองคอลัมน์ถูกอ่านกลับมาเป็น Date ที่ฐาน UTC:
-   *   bookingDate → 2026-06-13T00:00:00Z
-   *   startTime   → 1970-01-01T09:00:00Z
-   * ความหมายจริงคือ "9 โมงเช้าเวลาไทย" → ลบ 7 ชม. เพื่อได้ instant จริง
-   * (ไทยเป็น UTC+7 คงที่ ไม่มี DST จึงบวกลบตรง ๆ ได้ ไม่ต้องใช้ library)
+   * PYG-434: ย้ายตัวสูตรออกไปไว้ที่ booking-schedule.util.ts แล้ว
+   * เพราะระบบ QR ต้องใช้สูตรเดียวกันเป๊ะ ๆ ในการคำนวณช่วงเวลาที่ QR ใช้ได้
+   * ถ้าปล่อยให้มีสูตรสองชุด วันที่แก้ไม่ครบทั้งคู่ QR จะหมดอายุคนละเวลากับเช็คอิน
+   *
+   * เก็บ method นี้ไว้เป็นตัวต่อ (delegate) เพื่อไม่ต้องแก้จุดเรียกทั้งไฟล์
    */
   private scheduledStartOf(bookingDate: Date, startTime: Date | null): Date {
-    const utcMidnight = Date.UTC(
-      bookingDate.getUTCFullYear(),
-      bookingDate.getUTCMonth(),
-      bookingDate.getUTCDate(),
-      startTime ? startTime.getUTCHours() : 0,
-      startTime ? startTime.getUTCMinutes() : 0,
-      startTime ? startTime.getUTCSeconds() : 0,
-    );
-    return new Date(utcMidnight - 7 * 60 * 60 * 1000);
+    return scheduledStartOf(bookingDate, startTime);
   }
 
   /** bookingDate ตรงกับ "วันนี้" ตามเวลาไทยหรือไม่ */

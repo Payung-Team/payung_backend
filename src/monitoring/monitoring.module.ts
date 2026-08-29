@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { MonitoringResolver } from './monitoring.resolver';
+import { JobQrService } from './qr/job-qr.service';
+import { JobQrResolver } from './qr/job-qr.resolver';
 import { CommonModule } from '../common/common.module';
 
 /**
@@ -13,10 +15,25 @@ import { CommonModule } from '../common/common.module';
  *
  * exports MonitoringService เพราะ PYG-366 / PYG-367 (escrow gate + cron ปล่อยเงิน)
  * ต้องอ่านหลักฐานไปตัดสินว่าจะโอนเงินให้ผู้ดูแลหรือยัง
+ *
+ * PYG-434: เพิ่มระบบ QR (โฟลเดอร์ qr/) เข้ามาใน module เดียวกัน
+ *   เพราะ QR คือ "ประตูหน้า" ของการเช็คอิน/เช็คเอาท์ ซึ่งเป็นเรื่องเดียวกับ proof-of-work
+ *   และ PYG-435 จะให้ scanJobQr เรียก MonitoringService ต่อ — อยู่ module เดียวกันแล้วไม่ต้อง import ข้าม
+ *
+ *   exports JobQrService เพราะ BookingModule ต้องเรียกตอนสร้าง booking
+ *   ⚠ ทิศทางเดียว: BookingModule → MonitoringModule
+ *     ห้ามให้ MonitoringModule import BookingModule กลับ ไม่งั้นเกิด circular dependency
+
  */
 @Module({
   imports: [CommonModule],
-  providers: [MonitoringResolver, MonitoringService],
-  exports: [MonitoringService],
+  providers: [
+    MonitoringResolver,
+    MonitoringService,
+    // PYG-434: สร้าง/อ่านใบ QR ของงาน
+    JobQrResolver,
+    JobQrService,
+  ],
+  exports: [MonitoringService, JobQrService],
 })
 export class MonitoringModule {}

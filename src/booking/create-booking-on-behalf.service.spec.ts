@@ -6,6 +6,7 @@ import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
 import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 
@@ -73,6 +74,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
   let prisma: any;
   let tx: any;
   let emitter: { emit: jest.Mock };
+  // PYG-434: ใบ QR ที่ต้องถูกสร้างพร้อม booking ทุกใบ
+  let jobQr: { createForBooking: jest.Mock };
 
   beforeEach(async () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
@@ -92,6 +95,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     emitter = { emit: jest.fn() };
+    jobQr = { createForBooking: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -100,6 +104,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         { provide: EventEmitter2, useValue: emitter },
         { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        { provide: JobQrService, useValue: jobQr },
       ],
     }).compile();
 
@@ -293,20 +298,76 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(where.careRecipientId).toBeUndefined();
     });
 
-    it('จองปกติไม่แตะ transaction และไม่เขียนฟีดกิจกรรม', async () => {
+    /**
+     * ⚠ เทสนี้ถูกแก้ใน PYG-434 — ของเดิมเขียนว่า "จองปกติไม่แตะ transaction"
+     *
+     * เหตุผลที่เปลี่ยน: ตอนนี้ booking ทุกใบต้องเกิดพร้อม "ใบ QR" ใน transaction
+     * เดียวกัน (AC: ทุก booking ใหม่มี JobSession) → จองปกติจึงใช้ transaction ด้วย
+     * สิ่งที่ยังต้องเป็นจริงเหมือนเดิมคือ "จองปกติไม่เขียนฟีดกิจกรรมของกลุ่ม"
+     * ซึ่งเป็นประเด็นจริง ๆ ของ PYG-424 ที่เทสนี้ตั้งใจปกป้อง
+     */
+    it('จองปกติไม่เขียนฟีดกิจกรรม (แต่ยังอยู่ใน transaction เพราะต้องสร้างใบ QR)', async () => {
       await service.createBooking(BOOKER_ID, makeInput({
         careRecipientId: undefined,
         groupId: undefined,
       }));
 
-      expect(prisma.$transaction).not.toHaveBeenCalled();
-      expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.booking.create).toHaveBeenCalledTimes(1);
       expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
 
       // บริบทกลุ่มต้องเป็น null ทั้งคู่
-      const data = prisma.booking.create.mock.calls[0][0].data;
+      const data = tx.booking.create.mock.calls[0][0].data;
       expect(data.familyGroupId).toBeNull();
       expect(data.bookedBy).toBeNull();
+    });
+  });
+
+  // ── PYG-434: ใบ QR ต้องเกิดพร้อม booking ทุกเส้นทาง ─────────────────────
+
+  describe('ใบ QR (PYG-434)', () => {
+    it('★ จองแทน → สร้างใบ QR ใน transaction เดียวกับ booking', async () => {
+      // โปรไฟล์อยู่ในกลุ่มจริง → ผ่านด่านแรกไปถึงขั้นสร้าง booking ได้
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+        familyGroupId: GROUP_ID,
+      });
+
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput());
+
+      expect(jobQr.createForBooking).toHaveBeenCalledTimes(1);
+      // argument แรกต้องเป็น tx ตัวเดียวกับที่สร้าง booking ไม่ใช่ prisma client ปกติ
+      // ถ้าส่งผิดตัว ใบ QR จะถูก commit แยกจาก booking แล้ว atomicity หายไปเงียบ ๆ
+      const [txArg, bookingArg] = jobQr.createForBooking.mock.calls[0];
+      expect(txArg).toBe(tx);
+      expect(bookingArg.id).toBe(BOOKING_ID);
+    });
+
+    it('★ จองปกติ (ไม่ผ่านกลุ่ม) → ก็ต้องได้ใบ QR เหมือนกัน', async () => {
+      await service.createBooking(BOOKER_ID, makeInput({
+        careRecipientId: undefined,
+        groupId: undefined,
+      }));
+
+      expect(jobQr.createForBooking).toHaveBeenCalledTimes(1);
+      expect(jobQr.createForBooking.mock.calls[0][0]).toBe(tx);
+    });
+
+    it('สร้าง booking ไม่สำเร็จ → ต้องไม่มีการสร้างใบ QR', async () => {
+      // นัดชนกัน → โยน ConflictException ตั้งแต่ก่อนเข้า transaction
+      prisma.booking.findMany.mockResolvedValue([
+        { startTime: new Date('1970-01-01T09:00:00Z'), durationHours: 4 },
+      ]);
+
+      await expect(
+        service.createBooking(BOOKER_ID, makeInput({
+          careRecipientId: undefined,
+          groupId: undefined,
+        })),
+      ).rejects.toThrow(ConflictException);
+
+      expect(jobQr.createForBooking).not.toHaveBeenCalled();
     });
   });
 });
