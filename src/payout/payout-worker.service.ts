@@ -37,6 +37,7 @@ import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
 import { PayoutRetryPolicy } from './payout-retry-policy';
 import { PayoutKillswitch } from './payout-killswitch';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 @Injectable()
 export class PayoutWorkerService {
@@ -49,6 +50,7 @@ export class PayoutWorkerService {
     private readonly stateMachine: PayoutStateMachine,
     private readonly retryPolicy: PayoutRetryPolicy,
     private readonly killswitch: PayoutKillswitch,
+    private readonly eligibility: PayoutEligibilityService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
@@ -124,6 +126,43 @@ export class PayoutWorkerService {
     if (payout.status !== PayoutStatus.scheduled) {
       this.logger.debug(
         `[PayoutWorker] payout ${payoutId} no longer scheduled (${payout.status}) — skipping`,
+      );
+      return;
+    }
+
+    // ── Step 1b: RE-CHECK ก่อนโอนจริง ───────────────────────────────────────
+    // ⚠️ ต้องเช็คซ้ำถึงแม้ตอนสร้าง payout จะเช็คไปแล้ว:
+    //    payout ถูกสร้างตอน booking completed แต่ worker โอนอีก 7 วันให้หลัง
+    //    (PAYOUT_HOLD_WINDOW_DAYS) — patient มีเวลาทั้งสัปดาห์ที่จะ flag dispute
+    //    เช็คก่อน claim/ก่อนอ่าน recipient เพราะนี่คือประตูเงิน ไม่ใช่เรื่อง config ปลายทาง
+    // ⚠️ ห้ามโอนก่อนแล้วค่อยแก้ทีหลัง — Omise transfer ย้อนกลับเองไม่ได้
+    const verdict = await this.eligibility.check(payout.bookingId);
+
+    if (verdict.kind === 'hold') {
+      // ห้ามแตะ row (ไม่ claim / ไม่เขียน history) — เหมือน pattern recipient-not-ready
+      // ปล่อยค้างที่ scheduled: ถ้า admin ตัดสิน no_refund รอบหน้าจะไหลต่อเอง
+      this.logger.warn(
+        `[PayoutWorker] hold payout=${payoutId} booking=${payout.bookingId} — ` +
+          `${verdict.reason} (evidence=${JSON.stringify(verdict.evidence)}) — not transferring`,
+      );
+      return;
+    }
+
+    if (verdict.kind === 'deny') {
+      // ปิดตาย: scheduled → cancelled ผ่าน state machine (claim = conditional update
+      // กัน race กับ worker ตัวอื่นที่อาจ claim เป็น processing ไปแล้ว)
+      const cancelled = await this.stateMachine.claim(
+        payoutId,
+        PayoutStatus.scheduled,
+        PayoutStatus.cancelled,
+        {
+          reason: `payout_gate_denied:${verdict.reason}`,
+          metadata: { ...verdict.evidence, deniedAt: new Date().toISOString() },
+        },
+      );
+      this.logger.error(
+        `[PayoutWorker] cancelled payout=${payoutId} booking=${payout.bookingId} — ` +
+          `${verdict.reason} (claimed=${cancelled.claimed})`,
       );
       return;
     }

@@ -22,6 +22,7 @@ import { PayoutService } from './payout.service';
 import { PrismaService } from '../common/prisma.service';
 import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 const BOOKING_ID = 'booking-1';
 const CAREGIVER_ID = 'cg-profile-1';
@@ -53,6 +54,23 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** verdict ที่ payout gate คืนมา — กฎจริงเทสต์แยกใน payout-eligibility.service.spec */
+function eligibleVerdict() {
+  return {
+    kind: 'eligible' as const,
+    reason: 'proof_valid',
+    evidence: {
+      checkInId: 'evt-in-1',
+      checkOutId: 'evt-out-1',
+      verdict: 'valid',
+      reviewReasons: [],
+      noCheckout: false,
+      disputed: false,
+      refundedAmount: 0,
+    },
+  };
+}
+
 describe('PayoutService', () => {
   let service: PayoutService;
   let tx: { payout: { create: jest.Mock } };
@@ -63,6 +81,7 @@ describe('PayoutService', () => {
   };
   let stateMachine: { recordInitialStatus: jest.Mock };
   let config: ReturnType<typeof makeConfig>;
+  let eligibility: { check: jest.Mock };
 
   beforeEach(async () => {
     tx = { payout: { create: jest.fn() } };
@@ -73,6 +92,8 @@ describe('PayoutService', () => {
     };
     stateMachine = { recordInitialStatus: jest.fn().mockResolvedValue(undefined) };
     config = makeConfig();
+    // default: หลักฐานครบ verdict=valid (เทสต์ที่สนใจ gate จะ override เอง)
+    eligibility = { check: jest.fn().mockResolvedValue(eligibleVerdict()) };
 
     const mod: TestingModule = await Test.createTestingModule({
       providers: [
@@ -80,6 +101,7 @@ describe('PayoutService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ConfigService, useValue: config },
         { provide: PayoutStateMachine, useValue: stateMachine },
+        { provide: PayoutEligibilityService, useValue: eligibility },
       ],
     }).compile();
 
@@ -115,6 +137,93 @@ describe('PayoutService', () => {
     );
     await service.createFromCompletedBooking(BOOKING_ID);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  // ── Payout gate (ห้ามสร้าง payout ให้ booking ที่ไม่ควรได้เงิน) ─────────────
+
+  it("verdict ไม่ใช่ 'valid' → ไม่สร้าง payout row เลย", async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    eligibility.check.mockResolvedValue({
+      kind: 'hold',
+      reason: 'proof_needs_review',
+      evidence: { verdict: 'needs_review' },
+    });
+
+    await service.createFromCompletedBooking(BOOKING_ID);
+
+    // ไม่ใช่ "สร้างแล้ว mark failed" — ต้องไม่มีแถวเกิดขึ้นเลย
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.payout.create).not.toHaveBeenCalled();
+    expect(stateMachine.recordInitialStatus).not.toHaveBeenCalled();
+  });
+
+  it('งานที่ไม่มีเช็คเอาท์ (no_checkout) → ไม่สร้าง payout', async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    eligibility.check.mockResolvedValue({
+      kind: 'hold',
+      reason: 'proof_no_checkout',
+      evidence: { verdict: 'incomplete', noCheckout: true },
+    });
+
+    await service.createFromCompletedBooking(BOOKING_ID);
+
+    expect(tx.payout.create).not.toHaveBeenCalled();
+  });
+
+  it('booking ที่มีข้อพิพาทเปิดอยู่ → ไม่สร้าง payout', async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    eligibility.check.mockResolvedValue({
+      kind: 'hold',
+      reason: 'proof_needs_review',
+      evidence: { verdict: 'needs_review', disputed: true },
+    });
+
+    await service.createFromCompletedBooking(BOOKING_ID);
+
+    expect(tx.payout.create).not.toHaveBeenCalled();
+  });
+
+  it('deny (คืนเงินไปแล้ว) → ไม่สร้าง payout', async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    eligibility.check.mockResolvedValue({
+      kind: 'deny',
+      reason: 'payment_refunded',
+      evidence: { refundedAmount: 1000 },
+    });
+
+    await service.createFromCompletedBooking(BOOKING_ID);
+
+    expect(tx.payout.create).not.toHaveBeenCalled();
+  });
+
+  it('gate ไม่ throw ออกไปหา listener (listener swallow → จะกลายเป็นล้มเงียบ)', async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    eligibility.check.mockResolvedValue({
+      kind: 'hold',
+      reason: 'proof_needs_review',
+      evidence: {},
+    });
+
+    await expect(
+      service.createFromCompletedBooking(BOOKING_ID),
+    ).resolves.toBeUndefined();
+  });
+
+  it('payout ที่สร้างสำเร็จ แนบ checkInId/checkOutId/verdict ลง history metadata', async () => {
+    prisma.booking.findUnique.mockResolvedValue(makeBooking());
+    tx.payout.create.mockResolvedValue({ id: CREATED_PAYOUT_ID });
+
+    await service.createFromCompletedBooking(BOOKING_ID);
+
+    const [, , options] = stateMachine.recordInitialStatus.mock.calls[0];
+    expect(options.metadata).toEqual(
+      expect.objectContaining({
+        gate: 'proof_valid',
+        checkInId: 'evt-in-1',
+        checkOutId: 'evt-out-1',
+        verdict: 'valid',
+      }),
+    );
   });
 
   // ── Fee math ─────────────────────────────────────────────────────────────

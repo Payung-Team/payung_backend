@@ -1,0 +1,7 @@
+﻿paymentId,bookingId,method,amountBaht,currentStatus,omiseChargeId,omisePaid,omiseCaptured,omiseAmountSatang,proposedStatus,bucket,reason
+pay-webhooklost,bk-1,promptpay,1500,pending,chrg_a,true,true,150000,captured,→captured (webhook-lost),PYG-375 repair: omise paid=true captured=true (webhook lost) → captured
+pay-hold,bk-2,credit_card,800,pending,chrg_b,false,false,80000,held,→held,PYG-375 repair: omise paid=false authorized=true (hold) → held
+pay-abandoned,bk-3,promptpay,2200,pending,chrg_c,false,false,220000,expired,→expired,PYG-375 repair: omise paid=false authorized=false (asked omise) → expired
+pay-404,bk-4,credit_card,500,pending,chrg_gone,,,,failed,→failed,PYG-375 repair: omise 404 not_found → failed
+pay-nocharge,bk-5,credit_card,600,pending,,,,,failed,→failed,PYG-375 repair: omise_charge_id is NULL (charge never created) → failed
+pay-unreach,bk-6,promptpay,999,pending,chrg_d,,,,,skip:omise_unreachable,"PYG-375 repair: omise unreachable (timeout/network/5xx) → skip, left pending"

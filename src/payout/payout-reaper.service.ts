@@ -34,6 +34,7 @@ import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
 import { PayoutRetryPolicy } from './payout-retry-policy';
 import { PayoutKillswitch } from './payout-killswitch';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 @Injectable()
 export class PayoutReaperService {
@@ -45,12 +46,21 @@ export class PayoutReaperService {
     private readonly stateMachine: PayoutStateMachine,
     private readonly retryPolicy: PayoutRetryPolicy,
     private readonly killswitch: PayoutKillswitch,
+    private readonly eligibility: PayoutEligibilityService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
   async run(): Promise<void> {
     if (this.killswitch.gate('PayoutReaper')) return;
 
+    await this.reapStaleProcessing();
+    await this.reapIneligible();
+  }
+
+  /**
+   * reapStaleProcessing — งานเดิมของ reaper: ปลด row ที่ค้าง processing เพราะ worker crash
+   */
+  private async reapStaleProcessing(): Promise<void> {
     const staleMinutes = this.readStaleMinutes();
     const threshold = new Date(Date.now() - staleMinutes * 60 * 1000);
 
@@ -77,6 +87,64 @@ export class PayoutReaperService {
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.error(
           `[PayoutReaper] uncaught error payout=${payout.id}: ${msg}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * reapIneligible — ยกเลิก payout ที่ยังไม่ได้โอน แต่ booking กลายเป็น "ไม่ควรจ่าย" ไปแล้ว
+   *
+   * ทำไมต้องมีทั้งที่ worker ก็เช็คแล้ว?
+   *   worker query กรอง `scheduled_at <= now()` — payout ที่อยู่ในช่วง hold window 7 วัน
+   *   worker ยัง "มองไม่เห็น" เลย ถ้า patient flag dispute วันที่ 2 แล้ว admin ตัดสิน
+   *   refund วันที่ 3 payout ใบนั้นจะนอนรออีก 4 วันกว่า worker จะมาเจอและ cancel
+   *   reaper กวาดทุก 10 นาทีโดยไม่สนใจ scheduled_at → ปิดบัญชีเร็วกว่า ตัวเลขใน
+   *   admin dashboard (PYG-333) จึงไม่ค้างโชว์เงินที่จะไม่มีวันจ่าย
+   *
+   * ⚠️ cancel เฉพาะ verdict = 'deny' เท่านั้น — 'hold' (dispute ยังเปิด) ห้ามแตะ
+   *    cancelled เป็น terminal + payouts.booking_id UNIQUE = ยกเลิกผิดแล้วกู้ไม่ได้
+   */
+  private async reapIneligible(): Promise<void> {
+    // เฉพาะ scheduled — processing แปลว่า worker ถือ lock อยู่ (กฎห้าม processing → cancelled)
+    const pending = await this.prisma.payout.findMany({
+      where: { status: PayoutStatus.scheduled },
+      select: { id: true, bookingId: true },
+    });
+
+    if (pending.length === 0) return;
+
+    for (const payout of pending) {
+      try {
+        const verdict = await this.eligibility.check(payout.bookingId);
+        if (verdict.kind !== 'deny') continue;
+
+        // claim = conditional UPDATE (where status=scheduled) → race-safe กับ worker
+        const cancelled = await this.stateMachine.claim(
+          payout.id,
+          PayoutStatus.scheduled,
+          PayoutStatus.cancelled,
+          {
+            reason: `payout_gate_denied:${verdict.reason}`,
+            metadata: {
+              ...verdict.evidence,
+              cancelledBy: 'reaper',
+              cancelledAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        if (cancelled.claimed) {
+          this.logger.warn(
+            `[PayoutReaper] cancelled payout=${payout.id} booking=${payout.bookingId} — ` +
+              `${verdict.reason} (evidence=${JSON.stringify(verdict.evidence)})`,
+          );
+        }
+      } catch (err) {
+        // 1 ใบพังห้ามล้มทั้งรอบ
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `[PayoutReaper] eligibility sweep failed payout=${payout.id}: ${msg}`,
         );
       }
     }
