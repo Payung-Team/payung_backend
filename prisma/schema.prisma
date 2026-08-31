@@ -1,144 +1,989 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  // Optional shadow DB for `prisma migrate dev` (does not affect `deploy`).
+  // Points at the container in docker-compose.dev.yml. See
+  // prisma/migrations/00000000000000_supabase_shadow_shim/migration.sql for
+  // the Supabase-auth shim that lets old migrations replay against plain Postgres.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
-// ─── User Model ──────────────────────────────────────────────────────────────
-// ตาราง users เก็บข้อมูลผู้ใช้ในระบบของเรา
-//
-// ทำไมต้องมีตาราง users ของเราเอง ทั้งที่ Supabase Auth ก็เก็บ user อยู่แล้ว?
-// → เพราะ Supabase Auth เก็บแค่ email + password (สำหรับ login)
-//   แต่เราต้องการเก็บข้อมูลเพิ่ม เช่น role, displayName, isActive
-//   ดังนั้นเราจึงใช้ supabaseUid เชื่อมโยงข้อมูลทั้ง 2 ฝั่งเข้าด้วยกัน
-//
-// @map("snake_case") = ใน TypeScript ใช้ camelCase แต่ใน database ใช้ snake_case
-// @@map("users")     = ตั้งชื่อ table ใน database เป็น "users" (ไม่ใช่ "User")
 model User {
-  id          String   @id @default(uuid())       // Primary key, สร้าง UUID ให้อัตโนมัติ
-  supabaseUid String   @unique @map("supabase_uid") // เชื่อมกับ Supabase Auth user
-  email       String   @unique                    // Email ห้ามซ้ำ
-  displayName String?  @map("display_name")       // ชื่อแสดงผล (อาจเป็น null ถ้ายังไม่ตั้ง)
-  avatarUrl   String?  @map("avatar_url")         // URL รูปโปรไฟล์ (อาจเป็น null ถ้ายังไม่อัปโหลด)
-  phone       String?  @map("phone")              // เบอร์โทรศัพท์
-  address     String?  @map("address")            // ที่อยู่
-  bio         String?  @map("bio")                // เกี่ยวกับตัวเอง / บรรยายสั้น
-  role        Int      @default(1)                // 1 = patient, 2 = caregiver
-  isActive    Boolean  @default(true) @map("is_active")   // สถานะ active
-  emailPreferences Boolean @default(true) @map("email_preferences") // รับอีเมลแจ้งเตือนมั้ย (PYG-95)
-  createdAt   DateTime @default(now()) @map("created_at") // วันที่สร้าง
-  updatedAt   DateTime @updatedAt @map("updated_at")      // วันที่อัปเดตล่าสุด (อัปเดตอัตโนมัติ)
+  id                                                      String                 @id @default(uuid())
+  supabaseUid                                             String                 @unique @map("supabase_uid")
+  email                                                   String                 @unique
+  displayName                                             String?                @map("display_name")
+  avatarUrl                                               String?                @map("avatar_url")
+  isActive                                                Boolean                @default(true) @map("is_active")
+  createdAt                                               DateTime               @default(now()) @map("created_at")
+  updatedAt                                               DateTime               @updatedAt @map("updated_at")
+  address                                                 String?                @map("address")
+  bio                                                     String?                @map("bio")
+  phone                                                   String?                @map("phone")
+  role                                                    Int                    @default(1)
+  emailPreferences                                        Boolean                @default(true) @map("email_preferences")
+  invited_by                                              String?
+  must_change_password                                    Boolean                @default(false)
+  last_login_at                                           DateTime?              @db.Timestamptz(6)
+  scheduled_delete_at                                     DateTime?              @db.Timestamptz(6)
+  deletion_scheduled_by                                   String?
+  is_deleted                                              Boolean                @default(false)
+  deleted_at                                              DateTime?              @db.Timestamptz(6)
+  is_suspended                                            Boolean                @default(false)
+  subDistrict                                             String?                @map("sub_district")
+  district                                                String?                @map("district")
+  province                                                String?                @map("province")
+  postalCode                                              String?                @map("postal_code")
+  admin_audit_logs_admin_audit_logs_admin_idTousers       admin_audit_logs[]     @relation("admin_audit_logs_admin_idTousers")
+  admin_audit_logs_admin_audit_logs_target_user_idTousers admin_audit_logs[]     @relation("admin_audit_logs_target_user_idTousers")
+  bookings                                                Booking[]              @relation("BookingPatient")
+  // PYG-411: การจองที่ user คนนี้เป็นคน "กดจองแทน" (ไม่ใช่เจ้าของ booking)
+  bookingsBookedBy                                        Booking[]              @relation("BookingBookedBy")
+  careRecipients                                          CareRecipient[]
+  // ─── PYG-411: Family Group ───────────────────────────────────────────────
+  familyGroupsCreated                                     FamilyGroup[]
+  familyGroupMemberships                                  FamilyGroupMember[]    @relation("FamilyGroupMemberUser")
+  familyGroupMembersInvited                               FamilyGroupMember[]    @relation("FamilyGroupMemberInvitedBy")
+  familyGroupInvitesSent                                  FamilyGroupInvite[]    @relation("FamilyGroupInviteInvitedBy")
+  familyGroupInvitesAccepted                              FamilyGroupInvite[]    @relation("FamilyGroupInviteAcceptedBy")
+  familyGroupActivity                                     FamilyGroupActivity[]
+  caregiver_edit_logs                                     caregiver_edit_logs[]
+  caregiver                                               Caregiver?
+  field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
+  field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
+  documents                                               KycDocument[]
+  kycReviews                                              KycReview[]
+  notifications                                           Notification[]
+  paymentStatusChanges                                    PaymentStatusHistory[] @relation("PaymentStatusChanges")
+  caregiverPayments                                       Payment[]              @relation("CaregiverPayments")
+  patientPayments                                         Payment[]              @relation("PatientPayments")
+  patientReviews                                          Review[]
+  savedCaregivers                                         SavedCaregiver[]
+  users_users_deletion_scheduled_byTousers                User?                  @relation("users_deletion_scheduled_byTousers", fields: [deletion_scheduled_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_deletion_scheduled_byTousers          User[]                 @relation("users_deletion_scheduled_byTousers")
+  users_users_invited_byTousers                           User?                  @relation("users_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users_users_invited_byTousers                     User[]                 @relation("users_invited_byTousers")
 
-  // Relations — ตาราง Caregiver, KycDocument, KycReview, Notification reference กลับมาหา User
-  caregiver     Caregiver?
-  documents     KycDocument[]
-  reviews       KycReview[]    // admin reviews
-  notifications Notification[] // in-app notifications (PYG-95)
-
+  @@index([is_deleted], map: "idx_users_is_deleted")
+  @@index([role], map: "idx_users_role")
   @@map("users")
 }
 
-
 model Caregiver {
-  id              String    @id @default(uuid())
-  userId          String    @unique @map("user_id")
-  fullName        String?   @map("full_name")
-  idCardNumber    String?   @map("id_card_number")
-  phone           String?
-  skills          String[]  // array of strings
-  experienceYears Int?      @map("experience_years")
-  hourlyRate      Float?    @map("hourly_rate")
-  bio             String?
-  kycStatus       String    @default("none") @map("kyc_status")
-  // "none" | "pending" | "verified" | "rejected" <-- เปลี่ยนเป็น verified ให้ตรงกับ DB Constraint
-  kycSubmittedAt  DateTime? @map("kyc_submitted_at")
-  kycVerifiedAt   DateTime? @map("kyc_verified_at")   // วันที่ admin verify KYC (null ถ้ายังไม่ผ่าน)
-  isSearchable    Boolean   @default(false) @map("is_searchable")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id                  String                     @id @default(uuid())
+  userId              String                     @unique @map("user_id")
+  fullName            String?                    @map("full_name")
+  idCardNumber        String?                    @map("id_card_number")
+  phone               String?
+  skills              String[]
+  experienceYears     Int?                       @map("experience_years")
+  hourlyRate          Float?                     @map("hourly_rate")
+  bio                 String?
+  kycStatus           String                     @default("none") @map("kyc_status")
+  kycSubmittedAt      DateTime?                  @map("kyc_submitted_at")
+  isSearchable        Boolean                    @default(false) @map("is_searchable")
+  createdAt           DateTime                   @default(now()) @map("created_at")
+  updatedAt           DateTime                   @updatedAt @map("updated_at")
+  kycVerifiedAt       DateTime?                  @map("kyc_verified_at")
+  resubmitCount       Int                        @default(0) @map("resubmit_count")
+  caregiverNumber     String?                    @unique @map("caregiver_number")
+  gender              String?
+  dateOfBirth         DateTime?                  @map("date_of_birth")
+  address             String?
+  kycRejectedAt       DateTime?                  @map("kyc_rejected_at")
+  kycRejectionReason  String?                    @map("kyc_rejection_reason")
+  rejection_reasons   Json?
+  serviceAreaProvince String?                    @map("service_area_province") @db.VarChar
+  serviceAreaDistrict String?                    @map("service_area_district") @db.VarChar
+  languages           String[]                   @default([])
+  averageRating       Float?                     @map("average_rating")
+  reviewCount         Int                        @default(0) @map("review_count")
+  bookings            Booking[]
+  availability        CaregiverAvailability[]
+  caregiver_edit_logs caregiver_edit_logs[]
+  jobTypes            CaregiverJobType[]
+  serviceLocations    CaregiverServiceLocation[]
+  user                User                       @relation(fields: [userId], references: [id])
+  documents           KycDocument[]
+  kycReviews          KycReview[]
+  patientReviews      Review[]
+  payoutAccount       CaregiverPayoutAccount?
+  payouts             Payout[]
+  savedByPatients     SavedCaregiver[]
+  jobEvents           JobEvent[] // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ที่ผู้ดูแลคนนี้สร้าง
 
-  // Relations
-  user            User          @relation(fields: [userId], references: [id])
-  documents       KycDocument[]
-  reviews         KycReview[]   // เพิ่ม Relation มายัง KycReview
-
+  @@index([serviceAreaProvince, serviceAreaDistrict], map: "idx_caregivers_service_area")
   @@map("caregivers")
 }
 
-model KycDocument {
-  id            String    @id @default(uuid())
-  caregiverId   String?   @map("caregiver_id")   // nullable ก่อน submit
-  userId        String    @map("user_id")              // ← เพิ่ม: เชื่อมกับ user ที่อัปโหลด
-  documentType  String    @map("doc_type")  // "id_card" | "certificate" | "license" | "photo"
-  fileUrl       String    @map("file_url")
-  fileName      String    @map("file_name")      // เพิ่มตาม Data Dictionary
-  fileSize      Int       @map("file_size")      // เพิ่มตาม Data Dictionary (Bytes)
-  mimeType      String    @map("mime_type")      // เพิ่มตาม Data Dictionary
-  uploadedAt    DateTime  @default(now()) @map("uploaded_at")
+/// PYG-306 — Payout bank account 1:1 กับ Caregiver (foundation ของ Auto-Payout epic PYG-329)
+/// account_number_enc = ciphertext เข้ารหัสที่ app layer; แสดงผลใช้ account_number_last4 เท่านั้น
+/// omise_recipient_id + recipient_status จะถูกกรอกโดย webhook PYG-304 (ยังไม่ implement)
+model CaregiverPayoutAccount {
+  id                 String    @id @default(uuid())
+  caregiverId        String    @unique @map("caregiver_id")
+  bankCode           String    @map("bank_code")
+  accountName        String    @map("account_name")
+  accountNumberEnc   String    @map("account_number_enc")
+  accountNumberLast4 String    @map("account_number_last4")
+  omiseRecipientId   String?   @map("omise_recipient_id")
+  recipientStatus    String    @default("unverified") @map("recipient_status")
+  status             String    @default("pending")
+  verifiedAt         DateTime? @map("verified_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  // Relations
-  caregiver     Caregiver? @relation(fields: [caregiverId], references: [id])
-  user          User       @relation(fields: [userId], references: [id])
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+
+  @@map("caregiver_payout_accounts")
+}
+
+/// PYG-330 — Payout record 1:1 กับ Booking (worker + Omise Transfer จะทำในก้อน B)
+/// - booking_id @unique = DB-level idempotency (1 booking = 1 payout) ไม่พึ่งแค่โค้ด
+/// - onDelete Restrict ทั้ง 2 FK — ห้าม cascade ลบ record การเงิน
+/// - timestamptz ทุกช่อง — worker query "scheduled_at <= now()" ต้อง tz-safe (ไทย UTC+7)
+/// - index (status, scheduled_at) รองรับ worker query หลัก
+///
+/// PYG-330 (ก้อน A2) — fee snapshot:
+///   gross_amount = payments.amount ของ booking นั้น
+///   fee_rate     = config PAYOUT_PLATFORM_FEE_RATE (default 0.10) — snapshot ลง row เสมอ
+///                  ห้าม default ระดับ DB / ห้ามคำนวณจาก env ตอน query (นโยบายเปลี่ยน = ประวัติเพี้ยน)
+///   platform_fee = round(gross_amount * fee_rate, 2) HALF_UP
+///   amount       = gross_amount - platform_fee  ← ต้องได้จาก "ลบ" เท่านั้น
+///                  (ห้าม gross * (1 - rate) แยก — ปัดเศษแล้ว sum ไม่ตรง)
+///
+/// ⚠️ DB มี CHECK constraint `payouts_amount_split_check` (Prisma ไม่ support declare)
+///    บังคับ: gross_amount = platform_fee + amount
+///        AND platform_fee >= 0
+///        AND amount >= 0
+///        AND fee_rate >= 0
+///    → โค้ดคำนวณผิด = INSERT ถูก reject ทันที (ป้องกันเงินหายทีละสตางค์)
+model Payout {
+  id              String    @id @default(uuid())
+  bookingId       String    @unique @map("booking_id") @db.Uuid
+  caregiverId     String    @map("caregiver_id")
+  recipientId     String?   @map("recipient_id")
+  grossAmount     Decimal   @map("gross_amount") @db.Decimal(10, 2)
+  feeRate         Decimal   @map("fee_rate") @db.Decimal(5, 4)
+  platformFee     Decimal   @map("platform_fee") @db.Decimal(10, 2)
+  amount          Decimal   @db.Decimal(10, 2)
+  status          String    @default("scheduled")
+  scheduledAt     DateTime  @map("scheduled_at") @db.Timestamptz(3)
+  processedAt     DateTime? @map("processed_at") @db.Timestamptz(3)
+  omiseTransferId String?   @map("omise_transfer_id")
+  retryCount      Int       @default(0) @map("retry_count")
+  // PYG-331 (ก้อน A) — next_retry_at ใช้กับ exponential backoff ในก้อน B
+  //   worker query จะเปลี่ยนเป็น: status='scheduled' AND scheduled_at <= now()
+  //                                AND (next_retry_at IS NULL OR next_retry_at <= now())
+  //   nullable — payout ที่ยังไม่เคย fail ไม่มีค่านี้ (worker เห็นเป็น "พร้อมยิงเลย")
+  nextRetryAt     DateTime? @map("next_retry_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking       Booking               @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  caregiver     Caregiver             @relation(fields: [caregiverId], references: [id], onDelete: Restrict)
+  statusHistory PayoutStatusHistory[]
+
+  @@index([status, scheduledAt])
+  // PYG-333: index รองรับ admin transactions list (default sort created_desc + date-range filter)
+  @@index([createdAt], map: "idx_payouts_created_at")
+  @@map("payouts")
+}
+
+/// PYG-331 (ก้อน A) — audit log ทุก transition ของ payout
+/// mirror pattern ของ payment_status_history (PaymentStateMachine.runTransition() จะเขียนที่นี่ในก้อน B)
+///
+/// - fromStatus nullable → transition แรกตอนสร้าง payout (from = null)
+/// - changedBy nullable → null = system (auto-retry worker); userId = admin action (336/337)
+/// - onDelete Cascade ต่างจาก payouts FK (Restrict) เพราะ history เป็น log ลูกของ payout
+///   ถ้าลบ payout log ควรหายตาม ไม่ใช่ block
+/// - index (payout_id, created_at) → timeline query เรียงเวลา (337 export/reporting)
+/// - status ยังเป็น text อิสระ (ไม่มี enum) — validate ใน state machine ของก้อน B
+model PayoutStatusHistory {
+  id         String   @id @default(uuid())
+  payoutId   String   @map("payout_id")
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  changedBy  String?  @map("changed_by")
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  payout Payout @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+
+  @@index([payoutId, createdAt])
+  @@map("payout_status_history")
+}
+
+/// Audit trail ของ dispute — mirror payout_status_history
+/// backend-only: RLS off, ไม่มี grant (ดู migration.sql)
+model DisputeAuditLog {
+  id         String   @id @default(uuid())
+  bookingId  String   @map("booking_id") @db.Uuid
+  action     String // dispute_filed | evidence_added | status_changed | resolved
+  fromStatus String?  @map("from_status")
+  toStatus   String?  @map("to_status")
+  actorId    String?  @map("actor_id") // null = system
+  actorRole  String?  @map("actor_role") // patient | caregiver | admin
+  note       String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId, createdAt])
+  @@map("dispute_audit_logs")
+}
+
+/// หลักฐานของ dispute — เก็บ metadata + url, ไฟล์จริงอยู่ Supabase Storage (แบบ kyc_documents)
+/// backend-only: RLS off, ไม่มี grant
+model DisputeEvidence {
+  id           String   @id @default(uuid())
+  bookingId    String   @map("booking_id") @db.Uuid
+  uploadedBy   String   @map("uploaded_by") // user id
+  uploaderRole String   @map("uploader_role") // patient | caregiver | admin
+  fileUrl      String   @map("file_url")
+  fileName     String   @map("file_name")
+  fileSize     Int      @map("file_size")
+  mimeType     String   @map("mime_type")
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId, createdAt])
+  @@map("dispute_evidence")
+}
+
+model CaregiverJobType {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiverId String    @map("caregiver_id")
+  jobType     job_type  @map("job_type")
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([caregiverId, jobType])
+  @@index([jobType], map: "idx_caregiver_job_types_type")
+  @@index([caregiverId], map: "idx_caregiver_job_types_caregiver")
+  @@map("caregiver_job_types")
+}
+
+model CaregiverServiceLocation {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiverId     String           @map("caregiver_id")
+  serviceLocation service_location @map("service_location")
+  caregiver       Caregiver        @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([caregiverId, serviceLocation])
+  @@index([serviceLocation], map: "idx_caregiver_service_locations_type")
+  @@index([caregiverId], map: "idx_caregiver_service_locations_caregiver")
+  @@index([caregiverId], map: "idx_csl_caregiver_id")
+  @@map("caregiver_service_locations")
+}
+
+model CaregiverAvailability {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiverId String    @map("caregiver_id")
+  dayOfWeek   Int       @map("day_of_week") @db.SmallInt
+  timeSlot    time_slot @map("time_slot")
+  isActive    Boolean   @default(true) @map("is_active")
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([caregiverId, dayOfWeek, timeSlot])
+  @@index([caregiverId], map: "idx_caregiver_availability_caregiver")
+  @@map("caregiver_availability")
+}
+
+model Review {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String    @unique @map("booking_id") @db.Uuid
+  patientId   String    @map("patient_id")
+  caregiverId String    @map("caregiver_id")
+  rating      Int
+  comment     String?
+  isAnonymous Boolean   @default(false) @map("is_anonymous")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  isVisible   Boolean   @default(true) @map("is_visible")
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([caregiverId], map: "idx_reviews_caregiver")
+  @@index([patientId], map: "idx_reviews_patient")
+  @@map("reviews")
+}
+
+model Booking {
+  id                       String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId                String            @map("patient_id")
+  caregiverId              String?           @map("caregiver_id")
+  careRecipientId          String?           @map("care_recipient_id") @db.Uuid
+  serviceLocations         String[]          @map("service_locations")
+  serviceType              String            @map("service_type")
+  timeSlot                 String            @map("time_slot")
+  startTime                DateTime          @map("start_time") @db.Time(6)
+  durationHours            Decimal           @map("duration_hours") @db.Decimal
+  locationAddress          String            @map("location_address")
+  locationLat              Decimal?          @map("location_lat") @db.Decimal(10, 7)
+  locationLng              Decimal?          @map("location_lng") @db.Decimal(10, 7)
+  status                   String            @default("unmatched")
+  rejectionReason          String?           @map("rejection_reason")
+  estimatedCost            Decimal?          @map("estimated_cost") @db.Decimal(10, 2)
+  platformFee              Decimal?          @map("platform_fee") @db.Decimal(10, 2)
+  bookingDate              DateTime          @map("booking_date") @db.Date
+  dayOfContactName         String?           @map("day_of_contact_name")
+  dayOfContactPhone        String?           @map("day_of_contact_phone")
+  dayOfContactRelationship String?           @map("day_of_contact_relationship")
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  confirmedAt              DateTime?         @map("confirmed_at") @db.Timestamptz(6)
+  tasks                    String[]          @default([]) @map("tasks")
+  acceptedAt               DateTime?         @map("accepted_at") @db.Timestamptz(6)
+  notes                    String?           @map("notes")
+  disputeStatus            String            @default("none") @map("dispute_status") @db.VarChar(20)
+  disputeReason            String?           @map("dispute_reason")
+  disputeResolvedAt        DateTime?         @map("dispute_resolved_at") @db.Timestamptz(6)
+  // PYG-316: when the dispute was filed (set on flag) — powers SLA calc, date filters & SLA sort
+  disputeFiledAt           DateTime?         @map("dispute_filed_at") @db.Timestamptz(6)
+  // PYG-316: who filed the dispute — 'customer' | 'caregiver' (only patients can file today)
+  disputeFiledBy           String?           @map("dispute_filed_by") @db.VarChar(20)
+  patientName              String?           @map("patient_name")
+  completedAt              DateTime?         @map("completed_at") @db.Timestamptz(6)
+  // PYG-352: ธงที่บอกว่าทำไมงานนี้ต้องให้แอดมินดู เช่น {'out_of_radius','clock_anomaly'}
+  // array ว่าง = ไม่มีปัญหา ซึ่งเป็นเงื่อนไขหนึ่งของ verdict='valid'
+  reviewReasons            String[]          @default([]) @map("review_reasons")
+  // PYG-411: จองในนามกลุ่มครอบครัวไหน (NULL = จองปกติ ไม่เกี่ยวกับกลุ่ม)
+  // FK ON DELETE SET NULL — ลบกลุ่มแล้วประวัติการจองต้องอยู่ต่อ (edge case ของ PYG-407)
+  familyGroupId            String?           @map("family_group_id") @db.Uuid
+  // PYG-411 (เตรียมไว้ให้ PYG-424): สมาชิกที่กด "จองแทน" จริง ๆ
+  // ต่างจาก patientId ตรงที่ patientId = เจ้าของ booking + คนจ่ายเงิน
+  bookedBy                 String?           @map("booked_by")
+  // PYG-411 (เตรียมไว้ให้ PYG-424): memberDetails — อาการ/รายละเอียดที่กรอกตอนจองแทน
+  // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
+  memberDetails            Json?             @map("member_details")
+  booking_tasks            booking_tasks[]
+  // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
+  jobEvents                JobEvent[]
+  // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
+  // optional (?) เพราะ booking เก่าทุกใบที่มีอยู่ก่อน migration นี้ยังไม่มี session
+  jobSession               JobSession?
+  // PYG-435: บันทึกการสแกน QR ทุกครั้ง (สำเร็จและล้มเหลว) — ไม่จำกัดจำนวนแถว
+  jobScanEvents            JobScanEvent[]
+  careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
+  caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
+  patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
+  // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
+  // FK ทั้งสองเป็น ON DELETE SET NULL / ON UPDATE CASCADE = ค่า default ของ optional relation
+  bookedByUser             User?             @relation("BookingBookedBy", fields: [bookedBy], references: [id])
+  familyGroup              FamilyGroup?      @relation(fields: [familyGroupId], references: [id])
+  payment                  Payment?
+  payout                   Payout?
+  review                   Review?
+  disputeAuditLogs         DisputeAuditLog[]
+  disputeEvidence          DisputeEvidence[]
+
+  @@index([caregiverId], map: "idx_bookings_caregiver")
+  @@index([bookingDate], map: "idx_bookings_date")
+  @@index([patientId], map: "idx_bookings_patient")
+  @@index([status], map: "idx_bookings_status")
+  @@index([disputeStatus], map: "idx_bookings_dispute_status")
+  // PYG-316: composite index for the admin dispute queue — filter by status + sort by SLA (filedAt)
+  @@index([disputeStatus, disputeFiledAt], map: "idx_bookings_dispute_queue")
+  @@map("bookings")
+}
+
+/// PYG-352 — หลักฐานการทำงาน (proof of work) ของ 1 booking
+///
+/// 1 booking มีได้อย่างมาก 2 แถว: check_in หนึ่งแถว + check_out หนึ่งแถว
+/// บังคับด้วย @@unique([bookingId, eventType]) → กดปุ่มซ้ำก็ยังได้แถวเดียว
+///
+/// ⚠ ตั้งใจไม่มีคอลัมน์ withinRadius:
+///    เก็บแค่ distanceM ดิบ ๆ แล้วค่อยตัดสินตอนอ่าน โดยเทียบกับ threshold ใน ENV
+///    ถ้าเก็บ boolean ไว้ตอนเขียน วันหนึ่งที่ threshold เปลี่ยน ข้อมูลเก่าจะโกหกทันที
+model JobEvent {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String @map("booking_id") @db.Uuid
+  caregiverId String @map("caregiver_id")
+
+  /// 'check_in' | 'check_out' (บังคับด้วย CHECK constraint ฝั่ง DB)
+  eventType String @map("event_type")
+  /// 'caregiver' = ผู้ดูแลกดเอง | 'system' = cron ปิดให้ (PYG-359)
+  /// verdict='valid' บังคับว่า check_out ต้องเป็น 'caregiver' เท่านั้น
+  source    String
+
+  /// NULL ได้ — ผู้ดูแลปฏิเสธสิทธิ์ตำแหน่งแล้วยังต้องเช็คอินได้
+  lat       Decimal? @db.Decimal(10, 7)
+  lng       Decimal? @db.Decimal(10, 7)
+  /// ระยะจากจุดงาน (เมตร) — ค่าดิบ. NULL = คำนวณไม่ได้ ห้ามตีความว่าผิด
+  distanceM Int?     @map("distance_m")
+  /// ความแม่นยำจาก position.coords.accuracy (เมตร) — ตัวชี้ขาดว่า distanceM เชื่อได้ไหม
+  accuracyM Int?     @map("accuracy_m")
+
+  /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
+  serverTs DateTime  @default(now()) @map("server_ts") @db.Timestamptz(6)
+  /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น ใช้จับ clock_anomaly
+  deviceTs DateTime? @map("device_ts") @db.Timestamptz(6)
+
+  /// ใช้ตอน check_out (PYG-358) — check_in ปล่อย NULL
+  note     String?
+  photoUrl String? @map("photo_url")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  caregiver Caregiver @relation(fields: [caregiverId], references: [id])
+
+  @@unique([bookingId, eventType], map: "job_events_booking_id_event_type_key")
+  @@index([bookingId], map: "job_events_booking_id_idx")
+  @@map("job_events")
+}
+
+/// PYG-434 — "ใบงาน QR" ของ booking 1 ใบ (การ์ดแม่ PYG-433)
+///
+/// 1 booking = 1 แถวเท่านั้น (บังคับด้วย @unique บน bookingId)
+/// QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ — ตัว QR ไม่ได้บอกว่าจะทำ action ไหน
+/// action ตัดสินจาก `status` ปัจจุบัน: PENDING→เช็คอิน, CHECKED_IN→เช็คเอาท์ (PYG-435)
+///
+/// ★★ เรื่องสำคัญที่สุดของตารางนี้: ★★
+///    คอลัมน์ token_hash เก็บ "ลายนิ้วมือ" ของ token เท่านั้น (sha256 hex 64 ตัว)
+///    ตัว token จริงไม่เคยถูกเขียนลงดีบีเลยแม้แต่ครั้งเดียว
+///    → ใครขโมยดีบีไปทั้งก้อนก็สร้าง QR ปลอมไม่ได้ เพราะขาด QR_TOKEN_SECRET
+///    (วิธีคำนวณ token กลับมา ดู src/monitoring/qr/job-qr.service.ts)
+///
+/// ⚠ ตั้งใจ "ไม่มี" สถานะ CANCELLED:
+///    booking ถูกยกเลิกแล้ว QR ต้องใช้ไม่ได้ทันที — แต่ความจริงข้อนั้นอยู่ที่
+///    bookings.status อยู่แล้ว ถ้าคัดลอกมาไว้ที่นี่อีกที่ วันที่อัปเดตไม่ครบทั้งสองที่
+///    จะได้ QR ที่ยังสแกนผ่านทั้งที่งานถูกยกเลิกไปแล้ว → อ่าน booking.status ตอนสแกนแทน
+///    (เหตุผลเดียวกับที่ job_events ไม่เก็บ within_radius — ดูคอมเมนต์ด้านบน)
+model JobSession {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId String @unique @map("booking_id") @db.Uuid
+
+  /// ★ sha256(token) เป็น hex 64 ตัว — ห้ามเก็บ token ดิบ
+  ///   ดีบีมี CHECK char_length = 64 กันเผลอเขียน token ดิบลงมา
+  ///   unique เพราะ PYG-435 ค้นหา session จากค่านี้ตรง ๆ (scanJobQr)
+  tokenHash String @unique @map("token_hash")
+
+  /// 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT' (บังคับด้วย CHECK ฝั่งดีบี)
+  /// เดินหน้าทางเดียวเสมอ ถอยหลังไม่ได้ (PYG-435 เป็นคนบังคับลำดับ)
+  status String @default("PENDING")
+
+  /// ช่วงเวลาที่ QR ใบนี้ใช้ได้ — คำนวณตอนสร้างจากตารางงานของ booking
+  ///   valid_from  = เวลานัดเริ่ม − QR_VALID_FROM_OFFSET_MIN
+  ///   valid_until = เวลานัดจบ   + QR_VALID_UNTIL_GRACE_MIN
+  /// เก็บเป็นคอลัมน์จริง ไม่คำนวณตอนอ่าน เพราะถ้างานถูกเลื่อนแล้วออกใบใหม่
+  /// เราต้องรู้ว่า "ตอนนั้นตกลงกันว่าช่วงไหน" ไม่ใช่ค่าที่เปลี่ยนตามตารางล่าสุด
+  validFrom  DateTime @map("valid_from") @db.Timestamptz(6)
+  validUntil DateTime @map("valid_until") @db.Timestamptz(6)
+
+  /// เวลาที่สแกนสำเร็จแต่ละ action — NULL = ยังไม่เกิด (PYG-435 เป็นคนเขียน)
+  /// ซ้ำกับ job_events.server_ts โดยตั้งใจ: ที่นี่คือ "สถานะของ QR"
+  /// ส่วน job_events คือ "หลักฐานการทำงาน" ซึ่งคนละเรื่องกันและอาจถูกเขียนโดย cron
+  checkedInAt  DateTime? @map("checked_in_at") @db.Timestamptz(6)
+  checkedOutAt DateTime? @map("checked_out_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  /// PYG-435: ประวัติการสแกนของใบนี้ (สำเร็จ + ล้มเหลว)
+  scanEvents JobScanEvent[]
+
+  /// PYG-435 จะกวาดหา session ที่ "ยังไม่ปิด" ในช่วงเวลาหนึ่ง ๆ
+  @@index([status, validUntil], map: "job_sessions_status_valid_until_idx")
+  @@map("job_sessions")
+}
+
+/// PYG-435 — บันทึก "ทุกครั้งที่มีการสแกน QR" ทั้งที่สำเร็จและล้มเหลว (การ์ดแม่ PYG-433)
+///
+/// ★ ตารางนี้เป็น audit log เท่านั้น — ไม่มีตรรกะใดในระบบอ่านค่าจากที่นี่ไปตัดสินใจ
+///   ความจริงเรื่อง "งานถึงไหนแล้ว" อยู่ที่ job_sessions.status + job_events
+///   ถ้าวันหนึ่งมีโค้ดอ่านตารางนี้ไปตัดสินใจ แปลว่าออกแบบผิดแล้ว
+///
+/// ทำไมต้องบันทึกครั้งที่ "ล้มเหลว" ด้วย: เพราะการสแกนที่ล้มเหลวคือสัญญาณความปลอดภัย
+/// (คนถ่ายรูป QR ของคนอื่นไปลอง / ผู้ดูแลที่ถูกเปลี่ยนกลางคันยังถือ QR เก่า /
+///  สแกนตอนดึกนอกช่วงเวลางาน) ถ้าเก็บแต่ครั้งที่สำเร็จ เราจะมองไม่เห็นอะไรเลย
+///
+/// ⚠ ทุกคอลัมน์ที่ชี้ไปตารางอื่นเป็น NULL ได้หมด โดยตั้งใจ
+///   เพราะการสแกนด้วย token มั่ว ๆ ก็ต้องถูกบันทึก ทั้งที่ยังไม่รู้ด้วยซ้ำว่าเป็นงานใบไหน
+model JobScanEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// NULL = token ที่สแกนมาไม่ตรงกับ session ใดเลย (QR ปลอม / QR ของระบบอื่น)
+  sessionId String? @map("session_id") @db.Uuid
+  /// คัดลอกมาจาก session ตอนสแกน เพื่อให้ query "งานใบนี้ถูกสแกนกี่ครั้ง" ได้ตรง ๆ
+  bookingId String? @map("booking_id") @db.Uuid
+
+  /// users.id ของคนที่กดสแกน — รู้เสมอ เพราะผ่าน SupabaseAuthGuard มาแล้ว
+  /// ไม่มี FK โดยตั้งใจ: audit ต้องอยู่รอดแม้บัญชีจะถูกลบตามคำขอ PDPA
+  scannedBy   String  @map("scanned_by")
+  /// caregivers.id ถ้าบัญชีนั้นมีโปรไฟล์ผู้ดูแล — NULL ได้ถ้าไม่มี
+  caregiverId String? @map("caregiver_id")
+
+  /// sha256 ของ token ที่สแกนมา (hex 64) — เก็บแม้ token จะผิด
+  /// ★ เก็บ "hash" ไม่ใช่ token ดิบ ด้วยเหตุผลเดียวกับ job_sessions.token_hash
+  ///   ประโยชน์: เห็นได้ว่ามีคนเอา QR ใบเดิมมาลองซ้ำ ๆ กี่ครั้ง โดยไม่ต้องเก็บของลับไว้
+  tokenHash String @map("token_hash")
+
+  /// 'CHECK_IN' | 'CHECK_OUT' | 'NONE' — action ที่ "พยายามจะทำ"
+  /// NONE = ยังไม่ทันรู้ว่าจะทำอะไร (หา session ไม่เจอ / งานถูกยกเลิก)
+  action String
+  /// รหัสผลลัพธ์ เช่น 'SUCCESS' | 'WRONG_CAREGIVER' | 'OUT_OF_WINDOW'
+  /// ค่าทั้งหมดอยู่ที่ SCAN_RESULT ใน src/monitoring/qr/qr.constants.ts
+  result String
+  /// ข้อความภาษาไทยที่ผู้สแกนเห็นบนหน้าจอ — เก็บไว้ให้แอดมินอ่านย้อนหลังได้ว่า
+  /// "ตอนนั้นระบบบอกผู้ดูแลว่าอะไร" ซึ่งสำคัญมากเวลามีข้อพิพาท
+  reason String?
+
+  /// เวลาของเซิร์ฟเวอร์เท่านั้น (ClockService) — ไม่รับเวลาจากเครื่อง client
+  /// ไม่มีคอลัมน์ created_at เพราะจะเป็นค่าเดียวกันเป๊ะ ๆ ซ้ำซ้อนเปล่า ๆ
+  scannedAt DateTime @default(now()) @map("scanned_at") @db.Timestamptz(6)
+
+  /// SetNull ไม่ใช่ Cascade โดยตั้งใจ — audit log ต้องไม่หายไปพร้อมของที่มันบันทึกไว้
+  session JobSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  booking Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  /// การ์ด PYG-436 ระบุ index bookingId ไว้ตรง ๆ
+  @@index([bookingId], map: "job_scan_events_booking_id_idx")
+  /// ไทม์ไลน์การสแกนของ session หนึ่ง ๆ (หน้าแอดมิน / การสอบสวนข้อพิพาท)
+  @@index([sessionId, scannedAt], map: "job_scan_events_session_id_scanned_at_idx")
+  @@map("job_scan_events")
+}
+
+model CareRecipient {
+  id                      String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patientId               String          @map("patient_id")
+  name                    String          @db.VarChar(255)
+  nickname                String?         @db.VarChar(100)
+  date_of_birth           DateTime?       @db.Date
+  gender                  gender_enum?
+  weight_kg               Decimal?        @db.Decimal(5, 2)
+  height_cm               Decimal?        @db.Decimal(5, 2)
+  mobility_level          mobility_level?
+  medical_conditions      String[]
+  current_medications     String?
+  allergies               String?
+  blood_type              String?         @db.VarChar(5)
+  address_line            String?
+  province                String?         @db.VarChar(100)
+  district                String?         @db.VarChar(100)
+  lat                     Decimal?        @db.Decimal(10, 7)
+  lng                     Decimal?        @db.Decimal(10, 7)
+  emergency_contact_name  String?
+  emergency_contact_phone String?
+  emergency_contact_rel   String?
+  preferred_hospital      String?
+  is_self                 Boolean         @default(false)
+  created_at              DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime        @default(now()) @db.Timestamptz(6)
+  /// PYG-411: กลุ่มครอบครัวที่โปรไฟล์นี้ถูกแชร์เข้าไป
+  /// NULL = โปรไฟล์ส่วนตัวของ patient คนนั้น (พฤติกรรมเดิมทั้งหมดก่อนมี family group)
+  /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
+  familyGroupId           String?         @map("family_group_id") @db.Uuid
+  bookings                Booking[]
+  patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // FK จริงคือ ON DELETE SET NULL / ON UPDATE CASCADE ซึ่งเป็นค่า default ของ Prisma
+  // สำหรับ relation แบบ optional อยู่แล้ว → ไม่เขียนซ้ำ เพื่อให้ db pull ไม่มี diff
+  familyGroup             FamilyGroup?    @relation(fields: [familyGroupId], references: [id])
+
+  @@index([patientId], map: "idx_care_recipients_patient")
+  // หมายเหตุ: index "care_recipients_family_group_id_idx" เป็น partial index
+  // (WHERE family_group_id IS NOT NULL) ซึ่ง Prisma เขียนไม่ได้ → มีเฉพาะใน migration SQL
+  @@map("care_recipients")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PYG-411 — Family Group (Epic PYG-381)
+// migration: prisma/migrations/20260824000000_family_group_management
+//
+// ★ CHECK constraint และ partial index ทุกอันอยู่ในไฟล์ SQL เท่านั้น
+//   เพราะ Prisma เขียนสองอย่างนี้ไม่ได้ → `db pull` ก็มองไม่เห็น จึงไม่ทำให้เกิด diff
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// กลุ่มครอบครัวหนึ่งกลุ่ม
+///
+/// ★ ไม่มีฟิลด์ ownerId โดยตั้งใจ — "เจ้าของกลุ่ม" เก็บที่ FamilyGroupMember.role = 'OWNER'
+///   ที่เดียว ถ้าเก็บซ้ำสองที่ พอ transferOwnership อัปเดตไม่ครบจะได้กลุ่มที่เจ้าของเพี้ยนแบบเงียบ ๆ
+///   ดีบีบังคับ "OWNER ที่ ACTIVE ได้กลุ่มละคนเดียว" ด้วย partial unique index ในไฟล์ SQL
+model FamilyGroup {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// ดีบีมี CHECK: 1–80 ตัวอักษรหลัง trim (AC "rename empty or >80 chars → validation")
+  name      String
+  /// คนสร้างกลุ่ม = ประวัติ ไม่ใช่ "เจ้าของปัจจุบัน" (โอนเจ้าของได้ แต่คนสร้างเปลี่ยนไม่ได้)
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  creator        User?                 @relation(fields: [createdBy], references: [id])
+  members        FamilyGroupMember[]
+  invites        FamilyGroupInvite[]
+  activity       FamilyGroupActivity[]
+  careRecipients CareRecipient[]
+  bookings       Booking[]
+
+  @@map("family_groups")
+}
+
+/// ใครอยู่กลุ่มไหน บทบาทอะไร สถานะอะไร
+model FamilyGroupMember {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String    @map("group_id") @db.Uuid
+  userId    String    @map("user_id")
+  /// 'OWNER' | 'MEMBER' — text + CHECK ในดีบี ไม่ใช่ PG enum (กติกาของการ์ด)
+  role      String    @default("MEMBER")
+  /// 'ACTIVE' | 'REMOVED' | 'LEFT'
+  /// ★ ไม่ลบแถวทิ้งตอนออก/โดนเตะ เพราะ activity feed ต้องอ้างย้อนหลังได้ว่าใครเคยอยู่
+  /// PYG-412: ทุกการเช็คสิทธิ์ต้องกรอง status = 'ACTIVE' เสมอ
+  status    String    @default("ACTIVE")
+  /// NULL = คนสร้างกลุ่มเอง ไม่มีใครเชิญ
+  invitedBy String?   @map("invited_by")
+  joinedAt  DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group   FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user    User        @relation("FamilyGroupMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  inviter User?       @relation("FamilyGroupMemberInvitedBy", fields: [invitedBy], references: [id])
+
+  /// คนเดียวมีได้แถวเดียวต่อกลุ่มไม่ว่าสถานะอะไร → คนที่เคยออกแล้วกลับเข้ามา
+  /// คือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง (ช่วยให้ PYG-417 idempotent)
+  @@unique([groupId, userId])
+  @@index([userId])
+  /// คิวรี่ที่ FamilyGroupGuard (PYG-412) เรียกทุก request
+  @@index([groupId, status])
+  // partial unique "family_group_members_one_active_owner_key"
+  // (WHERE role='OWNER' AND status='ACTIVE') อยู่ในไฟล์ SQL — Prisma เขียนไม่ได้
+  @@map("family_group_members")
+}
+
+/// คำเชิญทางอีเมล (FG-2 / PYG-416, PYG-417)
+model FamilyGroupInvite {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String @map("group_id") @db.Uuid
+  /// เทียบแบบ case-insensitive ผ่าน index บน lower(email) ในไฟล์ SQL
+  email     String
+  /// ★ sha256(token) เป็น hex 64 ตัว — ห้ามเก็บ token ดิบ (โชว์ครั้งเดียวตอนสร้างลิงก์)
+  ///   ดีบีมี CHECK char_length = 64 กันเผลอเก็บ token ดิบลงมา
+  tokenHash String @unique @map("token_hash")
+  /// 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED'
+  status    String @default("PENDING")
+
+  invitedBy  String?   @map("invited_by")
+  acceptedBy String?   @map("accepted_by")
+  /// now() + FAMILY_INVITE_TTL_HOURS (168 ชม.) — คำนวณฝั่ง app เพราะ TTL เป็น config (PYG-428)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt DateTime? @map("accepted_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group    FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  inviter  User?       @relation("FamilyGroupInviteInvitedBy", fields: [invitedBy], references: [id])
+  acceptor User?       @relation("FamilyGroupInviteAcceptedBy", fields: [acceptedBy], references: [id])
+
+  // acceptInvite(token) หา invite จาก sha256(token) — unique อยู่ที่ฟิลด์ tokenHash ด้านบน
+  @@index([groupId, status])
+  // partial unique "family_group_invites_pending_group_email_key"
+  // บน (group_id, lower(email)) WHERE status='PENDING' อยู่ในไฟล์ SQL — Prisma เขียนไม่ได้
+  @@map("family_group_invites")
+}
+
+/// ฟีดกิจกรรมของกลุ่ม แบบ append-only (FG-3 / PYG-421)
+/// ทุกแถวต้องเขียนใน transaction เดียวกับการเปลี่ยนแปลงจริง (AC A5) ห้าม fire-and-forget
+model FamilyGroupActivity {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId    String   @map("group_id") @db.Uuid
+  /// ★ ลบ user แล้วเป็น NULL ไม่ใช่ลบแถวตาม — ฟีดคือหลักฐาน ห้ามลบบัญชีแล้วลบร่องรอยตัวเองได้
+  actorId    String?  @map("actor_id")
+  /// ค่าที่อนุญาตดูได้จาก CHECK "family_group_activity_action_check" ในไฟล์ SQL
+  /// (เช่น GROUP_CREATED, MEMBER_JOINED, BOOKING_ON_BEHALF)
+  action     String
+  /// 'GROUP' | 'MEMBER' | 'INVITE' | 'RECIPIENT' | 'BOOKING'
+  targetType String?  @map("target_type")
+  /// polymorphic จึง "ไม่มี FK" และเป็น TEXT เพราะเป้าหมายปนกันทั้ง UUID และ TEXT
+  targetId   String?  @map("target_id")
+  /// รายละเอียดที่ไม่คุ้มทำเป็นคอลัมน์ เช่น {"oldName":"บ้านยาย","newName":"บ้านย่า"}
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  group FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  actor User?       @relation(fields: [actorId], references: [id])
+
+  /// keyset pagination ของ PYG-421 (created_at DESC)
+  /// ★ ต้องมี id ต่อท้าย เพราะ activity ที่เขียนใน transaction เดียวกันได้ created_at เท่ากันเป๊ะ
+  ///   cursor ที่ดูแค่ created_at จะข้ามแถวหายหรือวนซ้ำ → cursor ต้องเป็นคู่ (createdAt, id)
+  @@index([groupId, createdAt(sort: Desc), id(sort: Desc)], map: "family_group_activity_group_id_created_at_idx")
+  @@map("family_group_activity")
+}
+
+model SavedCaregiver {
+  patientId   String    @map("patient_id")
+  caregiverId String    @map("caregiver_id")
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  saved_at    DateTime  @default(now()) @db.Timestamptz(6)
+  id          String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patient     User      @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([patientId, caregiverId])
+  @@unique([patientId, caregiverId])
+  @@index([patientId], map: "idx_saved_caregivers_patient")
+  @@map("saved_caregivers")
+}
+
+model KycDocument {
+  id           String     @id @default(uuid())
+  caregiverId  String?    @map("caregiver_id")
+  documentType String     @map("doc_type")
+  fileUrl      String     @map("file_url")
+  fileName     String     @map("file_name")
+  fileSize     Int        @map("file_size")
+  mimeType     String     @map("mime_type")
+  uploadedAt   DateTime   @default(now()) @map("uploaded_at")
+  userId       String     @map("user_id")
+  caregiver    Caregiver? @relation(fields: [caregiverId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
+
   @@map("kyc_documents")
 }
 
 model KycReview {
-  id            String    @id @default(uuid())
-  caregiverId   String    @map("caregiver_id")
-  reviewerId    String    @map("reviewer_id")
-  action        String    // "approved" | "rejected"
-  reason        String?
-  reviewedAt    DateTime  @default(now()) @map("reviewed_at")
-
-  // Relations
-  caregiver     Caregiver @relation(fields: [caregiverId], references: [id])
-  reviewer      User      @relation(fields: [reviewerId], references: [id]) // Assuming User model handles Admin
+  id          String    @id @default(uuid())
+  caregiverId String    @map("caregiver_id")
+  reviewerId  String    @map("reviewer_id")
+  action      String
+  reason      String?
+  reviewedAt  DateTime  @default(now()) @map("reviewed_at")
+  caregiver   Caregiver @relation(fields: [caregiverId], references: [id])
+  reviewer    User      @relation(fields: [reviewerId], references: [id])
 
   @@map("kyc_reviews")
 }
 
-// ─── Notification Feature (PYG-95) ───────────────────────────────────────────
-// In-app notifications สำหรับแจ้งเตือน user เช่น KYC status, booking update
-//
-// ทำไมต้องเป็น enum?
-// - เพื่อจำกัด type ให้เป็นค่าที่กำหนด ป้องกัน typo (เช่น "kyc_submited")
-// - Prisma enum จะ generate TypeScript type + Postgres enum type ให้อัตโนมัติ
-//
-// เวลาเพิ่ม type ใหม่ → เพิ่มที่นี่ + rerun migration
-enum NotificationType {
-  kyc_submitted    // caregiver ส่ง KYC เข้ามา (แจ้ง admin)
-  kyc_verified     // KYC ผ่าน (แจ้ง caregiver)
-  kyc_rejected     // KYC ไม่ผ่าน (แจ้ง caregiver)
-  kyc_resubmitted  // caregiver ส่ง KYC ใหม่หลังถูก reject
-}
-
 model Notification {
   id        String           @id @default(uuid())
-  userId    String           @map("user_id")      // คนที่ได้รับ notification
-  type      NotificationType                       // ประเภทแจ้งเตือน (enum)
-  title     String                                 // หัวข้อสั้นๆ แสดงใน list
-  body      String                                 // เนื้อหารายละเอียด
-  data      Json?                                  // metadata เพิ่มเติม เช่น { caregiverId, bookingId }
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
   isRead    Boolean          @default(false) @map("is_read")
-  readAt    DateTime?        @map("read_at")       // เวลาที่ user อ่าน (null = ยังไม่อ่าน)
+  readAt    DateTime?        @map("read_at")
   createdAt DateTime         @default(now()) @map("created_at")
-
-  // Relations
   user      User             @relation(fields: [userId], references: [id])
 
-  // Index สำหรับ query ยอดนิยม:
-  // - ดู notification ของ user ตัวเอง เรียงจากใหม่ไปเก่า
-  // - filter unreadOnly ได้เร็ว
   @@index([userId, isRead, createdAt(sort: Desc)])
-
   @@map("notifications")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model field_locks {
+  id                                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entity_type                          String
+  entity_id                            String
+  field_name                           String
+  locked_by                            String
+  locked_at                            DateTime  @default(now()) @db.Timestamptz(6)
+  unlocked_at                          DateTime? @db.Timestamptz(6)
+  unlocked_by                          String?
+  users_field_locks_locked_byTousers   User      @relation("field_locks_locked_byTousers", fields: [locked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_field_locks_unlocked_byTousers User?     @relation("field_locks_unlocked_byTousers", fields: [unlocked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([entity_type, entity_id, field_name])
+  @@index([locked_by], map: "idx_field_locks_locked_by")
+}
+
+model admin_audit_logs {
+  id                                           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id                                     String
+  action                                       String
+  target_user_id                               String?
+  details                                      Json?
+  created_at                                   DateTime @default(now())
+  users_admin_audit_logs_admin_idTousers       User     @relation("admin_audit_logs_admin_idTousers", fields: [admin_id], references: [id])
+  users_admin_audit_logs_target_user_idTousers User?    @relation("admin_audit_logs_target_user_idTousers", fields: [target_user_id], references: [id])
+}
+
+model caregiver_edit_logs {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver_id  String
+  edited_by     String
+  action        String
+  field_changes Json?
+  created_at    DateTime  @default(now())
+  caregivers    Caregiver @relation(fields: [caregiver_id], references: [id])
+  users         User      @relation(fields: [edited_by], references: [id])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model booking_tasks {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id   String   @db.Uuid
+  description  String
+  is_suggested Boolean  @default(false)
+  is_custom    Boolean  @default(false)
+  time_note    String?
+  sort_order   Int      @default(0)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  bookings     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_booking_tasks_booking")
+}
+
+model Payment {
+  id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId      String                 @unique(map: "idx_payments_booking") @map("booking_id") @db.Uuid
+  patientId      String                 @map("patient_id")
+  caregiverId    String                 @map("caregiver_id")
+  amount         Decimal                @db.Decimal(10, 2)
+  capturedAmount Decimal?               @map("captured_amount") @db.Decimal(10, 2)
+  refundedAmount Decimal                @default(0) @map("refunded_amount") @db.Decimal(10, 2)
+  currency       String                 @default("THB") @db.VarChar(3)
+  omiseChargeId  String?                @map("omise_charge_id")
+  omiseToken     String?                @map("omise_token")
+  paymentMethod  String                 @default("credit_card") @map("payment_method") @db.VarChar(20)
+  paymentStatus  PaymentStatus          @default(pending) @map("payment_status")
+  failureCode    String?                @map("failure_code")
+  failureMessage String?                @map("failure_message")
+  metadata       Json                   @default("{}")
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)
+  statusHistory  PaymentStatusHistory[]
+  booking        Booking                @relation(fields: [bookingId], references: [id], onUpdate: NoAction, map: "fk_payments_booking")
+  caregiver      User                   @relation("CaregiverPayments", fields: [caregiverId], references: [id], onUpdate: NoAction, map: "fk_payments_caregiver")
+  patient        User                   @relation("PatientPayments", fields: [patientId], references: [id], onUpdate: NoAction, map: "fk_payments_patient")
+
+  @@index([patientId], map: "idx_payments_patient")
+  @@index([paymentStatus], map: "idx_payments_status")
+  // PYG-333: index รองรับ admin transactions list (default sort created_desc + date-range filter)
+  @@index([createdAt], map: "idx_payments_created_at")
+  @@map("payments")
+}
+
+/// PYG-277 — Audit trail ของการเปลี่ยน payment status (FSM)
+/// ทุกครั้งที่ PaymentStateMachine.transition() ทำงาน → insert 1 แถวที่นี่
+/// ใช้ตอบคำถาม "ทำไม payment ถึงเป็นสถานะนี้ ใครเปลี่ยน เปลี่ยนเมื่อไหร่"
+model PaymentStatusHistory {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentId     String         @map("payment_id") @db.Uuid
+  fromStatus    PaymentStatus? @map("from_status")
+  toStatus      PaymentStatus  @map("to_status")
+  changedBy     String?        @map("changed_by")
+  reason        String?
+  metadata      Json?
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  changedByUser User?          @relation("PaymentStatusChanges", fields: [changedBy], references: [id], onUpdate: NoAction, map: "fk_psh_changed_by")
+  payment       Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_psh_payment")
+
+  @@index([paymentId], map: "idx_psh_payment")
+  @@map("payment_status_history")
+}
+
+/// PYG-375: deterministic once-only execution for money commands (capture/refund/payout/transfer).
+/// key is INSERTed before the Omise call; a PK collision → return stored `result` (no 2nd call).
+/// Same key is also sent as the Omise-Idempotency-Key header (two layers). Cron prunes > 30 days.
+model IdempotencyKey {
+  key       String   @id
+  action    String
+  bookingId String?  @map("booking_id") @db.Uuid
+  result    Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
+
+enum NotificationType {
+  kyc_submitted
+  kyc_verified
+  kyc_rejected
+  kyc_resubmitted
+  booking_new
+  booking_accepted
+  booking_declined
+  booking_confirmed
+  booking_cancelled
+  booking_completed
+  payment_held
+  payment_captured
+  refund_issued
+  dispute_created
+  dispute_resolved
+  payment_refunded
+  payment_voided
+  payment_transferred
+}
+
+enum booking_service_type {
+  general_care
+  bedridden_care
+  physiotherapy
+  medication
+  companion
+}
+
+enum booking_status {
+  pending
+  accepted
+  confirmed
+  rejected
+  completed
+  unmatched
+  cancelled
+}
+
+enum gender_enum {
+  male
+  female
+}
+
+enum job_type {
+  general_care
+  bedridden_care
+  physiotherapy
+  medication
+  companion
+}
+
+enum mobility_level {
+  independent
+  assisted
+  wheelchair
+  bedridden
+}
+
+enum PaymentStatus {
+  pending
+  held
+  captured
+  transferred
+  voided
+  refunded
+  partially_refunded
+  failed
+  expired
+
+  @@map("payment_status_enum")
+}
+
+enum service_location {
+  at_home
+  accompany_outside
+}
+
+enum time_slot {
+  morning
+  afternoon
+  evening
 }

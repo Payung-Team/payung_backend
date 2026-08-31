@@ -13,6 +13,7 @@
  * @Field()      = บอก GraphQL ว่า property นี้เป็น field ที่ client ขอได้
  */
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
+import { RejectionReason } from './rejection-reason.entity';
 
 @ObjectType()
 export class Caregiver {
@@ -24,13 +25,33 @@ export class Caregiver {
   @Field({ description: 'Internal user ID linked to this caregiver' })
   userId!: string;
 
+  /** รหัสประจำตัว caregiver ที่ system generate ให้ เช่น CG-0001 */
+  @Field({ nullable: true, description: 'System-generated caregiver number e.g. CG-0001' })
+  caregiverNumber?: string;
+
   /** ชื่อ-นามสกุลจริง (ต้องตรงกับบัตรประชาชน) */
   @Field()
   fullName!: string;
 
+  /** Email ของ caregiver (ดึงจาก user) */
+  @Field({ nullable: true, description: 'Email address of the caregiver linked user' })
+  email?: string;
+
   /** เลขบัตรประชาชน 13 หลัก */
   @Field()
   idCardNumber!: string;
+
+  /** เพศ: "male" | "female" | "other" */
+  @Field({ nullable: true })
+  gender?: string;
+
+  /** วันเกิด */
+  @Field({ nullable: true })
+  dateOfBirth?: Date;
+
+  /** ที่อยู่ */
+  @Field({ nullable: true })
+  address?: string;
 
   /** เบอร์โทรศัพท์ติดต่อ */
   @Field()
@@ -77,6 +98,10 @@ export class Caregiver {
   @Field({ description: 'Whether caregiver appears in search results' })
   isSearchable!: boolean;
 
+  /** จำนวนครั้งที่ resubmit KYC หลังถูก reject (audit log) */
+  @Field(() => Int, { description: 'Number of times KYC was resubmitted after rejection' })
+  resubmitCount!: number;
+
   /** วันเวลาที่สร้าง caregiver record */
   @Field()
   createdAt!: Date;
@@ -84,4 +109,12 @@ export class Caregiver {
   /** วันเวลาที่อัปเดตข้อมูลล่าสุด */
   @Field()
   updatedAt!: Date;
+
+  /** เหตุผลที่ reject KYC (JSONB) — null ถ้ายังไม่เคย reject หรือหลัง resubmit */
+  @Field(() => [RejectionReason], { nullable: true })
+  rejectionReasons?: RejectionReason[];
+
+  /** ภาษาที่สื่อสารได้ */
+  @Field(() => [String], { description: 'Languages spoken by caregiver' })
+  languages!: string[];
 }

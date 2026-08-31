@@ -14,20 +14,36 @@
  */
 import { Module } from '@nestjs/common';
 import { KycResolver } from './kyc.resolver';
+import { CaregiverResolver } from './caregiver.resolver';
+import { WorkConditionResolver } from './work-condition.resolver';
 import { KycService } from './kyc.service';
 import { CaregiverService } from './caregiver.service';
+import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { FieldLockGuard } from '../../common/guards/field-lock.guard';
+import { NotificationModule } from '../../notification/notification.module';
+import { EmailModule } from '../../email/email.module';
 
 @Module({
+  // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
+  // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
+  imports: [NotificationModule, EmailModule],
   providers: [
     KycResolver,
+    CaregiverResolver,
+    WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition
     KycService,
-    CaregiverService,       // CRUD สำหรับ caregivers table
-    KycDocumentService,     // CRUD สำหรับ kyc_documents table
+    CaregiverService, // CRUD สำหรับ caregivers table
+    WorkConditionService, // PYG-188: availability + jobTypes + serviceArea (3 tables)
+    KycDocumentService, // CRUD สำหรับ kyc_documents table
     SupabaseAuthGuard,
     RolesGuard,
+    FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile
   ],
+  // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
+  // me { caregiver { ... } } (PYG-90)
+  exports: [CaregiverService],
 })
 export class KycModule {}

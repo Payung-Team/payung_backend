@@ -32,6 +32,34 @@ export class UpdateProfileInput {
   @MaxLength(200, { message: 'Address must be at most 200 characters' })
   address?: string;
 
+  /** ตำบล/แขวง — 0-100 ตัวอักษร */
+  @Field({ nullable: true, description: 'Sub-district (ตำบล/แขวง)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100, { message: 'Sub-district must be at most 100 characters' })
+  subDistrict?: string;
+
+  /** อำเภอ/เขต — 0-100 ตัวอักษร */
+  @Field({ nullable: true, description: 'District (อำเภอ/เขต)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100, { message: 'District must be at most 100 characters' })
+  district?: string;
+
+  /** จังหวัด — 0-100 ตัวอักษร */
+  @Field({ nullable: true, description: 'Province (จังหวัด)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100, { message: 'Province must be at most 100 characters' })
+  province?: string;
+
+  /** รหัสไปรษณีย์ — 0-10 ตัวอักษร */
+  @Field({ nullable: true, description: 'Postal code (รหัสไปรษณีย์)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10, { message: 'Postal code must be at most 10 characters' })
+  postalCode?: string;
+
   /** เกี่ยวกับตัวเอง — 0-300 ตัวอักษร */
   @Field({ nullable: true, description: 'Bio or personal description' })
   @IsOptional()

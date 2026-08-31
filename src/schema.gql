@@ -2,6 +2,204 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+"""
+Admin dashboard data: summary stats, trends, review time, and recent activity
+"""
+type AdminDashboardPayload {
+  """
+  Average hours between KYC submission and approval (null if no verified caregivers)
+  """
+  avgReviewTimeHours: Float
+
+  """Last 10 admin KYC review actions"""
+  recentActivity: [RecentActivity!]!
+
+  """High-level KYC statistics"""
+  summary: DashboardSummary!
+
+  """KYC submissions per week for the last 8 weeks (oldest first)"""
+  weeklySubmissions: [WeeklySubmission!]!
+}
+
+input AdminDisputesInput {
+  dateFrom: DateTime
+  dateTo: DateTime
+  disputeStatus: DisputeStatus
+  filedBy: DisputeFiledBy
+  limit: Int
+  page: Int
+  q: String
+  sortBy: DisputeSortBy
+}
+
+input AdminEditUserInput {
+  """Address"""
+  address: String
+
+  """Bio or personal description"""
+  bio: String
+
+  """Display name"""
+  displayName: String
+
+  """Email address"""
+  email: String
+
+  """Phone number"""
+  phone: String
+
+  """UUID of the user to edit"""
+  userId: ID!
+}
+
+"""Full KYC detail for a single caregiver (admin only)"""
+type AdminKycDetailPayload {
+  """Caregiver profile"""
+  caregiver: Caregiver!
+
+  """KYC documents with signed URLs (1hr expiry)"""
+  documents: [KycDocument!]!
+
+  """Edit history showing field changes, newest first"""
+  editHistory: [CaregiverEditLog!]!
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
+
+  """Review history, newest first"""
+  reviews: [KycReview!]!
+}
+
+input AdminKycListInput {
+  """Items per page (default: 20, max: 100)."""
+  limit: Int
+
+  """Page number (1-based). Defaults to 1."""
+  page: Int
+
+  """Search by caregiver full name (case-insensitive partial match)"""
+  search: String
+
+  """Filter by KYC status. Omit or use "all" to return every status."""
+  status: KycStatusFilter
+}
+
+"""Paginated KYC submission list for admin"""
+type AdminKycListPayload {
+  """Caregiver KYC summaries for the current page"""
+  items: [CaregiverKycSummary!]!
+
+  """Current page number (1-based)"""
+  page: Int!
+
+  """Total number of matching caregivers"""
+  total: Int!
+
+  """Total number of pages"""
+  totalPages: Int!
+}
+
+input AdminPaymentsInput {
+  limit: Int
+  page: Int
+  status: PaymentStatus
+}
+
+input AdminTransactionsInput {
+  dateFrom: DateTime
+  dateTo: DateTime
+  limit: Int
+  page: Int
+  q: String
+  sortBy: TransactionSortBy
+  status: String
+  type: TransactionType
+}
+
+input AdminUpdateCaregiverInfoInput {
+  """UUID of the caregiver to edit"""
+  caregiverId: ID!
+
+  """Email address (must be unique)"""
+  email: String
+
+  """First name"""
+  firstName: String
+
+  """Thai national ID (exactly 13 digits)"""
+  idCardNumber: String
+
+  """Last name"""
+  lastName: String
+}
+
+type AdminUpdateCaregiverInfoPayload {
+  """Email address of the linked user"""
+  email: String!
+
+  """First name (extracted from fullName)"""
+  firstName: String!
+
+  """Caregiver UUID"""
+  id: ID!
+
+  """Thai national ID (13 digits)"""
+  idCardNumber: String!
+
+  """Last name (extracted from fullName)"""
+  lastName: String!
+}
+
+"""Full user detail for admin management"""
+type AdminUserDetailPayload {
+  """Number of admin actions taken on this user"""
+  auditLogCount: Int!
+
+  """Caregiver profile (null if not a caregiver)"""
+  caregiver: Caregiver
+
+  """Whether the user is currently suspended"""
+  isSuspended: Boolean!
+
+  """Current KYC status: none | pending | verified | rejected | n/a"""
+  kycStatus: String!
+
+  """Scheduled permanent deletion date"""
+  scheduledDeleteAt: DateTime
+
+  """User profile"""
+  user: User!
+}
+
+input AdminUserListInput {
+  """Items per page (default: 20, max: 100)."""
+  limit: Int
+
+  """Page number (1-based). Defaults to 1."""
+  page: Int
+
+  """Filter by user role. Omit or "all" for every role."""
+  role: RoleFilter
+
+  """Search by display name or email (case-insensitive)"""
+  search: String
+}
+
+"""Paginated user list for admin"""
+type AdminUserListPayload {
+  """Users for the current page"""
+  items: [UserSummary!]!
+
+  """Current page number (1-based)"""
+  page: Int!
+
+  """Total number of matching users"""
+  total: Int!
+
+  """Total number of pages"""
+  totalPages: Int!
+}
+
 type AuthPayload {
   """JWT access token for API requests"""
   accessToken: String!
@@ -13,11 +211,114 @@ type AuthPayload {
   user: User!
 }
 
-type Caregiver {
-  bio: String
+type AvailabilitySlot {
+  """Day of week: 0=Sunday, 1=Monday … 6=Saturday"""
+  dayOfWeek: Int!
+
+  """Whether caregiver is available in this slot"""
+  isActive: Boolean!
+
+  """Time slot label e.g. 'morning' | 'afternoon' | 'evening'"""
+  timeSlot: String!
+}
+
+input AvailabilitySlotInput {
+  """Day of week: 0=Sunday, 1=Monday … 6=Saturday"""
+  dayOfWeek: Int!
+
+  """Whether caregiver is available in this slot"""
+  isActive: Boolean! = true
+
+  """Time slot label e.g. 'morning' | 'afternoon' | 'evening'"""
+  timeSlot: String!
+}
+
+input BookingHistoryInput {
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus
+}
+
+type BookingListResponse {
+  data: [BookingSummary!]!
+  pagination: BookingPagination!
+}
+
+type BookingPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+enum BookingStatus {
+  ACCEPTED
+  CANCELLED
+  COMPLETED
+  CONFIRMED
+  PENDING
+  REJECTED
+  UNMATCHED
+}
+
+type BookingSummary {
+  bookingDate: String!
+  careRecipientName: String
+  caregiver: CaregiverBriefDto
+  confirmedAt: DateTime
   createdAt: DateTime!
+  disputeReason: String
+  disputeStatus: String
+  durationHours: Float
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  locationLat: Float
+  locationLng: Float
+  notes: String
+
+  """
+  PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
+  """
+  payment: Payment
+  serviceLocations: [String!]!
+  serviceType: String!
+  startTime: String
+  status: String!
+  tasks: [String!]!
+  timeSlot: String!
+}
+
+input CancelAcceptanceInput {
+  bookingId: ID!
+  reason: String!
+}
+
+input CancelScheduledDeleteInput {
+  """ID of the target admin user whose scheduled deletion to cancel"""
+  adminId: String!
+}
+
+type CancelScheduledDeletePayload {
+  """Whether the account was reactivated as part of the cancellation"""
+  reactivated: Boolean!
+  user: User!
+}
+
+type Caregiver {
+  address: String
+  bio: String
+
+  """System-generated caregiver number e.g. CG-0001"""
+  caregiverNumber: String
+  createdAt: DateTime!
+  dateOfBirth: DateTime
+
+  """Email address of the caregiver linked user"""
+  email: String
   experienceYears: Int!
   fullName: String!
+  gender: String
   hourlyRate: Float!
   id: ID!
   idCardNumber: String!
@@ -33,7 +334,14 @@ type Caregiver {
 
   """When KYC was verified by admin"""
   kycVerifiedAt: DateTime
+
+  """Languages spoken by caregiver"""
+  languages: [String!]!
   phone: String!
+  rejectionReasons: [RejectionReason!]
+
+  """Number of times KYC was resubmitted after rejection"""
+  resubmitCount: Int!
   skills: [String!]!
   updatedAt: DateTime!
 
@@ -41,10 +349,555 @@ type Caregiver {
   userId: String!
 }
 
+input CaregiverBookingHistoryInput {
+  dateFrom: String
+  dateTo: String
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus
+}
+
+type CaregiverBookingListResponse {
+  data: [CaregiverBookingSummary!]!
+  pagination: BookingPagination!
+}
+
+type CaregiverBookingSummary {
+  acceptedAt: DateTime
+  bookingDate: String!
+  careRecipientName: String
+  confirmedAt: DateTime
+  createdAt: DateTime!
+  durationHours: Float!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String
+  locationLat: Float
+  locationLng: Float
+  notes: String
+  patient: PatientBriefDto!
+  rejectionReason: String
+  serviceLocations: [String!]!
+  serviceType: String!
+  startTime: String!
+  status: String!
+  tasks: [String!]!
+  timeSlot: String!
+}
+
+input CaregiverBookingsInput {
+  limit: Int = 10
+  page: Int = 1
+  status: BookingStatus!
+  upcoming: Boolean
+}
+
+type CaregiverBriefDto {
+  avatarUrl: String
+  fullName: String
+  hourlyRate: Float
+  id: ID!
+}
+
+"""Log entry for caregiver profile/document edits"""
+type CaregiverEditLog {
+  """
+  Edit action: resubmit | profile_edit | document_upload | document_delete
+  """
+  action: String!
+
+  """Caregiver ID"""
+  caregiverId: String!
+
+  """When this edit was made"""
+  createdAt: DateTime!
+
+  """User ID who made the edit"""
+  editedBy: String!
+
+  """Display name of the editor"""
+  editorName: String
+
+  """List of changed fields with old/new values"""
+  fieldChanges: [FieldChange!]
+  id: ID!
+}
+
+"""Summary of a caregiver KYC submission for admin review"""
+type CaregiverKycSummary {
+  """Caregiver Number (e.g. CG-12345)"""
+  caregiverNumber: String
+
+  """Number of KYC documents uploaded"""
+  documentCount: Int!
+
+  """Caregiver email"""
+  email: String!
+
+  """Caregiver full name"""
+  fullName: String!
+
+  """Caregiver UUID"""
+  id: ID!
+
+  """Current KYC status: none | pending | verified | rejected"""
+  kycStatus: String!
+
+  """When KYC was last submitted"""
+  submittedAt: DateTime
+}
+
+input CaregiverReviewsInput {
+  """caregiver.id ที่ต้องการดูรีวิว"""
+  caregiverId: ID!
+
+  """จำนวนต่อหน้า (สูงสุด 50)"""
+  limit: Int = 10
+
+  """เลขหน้า (เริ่มที่ 1)"""
+  page: Int = 1
+}
+
+type CaregiverReviewsResponse {
+  data: [ReviewItem!]!
+  pagination: ReviewPagination!
+}
+
+type CaregiverSummary {
+  """Avatar URL from user profile"""
+  avatarUrl: String
+
+  """Average rating (null if no reviews yet)"""
+  avgRating: Float
+
+  """Service area district"""
+  district: String
+
+  """Full name"""
+  fullName: String!
+
+  """Hourly rate in THB"""
+  hourlyRate: Float!
+
+  """Caregiver UUID"""
+  id: ID!
+
+  """Service area province"""
+  province: String
+
+  """Total number of patient reviews"""
+  reviewCount: Int!
+
+  """Skill tags"""
+  skills: [String!]!
+}
+
+input ChangeUserRoleInput {
+  """New role ID (1=patient, 2=caregiver). Cannot be 3 or 4."""
+  newRole: Int!
+
+  """UUID of the user to change role"""
+  userId: ID!
+}
+
+input CheckInInput {
+  """
+  position.coords.accuracy หน่วยเมตร — ยิ่งมากยิ่งมั่ว. เกิน GPS_ACCURACY_TRUST_M แล้วระบบจะไม่ติดธงใด ๆ
+  """
+  accuracyM: Int
+
+  """booking ที่จะเช็คอิน — ต้องเป็นงานของผู้ดูแลคนนี้"""
+  bookingId: ID!
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — เก็บเป็น metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """ละติจูดจาก browser (null ได้ ถ้าผู้ใช้ไม่อนุญาตสิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดจาก browser (null ได้ ถ้าผู้ใช้ไม่อนุญาตสิทธิ์ตำแหน่ง)"""
+  lng: Float
+}
+
+input CheckOutInput {
+  """
+  position.coords.accuracy หน่วยเมตร — เกินค่าที่เชื่อได้ ระบบจะไม่ติดธงระยะทาง
+  """
+  accuracyM: Int
+
+  """booking ที่จะปิดงาน — ต้องเช็คอินไปแล้ว"""
+  bookingId: ID!
+
+  """
+  เวลาที่เครื่อง client อ้าง — เก็บเป็น metadata เท่านั้น ห้ามใช้คำนวณระยะเวลาทำงาน
+  """
+  deviceTs: String
+
+  """ละติจูดตอนปิดงาน (null ได้)"""
+  lat: Float
+
+  """ลองจิจูดตอนปิดงาน (null ได้)"""
+  lng: Float
+
+  """
+  บันทึกปิดงาน (ไม่บังคับ) ยาวไม่เกิน 500 ตัวอักษร — ดีไซน์โชว์ตัวนับ 0/500
+  """
+  note: String
+
+  """
+  รูปหลักฐาน 1 รูป (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
+  """
+  photoUrl: String
+}
+
+type CompleteBookingResult {
+  amount: Float!
+  bookingId: ID!
+  completedAt: DateTime!
+  omiseChargeId: String
+  paymentStatus: PaymentStatus!
+  status: String!
+}
+
+input CreateBookingOnBehalfInput {
+  """
+  วันที่ให้บริการ รูปแบบ ISO: "2026-09-15"
+  """
+  bookingDate: String!
+
+  """
+  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ
+  """
+  careRecipientId: ID!
+
+  """
+  ผู้ดูแลที่เลือกไว้ — ส่งมา = booking เป็น pending ทันที, ไม่ส่ง = unmatched รอ matching
+  """
+  caregiverId: ID
+
+  """ชื่อผู้ติดต่อวันให้บริการ"""
+  dayOfContactName: String
+
+  """เบอร์ผู้ติดต่อวันให้บริการ"""
+  dayOfContactPhone: String
+
+  """ความสัมพันธ์ของผู้ติดต่อกับผู้รับบริการ"""
+  dayOfContactRelationship: String
+
+  """จำนวนชั่วโมง (ขั้นต่ำ 0.5)"""
+  durationHours: Float!
+
+  """กลุ่มครอบครัวที่ใช้จอง — ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้"""
+  groupId: ID!
+
+  """ละติจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lat: Float
+
+  """ลองจิจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lng: Float
+
+  """ที่อยู่จุดให้บริการ"""
+  locationAddress: String!
+
+  """บันทึกเพิ่มเติมถึงผู้ดูแล"""
+  notes: String
+
+  """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
+  serviceLocations: [String!]!
+
+  """
+  ประเภทบริการ เช่น "elderly_care"
+  """
+  serviceType: String!
+
+  """
+  เวลาเริ่ม รูปแบบ "09:00:00"
+  """
+  startTime: String!
+
+  """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
+  tasks: [String!]!
+
+  """
+  ช่วงเวลา: "morning" | "afternoon" | "evening"
+  """
+  timeSlot: String!
+}
+
+input CreateFamilyGroupInput {
+  """ชื่อกลุ่ม 1–80 ตัวอักษร (ตัดช่องว่างหัวท้ายให้อัตโนมัติ)"""
+  name: String!
+}
+
+input CreatePaymentInput {
+  """UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)"""
+  bookingId: ID!
+
+  """Omise card token (tokn_...) — จำเป็นสำหรับ credit_card เท่านั้น"""
+  omiseToken: String
+
+  """วิธีการชำระเงิน: credit_card | promptpay"""
+  paymentMethod: String! = "credit_card"
+}
+
+input CreateReviewInput {
+  """booking ที่จะรีวิว — ต้องเป็นของ patient คนนี้ และสถานะ completed"""
+  bookingId: ID!
+
+  """ข้อความรีวิว (ไม่บังคับ) ยาวไม่เกิน 500 ตัวอักษร"""
+  comment: String
+
+  """true = ไม่เปิดเผยชื่อผู้รีวิวบนหน้าโปรไฟล์ caregiver"""
+  isAnonymous: Boolean = false
+
+  """คะแนนดาว 1–5"""
+  rating: Int!
+}
+
+"""High-level KYC statistics for the admin dashboard"""
+type DashboardSummary {
+  """Caregivers awaiting KYC review"""
+  pendingKyc: Int!
+
+  """Caregivers with rejected KYC"""
+  rejectedKyc: Int!
+
+  """Total caregiver profiles created"""
+  totalCaregivers: Int!
+
+  """Total active users across all roles"""
+  totalUsers: Int!
+
+  """Caregivers with verified KYC"""
+  verifiedKyc: Int!
+}
+
 """
 A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
 """
 scalar DateTime
+
+input DeclineBookingInput {
+  bookingId: ID!
+  reason: String!
+}
+
+type DeleteFamilyGroupResult {
+  """true เสมอเมื่อลบสำเร็จ (ล้มเหลวจะเป็น error ไม่ใช่ false)"""
+  deleted: Boolean!
+
+  """id ของกลุ่มที่ถูกลบ"""
+  id: ID!
+}
+
+type DisputeBooking {
+  bookingDate: String!
+  caregiver: DisputePartyBrief
+  createdAt: DateTime!
+  disputeReason: String
+  disputeResolvedAt: DateTime
+  disputeStatus: DisputeStatus!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  patient: DisputePartyBrief!
+  payment: DisputePaymentBrief
+  serviceType: String!
+  status: String!
+  timeSlot: String!
+  updatedAt: DateTime!
+}
+
+"""Admin decision when resolving a booking dispute (PYG-287)"""
+enum DisputeDecision {
+  no_refund
+  refund_full
+  refund_partial
+}
+
+"""ผู้ยื่น dispute: customer (patient) หรือ caregiver (PYG-316)"""
+enum DisputeFiledBy {
+  caregiver
+  customer
+}
+
+type DisputePartyBrief {
+  displayName: String
+  email: String
+  id: ID!
+}
+
+type DisputePaymentBrief {
+  amount: Float!
+  currency: String!
+  id: ID!
+  paymentStatus: PaymentStatus!
+}
+
+"""การเรียงลำดับ dispute queue — default sla_asc (ด่วนสุดก่อน) (PYG-316)"""
+enum DisputeSortBy {
+  sla_asc
+  sla_desc
+}
+
+"""Status of a booking dispute (PYG-287)"""
+enum DisputeStatus {
+  flagged
+  none
+  resolved
+}
+
+type DisputeSummary {
+  amount: Float
+  bookingId: ID!
+  caregiver: DisputePartyBrief
+  currency: String
+  filedAt: DateTime
+  filedBy: DisputeFiledBy
+  id: ID!
+  patient: DisputePartyBrief!
+  slaDueAt: DateTime
+  status: DisputeStatus!
+}
+
+type DisputeSummaryConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [DisputeSummary!]!
+  page: Int!
+  totalCount: Int!
+}
+
+input EditAdminInfoInput {
+  """UUID of the admin to edit"""
+  adminId: ID!
+
+  """New email address (optional)"""
+  email: String
+
+  """First name (optional)"""
+  firstName: String
+
+  """Last name (optional)"""
+  lastName: String
+
+  """3 = ADMIN, 4 = SUPER_ADMIN (optional)"""
+  role: Int
+}
+
+type EditAdminInfoPayload {
+  user: User!
+}
+
+"""Entity types that support field locking"""
+enum EntityTypeEnum {
+  CAREGIVER_PROFILE
+  USER
+}
+
+type FamilyGroup {
+  createdAt: DateTime!
+
+  """
+  users.id ของ "คนสร้าง" — เป็นประวัติ ไม่ใช่เจ้าของปัจจุบัน (โอนสิทธิ์แล้วค่านี้ไม่เปลี่ยน)
+  """
+  createdBy: ID
+  id: ID!
+
+  """จำนวนสมาชิกที่ยัง ACTIVE (รวมเจ้าของ)"""
+  memberCount: Int!
+
+  """
+  รายชื่อสมาชิกที่ยัง ACTIVE — เจ้าของมาก่อนเสมอ แล้วเรียงตามวันเข้ากลุ่ม
+  """
+  members: [FamilyGroupMemberItem!]!
+
+  """'OWNER' | 'MEMBER' — บทบาทของผู้เรียก API ในกลุ่มนี้"""
+  myRole: String!
+
+  """ชื่อกลุ่ม (1–80 ตัวอักษรหลังตัดช่องว่างหัวท้าย)"""
+  name: String!
+  updatedAt: DateTime!
+}
+
+type FamilyGroupMemberItem {
+  """รูปโปรไฟล์"""
+  avatarUrl: String
+
+  """ชื่อที่แสดง (null ได้ถ้าผู้ใช้ยังไม่ตั้งชื่อ)"""
+  displayName: String
+
+  """อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้"""
+  email: String!
+
+  """family_group_members.id"""
+  id: ID!
+
+  """
+  true = สมาชิกคนนี้คือผู้เรียก API ครั้งนี้เอง — FE ใช้ตัดสินว่าจะโชว์ปุ่ม "ออกจากกลุ่ม" หรือ "นำออก"
+  """
+  isMe: Boolean!
+
+  """เข้ากลุ่มเมื่อไหร่"""
+  joinedAt: DateTime!
+
+  """'OWNER' | 'MEMBER' — บทบาทเฉพาะในกลุ่มนี้ ไม่ใช่ role ของทั้งระบบ"""
+  role: String!
+
+  """users.id — ใช้เป็นเป้าหมายของ removeMember / transferOwnership"""
+  userId: ID!
+}
+
+"""A single field change record"""
+type FieldChange {
+  """Field name that was changed"""
+  field: String!
+
+  """New value (JSON-stringified)"""
+  newValue: String
+
+  """Previous value (JSON-stringified)"""
+  oldValue: String
+}
+
+type FieldLockResult {
+  """The field that was locked or unlocked"""
+  fieldName: String!
+
+  """Lock state after the operation"""
+  locked: Boolean!
+
+  """When the field was locked"""
+  lockedAt: DateTime
+
+  """Display name of the admin who locked the field"""
+  lockedBy: String
+
+  """Whether the operation succeeded"""
+  success: Boolean!
+}
+
+input FlagDisputeInput {
+  bookingId: ID!
+  reason: String!
+}
+
+type GroupCareRecipient {
+  id: ID!
+
+  """ชื่อ-นามสกุลของผู้รับบริการ"""
+  name: String!
+
+  """ชื่อเล่น (ถ้ามี) — FE ใช้โชว์ในลิสต์ให้อ่านง่าย"""
+  nickname: String
+
+  """
+  users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"
+  """
+  ownerUserId: ID!
+}
 
 type HealthStatus {
   status: String!
@@ -52,9 +905,199 @@ type HealthStatus {
   timestamp: String!
 }
 
+input InviteAdminInput {
+  """Email address of the new admin"""
+  email: String!
+
+  """First name"""
+  firstName: String!
+
+  """Last name"""
+  lastName: String!
+
+  """3 = ADMIN, 4 = SUPER_ADMIN"""
+  role: Int!
+}
+
+type InviteAdminPayload {
+  """Whether the invitation email with temp password was sent"""
+  tempPasswordSent: Boolean!
+  user: User!
+}
+
+type JobEvent {
+  """ความแม่นยำของตำแหน่ง (เมตร)"""
+  accuracyM: Int
+
+  """
+  true = แถวนี้มีอยู่ก่อนแล้ว ระบบคืนของเดิมให้ ไม่ได้สร้างใหม่ (กดปุ่มซ้ำ) — FE ไม่ต้องขึ้น error
+  """
+  alreadyCheckedIn: Boolean!
+  bookingId: ID!
+
+  """เวลาที่เครื่อง client อ้าง — metadata เท่านั้น"""
+  deviceTs: DateTime
+
+  """ระยะจากจุดงาน (เมตร). null = คำนวณไม่ได้ — ไม่ได้แปลว่าทำผิด"""
+  distanceM: Int
+
+  """'check_in' | 'check_out'"""
+  eventType: String!
+
+  """
+  true = สัญญาณตำแหน่งไม่แม่นพอที่จะเชื่อ distanceM → ระบบจะไม่ติดธงใด ๆ เลย. FE เอาไปโชว์ชิป "สัญญาณอ่อน"
+  """
+  gpsAccuracyLow: Boolean!
+  id: ID!
+
+  """
+  true = booking ใบนี้ไม่มีพิกัดจุดงาน (booking เก่าทุกใบเป็นแบบนี้) → คำนวณระยะไม่ได้ และไม่ติดธง
+  """
+  jobCoordsMissing: Boolean!
+
+  """ละติจูดที่บันทึกไว้ (null = ไม่ได้ให้สิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดที่บันทึกไว้"""
+  lng: Float
+
+  """บันทึกปิดงาน (ใช้ตอน check_out)"""
+  note: String
+
+  """signed URL ของรูปหลักฐาน — หมดอายุใน 1 ชม."""
+  photoUrl: String
+
+  """
+  ธงที่เหตุการณ์นี้ทำให้เกิดขึ้น (array ว่าง = ไม่มีปัญหา) เช่น out_of_radius / out_of_window / clock_anomaly
+  """
+  reviewReasons: [String!]!
+
+  """เวลาที่เซิร์ฟเวอร์บันทึก — เวลาที่ถือเป็นทางการ"""
+  serverTs: DateTime!
+
+  """
+  'caregiver' = ผู้ดูแลกดเอง | 'system' = ระบบปิดให้อัตโนมัติ (งานที่ระบบปิดให้ ไม่นับว่า valid)
+  """
+  source: String!
+
+  """
+  true = อยู่ในรัศมีปกติ (≤ WARN_RADIUS_M). false = นอกรัศมีแนะนำ แต่ยังไม่ถึงขั้นติดธง. null = ตัดสินไม่ได้
+  """
+  withinWarnRadius: Boolean
+}
+
+type JobQr {
+  """booking ที่ QR ใบนี้ผูกอยู่"""
+  bookingId: ID!
+
+  """
+  true = ตอนนี้สแกนได้จริง (อยู่ในช่วงเวลา + ยังไม่ปิดงาน). FE เอาไปตัดสินว่าจะโชว์ QR หรือโชว์ข้อความ "ยังไม่ถึงเวลา / หมดเวลาแล้ว"
+  """
+  isActive: Boolean!
+
+  """
+  สแกนครั้งต่อไปจะเป็น action อะไร: CHECK_IN | CHECK_OUT | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ. ★ ใช้ enum ตัวเดียวกับที่ scanJobQr คืนกลับมา จะได้ไม่ต้องมีคำศัพท์สองชุด
+  """
+  nextAction: ScanAction
+
+  """
+  PENDING = ยังไม่เช็คอิน | CHECKED_IN = กำลังทำงาน | CHECKED_OUT = ปิดงานแล้ว
+  """
+  status: JobSessionStatus!
+
+  """
+  ★ ข้อความลับที่เอาไปวาดเป็น QR — วาดตรง ๆ ทั้งสตริง ห้ามเติม prefix/URL. เฉพาะ patient เจ้าของงานเท่านั้นที่ขอค่านี้ได้
+  """
+  token: String!
+
+  """สแกนได้ตั้งแต่เมื่อไหร่ (ก่อนเวลานัดได้ตามค่า config)"""
+  validFrom: DateTime!
+
+  """สแกนได้ถึงเมื่อไหร่ (เลยเวลาเลิกงานได้ตามค่า config)"""
+  validUntil: DateTime!
+}
+
+type JobScanResult {
+  """
+  สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ) — ตัดสินจากสถานะของ QR ไม่ใช่จากตัว QR เอง
+  """
+  action: ScanAction!
+
+  """งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)"""
+  bookingId: ID
+
+  """
+  หลักฐานการทำงานที่เพิ่งถูกบันทึก (มีเฉพาะตอน ok = true) — เอาไปโชว์ระยะทาง/ธงต่อได้เลย โดยไม่ต้องยิง proofOfWork ซ้ำ
+  """
+  jobEvent: JobEvent
+
+  """
+  ข้อความภาษาไทยที่แสดงให้ผู้ดูแลอ่านได้ทันที (แสดงตรง ๆ ได้เลย ไม่ต้องแปลง)
+  """
+  message: String!
+
+  """
+  true = งานขยับจริง (เช็คอินหรือเช็คเอาท์สำเร็จ). false = ถูกปฏิเสธ ดูสาเหตุที่ result
+  """
+  ok: Boolean!
+
+  """รหัสผลลัพธ์ — ใช้ค่านี้เลือกหน้าจอ ไม่ใช่ message"""
+  result: ScanResult!
+
+  """เวลาที่เซิร์ฟเวอร์บันทึกการสแกนครั้งนี้ — เวลาที่ถือเป็นทางการ"""
+  scannedAt: DateTime!
+
+  """
+  สถานะของ QR 'หลัง' การสแกนครั้งนี้. null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นใบไหน)
+  """
+  sessionStatus: JobSessionStatus
+}
+
+"""
+สถานะของใบ QR — เดินหน้าทางเดียว PENDING → CHECKED_IN → CHECKED_OUT. ไม่มีสถานะ "ยกเลิก" เพราะเรื่องนั้นอ่านจากสถานะของ booking
+"""
+enum JobSessionStatus {
+  CHECKED_IN
+  CHECKED_OUT
+  PENDING
+}
+
+type KycDocument {
+  """Caregiver ID (null before KYC submit)"""
+  caregiverId: String
+
+  """Document type: id_card | certificate | license | photo"""
+  docType: String!
+
+  """Original file name"""
+  fileName: String!
+
+  """File size in bytes"""
+  fileSize: Int!
+
+  """File URL in storage"""
+  fileUrl: String!
+  id: ID!
+
+  """MIME type (e.g. image/jpeg, application/pdf)"""
+  mimeType: String!
+
+  """Temporary signed URL (1hr expiry)"""
+  signedUrl: String
+
+  """Upload timestamp"""
+  uploadedAt: DateTime!
+
+  """User who uploaded this document"""
+  userId: String!
+}
+
 input KycInput {
   """Short bio / introduction"""
   bio: String
+
+  """Date of birth"""
+  dateOfBirth: DateTime
 
   """IDs of previously uploaded KYC documents"""
   documentIds: [String!]!
@@ -64,6 +1107,9 @@ input KycInput {
 
   """Full legal name (must match ID card)"""
   fullName: String!
+
+  """Gender: male | female | other"""
+  gender: String
 
   """Hourly rate in THB"""
   hourlyRate: Float!
@@ -78,6 +1124,90 @@ input KycInput {
   skills: [String!]!
 }
 
+"""A single KYC review action by an admin"""
+type KycReview {
+  """Review action: approved | rejected"""
+  action: String!
+  id: ID!
+
+  """Rejection reason (null if approved)"""
+  reason: String
+
+  """When this review was performed"""
+  reviewedAt: DateTime!
+
+  """ID of the admin who performed this review"""
+  reviewedBy: String!
+
+  """Display name of the admin reviewer"""
+  reviewerName: String
+}
+
+"""Filter KYC list by status. Use "all" to return every status."""
+enum KycStatusFilter {
+  """Return all statuses"""
+  all
+
+  """Awaiting admin review"""
+  pending
+
+  """KYC rejected, caregiver can resubmit"""
+  rejected
+
+  """KYC approved"""
+  verified
+}
+
+type KycStatusPayload {
+  """Caregiver profile (null if never submitted)"""
+  caregiver: Caregiver
+
+  """KYC documents with temporary signed URLs (1hr expiry)"""
+  documents: [KycDocument!]!
+
+  """When KYC was rejected by admin"""
+  rejectedAt: DateTime
+
+  """Reason for rejection (if rejected)"""
+  rejectedReason: String
+
+  """KYC status: none | pending | verified | rejected"""
+  status: String!
+
+  """When KYC was submitted"""
+  submittedAt: DateTime
+
+  """When KYC was verified by admin"""
+  verifiedAt: DateTime
+}
+
+type LeaveFamilyGroupResult {
+  """id ของกลุ่มที่เพิ่งออกมา"""
+  groupId: ID!
+
+  """
+  ชื่อกลุ่ม ณ ตอนที่ออก — เอาไปโชว์ข้อความ "ออกจากกลุ่ม X แล้ว"
+  """
+  groupName: String!
+
+  """true เสมอเมื่อออกสำเร็จ (ล้มเหลวจะเป็น error ไม่ใช่ false)"""
+  left: Boolean!
+}
+
+type LockedField {
+  """The locked field name (camelCase)"""
+  fieldName: String!
+
+  """Whether the field is currently locked"""
+  locked: Boolean!
+
+  """When the lock was applied"""
+  lockedAt: DateTime!
+
+  """Display name of the admin who locked this field"""
+  lockedBy: String!
+}
+
 input LoginInput {
   """Email address of the user"""
   email: String!
@@ -87,37 +1217,991 @@ input LoginInput {
 }
 
 type Mutation {
+  """Caregiver accepts a pending booking request (pending → accepted)."""
+  acceptBooking(bookingId: ID!): CaregiverBookingSummary!
+
+  """
+  Admin only: Activate a suspended user (set isActive = true, is_deleted = false). Records audit log.
+  """
+  activateUser(
+    """UUID of the user to activate"""
+    userId: ID!
+  ): User!
+
+  """
+  Admin only: Edit a regular user profile (displayName, email, phone, address, bio). Cannot be used on admin/super_admin accounts — use editAdminInfo instead. Syncs email to Supabase Auth if changed. Records audit log.
+  """
+  adminEditUser(input: AdminEditUserInput!): User!
+
+  """
+  Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. Records audit log.
+  """
+  adminUpdateCaregiverInfo(input: AdminUpdateCaregiverInfoInput!): AdminUpdateCaregiverInfoPayload!
+
+  """
+  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
+  """
+  approveKyc(
+    """UUID of the caregiver to approve"""
+    caregiverId: ID!
+  ): Caregiver!
+
+  """
+  Caregiver cancels a previously accepted booking before patient confirmation, with a required reason (accepted → rejected).
+  """
+  cancelAcceptance(input: CancelAcceptanceInput!): CaregiverBookingSummary!
+
+  """
+  Super Admin only: Cancel a scheduled deletion for an admin account. Reactivates the account and unbans Supabase Auth.
+  """
+  cancelScheduledDelete(input: CancelScheduledDeleteInput!): CancelScheduledDeletePayload!
+
+  """
+  Admin only: Change a user role. Only patient (1) ↔ caregiver (2) allowed. Cannot change own role or escalate to admin/super_admin. Records audit log.
+  """
+  changeUserRole(input: ChangeUserRoleInput!): User!
+
+  """
+  ผู้ดูแลเช็คอินเพื่อเริ่มงาน (confirmed → in_progress). ★ GPS ไม่เคยทำให้ล้มเหลว — พิกัดเพี้ยนหรือไม่มีพิกัดเลยก็เช็คอินได้ ระบบแค่ติดธงไว้ให้แอดมินดู. กดซ้ำได้ ไม่ error และไม่เกิดแถวใหม่.
+  """
+  checkInBooking(input: CheckInInput!): JobEvent!
+
+  """
+  ผู้ดูแลเช็คเอาท์เพื่อ "ปิดงาน" (in_progress → awaiting_release ถ้าไม่มีธง, → needs_review ถ้ามี). ★ ผู้รับบริการไม่ต้องกดยืนยันอะไรอีก. แนบบันทึกและรูปได้ 1 รูป (ต้องเป็นไฟล์ใน bucket ของเราเท่านั้น). การ์ดนี้ไม่แตะเงิน — การ capture เป็นงานของ Epic 2.
+  """
+  checkOutBooking(input: CheckOutInput!): JobEvent!
+
+  """
+  Patient or caregiver completes a confirmed booking: captures the held charge (payment held → captured) and marks the booking completed (confirmed → completed).
+  """
+  completeBooking(bookingId: ID!): CompleteBookingResult!
+
+  """
+  Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.
+  """
+  completePasswordChange: User!
+
+  """Patient confirms a booking that has been accepted by the caregiver."""
+  confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
+  """
+  createBookingOnBehalf(input: CreateBookingOnBehalfInput!): BookingSummary!
+
+  """
+  สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
+  """
+  createFamilyGroup(input: CreateFamilyGroupInput!): FamilyGroup!
+  createPayment(input: CreatePaymentInput!): Payment!
+
+  """Patient เขียนรีวิวให้ caregiver หลังงาน completed (1 รีวิว/booking)"""
+  createReview(input: CreateReviewInput!): ReviewItem!
+
+  """
+  Caregiver declines a pending booking request with a required reason (pending → rejected).
+  """
+  declineBooking(input: DeclineBookingInput!): CaregiverBookingSummary!
+
+  """
+  ลบกลุ่ม (เจ้าของเท่านั้น). สมาชิก/คำเชิญ/ฟีดกิจกรรม ถูกลบตาม. ★ โปรไฟล์ผู้รับบริการและประวัติการจอง "ไม่ถูกลบ" — แค่ถูกตัดความเชื่อมโยงกับกลุ่ม (family_group_id = null).
+  """
+  deleteFamilyGroup(groupId: ID!): DeleteFamilyGroupResult!
+
+  """Delete a KYC document (allowed only when status is rejected or none)"""
+  deleteKycDocument(documentId: String!): Boolean!
+
+  """
+  Super Admin only: Edit an admin account (name, email, role). Syncs email to Supabase Auth. Protects the last active Super Admin from demotion. Records audit log.
+  """
+  editAdminInfo(input: EditAdminInfoInput!): EditAdminInfoPayload!
+
+  """
+  Patient flags a dispute on their completed booking. Requires booking.status="completed" and reason length ≥ 20.
+  """
+  flagBookingDispute(input: FlagDisputeInput!): DisputeBooking!
+
+  """Admin ซ่อนรีวิว (is_visible=false) เช่นรีวิวไม่เหมาะสม"""
+  hideReview(reviewId: ID!): ReviewItem!
+
+  """
+  Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
+  """
+  inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
+
+  """
+  ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.
+  """
+  leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
+
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
 
   """Logout user"""
   logout: Boolean!
 
+  """Mark all notifications of current user as read"""
+  markAllAsRead: Boolean!
+
+  """Mark a single notification as read"""
+  markAsRead(id: String!): Notification!
+
+  """
+  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
+  """
+  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
+
+  """
+  Admin only: Refund a captured payment (full or partial). amount omitted = full refund. amount specified must be in (0, payment.amount]. Uses Omise-Idempotency-Key to prevent double-refund races.
+  """
+  refundPayment(input: RefundPaymentInput!): Payment!
+
   """Register a new user"""
   register(input: RegisterInput!): AuthPayload!
+
+  """
+  Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
+  """
+  rejectKyc(input: RejectKycInput!): Caregiver!
+
+  """
+  นำสมาชิกออกจากกลุ่ม (เจ้าของเท่านั้น) — สิทธิ์ทั้งหมดของคนนั้นหายทันที. นำตัวเองออกไม่ได้ → LAST_OWNER.
+  """
+  removeMember(input: RemoveMemberInput!): FamilyGroup!
+
+  """
+  เปลี่ยนชื่อกลุ่ม (เจ้าของเท่านั้น). ชื่อว่างหรือเกิน 80 ตัวอักษร → GROUP_NAME_INVALID.
+  """
+  renameFamilyGroup(input: RenameFamilyGroupInput!): FamilyGroup!
+
+  """
+  Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
+  """
+  requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
+
+  """
+  Admin only: Resolve a flagged dispute (no_refund | refund_full | refund_partial). refund_partial requires refundAmount in (0, payment.amount]. refund_full / refund_partial call PaymentService.refundPayment (PYG-286).
+  """
+  resolveDispute(input: ResolveDisputeInput!): DisputeBooking!
+
+  """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
+  resubmitKyc(input: KycInput!): Caregiver!
+
+  """
+  ผู้ดูแลสแกน QR ของงานเพื่อเริ่มหรือจบงาน. ★ สแกนครั้งแรก = เช็คอิน, ครั้งที่สอง = เช็คเอาท์ — ผู้เรียก "ไม่ได้เลือก" ว่าจะทำอะไร สถานะของ QR เป็นตัวตัดสิน. ★ การสแกนที่ถูกปฏิเสธจะ "ไม่ throw error" แต่คืน ok=false พร้อมรหัสเหตุผลใน result (ทุกครั้งถูกบันทึกไว้เสมอ ทั้งสำเร็จและล้มเหลว).
+  """
+  scanJobQr(input: ScanJobQrInput!): JobScanResult!
+
+  """
+  Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
+  """
+  scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
+
+  """Toggle caregiver availability in search results (verified only)"""
+  setSearchable(isSearchable: Boolean!): Caregiver!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
 
+  """
+  Admin only: Suspend a user (set isActive = false). Cannot suspend yourself. Records audit log.
+  """
+  suspendUser(
+    """UUID of the user to suspend"""
+    userId: ID!
+  ): User!
+
+  """
+  Super Admin only: Activate or deactivate an admin account. Deactivate revokes Supabase Auth sessions (ban). Activate clears any scheduled deletion. Sends notification email.
+  """
+  toggleAdminStatus(input: ToggleAdminStatusInput!): ToggleAdminStatusPayload!
+
+  """
+  Admin only: Lock or unlock a specific field of a caregiver profile or user. Locked fields cannot be edited by the user until unlocked. Records audit log.
+  """
+  toggleFieldLock(input: ToggleFieldLockInput!): FieldLockResult!
+
+  """
+  โอนสิทธิ์เจ้าของให้สมาชิกคนอื่นในกลุ่ม (เจ้าของเท่านั้น) — ผู้เรียกจะกลายเป็นสมาชิกธรรมดาทันที. เป้าหมายต้องเป็นสมาชิก ACTIVE อยู่แล้ว มิฉะนั้น MEMBER_NOT_FOUND.
+  """
+  transferOwnership(input: TransferOwnershipInput!): FamilyGroup!
+
+  """Update caregiver profile (verified caregiver only)"""
+  updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
+
+  """Toggle email notification preference"""
+  updateEmailPreference(enabled: Boolean!): User!
+
+  """
+  Update the current user's password. Requires a valid session established via the password-reset magic link.
+  """
+  updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
+
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
+
+  """
+  Upsert the caregiver work condition. Each section is optional (partial update): omit a section to keep it unchanged, or send [] to clear it. Verified caregivers only.
+  """
+  updateWorkCondition(input: UpdateWorkConditionInput!): WorkCondition!
+
+  """Register a KYC document record after uploading to storage"""
+  uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+}
+
+type Notification {
+  """Body / detail of the notification"""
+  body: String!
+
+  """When the notification was created"""
+  createdAt: DateTime!
+
+  """Optional JSON-stringified payload"""
+  data: String
+  id: ID!
+
+  """Whether the notification has been read"""
+  isRead: Boolean!
+
+  """When the notification was read (null if unread)"""
+  readAt: DateTime
+
+  """Short title shown in notification list"""
+  title: String!
+
+  """Notification category"""
+  type: NotificationType!
+
+  """Recipient user ID"""
+  userId: String!
+}
+
+"""Type of in-app notification"""
+enum NotificationType {
+  booking_accepted
+  booking_cancelled
+  booking_completed
+  booking_confirmed
+  booking_declined
+  booking_new
+  dispute_created
+  dispute_resolved
+  kyc_rejected
+  kyc_resubmitted
+  kyc_submitted
+  kyc_verified
+  payment_captured
+  payment_held
+  payment_transferred
+  payment_voided
+  refund_issued
+}
+
+type PatientBriefDto {
+  avatarUrl: String
+  displayName: String
+  id: ID!
+}
+
+type Payment {
+  amount: Float!
+  bookingId: String!
+  caregiverId: String!
+  createdAt: DateTime!
+  currency: String!
+  failureCode: String
+  failureMessage: String
+  id: ID!
+  omiseChargeId: String
+  patientId: String!
+  paymentMethod: String!
+  paymentStatus: PaymentStatus!
+
+  """QR code URL สำหรับ PromptPay (มาจาก Omise)"""
+  qrCodeUrl: String
+  updatedAt: DateTime!
+}
+
+type PaymentConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [Payment!]!
+  page: Int!
+  totalCount: Int!
+}
+
+"""สถานะการชำระเงินของ booking (FSM)"""
+enum PaymentStatus {
+  captured
+  expired
+  failed
+  held
+  partially_refunded
+  pending
+  refunded
+  transferred
+  voided
+}
+
+type PaymentStatusHistory {
+  """User ID ผู้สั่งเปลี่ยน (null = ระบบ/cron)"""
+  changedBy: String
+
+  """เวลาที่เกิดการเปลี่ยนสถานะ"""
+  createdAt: DateTime!
+
+  """สถานะก่อนเปลี่ยน (null = แถวแรกตอนสร้าง payment)"""
+  fromStatus: PaymentStatus
+  id: ID!
+
+  """metadata แบบ JSON-stringified (optional)"""
+  metadata: String
+
+  """Payment ID ที่ประวัตินี้สังกัด"""
+  paymentId: String!
+
+  """เหตุผลของการเปลี่ยนสถานะ"""
+  reason: String
+
+  """สถานะหลังเปลี่ยน"""
+  toStatus: PaymentStatus!
+}
+
+type ProofOfWorkSummary {
+  """
+  เวลาทำงานจริง (นาที) คำนวณจาก server_ts ทั้งสองฝั่ง. null เมื่อยังไม่ปิดงาน หรือเมื่อระบบปิดให้เอง
+  """
+  actualMinutes: Int
+
+  """เวลาที่จองไว้ (นาที) = duration_hours × 60"""
+  bookedMinutes: Int!
+
+  """แถวเช็คอิน (null = ยังไม่เช็คอิน)"""
+  checkIn: JobEvent
+
+  """แถวเช็คเอาท์ (null = ยังไม่ปิดงาน)"""
+  checkOut: JobEvent
+
+  """true = มีข้อพิพาทค้างอยู่ (dispute_status != none)"""
+  disputed: Boolean!
+
+  """ระยะห่างตอนเช็คอิน (เมตร) — ค่าดิบ"""
+  distanceInM: Int
+
+  """ระยะห่างตอนเช็คเอาท์ (เมตร) — ค่าดิบ"""
+  distanceOutM: Int
+
+  """
+  ★ สำหรับ "แสดงผล" เท่านั้น ห้ามใช้ตัดสิน — ตัวตัดสินจริงคือธง short_duration ใน reviewReasons
+  """
+  durationOk: Boolean!
+
+  """
+  true = booking ใบนี้ไม่มีพิกัดจุดงาน — เป็นช่องว่างของข้อมูลเรา ไม่ใช่ความผิดผู้ดูแล
+  """
+  jobCoordsMissing: Boolean!
+
+  """true = ไม่มีการเช็คเอาท์จากผู้ดูแล (ระบบปิดให้เอง หรือยังไม่ปิด)"""
+  noCheckout: Boolean!
+
+  """★ ตัวตัดสินจริง — ธงทั้งหมดที่สะสมจากทั้งเช็คอินและเช็คเอาท์"""
+  reviewReasons: [String!]!
+
+  """'valid' | 'needs_review' | 'incomplete'"""
+  verdict: String!
 }
 
 type Query {
+  """
+  Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
+  """
+  adminDashboard: AdminDashboardPayload!
+
+  """
+  Admin only: Paginated dispute queue (PYG-316). Filters: disputeStatus, dateFrom/dateTo (filed_at), filedBy, q (id / name / email). Default: all disputes (excludes "none"), sorted sla_asc (most urgent first).
+  """
+  adminDisputes(input: AdminDisputesInput): DisputeSummaryConnection!
+
+  """
+  Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
+  """
+  adminKycDetail(caregiverId: ID!): AdminKycDetailPayload!
+
+  """
+  Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
+  """
+  adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
+  """
+  adminPayments(input: AdminPaymentsInput): PaymentConnection!
+
+  """
+  Admin only: รายละเอียด 1 transaction + status timeline + related links. id เป็น composite "payment:<uuid>" หรือ "payout:<uuid>" (PYG-333)
+  """
+  adminTransaction(id: ID!): TransactionDetail!
+
+  """
+  Admin only: ผลรวม aggregate ของ transactions ตาม filter เดียวกับ list (count/ยอดรวมของ payment/payout/refund + net) (PYG-333)
+  """
+  adminTransactionSummary(input: AdminTransactionsInput): TransactionTotals!
+
+  """
+  Admin only: รายการ transactions รวม (payment + payout + refund) filter: type, status, dateFrom/dateTo (created_at), q (booking id / omise id / ชื่อ / อีเมล). default: ทุกประเภท เรียง created_desc (ใหม่สุดก่อน) (PYG-333)
+  """
+  adminTransactions(input: AdminTransactionsInput): TransactionSummaryConnection!
+
+  """
+  Admin only: Get full user detail including caregiver info, KYC status, suspension state, and audit log count.
+  """
+  adminUserDetail(
+    """UUID of the user"""
+    userId: ID!
+  ): AdminUserDetailPayload!
+
+  """
+  Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
+  """
+  adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.
+  """
+  caregiverBookingHistory(input: CaregiverBookingHistoryInput = {}): CaregiverBookingListResponse!
+
+  """
+  Caregiver bookings filtered by status (pending=new requests, accepted=awaiting patient, confirmed+upcoming=active jobs).
+  """
+  caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
+
+  """
+  รายการรีวิวที่มองเห็นได้ของ caregiver (ใหม่สุดก่อน) พร้อม pagination — public
+  """
+  caregiverReviews(input: CaregiverReviewsInput!): CaregiverReviewsResponse!
+
+  """
+  รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
+  """
+  familyGroup(groupId: ID!): FamilyGroup!
+
+  """
+  โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้ (เรียงตามชื่อ) — ใช้เติมตัวเลือก "จองให้ใคร". กลุ่มที่ยังไม่มีใครแชร์โปรไฟล์ = array ว่าง ไม่ใช่ error.
+  """
+  groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
 
-  """Get KYC status of caregiver"""
-  kycStatus: String!
+  """
+  QR ของงาน 1 ใบ สำหรับให้ผู้รับบริการเปิดโชว์ให้ผู้ดูแลสแกน. ★ คืน token ดิบ จึงเปิดให้เฉพาะ patient เจ้าของ booking เท่านั้น — ผู้ดูแลเรียก query นี้ไม่ได้. QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ระบบดูจากสถานะปัจจุบันว่าสแกนครั้งต่อไปคือ action ไหน.
+  """
+  jobQr(bookingId: ID!): JobQr!
+
+  """Get KYC status with full details for the Status Page"""
+  kycStatus: KycStatusPayload!
+
+  """
+  All authenticated users: Get all currently locked fields for an entity. Caregivers need this to know which fields they cannot edit.
+  """
+  lockedFields(entityId: String!, entityType: EntityTypeEnum!): [LockedField!]!
 
   """Get current logged-in user"""
   me: User!
+
+  """Returns a single booking by ID for the authenticated patient."""
+  myBooking(id: ID!): BookingSummary!
+
+  """
+  Returns the patient's full booking history, optionally filtered by status, newest first.
+  """
+  myBookingHistory(input: BookingHistoryInput = {}): BookingListResponse!
+
+  """Get current caregiver profile"""
+  myCaregiverProfile: Caregiver!
+
+  """
+  กลุ่มครอบครัวทั้งหมดที่ฉันเป็นสมาชิกอยู่ (ใหม่สุดก่อน) พร้อมรายชื่อสมาชิกและบทบาทของฉันในแต่ละกลุ่ม. ไม่มีกลุ่ม = คืน array ว่าง ไม่ใช่ error.
+  """
+  myFamilyGroups: [FamilyGroup!]!
+
+  """
+  Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.
+  """
+  myWorkCondition: WorkCondition!
+
+  """List notifications of current user (newest first)"""
+  notifications(limit: Int = 20, offset: Int = 0, unreadOnly: Boolean = false): [Notification!]!
+
+  """
+  ดู payment ของ booking — สำหรับ FE PromptPay polling (เปิดให้ patient/caregiver/admin). ถ้า payment ยังเป็น pending + paymentMethod=promptpay จะ retrieve charge จาก Omise สด ๆ แล้ว reconcile ถ้า user จ่ายแล้ว (กันเคส webhook เลทหรือหาย).
+  """
+  paymentByBooking(bookingId: ID!): Payment
+
+  """ประวัติการเปลี่ยนสถานะของ payment (เรียงเก่า → ใหม่)"""
+  paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
+
+  """
+  สรุปหลักฐานการทำงานของงาน 1 ใบ — เป็น "แหล่งความจริงเดียว" ที่ระบบเงินอ่านก่อนตัดสินใจโอน. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
+  """
+  proofOfWork(bookingId: ID!): ProofOfWorkSummary!
+
+  """
+  Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
+  """
+  searchCaregivers(input: SearchCaregiverInput = {}): SearchCaregiverPayload!
+
+  """Count of unread notifications for current user"""
+  unreadCount: Int!
+}
+
+"""A recent admin KYC review action"""
+type RecentActivity {
+  """
+  What the admin did: "approved" or "rejected"
+  """
+  action: String!
+
+  """Name of the caregiver involved"""
+  caregiverName: String!
+
+  """When this activity occurred"""
+  timestamp: DateTime!
+
+  """Activity type (e.g. "kyc_review")"""
+  type: String!
+}
+
+input RefundPaymentInput {
+  """จำนวนเงินที่คืน (THB) — ไม่ระบุ = คืนเต็มจำนวน, ระบุ = partial refund"""
+  amount: Float
+
+  """UUID ของ payment ที่ต้องการคืนเงิน"""
+  paymentId: ID!
+
+  """เหตุผลการคืนเงิน (audit) — ต้องมีอย่างน้อย 10 ตัวอักษร"""
+  reason: String!
 }
 
 input RegisterInput {
   email: String!
   password: String!
   role: Int!
+}
+
+input RejectKycInput {
+  """UUID of the caregiver to reject"""
+  caregiverId: ID!
+
+  """One or more rejection reasons"""
+  reasons: [RejectionReasonItem!]!
+}
+
+type RejectionReason {
+  """Detailed explanation for the caregiver"""
+  detail: String
+
+  """Which document this reason refers to"""
+  documentType: String
+
+  """Short title of the rejection reason"""
+  title: String!
+}
+
+input RejectionReasonItem {
+  """Free-text detail for the caregiver"""
+  detail: String
+
+  """Which document: id_card_photo, id_card_number, etc."""
+  documentType: String
+
+  """
+  Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
+  """
+  title: String!
+}
+
+input RemoveMemberInput {
+  """กลุ่มที่จะนำสมาชิกออก — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """
+  users.id ของสมาชิกที่จะนำออก (ไม่ใช่ family_group_members.id) — นำตัวเองออกไม่ได้ จะได้ LAST_OWNER
+  """
+  userId: ID!
+}
+
+input RenameFamilyGroupInput {
+  """กลุ่มที่จะเปลี่ยนชื่อ — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """ชื่อใหม่ 1–80 ตัวอักษร"""
+  name: String!
+}
+
+input RequestPasswordResetInput {
+  """Email address to send the password reset link to"""
+  email: String!
+}
+
+type RequestPasswordResetResponse {
+  message: String
+
+  """Always true — does not reveal whether the email exists"""
+  success: Boolean!
+}
+
+input ResolveDisputeInput {
+  bookingId: ID!
+  decision: DisputeDecision!
+  notes: String!
+  refundAmount: Float
+}
+
+type ReviewItem {
+  """
+  ข้อความรีวิว (ตัด HTML tag ออกแล้ว) — อาจเป็น null ถ้าผู้รีวิวให้แต่ดาว
+  """
+  comment: String
+
+  """เวลาที่สร้างรีวิว (frontend เอาไปทำ "x วันก่อน")"""
+  createdAt: DateTime!
+  id: ID!
+
+  """true = ผู้รีวิวเลือกไม่เปิดเผยชื่อ"""
+  isAnonymous: Boolean!
+
+  """false = ถูก admin ซ่อนไว้ (hideReview) จะไม่ถูกนับใน rating รวม"""
+  isVisible: Boolean!
+
+  """คะแนนดาว 1–5"""
+  rating: Int!
+
+  """ชื่อต้นของผู้รีวิว หรือ "ผู้ใช้ไม่ระบุชื่อ" ถ้า isAnonymous"""
+  reviewerName: String!
+}
+
+type ReviewPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+"""Filter users by role. Use "all" to return every role."""
+enum RoleFilter {
+  """Role 3: Admin"""
+  admin
+
+  """Return all roles"""
+  all
+
+  """Role 2: Caregiver"""
+  caregiver
+
+  """Role 1: Patient"""
+  patient
+
+  """Role 4: Super Admin"""
+  super_admin
+}
+
+"""
+สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ). NONE = ยังไม่ทันรู้ว่าจะทำอะไร เช่น หา QR ไม่เจอ
+"""
+enum ScanAction {
+  CHECK_IN
+  CHECK_OUT
+  NONE
+}
+
+input ScanJobQrInput {
+  """position.coords.accuracy หน่วยเมตร — ยิ่งมากยิ่งมั่ว"""
+  accuracyM: Int
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """ละติจูดตอนสแกน (null ได้ ถ้าไม่ได้ให้สิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดตอนสแกน"""
+  lng: Float
+
+  """
+  บันทึกปิดงาน — ใช้เฉพาะเมื่อการสแกนนี้กลายเป็นเช็คเอาท์ ยาวไม่เกิน 500 ตัวอักษร
+  """
+  note: String
+
+  """
+  รูปหลักฐาน 1 รูป — ใช้เฉพาะตอนเช็คเอาท์ ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของงานใบนั้น
+  """
+  photoUrl: String
+
+  """
+  ข้อความดิบที่อ่านได้จาก QR — ส่งมาตามที่อ่านได้เป๊ะ ๆ ห้ามตัด/เติม/แปลงตัวพิมพ์
+  """
+  token: String!
+}
+
+"""
+ผลของการสแกน. SUCCESS เท่านั้นที่แปลว่างานขยับจริง ค่าอื่นทั้งหมดคือถูกปฏิเสธ (แต่ถูกบันทึกไว้ทุกครั้ง)
+"""
+enum ScanResult {
+  ALREADY_COMPLETED
+  BOOKING_INACTIVE
+  DUPLICATE
+  JOB_NOT_READY
+  NOT_A_CAREGIVER
+  OUT_OF_WINDOW
+  SUCCESS
+  TOKEN_NOT_FOUND
+  TOO_SOON
+  WRONG_CAREGIVER
+  WRONG_SEQUENCE
+}
+
+input ScheduleDeleteAdminInput {
+  """ID of the target admin user"""
+  adminId: String!
+
+  """Grace period in days before permanent deletion. Allowed: 7, 14, 30, 60"""
+  gracePeriodDays: Int! = 30
+}
+
+type ScheduleDeleteAdminPayload {
+  """Grace period in days that was set"""
+  gracePeriodDays: Int!
+
+  """Datetime when the account will be permanently deleted"""
+  scheduledDeleteAt: DateTime!
+  user: User!
+}
+
+input SearchCaregiverInput {
+  """Filter by service area district"""
+  district: String
+
+  """
+  Comma-separated job types e.g. "general_care,overnight"
+  """
+  jobType: String
+
+  """Results per page (max 50)"""
+  limit: Int = 10
+
+  """Maximum hourly rate"""
+  maxPrice: Float
+
+  """Minimum hourly rate"""
+  minPrice: Float
+
+  """Minimum average rating (0–5)"""
+  minRating: Float
+
+  """Page number (1-based)"""
+  page: Int = 1
+
+  """Filter by service area province"""
+  province: String
+  sortBy: SortByEnum = RATING_DESC
+}
+
+type SearchCaregiverPayload {
+  data: [CaregiverSummary!]!
+  pagination: SearchPagination!
+}
+
+type SearchPagination {
+  limit: Int!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+type ServiceArea {
+  """Service area district (อำเภอ/เขต)"""
+  district: String
+
+  """Service area province (จังหวัด)"""
+  province: String
+}
+
+input ServiceAreaInput {
+  """Service area district (อำเภอ/เขต)"""
+  district: String
+
+  """Service area province (จังหวัด)"""
+  province: String
+}
+
+"""Caregiver search sort order"""
+enum SortByEnum {
+  PRICE_ASC
+  PRICE_DESC
+  RATING_DESC
+}
+
+input ToggleAdminStatusInput {
+  """ID of the target admin user"""
+  adminId: String!
+
+  """true = activate, false = deactivate"""
+  isActive: Boolean!
+}
+
+type ToggleAdminStatusPayload {
+  """
+  "ADMIN_ACTIVATED" or "ADMIN_DEACTIVATED"
+  """
+  action: String!
+  user: User!
+}
+
+input ToggleFieldLockInput {
+  """UUID of the caregiver or user"""
+  entityId: ID!
+
+  """Entity type: CAREGIVER_PROFILE or USER"""
+  entityType: EntityTypeEnum!
+
+  """Field name to lock/unlock (camelCase, e.g. "phone", "hourlyRate")"""
+  fieldName: String!
+
+  """true = lock, false = unlock"""
+  lock: Boolean!
+}
+
+type TransactionDetail {
+  amount: Float!
+  bookingId: ID!
+  counterparty: TransactionParty!
+  createdAt: DateTime!
+  currency: String!
+  id: ID!
+  method: String
+  relatedLinks: TransactionRelatedLinks!
+  status: String!
+  timeline: [TransactionTimelineEntry!]!
+  type: TransactionType!
+}
+
+type TransactionParty {
+  displayName: String
+  email: String!
+  id: ID!
+}
+
+type TransactionRelatedLinks {
+  bookingId: ID!
+  caregiverId: ID
+  patientId: ID
+  paymentId: ID
+  payoutId: ID
+}
+
+"""การเรียง transaction — default created_desc (ใหม่สุดก่อน) (PYG-333)"""
+enum TransactionSortBy {
+  amount_asc
+  amount_desc
+  created_asc
+  created_desc
+}
+
+type TransactionSummary {
+  amount: Float!
+  bookingId: ID!
+  counterparty: TransactionParty!
+  createdAt: DateTime!
+  currency: String!
+  id: ID!
+  method: String
+  status: String!
+  type: TransactionType!
+}
+
+type TransactionSummaryConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [TransactionSummary!]!
+  page: Int!
+  totalCount: Int!
+}
+
+type TransactionTimelineEntry {
+  changedBy: ID
+  createdAt: DateTime!
+  fromStatus: String
+  reason: String
+  toStatus: String!
+}
+
+type TransactionTotals {
+  currency: String!
+  netAmount: Float!
+  paymentCount: Int!
+  payoutCount: Int!
+  refundCount: Int!
+  totalCount: Int!
+  totalPaymentAmount: Float!
+  totalPayoutAmount: Float!
+  totalRefundAmount: Float!
+}
+
+"""
+ประเภท transaction: payment (เงินเข้า) | payout (เงินออกให้ caregiver) | refund (เงินคืน patient) (PYG-333)
+"""
+enum TransactionType {
+  payment
+  payout
+  refund
+}
+
+input TransferOwnershipInput {
+  """กลุ่มที่จะโอนสิทธิ์ — ต้องเป็นเจ้าของกลุ่มปัจจุบัน"""
+  groupId: ID!
+
+  """
+  users.id ของเจ้าของคนใหม่ — ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้ว (เชิญคนนอกมาเป็นเจ้าของตรง ๆ ไม่ได้)
+  """
+  newOwnerUserId: ID!
+}
+
+input UpdateCaregiverInput {
+  """Address"""
+  address: String
+
+  """Short bio / introduction"""
+  bio: String
+
+  """Years of caregiving experience"""
+  experienceYears: Int
+
+  """Hourly rate in THB"""
+  hourlyRate: Float
+
+  """Languages spoken by caregiver"""
+  languages: [String!]
+
+  """Contact phone number (Thai format)"""
+  phone: String
+
+  """List of caregiver skills"""
+  skills: [String!]
+}
+
+input UpdatePasswordInput {
+  """New password (minimum 8 characters)"""
+  newPassword: String!
+}
+
+type UpdatePasswordResponse {
+  message: String
+
+  """Whether the password was updated successfully"""
+  success: Boolean!
 }
 
 input UpdateProfileInput {
@@ -133,8 +2217,57 @@ input UpdateProfileInput {
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Phone number"""
   phone: String
+
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
+
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
+}
+
+input UpdateWorkConditionInput {
+  """
+  Weekly availability grid. Send [] to clear all slots; omit to keep unchanged.
+  """
+  availability: [AvailabilitySlotInput!]
+
+  """
+  Accepted job types: "general_care" | "bedridden_care" | "physiotherapy" | "medication" | "companion". Send [] to clear all; omit to keep unchanged.
+  """
+  jobTypes: [String!]
+
+  """Service area (province + district). Omit to keep unchanged."""
+  serviceArea: ServiceAreaInput
+
+  """
+  Service locations: "at_home" | "accompany_outside". Send [] to clear all; omit to keep unchanged.
+  """
+  serviceLocations: [String!]
+}
+
+input UploadDocumentInput {
+  """Document type: id_card_front | id_card_selfie | certificate"""
+  docType: String!
+
+  """Original file name"""
+  fileName: String!
+
+  """File size in bytes"""
+  fileSize: Int!
+
+  """File URL in Supabase Storage"""
+  fileUrl: String!
+
+  """MIME type: image/jpeg | image/png | application/pdf"""
+  mimeType: String!
 }
 
 type User {
@@ -147,14 +2280,23 @@ type User {
   """Bio or personal description"""
   bio: String
 
+  """Caregiver profile (null if user is not a caregiver)"""
+  caregiver: Caregiver
+
   """Account creation timestamp"""
   createdAt: DateTime!
 
   """Display name of the user"""
   displayName: String
 
+  """District (อำเภอ/เขต)"""
+  district: String
+
   """Email address of the user"""
   email: String!
+
+  """Whether the user receives email notifications"""
+  emailPreferences: Boolean!
 
   """Unique identifier of the user"""
   id: ID!
@@ -162,12 +2304,86 @@ type User {
   """Whether the user account is active"""
   isActive: Boolean!
 
+  """Whether the user is currently suspended"""
+  isSuspended: Boolean!
+
+  """Whether the user must change their password before using the app"""
+  mustChangePassword: Boolean!
+
   """Phone number"""
   phone: String
+
+  """Postal code (รหัสไปรษณีย์)"""
+  postalCode: String
+
+  """Province (จังหวัด)"""
+  province: String
 
   """User role ID: 1=patient, 2=caregiver, 3=admin"""
   role: Int!
 
+  """Sub-district (ตำบล/แขวง)"""
+  subDistrict: String
+
   """Last profile update timestamp"""
   updatedAt: DateTime!
+}
+
+"""Summary of a user for admin user management list"""
+type UserSummary {
+  """Caregiver number e.g. CG-00001 (role=2 only)"""
+  caregiverNumber: String
+
+  """Account creation date"""
+  createdAt: DateTime!
+
+  """Display name"""
+  displayName: String
+
+  """User email"""
+  email: String!
+
+  """User UUID"""
+  id: ID!
+
+  """Whether the account is active (not suspended)"""
+  isActive: Boolean!
+
+  """Whether the user is suspended"""
+  isSuspended: Boolean!
+
+  """KYC status: none | pending | verified | rejected (role=2 only)"""
+  kycStatus: String
+
+  """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
+  role: Int!
+
+  """When this account is scheduled to be permanently deleted"""
+  scheduledDeleteAt: DateTime
+}
+
+"""KYC submission and approval counts for a single week"""
+type WeeklySubmission {
+  """Number of KYC approvals in this week"""
+  approved: Int!
+
+  """Number of KYC submissions in this week"""
+  count: Int!
+
+  """Monday of the week (YYYY-MM-DD format)"""
+  week: String!
+}
+
+type WorkCondition {
+  """Weekly availability slots"""
+  availability: [AvailabilitySlot!]!
+
+  """Accepted job types"""
+  jobTypes: [String!]!
+
+  """Service area (province + district)"""
+  serviceArea: ServiceArea!
+
+  """Accepted service locations (at_home | accompany_outside)"""
+  serviceLocations: [String!]!
 }

@@ -14,7 +14,8 @@ export class AuthUser {
   id!: string; // users.id (internal UUID)
   supabaseUid!: string; // Supabase Auth UID
   email!: string;
-  role!: number; // role id (1=patient, 2=caregiver) — เก็บเป็น number ในฐานข้อมูล
+  role!: number; // role id (1=patient, 2=caregiver, 3=admin) — เก็บเป็น number ในฐานข้อมูล
+  isSuspended!: boolean; // PYG-132 — true = admin ระงับบัญชี (Guard จะ throw 403 ก่อนถึง resolver)
 }
 
 export const CurrentUser = createParamDecorator(
@@ -22,5 +23,18 @@ export const CurrentUser = createParamDecorator(
     const gqlCtx = GqlExecutionContext.create(ctx);
     // generic บอก context shape → TypeScript ไม่ต้อง infer เป็น unknown
     return gqlCtx.getContext<{ req: { user: AuthUser } }>().req.user;
+  },
+);
+
+/**
+ * CurrentHttpUser — ดึง user จาก HTTP (REST) request
+ * ถูก inject โดย SupabaseHttpAuthGuard หลังตรวจ JWT สำเร็จ
+ *
+ * @example
+ * async create(@CurrentHttpUser() user: AuthUser) { ... }
+ */
+export const CurrentHttpUser = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): AuthUser => {
+    return ctx.switchToHttp().getRequest<{ user: AuthUser }>().user;
   },
 );

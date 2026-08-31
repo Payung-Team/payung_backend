@@ -61,6 +61,22 @@ export class User {
   @Field({ nullable: true, description: 'User address' })
   address?: string;
 
+  /** ตำบล/แขวง — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Sub-district (ตำบล/แขวง)' })
+  subDistrict?: string;
+
+  /** อำเภอ/เขต — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'District (อำเภอ/เขต)' })
+  district?: string;
+
+  /** จังหวัด — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Province (จังหวัด)' })
+  province?: string;
+
+  /** รหัสไปรษณีย์ — อาจเป็น null ได้ */
+  @Field({ nullable: true, description: 'Postal code (รหัสไปรษณีย์)' })
+  postalCode?: string;
+
   /** เกี่ยวกับตัวเอง / บรรยายสั้น — อาจเป็น null ได้ */
   @Field({ nullable: true, description: 'Bio or personal description' })
   bio?: string;
@@ -77,6 +93,18 @@ export class User {
   /** สถานะว่า account ยังใช้งานได้อยู่หรือไม่ */
   @Field({ description: 'Whether the user account is active' })
   isActive!: boolean;
+
+  /** ถูก suspend หรือถูกลบหรือไม่ */
+  @Field({ description: 'Whether the user is currently suspended' })
+  isSuspended!: boolean;
+
+  /** ต้องเปลี่ยนรหัสผ่านก่อนใช้งาน (admin invite flow) */
+  @Field({ description: 'Whether the user must change their password before using the app' })
+  mustChangePassword!: boolean;
+
+  /** PYG-97: รับอีเมลแจ้งเตือนหรือไม่ (default: true) */
+  @Field({ description: 'Whether the user receives email notifications' })
+  emailPreferences!: boolean;
 
   /** วันเวลาที่สร้าง account */
   @Field({ description: 'Account creation timestamp' })

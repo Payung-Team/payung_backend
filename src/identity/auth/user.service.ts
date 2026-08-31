@@ -11,6 +11,7 @@
  * (ไม่ query Supabase โดยตรง เพราะ Prisma จัดการ type-safety และ schema ให้)
  */
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   InternalServerErrorException,
@@ -27,9 +28,16 @@ type PrismaUser = {
   avatarUrl: string | null;
   phone: string | null;
   address: string | null;
+  subDistrict: string | null;
+  district: string | null;
+  province: string | null;
+  postalCode: string | null;
   bio: string | null;
   role: number;
   isActive: boolean;
+  is_deleted: boolean;
+  must_change_password: boolean;
+  emailPreferences: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -51,9 +59,16 @@ export class UserService {
       avatarUrl: user.avatarUrl ?? undefined,
       phone: user.phone ?? undefined,
       address: user.address ?? undefined,
+      subDistrict: user.subDistrict ?? undefined,
+      district: user.district ?? undefined,
+      province: user.province ?? undefined,
+      postalCode: user.postalCode ?? undefined,
       bio: user.bio ?? undefined,
       role: user.role,
       isActive: user.isActive,
+      isSuspended: !user.isActive || user.is_deleted,
+      mustChangePassword: user.must_change_password,
+      emailPreferences: user.emailPreferences,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
@@ -161,6 +176,10 @@ export class UserService {
       address?: string;
       bio?: string;
       avatarUrl?: string;
+      subDistrict?: string;
+      district?: string;
+      province?: string;
+      postalCode?: string;
     },
   ): Promise<User> {
     // ตรวจสอบว่า user มีอยู่จริงก่อน
@@ -179,6 +198,18 @@ export class UserService {
         ...(updates.address !== undefined && {
           address: updates.address,
         }),
+        ...(updates.subDistrict !== undefined && {
+          subDistrict: updates.subDistrict,
+        }),
+        ...(updates.district !== undefined && {
+          district: updates.district,
+        }),
+        ...(updates.province !== undefined && {
+          province: updates.province,
+        }),
+        ...(updates.postalCode !== undefined && {
+          postalCode: updates.postalCode,
+        }),
         ...(updates.bio !== undefined && {
           bio: updates.bio,
         }),
@@ -190,5 +221,66 @@ export class UserService {
     });
 
     return this.mapToEntity(user);
+  }
+
+  /**
+   * อัปเดตการรับ email notification (PYG-97)
+   *
+   * ใช้เมื่อ: user เปิด/ปิดการรับอีเมลแจ้งเตือนใน settings
+   * - true  = รับอีเมล (KYC submitted/verified/rejected ฯลฯ)
+   * - false = EmailService จะ skip การส่ง email ทุกประเภท
+   *
+   * @param id      - users.id
+   * @param enabled - true = รับ, false = ไม่รับ
+   * @throws NotFoundException ถ้าไม่พบ user
+   */
+  async updateEmailPreference(id: string, enabled: boolean): Promise<User> {
+    await this.findById(id);
+
+    const user = await this.prismaService.user.update({
+      where: { id },
+      data: { emailPreferences: enabled },
+    });
+
+    return this.mapToEntity(user);
+  }
+
+  /**
+   * completePasswordChange — ล้าง must_change_password flag หลังจาก user เปลี่ยน password แล้ว
+   *
+   * ใช้เมื่อ: FE เรียก supabase.auth.updateUser({ password }) สำเร็จแล้ว
+   *          จากนั้น call mutation นี้เพื่อบอก BE ว่าเปลี่ยนเรียบร้อย
+   *
+   * @throws BadRequestException ถ้า must_change_password เป็น false อยู่แล้ว
+   */
+  async completePasswordChange(userId: string): Promise<User> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID "${userId}" not found`);
+    }
+
+    if (!user.must_change_password) {
+      throw new BadRequestException('Password change not required');
+    }
+
+    const updated = await this.prismaService.user.update({
+      where: { id: userId },
+      data: { must_change_password: false },
+    });
+
+    return this.mapToEntity(updated);
+  }
+
+  /**
+   * updateLastLogin — บันทึกเวลา login ล่าสุด (fire-and-forget)
+   */
+  async updateLastLogin(userId: string): Promise<void> {
+    await this.prismaService.user.update({
+      where: { id: userId },
+      data: { last_login_at: new Date() },
+    });
   }
 }

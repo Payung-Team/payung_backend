@@ -18,22 +18,30 @@ import {
   ConflictException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GraphQLError } from 'graphql';
 import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
+import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
+import { UpdatePasswordResponse } from './dto/update-password.response';
+import { CaregiverService } from '../kyc/caregiver.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
-    private supabaseService: SupabaseService,
-    private prismaService: PrismaService,
-    private configService: ConfigService,
+    private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
+    private readonly configService: ConfigService,
+    private readonly caregiverService: CaregiverService,
   ) {}
 
   /**
@@ -76,20 +84,29 @@ export class AuthService {
       throw new UnauthorizedException('User account not found');
     }
 
-    // ขั้นตอนที่ 5: ส่งผลลัพธ์กลับให้ client
-    // - accessToken: ใช้แนบไปกับทุก request เพื่อยืนยันตัวตน (มีอายุสั้น ~1 ชม.)
-    // - refreshToken: ใช้ขอ accessToken ใหม่เมื่อหมดอายุ (มีอายุยาวกว่า)
-    // - user: ข้อมูล user สำหรับแสดงใน frontend
+    // ขั้นตอนที่ 5: บันทึก last_login_at (fire-and-forget)
+    void this.prismaService.user.update({
+      where: { id: user.id },
+      data: { last_login_at: new Date() },
+    }).catch(() => {/* non-critical */});
+
+    // ขั้นตอนที่ 6: ส่งผลลัพธ์กลับให้ client
     return {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
       user: {
         id: user.id,
         email: user.email,
-        displayName: user.displayName ?? undefined, // Prisma ส่ง null มา แต่ GraphQL ต้องการ undefined
-        avatarUrl: user.avatarUrl ?? undefined, // เช่นเดียวกัน — แปลง null → undefined
+        displayName: user.displayName ?? undefined,
+        avatarUrl: user.avatarUrl ?? undefined,
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
+        isSuspended: !user.isActive || user.is_deleted,
+        mustChangePassword: user.must_change_password,
+        emailPreferences: user.emailPreferences,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -148,18 +165,40 @@ export class AuthService {
     // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
     let user;
     try {
+      // Generate caregiverNumber ก่อน ถ้า role เป็น caregiver
+      let caregiverNumber: string | undefined;
+      if (input.role === 2) {
+        caregiverNumber = await this.caregiverService.generateCaregiverNumber();
+        console.log('[AuthService.register] Generated caregiverNumber:', caregiverNumber);
+      }
+
+      const createData = {
+        supabaseUid: data.user.id, // UUID จาก Supabase
+        email: input.email,
+        role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
+        displayName: input.email.split('@')[0], // default จาก email prefix
+        isActive: true,
+        // หากเป็น caregiver (role=2) ให้สร้าง row ในตาราง caregiver ด้วย
+        ...(input.role === 2 ? {
+          caregiver: {
+            create: {
+              caregiverNumber, // เพิ่ม caregiverNumber ตั้งแต่แรก
+              kycStatus: 'none',
+            }
+          }
+        } : {})
+      };
+
+      console.log('[AuthService.register] Creating user with data:', JSON.stringify(createData, null, 2));
+
       user = await this.prismaService.user.create({
-        data: {
-          supabaseUid: data.user.id, // UUID จาก Supabase
-          email: input.email,
-          role: input.role, // role ส่งมาเป็นตัวเลข (1 หรือ 2)
-          displayName: input.email.split('@')[0], // default จาก email prefix
-          isActive: true,
-        },
+        data: createData,
       });
+
+      console.log('[AuthService.register] User created successfully:', user.id);
     } catch (err: any) {
       // ถ้า user สร้างล้มเหลว ให้ลบ user จาก Supabase ด้วย
-      console.error('Failed to create user in database:', err);
+      console.error('[AuthService.register] Failed to create user in database:', err);
       
       // ลองลบ Supabase user
       try {
@@ -169,17 +208,16 @@ export class AuthService {
         );
         await adminAuthClient.auth.admin.deleteUser(data.user.id);
       } catch (deleteErr) {
-        console.error('Failed to rollback Supabase user:', deleteErr);
+        console.error('[AuthService.register] Failed to rollback Supabase user:', deleteErr);
       }
       
       if (err.code === 'P2002') {
         throw new ConflictException('Email is already in use');
       }
-      throw new InternalServerErrorException('Failed to create user account in database');
+      throw new InternalServerErrorException('Failed to create user account in database: ' + err.message);
     }
 
     // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
-    // client จะได้ token ทันที ไม่ต้อง login ซ้ำหลัง register
     return {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
@@ -188,8 +226,14 @@ export class AuthService {
         email: user.email,
         displayName: user.displayName ?? undefined,
         avatarUrl: user.avatarUrl ?? undefined,
+        phone: user.phone ?? undefined,
+        address: user.address ?? undefined,
+        bio: user.bio ?? undefined,
         role: user.role,
         isActive: user.isActive,
+        isSuspended: !user.isActive || user.is_deleted,
+        mustChangePassword: user.must_change_password,
+        emailPreferences: user.emailPreferences,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -248,5 +292,67 @@ export class AuthService {
     }
 
     return true;
+  }
+
+  /**
+   * Send a password reset email to the given address.
+   *
+   * Always returns success=true regardless of whether the email exists in the
+   * system, to prevent user enumeration attacks.  Supabase errors (e.g. rate
+   * limit) are logged internally but never surfaced to the caller.
+   *
+   * @param email - Target email address
+   */
+  async requestPasswordReset(email: string): Promise<RequestPasswordResetResponse> {
+    const supabase   = this.supabaseService.getClient();
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${frontendUrl}/reset-password`,
+    });
+
+    if (error) {
+      this.logger.error({ event: 'password_reset.request_failed', email, msg: error.message });
+    }
+
+    return {
+      success: true,
+      message: 'หากอีเมลนี้มีอยู่ในระบบ ลิงก์รีเซ็ตรหัสผ่านจะถูกส่งไปยังอีเมลของคุณ',
+    };
+  }
+
+  /**
+   * Update the password of the currently authenticated user.
+   *
+   * The caller must hold a valid Supabase session obtained from the
+   * password-reset magic link (passed as the Bearer token).  A scoped
+   * temporary client is created per-request so that updateUser() targets
+   * the correct account — the same pattern used by logout().
+   *
+   * @param accessToken - Bearer token extracted from the Authorization header
+   * @param newPassword - New password (min-length validated at DTO level)
+   * @throws GraphQLError if Supabase rejects the update (expired link, etc.)
+   */
+  async updatePassword(
+    accessToken: string,
+    newPassword: string,
+  ): Promise<UpdatePasswordResponse> {
+    const supabaseUrl = this.configService.getOrThrow<string>('SUPABASE_URL');
+    const supabaseKey = this.configService.getOrThrow<string>('SUPABASE_ANON_KEY');
+
+    const tempClient = createClient(supabaseUrl, supabaseKey, {
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
+
+    const { error } = await tempClient.auth.updateUser({ password: newPassword });
+
+    if (error) {
+      this.logger.error({ event: 'password_reset.update_failed', msg: error.message });
+      throw new GraphQLError(
+        'ไม่สามารถเปลี่ยนรหัสผ่านได้ ลิงก์อาจหมดอายุ กรุณาขอลิงก์ใหม่',
+      );
+    }
+
+    return { success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' };
   }
 }

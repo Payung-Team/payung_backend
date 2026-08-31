@@ -12,9 +12,20 @@
  */
 import { Module } from '@nestjs/common';
 import { NotificationService } from './notification.service';
+import { NotificationResolver } from './notification.resolver';
+import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+import { EmailModule } from '../email/email.module';
+import { BookingNotificationListener } from './listeners/booking-notification.listener';
 
 @Module({
-  providers: [NotificationService],
+  // EmailModule → ให้ listener inject EmailService ได้ (ส่งอีเมล booking)
+  imports: [EmailModule],
+  providers: [
+    NotificationService,
+    NotificationResolver,         // PYG-97: GraphQL endpoints
+    SupabaseAuthGuard,            // ใช้ใน @UseGuards บน NotificationResolver
+    BookingNotificationListener,  // PYG-292: ฟัง booking/payment/dispute events
+  ],
   exports: [NotificationService],  // ให้ module อื่น inject ได้
 })
 export class NotificationModule {}

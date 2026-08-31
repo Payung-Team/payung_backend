@@ -7,17 +7,9 @@
  *
  * ลำดับ Guard สำคัญ: Auth ก่อน → Roles ทีหลัง
  */
-import { Resolver, Query } from '@nestjs/graphql';
-import { UseGuards } from '@nestjs/common';
-import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+import { Resolver } from '@nestjs/graphql';
 
 @Resolver()
 export class IdentityResolver {
-  // me query ย้ายไปอยู่ที่ AuthResolver แล้ว (พร้อม updateProfile)
-
-  @Query(() => String, { description: 'Get KYC status of caregiver' })
-  @UseGuards(SupabaseAuthGuard)
-  kycStatus(): string {
-    return 'PENDING';
-  }
+  // kycStatus query ย้ายไปอยู่ที่ KycResolver แล้ว
 }

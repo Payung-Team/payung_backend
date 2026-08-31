@@ -25,6 +25,8 @@ import { InputType, Field, Int, Float } from '@nestjs/graphql';
 import {
   ArrayMinSize,
   IsArray,
+  IsDate,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -99,6 +101,24 @@ export class KycInput {
   @IsNumber({}, { message: 'ค่าบริการต้องเป็นตัวเลข' })
   @Min(0, { message: 'ค่าบริการต้องไม่น้อยกว่า 0 บาท' })
   hourlyRate!: number;
+
+  /**
+   * เพศ — optional
+   * ค่าที่รับได้: "male", "female", "other"
+   */
+  @Field({ nullable: true, description: 'Gender: male | female | other' })
+  @IsOptional()
+  @IsString({ message: 'เพศต้องเป็นข้อความ' })
+  @IsIn(['male', 'female', 'other'], { message: 'เพศต้องเป็น male, female หรือ other' })
+  gender?: string;
+
+  /**
+   * วันเกิด — optional
+   */
+  @Field({ nullable: true, description: 'Date of birth' })
+  @IsOptional()
+  @IsDate({ message: 'วันเกิดต้องเป็นวันที่ที่ถูกต้อง' })
+  dateOfBirth?: Date;
 
   /**
    * แนะนำตัวสั้นๆ — optional, สูงสุด 500 ตัวอักษร
