@@ -42,6 +42,28 @@ export const FG_ERROR = {
    *   ซึ่งเป็นข้อมูลสุขภาพของคนอื่น (PDPA) → ตอบเหมือนกันหมดปลอดภัยกว่า
    */
   RECIPIENT_NOT_IN_GROUP: 'RECIPIENT_NOT_IN_GROUP',
+
+  // ── PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม ─────────────────────────
+  /**
+   * ลิงก์ใช้ไม่ได้ — token เดา/ถูกแก้/ไม่มีแถวนั้นอยู่จริง
+   *
+   * ★ ใช้ค่าเดียวกันกับทุกสาเหตุที่ "หาแถวไม่เจอ" โดยตั้งใจ
+   *   ถ้าแยกเป็น TOKEN_NOT_FOUND กับ TOKEN_MALFORMED คนที่ยิง token มั่ว ๆ
+   *   จะรู้ได้ว่าเดาใกล้เคียงแค่ไหน = ช่วยให้ brute-force ง่ายขึ้นฟรี ๆ
+   */
+  JOIN_LINK_INVALID: 'JOIN_LINK_INVALID',
+  /** เลยเวลาใน expires_at แล้ว */
+  JOIN_LINK_EXPIRED: 'JOIN_LINK_EXPIRED',
+  /** ถูกเจ้าของยกเลิก หรือถูก rotate ทับด้วยลิงก์ใบใหม่ */
+  JOIN_LINK_REVOKED: 'JOIN_LINK_REVOKED',
+  /** used_count ถึง max_uses แล้ว — ลิงก์ยัง ACTIVE แต่โควตาหมด */
+  JOIN_LINK_EXHAUSTED: 'JOIN_LINK_EXHAUSTED',
+  /** สมาชิก ACTIVE ในกลุ่มถึงเพดาน FAMILY_GROUP_MAX_MEMBERS แล้ว */
+  GROUP_MEMBER_LIMIT_REACHED: 'GROUP_MEMBER_LIMIT_REACHED',
+  /** กลุ่มยังไม่มีลิงก์ที่ใช้งานได้ — เจ้าของต้องกดสร้างก่อน */
+  JOIN_LINK_NOT_FOUND: 'JOIN_LINK_NOT_FOUND',
+  /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
+  JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
 } as const;
 
 export type FgErrorCode = (typeof FG_ERROR)[keyof typeof FG_ERROR];
@@ -130,6 +152,90 @@ export class RecipientNotInGroupError extends FamilyGroupError {
     super(
       'ไม่พบโปรไฟล์ผู้รับบริการนี้ในกลุ่มของคุณ',
       FG_ERROR.RECIPIENT_NOT_IN_GROUP,
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★ ข้อความของสาม error นี้ตั้งใจให้ "ต่างกันพอให้ผู้ใช้รู้ว่าต้องทำอะไรต่อ"
+ *   แต่ทั้งสามตัวโผล่เฉพาะกับคนที่ถือ token ที่ hash ตรงกับแถวจริงเท่านั้น
+ *   คนที่เดา token มั่ว ๆ จะได้ JOIN_LINK_INVALID เสมอ ไม่มีทางแยกออก
+ */
+export class JoinLinkInvalidError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ลิงก์นี้ใช้ไม่ได้ กรุณาขอลิงก์ใหม่จากเจ้าของกลุ่ม',
+      FG_ERROR.JOIN_LINK_INVALID,
+    );
+  }
+}
+
+export class JoinLinkExpiredError extends FamilyGroupError {
+  constructor(expiresAt: Date) {
+    super(
+      'ลิงก์นี้หมดอายุแล้ว กรุณาขอลิงก์ใหม่จากเจ้าของกลุ่ม',
+      FG_ERROR.JOIN_LINK_EXPIRED,
+      { expiresAt: expiresAt.toISOString() },
+    );
+  }
+}
+
+export class JoinLinkRevokedError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ลิงก์นี้ถูกยกเลิกไปแล้ว กรุณาขอลิงก์ใหม่จากเจ้าของกลุ่ม',
+      FG_ERROR.JOIN_LINK_REVOKED,
+    );
+  }
+}
+
+/**
+ * โควตาเต็ม — ส่ง maxUses กลับไปด้วยเพื่อให้ FE บอกผู้ใช้ได้ว่าเต็มที่เท่าไหร่
+ * โดยไม่ต้อง hardcode เลขซ้ำอีกฝั่ง (แพตเทิร์นเดียวกับ GroupNameInvalidError)
+ */
+export class JoinLinkExhaustedError extends FamilyGroupError {
+  constructor(maxUses: number) {
+    super(
+      'ลิงก์นี้ถูกใช้ครบจำนวนแล้ว กรุณาขอลิงก์ใหม่จากเจ้าของกลุ่ม',
+      FG_ERROR.JOIN_LINK_EXHAUSTED,
+      { maxUses },
+    );
+  }
+}
+
+export class GroupMemberLimitReachedError extends FamilyGroupError {
+  constructor(maxMembers: number) {
+    super(
+      `กลุ่มนี้มีสมาชิกครบ ${maxMembers} คนแล้ว`,
+      FG_ERROR.GROUP_MEMBER_LIMIT_REACHED,
+      { maxMembers },
+    );
+  }
+}
+
+export class JoinLinkNotFoundError extends FamilyGroupError {
+  constructor() {
+    super(
+      'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณากดสร้างลิงก์ก่อน',
+      FG_ERROR.JOIN_LINK_NOT_FOUND,
+    );
+  }
+}
+
+/**
+ * ตั้งค่า env ไม่ครบ — เป็นความผิดของฝั่ง deploy ไม่ใช่ของผู้ใช้
+ * ข้อความจึงไม่บอกชื่อ env ออกไป (คนนอกไม่ต้องรู้โครงสร้าง config ของเรา)
+ * ชื่อจริงอยู่ใน log ของเซิร์ฟเวอร์แทน
+ */
+export class JoinLinkConfigMissingError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ระบบยังตั้งค่าลิงก์เข้าร่วมกลุ่มไม่ครบ กรุณาแจ้งผู้ดูแลระบบ',
+      FG_ERROR.JOIN_LINK_CONFIG_MISSING,
     );
   }
 }

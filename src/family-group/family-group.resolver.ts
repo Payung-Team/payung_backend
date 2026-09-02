@@ -5,11 +5,16 @@ import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
 import { TransferOwnershipInput } from './dto/transfer-ownership.input';
+import { CreateJoinLinkInput } from './dto/create-join-link.input';
 import {
   DeleteFamilyGroupResult,
   FamilyGroup,
   LeaveFamilyGroupResult,
 } from './entities/family-group.entity';
+import {
+  FamilyGroupJoinLink,
+  JoinLinkPreview,
+} from './entities/family-group-join-link.entity';
 import { GroupRole } from './decorators/group-role.decorator';
 import { FamilyGroupGuard } from './guards/family-group.guard';
 import { GROUP_ROLE } from './family-group.constants';
@@ -141,5 +146,78 @@ export class FamilyGroupResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<FamilyGroup> {
     return this.familyGroupService.transferOwnership(user.id, input);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม
+  //
+  //  ★ ทุกตัวที่คืน FamilyGroupJoinLink ต้องมี @GroupRole('OWNER') เสมอ
+  //    เพราะ type นั้นมี url เต็มอยู่ข้างใน = ใครได้ไปก็เข้ากลุ่มได้
+  //    (service ตรวจ assertOwner ซ้ำอีกชั้นอยู่แล้ว แต่ guard ทำให้พลาดยากขึ้นหนึ่งชั้น)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  @Query(() => FamilyGroupJoinLink, {
+    description:
+      'ลิงก์เข้าร่วมที่ยังใช้ได้ของกลุ่ม (เจ้าของเท่านั้น) — ใช้ตอนกดปุ่มคัดลอกลิงก์ซ้ำ ' +
+      'โยน JOIN_LINK_NOT_FOUND ถ้ากลุ่มยังไม่เคยสร้างลิงก์ หรือลิงก์ถูกยกเลิกไปแล้ว',
+  })
+  @GroupRole(GROUP_ROLE.OWNER)
+  async groupJoinLink(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<FamilyGroupJoinLink> {
+    return this.familyGroupService.groupJoinLink(user.id, groupId);
+  }
+
+  @Query(() => JoinLinkPreview, {
+    description:
+      'ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ' +
+      'ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error ' +
+      'โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย',
+  })
+  async joinLinkPreview(
+    @Args('token') token: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<JoinLinkPreview> {
+    return this.familyGroupService.joinLinkPreview(user.id, token);
+  }
+
+  @Mutation(() => FamilyGroupJoinLink, {
+    description:
+      'สร้างลิงก์เข้าร่วมของกลุ่ม (เจ้าของเท่านั้น) — ถ้ามีลิงก์ที่ใช้ได้อยู่แล้วจะคืนใบเดิม ' +
+      'ไม่สร้างทับ เพื่อไม่ให้การกดปุ่มซ้ำฆ่าลิงก์ที่ส่งออกไปแล้ว',
+  })
+  @GroupRole(GROUP_ROLE.OWNER)
+  async createJoinLink(
+    @Args('input') input: CreateJoinLinkInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<FamilyGroupJoinLink> {
+    return this.familyGroupService.createJoinLink(user.id, input);
+  }
+
+  @Mutation(() => FamilyGroupJoinLink, {
+    description:
+      'ออกลิงก์ใหม่แทนใบเดิม (เจ้าของเท่านั้น) — ลิงก์เดิมใช้ไม่ได้ทันที ' +
+      'ใช้ตอนลิงก์หลุดไปในที่ที่ไม่ตั้งใจ',
+  })
+  @GroupRole(GROUP_ROLE.OWNER)
+  async rotateJoinLink(
+    @Args('input') input: CreateJoinLinkInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<FamilyGroupJoinLink> {
+    return this.familyGroupService.rotateJoinLink(user.id, input);
+  }
+
+  @Mutation(() => Boolean, {
+    description:
+      'ยกเลิกลิงก์เข้าร่วมโดยไม่ออกใบใหม่ (เจ้าของเท่านั้น) — หลังจากนี้กลุ่มจะไม่มีลิงก์ ' +
+      'จนกว่าจะกดสร้างใหม่ โยน JOIN_LINK_NOT_FOUND ถ้าไม่มีลิงก์ให้ยกเลิก',
+  })
+  @GroupRole(GROUP_ROLE.OWNER)
+  async revokeJoinLink(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<boolean> {
+    return this.familyGroupService.revokeJoinLink(user.id, groupId);
   }
 }
