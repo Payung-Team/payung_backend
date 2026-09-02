@@ -54,9 +54,19 @@ export type MemberStatus = (typeof MEMBER_STATUS)[keyof typeof MEMBER_STATUS];
 export const ACTIVITY_ACTION = {
   GROUP_CREATED: 'GROUP_CREATED',
   GROUP_RENAMED: 'GROUP_RENAMED',
-  MEMBER_INVITED: 'MEMBER_INVITED', // PYG-416
-  INVITE_REVOKED: 'INVITE_REVOKED', // PYG-416
+  /**
+   * @deprecated SCR-FG2-001 — โมเดลคำเชิญรายอีเมลถูกยกเลิก ใช้ JOIN_LINK_* แทน
+   * ยังไม่ลบออกเพราะ branch dev มีโค้ดที่เขียนค่านี้อยู่ และ CHECK ในดีบียังรับอยู่
+   */
+  MEMBER_INVITED: 'MEMBER_INVITED',
+  /** @deprecated SCR-FG2-001 — ดูหมายเหตุที่ MEMBER_INVITED */
+  INVITE_REVOKED: 'INVITE_REVOKED',
+  JOIN_LINK_CREATED: 'JOIN_LINK_CREATED', // PYG-416
+  JOIN_LINK_ROTATED: 'JOIN_LINK_ROTATED', // PYG-416
+  JOIN_LINK_REVOKED: 'JOIN_LINK_REVOKED', // PYG-416
   MEMBER_JOINED: 'MEMBER_JOINED', // PYG-417
+  /** PYG-417 · SCR ข้อ ค. — คนที่เคยถูกเตะออก กดลิงก์เดิมกลับเข้ามาใหม่ */
+  MEMBER_REJOINED: 'MEMBER_REJOINED',
   MEMBER_LEFT: 'MEMBER_LEFT',
   MEMBER_REMOVED: 'MEMBER_REMOVED',
   OWNERSHIP_TRANSFERRED: 'OWNERSHIP_TRANSFERRED',
@@ -73,7 +83,9 @@ export type ActivityAction =
 export const ACTIVITY_TARGET = {
   GROUP: 'GROUP',
   MEMBER: 'MEMBER',
+  /** @deprecated SCR-FG2-001 — ใช้ JOIN_LINK แทน */
   INVITE: 'INVITE',
+  JOIN_LINK: 'JOIN_LINK',
   RECIPIENT: 'RECIPIENT',
   BOOKING: 'BOOKING',
 } as const;
@@ -91,3 +103,82 @@ export type ActivityTarget =
  */
 export const GROUP_NAME_MIN_LENGTH = 1;
 export const GROUP_NAME_MAX_LENGTH = 80;
+
+// ─── 5. ลิงก์เข้าร่วมกลุ่ม (PYG-416 · SCR-FG2-001) ──────────────────────────
+/**
+ * สถานะของลิงก์ — ต้องตรงกับ CHECK "family_group_join_links_status_check"
+ *
+ * ★ ไม่มี 'EXPIRED' โดยตั้งใจ
+ *   หมดอายุคือ "ผลลัพธ์ของการเทียบ expiresAt กับเวลาปัจจุบัน" ไม่ใช่สถานะที่เก็บไว้
+ *   ถ้าทำเป็นสถานะจะต้องมี cron มาไล่เปลี่ยน แล้วช่วงที่ cron ยังไม่วิ่ง
+ *   ดีบีจะบอกว่า ACTIVE ทั้งที่หมดอายุไปแล้ว = โกหกโดยโครงสร้าง
+ */
+export const JOIN_LINK_STATUS = {
+  ACTIVE: 'ACTIVE',
+  REVOKED: 'REVOKED',
+} as const;
+
+export type JoinLinkStatus =
+  (typeof JOIN_LINK_STATUS)[keyof typeof JOIN_LINK_STATUS];
+
+/** ความยาวของ token ดิบเป็นไบต์ ก่อน encode เป็น base64url (สเปก: 32-byte random) */
+export const JOIN_LINK_TOKEN_BYTES = 32;
+
+/** อ่านจำนวนเต็มบวกจาก env — คืน fallback ถ้าไม่ได้ตั้ง / ตั้งมั่ว / <= 0 */
+const envPositiveInt = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/**
+ * อายุของลิงก์ (ชั่วโมง) — PYG-428
+ * ชื่อ env เปลี่ยนจาก FAMILY_INVITE_TTL_HOURS ตาม SCR-FG2-001
+ * แต่ยังอ่านชื่อเดิมเป็น fallback เพื่อไม่ให้ staging ที่ยังไม่ได้แก้ .env พังทันที
+ */
+export const JOIN_LINK_TTL_HOURS = envPositiveInt(
+  process.env.FAMILY_JOIN_LINK_TTL_HOURS ?? process.env.FAMILY_INVITE_TTL_HOURS,
+  168,
+);
+
+/**
+ * โควตาจำนวนคนที่เข้าได้ต่อลิงก์ 1 ใบ — PYG-428
+ *
+ * ★ ตั้งค่าเป็น 0 = "ไม่จำกัด" (เก็บลงดีบีเป็น NULL)
+ *   ไม่ใช้ค่าว่างแทนเพราะค่าว่างแยกไม่ออกจาก "ลืมตั้ง" ซึ่งต้องได้ค่า default
+ */
+export const JOIN_LINK_MAX_USES: number | null = (() => {
+  const raw = process.env.FAMILY_JOIN_LINK_MAX_USES;
+  if (raw !== undefined && raw.trim() === '0') return null;
+  return envPositiveInt(raw, 10);
+})();
+
+/**
+ * เพดานสมาชิก ACTIVE ต่อกลุ่ม — PYG-428
+ *
+ * ★ SCR-FG2-001 เลื่อนค่านี้จาก optional (§11.5) มาเป็นบังคับ
+ *   เพราะพอลิงก์ใช้ซ้ำได้ ตัวจำกัดจำนวนคนคือมาตรการควบคุมหลักที่เหลืออยู่
+ *   แทนที่การผูกคำเชิญกับอีเมลรายคนแบบเดิม
+ */
+export const GROUP_MAX_MEMBERS = envPositiveInt(
+  process.env.FAMILY_GROUP_MAX_MEMBERS,
+  10,
+);
+
+/**
+ * โดเมนที่เอาไปประกอบเป็น URL ของลิงก์ — PYG-428
+ *
+ * ★ เป็นฟังก์ชัน ไม่ใช่ const ต่างจากค่าอื่นในไฟล์นี้โดยตั้งใจ
+ *   ค่าอื่นเป็นตัวเลขที่มี default ใช้ได้เลย แต่ตัวนี้ "ต้องมาจาก env เท่านั้น"
+ *   ถ้าอ่านตอน import โมดูล เทสจะตั้งค่าไม่ทัน (import ถูก hoist ขึ้นก่อนเสมอ)
+ *   และ deploy ที่ inject env ทีหลังจะได้ค่าว่างค้างไปตลอดอายุ process
+ *   แพตเทิร์นเดียวกับ resolveSecret() ของ JobQrService (PYG-434)
+ *
+ * ไม่มี fallback เป็น localhost เพราะลิงก์ที่ชี้ localhost ส่งให้คนอื่นไม่ได้
+ * ปล่อยให้พังเสียงดังตอน deploy ดีกว่าไปพังเงียบ ๆ ตอนผู้ใช้กดลิงก์
+ */
+export const joinLinkBaseUrl = (): string =>
+  (process.env.APP_PUBLIC_BASE_URL ?? '').trim();
+
+/** path ของหน้ารับลิงก์ฝั่ง FE (PYG-418) */
+export const JOIN_LINK_PATH = '/join';

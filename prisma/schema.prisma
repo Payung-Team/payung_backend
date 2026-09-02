@@ -51,6 +51,7 @@ model User {
   familyGroupInvitesSent                                  FamilyGroupInvite[]    @relation("FamilyGroupInviteInvitedBy")
   familyGroupInvitesAccepted                              FamilyGroupInvite[]    @relation("FamilyGroupInviteAcceptedBy")
   familyGroupActivity                                     FamilyGroupActivity[]
+  familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
   caregiver                                               Caregiver?
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
@@ -625,6 +626,8 @@ model FamilyGroup {
   creator        User?                 @relation(fields: [createdBy], references: [id])
   members        FamilyGroupMember[]
   invites        FamilyGroupInvite[]
+  /// PYG-416 — ลิงก์เข้าร่วมกลุ่ม (ACTIVE ได้ครั้งละใบเดียว บังคับด้วย partial unique index)
+  joinLinks      FamilyGroupJoinLink[]
   activity       FamilyGroupActivity[]
   careRecipients CareRecipient[]
   bookings       Booking[]
@@ -645,6 +648,9 @@ model FamilyGroupMember {
   status    String    @default("ACTIVE")
   /// NULL = คนสร้างกลุ่มเอง ไม่มีใครเชิญ
   invitedBy String?   @map("invited_by")
+  /// PYG-416 — เข้ากลุ่มมาด้วยลิงก์ใบไหน (NULL = สร้างกลุ่มเอง หรือเข้ามาก่อนมีฟีเจอร์นี้)
+  /// จำเป็นเพราะลิงก์ใช้ซ้ำได้ → ความสัมพันธ์ 1:1 ระหว่างคำเชิญกับสมาชิกแบบเดิมหายไป
+  joinedViaLinkId String? @map("joined_via_link_id") @db.Uuid
   joinedAt  DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
   removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -653,6 +659,7 @@ model FamilyGroupMember {
   group   FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   user    User        @relation("FamilyGroupMemberUser", fields: [userId], references: [id], onDelete: Cascade)
   inviter User?       @relation("FamilyGroupMemberInvitedBy", fields: [invitedBy], references: [id])
+  joinedViaLink FamilyGroupJoinLink? @relation(fields: [joinedViaLinkId], references: [id])
 
   /// คนเดียวมีได้แถวเดียวต่อกลุ่มไม่ว่าสถานะอะไร → คนที่เคยออกแล้วกลับเข้ามา
   /// คือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง (ช่วยให้ PYG-417 idempotent)
@@ -660,6 +667,7 @@ model FamilyGroupMember {
   @@index([userId])
   /// คิวรี่ที่ FamilyGroupGuard (PYG-412) เรียกทุก request
   @@index([groupId, status])
+  @@index([joinedViaLinkId])
   // partial unique "family_group_members_one_active_owner_key"
   // (WHERE role='OWNER' AND status='ACTIVE') อยู่ในไฟล์ SQL — Prisma เขียนไม่ได้
   @@map("family_group_members")
@@ -699,6 +707,46 @@ model FamilyGroupInvite {
 
 /// ฟีดกิจกรรมของกลุ่ม แบบ append-only (FG-3 / PYG-421)
 /// ทุกแถวต้องเขียนใน transaction เดียวกับการเปลี่ยนแปลงจริง (AC A5) ห้าม fire-and-forget
+/// PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่มแบบใช้ซ้ำได้
+///
+/// แทนที่ FamilyGroupInvite (คำเชิญรายอีเมล) ตาม SCR-FG2-001
+/// ตารางเดิมยังอยู่ในไฟล์นี้เพราะ branch dev ยังอ้างถึง — ถอนออกเป็น migration แยก
+model FamilyGroupJoinLink {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String @map("group_id") @db.Uuid
+  /// sha256(token) hex 64 ตัว — ใช้ค้นหาแถวตอนมีคนกดลิงก์ (ดีบีมี CHECK char_length = 64)
+  tokenHash String @unique @map("token_hash")
+  /// ★ token ดิบ — ตั้งใจเก็บ ต่างจากตาราง invites เดิมที่ห้ามเก็บ
+  ///   เหตุผลเต็มอยู่ในไฟล์ migration 20260902000000 (ข้อตัดสินใจ ก. ของ SCR-FG2-001)
+  ///   ห้าม select ฟิลด์นี้ออกไปให้ใครที่ไม่ใช่ OWNER ของกลุ่มนั้น
+  tokenRaw  String? @map("token_raw")
+  /// 'ACTIVE' | 'REVOKED' — ไม่มี EXPIRED เพราะหมดอายุคำนวณจาก expiresAt ตอนอ่าน
+  /// (ถ้าทำเป็นสถานะจะต้องมี cron มาไล่เปลี่ยน แล้วช่วงที่ cron ยังไม่วิ่งจะโกหก)
+  status    String @default("ACTIVE")
+
+  /// NULL = ไม่จำกัดจำนวนครั้ง (ค่าเริ่มต้นมาจาก env FAMILY_JOIN_LINK_MAX_USES)
+  maxUses   Int? @map("max_uses")
+  /// ★ เพิ่มค่าด้วย conditional UPDATE เท่านั้น ห้ามอ่านมาบวกแล้วเขียนกลับ
+  ///   ไม่งั้นสองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้ายจะเข้าได้ทั้งคู่ (PYG-417)
+  usedCount Int @default(0) @map("used_count")
+
+  /// now() + FAMILY_JOIN_LINK_TTL_HOURS — คำนวณฝั่ง app เพราะ TTL เป็น config (PYG-428)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by")
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group   FamilyGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  creator User?               @relation("FamilyGroupJoinLinkCreatedBy", fields: [createdBy], references: [id])
+  members FamilyGroupMember[]
+
+  @@index([groupId, status])
+  // partial unique "family_group_join_links_one_active_key"
+  // (WHERE status='ACTIVE') อยู่ในไฟล์ SQL — Prisma เขียน partial index ไม่ได้
+  @@map("family_group_join_links")
+}
+
 model FamilyGroupActivity {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   groupId    String   @map("group_id") @db.Uuid

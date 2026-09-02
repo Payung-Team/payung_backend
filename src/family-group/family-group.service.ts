@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../common/prisma.service';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
 import { TransferOwnershipInput } from './dto/transfer-ownership.input';
+import { CreateJoinLinkInput } from './dto/create-join-link.input';
 import {
   DeleteFamilyGroupResult,
   FamilyGroup,
@@ -12,6 +14,10 @@ import {
 } from './entities/family-group.entity';
 import { FamilyGroupMemberItem } from './entities/family-group-member.entity';
 import { GroupCareRecipient } from './entities/care-recipient.entity';
+import {
+  FamilyGroupJoinLink,
+  JoinLinkPreview,
+} from './entities/family-group-join-link.entity';
 import {
   ACTIVITY_ACTION,
   ACTIVITY_TARGET,
@@ -21,6 +27,13 @@ import {
   GROUP_NAME_MIN_LENGTH,
   GROUP_ROLE,
   MEMBER_STATUS,
+  joinLinkBaseUrl,
+  GROUP_MAX_MEMBERS,
+  JOIN_LINK_MAX_USES,
+  JOIN_LINK_PATH,
+  JOIN_LINK_STATUS,
+  JOIN_LINK_TOKEN_BYTES,
+  JOIN_LINK_TTL_HOURS,
 } from './family-group.constants';
 import {
   AlreadyOwnerError,
@@ -29,6 +42,13 @@ import {
   LastOwnerError,
   MemberNotFoundError,
   NotGroupOwnerError,
+  GroupMemberLimitReachedError,
+  JoinLinkConfigMissingError,
+  JoinLinkExhaustedError,
+  JoinLinkExpiredError,
+  JoinLinkInvalidError,
+  JoinLinkNotFoundError,
+  JoinLinkRevokedError,
 } from './family-group.errors';
 
 /**
@@ -88,6 +108,8 @@ type MemberRow = Prisma.FamilyGroupMemberGetPayload<{
  */
 @Injectable()
 export class FamilyGroupService {
+  private readonly logger = new Logger(FamilyGroupService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -486,6 +508,388 @@ export class FamilyGroupService {
   // ═══════════════════════════════════════════════════════════════════════
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════════
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม
+  //
+  //  ── โมเดลนี้ต่างจากคำเชิญทางอีเมลเดิมตรงไหน ─────────────────────────
+  //  เดิม: 1 คำเชิญ = 1 อีเมล = ใช้ได้ครั้งเดียว ระบบเป็นคนส่งให้
+  //  ใหม่: 1 กลุ่ม = 1 ลิงก์ = ใช้ได้หลายครั้งจนกว่าจะเต็มโควตา เจ้าของก๊อปไปส่งเอง
+  //
+  //  สิ่งที่หายไปพร้อมอีเมลคือ "ตัวจำกัดว่าใครใช้ลิงก์ได้" — เมื่อก่อนคือเจ้าของอีเมล
+  //  ตอนนี้คือใครก็ตามที่ถือลิงก์ ตัวควบคุมที่เหลือจึงมีสามชั้นและต้องมีครบทั้งสาม:
+  //    1. วันหมดอายุ (expiresAt)   2. โควตา (maxUses)   3. เพดานสมาชิกของกลุ่ม
+  //  บวกกับปุ่ม rotate ที่ให้เจ้าของ "ฆ่าลิงก์ที่หลุด" ได้ทันทีโดยไม่ต้องลบกลุ่มทิ้ง
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * B1 — สร้างลิงก์เข้าร่วมของกลุ่ม (เจ้าของเท่านั้น)
+   *
+   * ★ ถ้ากลุ่มมีลิงก์ ACTIVE อยู่แล้ว จะ "คืนใบเดิม" ไม่สร้างใบใหม่ทับ
+   *   ตั้งใจให้เป็นแบบนี้เพราะการกดปุ่มซ้ำ (เน็ตช้า กดสองที มือถือ double-tap)
+   *   ไม่ควรฆ่าลิงก์ที่ส่งไปในไลน์ครอบครัวแล้ว การเปลี่ยนลิงก์ต้องเป็นเจตนาชัดเจน
+   *   เท่านั้น → ใช้ rotateJoinLink แทน ด้วยเหตุผลเดียวกัน ตัวเลือกใน input
+   *   จะถูกเมินเมื่อมีใบเดิมอยู่ (ไม่งั้นการกดซ้ำจะแอบเปลี่ยนโควตาของลิงก์ที่ใช้งานอยู่)
+   */
+  async createJoinLink(
+    userId: string,
+    input: CreateJoinLinkInput,
+  ): Promise<FamilyGroupJoinLink> {
+    this.assertJoinLinkConfig();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      await this.assertOwner(tx, input.groupId, userId);
+
+      const existing = await tx.familyGroupJoinLink.findFirst({
+        where: { groupId: input.groupId, status: JOIN_LINK_STATUS.ACTIVE },
+      });
+      if (existing) {
+        return existing;
+      }
+
+      const link = await this.insertJoinLink(tx, input, userId);
+
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.JOIN_LINK_CREATED,
+        targetType: ACTIVITY_TARGET.JOIN_LINK,
+        targetId: link.id,
+        // ★ ห้ามใส่ token หรือ url ลง metadata — ฟีดกิจกรรมสมาชิกทุกคนอ่านได้ (PYG-421)
+        metadata: {
+          maxUses: link.maxUses,
+          expiresAt: link.expiresAt.toISOString(),
+        },
+      });
+
+      return link;
+    });
+
+    return this.toJoinLink(
+      result,
+      await this.countActiveMembers(input.groupId),
+    );
+  }
+
+  /**
+   * B8 — หมุนลิงก์: ยกเลิกใบเดิม + ออกใบใหม่ ในธุรกรรมเดียว
+   *
+   * นี่คือทางแก้เมื่อลิงก์หลุดไปในกลุ่มที่ไม่ตั้งใจ — ใบเดิมตายทันที
+   * ทำในธุรกรรมเดียวเพราะ partial unique index บังคับว่ามี ACTIVE ได้ใบเดียว
+   * ถ้าแยกเป็นสองคำสั่งแล้วพังกลางทาง กลุ่มจะเหลือ 0 ลิงก์แบบกู้ไม่ได้อัตโนมัติ
+   */
+  async rotateJoinLink(
+    userId: string,
+    input: CreateJoinLinkInput,
+  ): Promise<FamilyGroupJoinLink> {
+    this.assertJoinLinkConfig();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      await this.assertOwner(tx, input.groupId, userId);
+
+      const revoked = await this.revokeActive(tx, input.groupId);
+      const link = await this.insertJoinLink(tx, input, userId);
+
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: revoked
+          ? ACTIVITY_ACTION.JOIN_LINK_ROTATED
+          : ACTIVITY_ACTION.JOIN_LINK_CREATED,
+        targetType: ACTIVITY_TARGET.JOIN_LINK,
+        targetId: link.id,
+        metadata: {
+          replacedLinkId: revoked?.id ?? null,
+          maxUses: link.maxUses,
+          expiresAt: link.expiresAt.toISOString(),
+        },
+      });
+
+      return link;
+    });
+
+    return this.toJoinLink(
+      result,
+      await this.countActiveMembers(input.groupId),
+    );
+  }
+
+  /**
+   * B3 (ครึ่งแรก) — ยกเลิกลิงก์โดยไม่ออกใบใหม่
+   *
+   * ต่างจาก rotate ตรงที่หลังจากนี้กลุ่มจะ "ไม่มีลิงก์เลย" จนกว่าเจ้าของจะกดสร้างใหม่
+   * ใช้ตอนที่เชิญคนครบแล้วและอยากปิดประตู ไม่ใช่ตอนลิงก์หลุด
+   */
+  async revokeJoinLink(userId: string, groupId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertOwner(tx, groupId, userId);
+
+      const revoked = await this.revokeActive(tx, groupId);
+      if (!revoked) {
+        throw new JoinLinkNotFoundError();
+      }
+
+      await this.writeActivity(tx, {
+        groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.JOIN_LINK_REVOKED,
+        targetType: ACTIVITY_TARGET.JOIN_LINK,
+        targetId: revoked.id,
+        metadata: { usedCount: revoked.usedCount },
+      });
+
+      return true;
+    });
+  }
+
+  /**
+   * อ่านลิงก์ปัจจุบันของกลุ่ม (เจ้าของเท่านั้น) — ตัวที่ทำให้ปุ่ม "คัดลอกลิงก์" กดซ้ำได้
+   *
+   * ★ เมธอดนี้คือเหตุผลทั้งหมดที่เราเก็บ tokenRaw ลงดีบี (ข้อตัดสินใจ ก. ของ SCR)
+   *   ถ้าเก็บแค่ hash เมธอดนี้จะเขียนไม่ได้เลย และเจ้าของกลุ่มจะต้อง rotate
+   *   ทุกครั้งที่อยากส่งลิงก์ให้คนถัดไป ซึ่งจะฆ่าลิงก์ของคนก่อนหน้าที่ยังไม่ได้กด
+   */
+  async groupJoinLink(
+    userId: string,
+    groupId: string,
+  ): Promise<FamilyGroupJoinLink> {
+    // ตรวจสิทธิ์กับอ่านลิงก์อยู่ในธุรกรรมเดียวกัน — ถ้าแยกกัน คนที่เพิ่งถูกโอนสิทธิ์ออก
+    // ระหว่างสองคำสั่งจะยังได้ url กลับไป ซึ่งเท่ากับแจกลิงก์ให้คนที่ไม่ใช่เจ้าของแล้ว
+    const link = await this.prisma.$transaction(async (tx) => {
+      await this.assertOwner(tx, groupId, userId);
+
+      const active = await tx.familyGroupJoinLink.findFirst({
+        where: { groupId, status: JOIN_LINK_STATUS.ACTIVE },
+      });
+      if (!active) {
+        throw new JoinLinkNotFoundError();
+      }
+      return active;
+    });
+
+    return this.toJoinLink(link, await this.countActiveMembers(groupId));
+  }
+
+  /**
+   * B2 (ครึ่งแรก) — สิ่งที่คนถือลิงก์เห็นก่อนกดยืนยัน
+   *
+   * เปิดให้ผู้ใช้ที่ล็อกอินแล้ว "ทุกคน" เรียกได้ ไม่ใช่แค่สมาชิก — เพราะคนที่กำลังจะเข้ากลุ่ม
+   * ยังไม่ได้เป็นสมาชิกโดยนิยาม สิ่งที่กันคนนอกคือตัว token เอง ไม่ใช่ role
+   *
+   * ★ ลิงก์ที่หมดอายุ/ถูกยกเลิก/เต็มแล้ว จะ "ไม่ throw" แต่คืน isUsable = false
+   *   พร้อมชื่อกลุ่ม เพื่อให้ FE ขึ้นหน้าว่า "ลิงก์เข้ากลุ่มบ้านยายหมดอายุแล้ว"
+   *   ซึ่งช่วยให้ผู้ใช้รู้ว่าต้องไปขอลิงก์ใหม่จากใคร ต่างจากหน้า error เปล่า ๆ
+   *   ที่ throw จริงมีกรณีเดียวคือ token ที่ไม่ตรงกับแถวไหนเลย (เดามา/พิมพ์ผิด)
+   */
+  async joinLinkPreview(
+    userId: string,
+    token: string,
+  ): Promise<JoinLinkPreview> {
+    const link = await this.prisma.familyGroupJoinLink.findUnique({
+      where: { tokenHash: this.hashJoinToken(token) },
+      select: {
+        id: true,
+        groupId: true,
+        status: true,
+        maxUses: true,
+        usedCount: true,
+        expiresAt: true,
+        group: {
+          select: {
+            name: true,
+            members: {
+              where: { status: MEMBER_STATUS.ACTIVE },
+              select: {
+                userId: true,
+                role: true,
+                user: { select: { displayName: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!link) {
+      throw new JoinLinkInvalidError();
+    }
+
+    const activeMembers = link.group.members;
+    const owner = activeMembers.find((m) => m.role === GROUP_ROLE.OWNER);
+    const memberCount = activeMembers.length;
+
+    return {
+      groupName: link.group.name,
+      ownerName: owner?.user?.displayName ?? null,
+      memberCount,
+      isUsable: this.joinLinkUnusableReason(link, memberCount) === null,
+      unusableReason: this.joinLinkUnusableReason(link, memberCount),
+      alreadyMember: activeMembers.some((m) => m.userId === userId),
+    };
+  }
+
+  /**
+   * token ดิบ → sha256 hex สำหรับค้นหาแถว
+   *
+   * public เพราะ PYG-417 (joinGroupByLink) ต้องใช้ตัวนี้เป๊ะ ๆ
+   * ถ้าไปเขียน createHash เองอีกที่ วันที่เปลี่ยนวิธี hash จะแก้ไม่ครบ
+   * (แพตเทิร์นเดียวกับ JobQrService.hashToken ของ PYG-434)
+   */
+  hashJoinToken(token: string): string {
+    return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  // ─── ตัวช่วยภายในของลิงก์เข้าร่วม ────────────────────────────────────────
+
+  /**
+   * เหตุผลที่ลิงก์กดไม่ได้ — คืน null แปลว่าใช้ได้
+   *
+   * ★ ลำดับการเช็คมีความหมาย: REVOKED ต้องมาก่อน EXPIRED
+   *   ลิงก์ที่ถูกยกเลิกไปแล้วและต่อมาเลยวันหมดอายุ ควรบอกว่า "ถูกยกเลิก"
+   *   เพราะนั่นคือสิ่งที่เจ้าของกลุ่มตั้งใจทำ ส่วนวันหมดอายุแค่ผ่านไปเฉย ๆ
+   */
+  private joinLinkUnusableReason(
+    link: {
+      status: string;
+      expiresAt: Date;
+      maxUses: number | null;
+      usedCount: number;
+    },
+    memberCount: number,
+  ): 'REVOKED' | 'EXPIRED' | 'EXHAUSTED' | 'GROUP_FULL' | null {
+    if (link.status !== JOIN_LINK_STATUS.ACTIVE) return 'REVOKED';
+    if (link.expiresAt.getTime() <= Date.now()) return 'EXPIRED';
+    if (link.maxUses !== null && link.usedCount >= link.maxUses)
+      return 'EXHAUSTED';
+    if (memberCount >= GROUP_MAX_MEMBERS) return 'GROUP_FULL';
+    return null;
+  }
+
+  /**
+   * แปลงเหตุผลด้านบนเป็น error ที่โยนได้ — PYG-417 เรียกใช้ตอนกดเข้าร่วมจริง
+   * แยกออกมาเพื่อให้ "หน้า preview" กับ "ตอนกดเข้าร่วม" ตัดสินด้วยตรรกะชุดเดียวกัน
+   * ไม่งั้นจะเกิดเคสที่ preview บอกว่าเข้าได้ แต่กดแล้วเด้ง หรือกลับกัน
+   */
+  assertJoinLinkUsable(
+    link: {
+      status: string;
+      expiresAt: Date;
+      maxUses: number | null;
+      usedCount: number;
+    },
+    memberCount: number,
+  ): void {
+    switch (this.joinLinkUnusableReason(link, memberCount)) {
+      case 'REVOKED':
+        throw new JoinLinkRevokedError();
+      case 'EXPIRED':
+        throw new JoinLinkExpiredError(link.expiresAt);
+      case 'EXHAUSTED':
+        throw new JoinLinkExhaustedError(link.maxUses as number);
+      case 'GROUP_FULL':
+        throw new GroupMemberLimitReachedError(GROUP_MAX_MEMBERS);
+      default:
+        return;
+    }
+  }
+
+  /** สร้างแถวลิงก์ใหม่ 1 ใบ — ใช้ร่วมกันระหว่าง create กับ rotate */
+  private insertJoinLink(
+    tx: Prisma.TransactionClient,
+    input: CreateJoinLinkInput,
+    userId: string,
+  ) {
+    // base64url ไม่ใช่ hex — ได้ 43 ตัวอักษรแทน 64 ลิงก์สั้นลงพอสมควร
+    // และไม่มีอักขระที่ต้อง percent-encode เวลาแปะในไลน์
+    const token = randomBytes(JOIN_LINK_TOKEN_BYTES).toString('base64url');
+    const ttlHours = input.ttlHours ?? JOIN_LINK_TTL_HOURS;
+
+    return tx.familyGroupJoinLink.create({
+      data: {
+        groupId: input.groupId,
+        tokenHash: this.hashJoinToken(token),
+        tokenRaw: token,
+        status: JOIN_LINK_STATUS.ACTIVE,
+        maxUses: input.maxUses ?? JOIN_LINK_MAX_USES,
+        expiresAt: new Date(Date.now() + ttlHours * 60 * 60 * 1000),
+        createdBy: userId,
+      },
+    });
+  }
+
+  /**
+   * ยกเลิกลิงก์ ACTIVE ของกลุ่ม (ถ้ามี) — คืนแถวที่ถูกยกเลิก หรือ null ถ้าไม่มี
+   *
+   * ใช้ updateMany + เงื่อนไข status เดิมใน where ตามกติกาข้อ 3 ของไฟล์นี้
+   * ถ้าใช้ update() เฉย ๆ สอง request ที่กด revoke พร้อมกันจะเขียน revokedAt ทับกัน
+   * แล้วฟีดจะมี JOIN_LINK_REVOKED สองแถวสำหรับการยกเลิกครั้งเดียว
+   */
+  private async revokeActive(tx: Prisma.TransactionClient, groupId: string) {
+    const current = await tx.familyGroupJoinLink.findFirst({
+      where: { groupId, status: JOIN_LINK_STATUS.ACTIVE },
+    });
+    if (!current) return null;
+
+    const { count } = await tx.familyGroupJoinLink.updateMany({
+      where: { id: current.id, status: JOIN_LINK_STATUS.ACTIVE },
+      data: { status: JOIN_LINK_STATUS.REVOKED, revokedAt: new Date() },
+    });
+
+    // แพ้เกมแย่งกัน — มีคนยกเลิกไปก่อนหน้าเราเสี้ยววินาที ถือว่าไม่ได้ยกเลิกเอง
+    return count === 1 ? current : null;
+  }
+
+  private countActiveMembers(groupId: string): Promise<number> {
+    return this.prisma.familyGroupMember.count({
+      where: { groupId, status: MEMBER_STATUS.ACTIVE },
+    });
+  }
+
+  /**
+   * ล้มตั้งแต่ต้นทางถ้า env ไม่ครบ แทนที่จะไปสร้างลิงก์ที่ประกอบ URL ไม่ได้
+   * (ลิงก์ที่ขึ้นต้นด้วย "undefined/join?token=..." คือลิงก์เสียที่นอนอยู่ในดีบีถาวร)
+   */
+  private assertJoinLinkConfig(): void {
+    if (!joinLinkBaseUrl()) {
+      this.logger.error(
+        'ไม่ได้ตั้ง APP_PUBLIC_BASE_URL — สร้างลิงก์เข้าร่วมกลุ่มไม่ได้ (PYG-428)',
+      );
+      throw new JoinLinkConfigMissingError();
+    }
+  }
+
+  /** แถวจากดีบี → type ที่ GraphQL ส่งออก (เฉพาะฝั่งเจ้าของกลุ่ม) */
+  private toJoinLink(
+    link: {
+      id: string;
+      groupId: string;
+      tokenRaw: string | null;
+      status: string;
+      maxUses: number | null;
+      usedCount: number;
+      expiresAt: Date;
+      createdAt: Date;
+    },
+    memberCount: number,
+  ): FamilyGroupJoinLink {
+    return {
+      id: link.id,
+      groupId: link.groupId,
+      url: `${joinLinkBaseUrl().replace(/\/+$/, '')}${JOIN_LINK_PATH}?token=${
+        link.tokenRaw ?? ''
+      }`,
+      expiresAt: link.expiresAt,
+      maxUses: link.maxUses,
+      remainingUses:
+        link.maxUses === null
+          ? null
+          : Math.max(0, link.maxUses - link.usedCount),
+      memberCount,
+      memberLimit: GROUP_MAX_MEMBERS,
+      isUsable: this.joinLinkUnusableReason(link, memberCount) === null,
+      createdAt: link.createdAt,
+    };
+  }
 
   /**
    * ตัดช่องว่างหัวท้าย แล้วยืนยันว่าชื่อยังอยู่ในกติกา
