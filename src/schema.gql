@@ -253,9 +253,12 @@ type BookingPagination {
 
 enum BookingStatus {
   ACCEPTED
+  AWAITING_RELEASE
   CANCELLED
   COMPLETED
   CONFIRMED
+  IN_PROGRESS
+  NEEDS_REVIEW
   PENDING
   REJECTED
   UNMATCHED
@@ -368,6 +371,9 @@ type CaregiverBookingSummary {
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
   durationHours: Float!
   estimatedCost: Float
   id: ID!
@@ -1389,6 +1395,11 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
+  """
+  caregiverBooking(id: ID!): CaregiverBookingSummary
 
   """
   Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.

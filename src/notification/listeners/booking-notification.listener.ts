@@ -139,6 +139,21 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
+  [BOOKING_EVENTS.JOB_CHECKED_IN]: {
+    // PYG-352: ผู้ดูแลเช็คอินเริ่มงาน — แจ้งผู้รับบริการว่าผู้ดูแลมาถึงแล้ว
+    //
+    // ★ ยืม NotificationType.booking_confirmed แทนการเพิ่มค่า enum ใหม่
+    //   (ตกลงกับทีมแล้วว่า enum นี้ยังไม่ได้ใช้ซ้ำกับ event อื่น ต่างจาก
+    //   booking_completed ที่ JOB_CHECKED_OUT ยืมไปแล้ว — ถ้ายืมซ้ำกับ event เดียวกัน
+    //   ผู้รับบริการจะแยก "มาถึงแล้ว" กับ "ปิดงานแล้ว" ไม่ออกจากไอคอน/ประเภท)
+    type: NotificationType.booking_confirmed,
+    recipient: 'patient',
+    title: 'ผู้ดูแลเช็คอินแล้ว',
+    body: (c) => `${c.caregiverName} เช็คอินเริ่มงานแล้ว`,
+    // in-app พอ — ยังไม่ใช่เหตุการณ์ที่กระทบเงินหรือเร่งด่วนพอต้องอีเมล
+    email: false,
+    ctaLabel: 'ดูรายละเอียดงาน',
+  },
   [BOOKING_EVENTS.JOB_CHECKED_OUT]: {
     // PYG-358: ผู้ดูแลปิดงานเอง — ผู้รับบริการ "ไม่ต้อง" กดยืนยันอะไรอีกแล้ว
     //
@@ -236,6 +251,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.DECLINED)
   @OnEvent(BOOKING_EVENTS.CONFIRMED)
   @OnEvent(BOOKING_EVENTS.COMPLETED)
+  @OnEvent(BOOKING_EVENTS.JOB_CHECKED_IN) // PYG-352
   @OnEvent(BOOKING_EVENTS.JOB_CHECKED_OUT) // PYG-358
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)

@@ -101,6 +101,11 @@ export type OmiseCaptureResult = {
    * ใช้ตัดสิน "charge ตายจริง" (expiresAt < now && !paid) แทนการเดาจากอายุ wall-clock
    */
   expiresAt?: string | null;
+  /**
+   * ยอดรวมที่ถูกคืนไปแล้วบน charge นี้ (หน่วย satangs) — Omise คำนวณสดจากทุก refund
+   * ใช้ตอน reconcile refund.create webhook (คืนเงินที่ทำนอกแอป เช่น ผ่าน Omise dashboard)
+   */
+  refunded?: number;
 };
 
 @Injectable()
@@ -604,6 +609,7 @@ export class OmiseService {
         typeof body.failure_message === 'string' ? body.failure_message : undefined,
       // PYG-375: expires_at ใช้ยืนยันว่า PromptPay charge ตายจริงก่อน mark expired
       expiresAt: typeof body.expires_at === 'string' ? body.expires_at : null,
+      refunded: typeof body.refunded === 'number' ? body.refunded : undefined,
     };
   }
 
