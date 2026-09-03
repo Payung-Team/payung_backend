@@ -70,6 +70,10 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     payment: { paymentStatus: 'held' },
     caregiver: { userId: USER_ID },
     jobEvents: [], // ยังไม่เคยเช็คอิน
+    // PYG-435: null = งานใบนี้ไม่มี QR (งานเก่าก่อน migration) → เรียก mutation ตรง ๆ ได้
+    // ค่านี้คือสิ่งที่ Prisma คืนจริงเมื่อไม่มีแถวใน job_sessions
+    // เทสของ "ประตูสแกน" จะ override เป็น { id: ... } เอง
+    jobSession: null,
     ...overrides,
   };
 }
@@ -314,6 +318,86 @@ describe('MonitoringService', () => {
       await expect(
         service.checkInBooking(USER_ID, { bookingId: BOOKING_ID }),
       ).rejects.toThrow(new BadRequestException('ยังไม่ถึงวันทำงาน'));
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════
+  // B2. ประตูสแกน QR (PYG-435)
+  //
+  // การ์ดเขียนว่า "การเริ่ม/จบงานต้องผ่าน scan นี้เท่านั้น"
+  // ชุดนี้พิสูจน์ว่ากลอนล็อกจริง และล็อกเฉพาะงานที่มี QR เท่านั้น
+  // ════════════════════════════════════════════════════════════════════
+  describe('ประตูสแกน QR (PYG-435)', () => {
+    it('งานมี QR + เรียก checkInBooking ตรง ๆ → ถูกปฏิเสธ', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ jobSession: { id: 'sess-1' } }),
+      );
+
+      await expect(
+        service.checkInBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'งานนี้ต้องสแกน QR ของผู้รับบริการก่อนจึงจะเริ่มหรือจบงานได้',
+        ),
+      );
+
+      // ★ สำคัญกว่าตัวข้อความ: ต้องไม่มีอะไรถูกเขียนลงดีบีเลย
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('งานมี QR + มาจากการสแกน (viaScan) → ผ่านตามปกติ', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ jobSession: { id: 'sess-1' } }),
+      );
+
+      await expect(
+        service.checkInBooking(
+          USER_ID,
+          { bookingId: BOOKING_ID },
+          { viaScan: true },
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('งานเก่าที่ไม่มี QR → เรียกตรง ๆ ได้เหมือนเดิม (ไม่ทำให้งานค้างเช็คอินไม่ได้)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ jobSession: null }),
+      );
+
+      await expect(
+        service.checkInBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).resolves.toBeDefined();
+    });
+
+    it('เช็คเอาท์ก็ติดประตูเดียวกัน', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          status: 'in_progress',
+          jobSession: { id: 'sess-1' },
+          jobEvents: [fakeEventRow({ eventType: 'check_in' })],
+        }),
+      );
+
+      await expect(
+        service.checkOutBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('ประตูมาก่อนด่าน "เช็คอินซ้ำ" — งานที่มี QR กดซ้ำตรง ๆ ก็ยังไม่ผ่าน', async () => {
+      // ถ้าลำดับด่านสลับ เคสนี้จะคืนแถวเดิมเงียบ ๆ แทนที่จะปฏิเสธ
+      // = ช่องที่ทำให้ "เคยสแกนครั้งหนึ่งแล้ว ต่อไปกดตรง ๆ ได้ตลอด"
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          jobSession: { id: 'sess-1' },
+          jobEvents: [fakeEventRow()],
+        }),
+      );
+
+      await expect(
+        service.checkInBooking(USER_ID, { bookingId: BOOKING_ID }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

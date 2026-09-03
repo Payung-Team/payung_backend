@@ -40,8 +40,18 @@ model User {
   postalCode                                              String?                @map("postal_code")
   admin_audit_logs_admin_audit_logs_admin_idTousers       admin_audit_logs[]     @relation("admin_audit_logs_admin_idTousers")
   admin_audit_logs_admin_audit_logs_target_user_idTousers admin_audit_logs[]     @relation("admin_audit_logs_target_user_idTousers")
-  bookings                                                Booking[]
+  bookings                                                Booking[]              @relation("BookingPatient")
+  // PYG-411: การจองที่ user คนนี้เป็นคน "กดจองแทน" (ไม่ใช่เจ้าของ booking)
+  bookingsBookedBy                                        Booking[]              @relation("BookingBookedBy")
   careRecipients                                          CareRecipient[]
+  // ─── PYG-411: Family Group ───────────────────────────────────────────────
+  familyGroupsCreated                                     FamilyGroup[]
+  familyGroupMemberships                                  FamilyGroupMember[]    @relation("FamilyGroupMemberUser")
+  familyGroupMembersInvited                               FamilyGroupMember[]    @relation("FamilyGroupMemberInvitedBy")
+  familyGroupInvitesSent                                  FamilyGroupInvite[]    @relation("FamilyGroupInviteInvitedBy")
+  familyGroupInvitesAccepted                              FamilyGroupInvite[]    @relation("FamilyGroupInviteAcceptedBy")
+  familyGroupActivity                                     FamilyGroupActivity[]
+  familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
   caregiver                                               Caregiver?
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
@@ -349,12 +359,31 @@ model Booking {
   // PYG-352: ธงที่บอกว่าทำไมงานนี้ต้องให้แอดมินดู เช่น {'out_of_radius','clock_anomaly'}
   // array ว่าง = ไม่มีปัญหา ซึ่งเป็นเงื่อนไขหนึ่งของ verdict='valid'
   reviewReasons            String[]          @default([]) @map("review_reasons")
+  // PYG-411: จองในนามกลุ่มครอบครัวไหน (NULL = จองปกติ ไม่เกี่ยวกับกลุ่ม)
+  // FK ON DELETE SET NULL — ลบกลุ่มแล้วประวัติการจองต้องอยู่ต่อ (edge case ของ PYG-407)
+  familyGroupId            String?           @map("family_group_id") @db.Uuid
+  // PYG-411 (เตรียมไว้ให้ PYG-424): สมาชิกที่กด "จองแทน" จริง ๆ
+  // ต่างจาก patientId ตรงที่ patientId = เจ้าของ booking + คนจ่ายเงิน
+  bookedBy                 String?           @map("booked_by")
+  // PYG-411 (เตรียมไว้ให้ PYG-424): memberDetails — อาการ/รายละเอียดที่กรอกตอนจองแทน
+  // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
+  memberDetails            Json?             @map("member_details")
   booking_tasks            booking_tasks[]
   // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
   jobEvents                JobEvent[]
+  // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
+  // optional (?) เพราะ booking เก่าทุกใบที่มีอยู่ก่อน migration นี้ยังไม่มี session
+  jobSession               JobSession?
+  // PYG-435: บันทึกการสแกน QR ทุกครั้ง (สำเร็จและล้มเหลว) — ไม่จำกัดจำนวนแถว
+  jobScanEvents            JobScanEvent[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
-  patient                  User              @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
+  // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
+  // FK ทั้งสองเป็น ON DELETE SET NULL / ON UPDATE CASCADE = ค่า default ของ optional relation
+  bookedByUser             User?             @relation("BookingBookedBy", fields: [bookedBy], references: [id])
+  familyGroup              FamilyGroup?      @relation(fields: [familyGroupId], references: [id])
   payment                  Payment?
   payout                   Payout?
   review                   Review?
@@ -380,34 +409,34 @@ model Booking {
 ///    เก็บแค่ distanceM ดิบ ๆ แล้วค่อยตัดสินตอนอ่าน โดยเทียบกับ threshold ใน ENV
 ///    ถ้าเก็บ boolean ไว้ตอนเขียน วันหนึ่งที่ threshold เปลี่ยน ข้อมูลเก่าจะโกหกทันที
 model JobEvent {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  bookingId   String    @map("booking_id") @db.Uuid
-  caregiverId String    @map("caregiver_id")
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String @map("booking_id") @db.Uuid
+  caregiverId String @map("caregiver_id")
 
   /// 'check_in' | 'check_out' (บังคับด้วย CHECK constraint ฝั่ง DB)
-  eventType   String    @map("event_type")
+  eventType String @map("event_type")
   /// 'caregiver' = ผู้ดูแลกดเอง | 'system' = cron ปิดให้ (PYG-359)
   /// verdict='valid' บังคับว่า check_out ต้องเป็น 'caregiver' เท่านั้น
-  source      String
+  source    String
 
   /// NULL ได้ — ผู้ดูแลปฏิเสธสิทธิ์ตำแหน่งแล้วยังต้องเช็คอินได้
-  lat         Decimal?  @db.Decimal(10, 7)
-  lng         Decimal?  @db.Decimal(10, 7)
+  lat       Decimal? @db.Decimal(10, 7)
+  lng       Decimal? @db.Decimal(10, 7)
   /// ระยะจากจุดงาน (เมตร) — ค่าดิบ. NULL = คำนวณไม่ได้ ห้ามตีความว่าผิด
-  distanceM   Int?      @map("distance_m")
+  distanceM Int?     @map("distance_m")
   /// ความแม่นยำจาก position.coords.accuracy (เมตร) — ตัวชี้ขาดว่า distanceM เชื่อได้ไหม
-  accuracyM   Int?      @map("accuracy_m")
+  accuracyM Int?     @map("accuracy_m")
 
   /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
-  serverTs    DateTime  @default(now()) @map("server_ts") @db.Timestamptz(6)
+  serverTs DateTime  @default(now()) @map("server_ts") @db.Timestamptz(6)
   /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น ใช้จับ clock_anomaly
-  deviceTs    DateTime? @map("device_ts") @db.Timestamptz(6)
+  deviceTs DateTime? @map("device_ts") @db.Timestamptz(6)
 
   /// ใช้ตอน check_out (PYG-358) — check_in ปล่อย NULL
-  note        String?
-  photoUrl    String?   @map("photo_url")
+  note     String?
+  photoUrl String? @map("photo_url")
 
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   caregiver Caregiver @relation(fields: [caregiverId], references: [id])
@@ -415,6 +444,119 @@ model JobEvent {
   @@unique([bookingId, eventType], map: "job_events_booking_id_event_type_key")
   @@index([bookingId], map: "job_events_booking_id_idx")
   @@map("job_events")
+}
+
+/// PYG-434 — "ใบงาน QR" ของ booking 1 ใบ (การ์ดแม่ PYG-433)
+///
+/// 1 booking = 1 แถวเท่านั้น (บังคับด้วย @unique บน bookingId)
+/// QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ — ตัว QR ไม่ได้บอกว่าจะทำ action ไหน
+/// action ตัดสินจาก `status` ปัจจุบัน: PENDING→เช็คอิน, CHECKED_IN→เช็คเอาท์ (PYG-435)
+///
+/// ★★ เรื่องสำคัญที่สุดของตารางนี้: ★★
+///    คอลัมน์ token_hash เก็บ "ลายนิ้วมือ" ของ token เท่านั้น (sha256 hex 64 ตัว)
+///    ตัว token จริงไม่เคยถูกเขียนลงดีบีเลยแม้แต่ครั้งเดียว
+///    → ใครขโมยดีบีไปทั้งก้อนก็สร้าง QR ปลอมไม่ได้ เพราะขาด QR_TOKEN_SECRET
+///    (วิธีคำนวณ token กลับมา ดู src/monitoring/qr/job-qr.service.ts)
+///
+/// ⚠ ตั้งใจ "ไม่มี" สถานะ CANCELLED:
+///    booking ถูกยกเลิกแล้ว QR ต้องใช้ไม่ได้ทันที — แต่ความจริงข้อนั้นอยู่ที่
+///    bookings.status อยู่แล้ว ถ้าคัดลอกมาไว้ที่นี่อีกที่ วันที่อัปเดตไม่ครบทั้งสองที่
+///    จะได้ QR ที่ยังสแกนผ่านทั้งที่งานถูกยกเลิกไปแล้ว → อ่าน booking.status ตอนสแกนแทน
+///    (เหตุผลเดียวกับที่ job_events ไม่เก็บ within_radius — ดูคอมเมนต์ด้านบน)
+model JobSession {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId String @unique @map("booking_id") @db.Uuid
+
+  /// ★ sha256(token) เป็น hex 64 ตัว — ห้ามเก็บ token ดิบ
+  ///   ดีบีมี CHECK char_length = 64 กันเผลอเขียน token ดิบลงมา
+  ///   unique เพราะ PYG-435 ค้นหา session จากค่านี้ตรง ๆ (scanJobQr)
+  tokenHash String @unique @map("token_hash")
+
+  /// 'PENDING' | 'CHECKED_IN' | 'CHECKED_OUT' (บังคับด้วย CHECK ฝั่งดีบี)
+  /// เดินหน้าทางเดียวเสมอ ถอยหลังไม่ได้ (PYG-435 เป็นคนบังคับลำดับ)
+  status String @default("PENDING")
+
+  /// ช่วงเวลาที่ QR ใบนี้ใช้ได้ — คำนวณตอนสร้างจากตารางงานของ booking
+  ///   valid_from  = เวลานัดเริ่ม − QR_VALID_FROM_OFFSET_MIN
+  ///   valid_until = เวลานัดจบ   + QR_VALID_UNTIL_GRACE_MIN
+  /// เก็บเป็นคอลัมน์จริง ไม่คำนวณตอนอ่าน เพราะถ้างานถูกเลื่อนแล้วออกใบใหม่
+  /// เราต้องรู้ว่า "ตอนนั้นตกลงกันว่าช่วงไหน" ไม่ใช่ค่าที่เปลี่ยนตามตารางล่าสุด
+  validFrom  DateTime @map("valid_from") @db.Timestamptz(6)
+  validUntil DateTime @map("valid_until") @db.Timestamptz(6)
+
+  /// เวลาที่สแกนสำเร็จแต่ละ action — NULL = ยังไม่เกิด (PYG-435 เป็นคนเขียน)
+  /// ซ้ำกับ job_events.server_ts โดยตั้งใจ: ที่นี่คือ "สถานะของ QR"
+  /// ส่วน job_events คือ "หลักฐานการทำงาน" ซึ่งคนละเรื่องกันและอาจถูกเขียนโดย cron
+  checkedInAt  DateTime? @map("checked_in_at") @db.Timestamptz(6)
+  checkedOutAt DateTime? @map("checked_out_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  /// PYG-435: ประวัติการสแกนของใบนี้ (สำเร็จ + ล้มเหลว)
+  scanEvents JobScanEvent[]
+
+  /// PYG-435 จะกวาดหา session ที่ "ยังไม่ปิด" ในช่วงเวลาหนึ่ง ๆ
+  @@index([status, validUntil], map: "job_sessions_status_valid_until_idx")
+  @@map("job_sessions")
+}
+
+/// PYG-435 — บันทึก "ทุกครั้งที่มีการสแกน QR" ทั้งที่สำเร็จและล้มเหลว (การ์ดแม่ PYG-433)
+///
+/// ★ ตารางนี้เป็น audit log เท่านั้น — ไม่มีตรรกะใดในระบบอ่านค่าจากที่นี่ไปตัดสินใจ
+///   ความจริงเรื่อง "งานถึงไหนแล้ว" อยู่ที่ job_sessions.status + job_events
+///   ถ้าวันหนึ่งมีโค้ดอ่านตารางนี้ไปตัดสินใจ แปลว่าออกแบบผิดแล้ว
+///
+/// ทำไมต้องบันทึกครั้งที่ "ล้มเหลว" ด้วย: เพราะการสแกนที่ล้มเหลวคือสัญญาณความปลอดภัย
+/// (คนถ่ายรูป QR ของคนอื่นไปลอง / ผู้ดูแลที่ถูกเปลี่ยนกลางคันยังถือ QR เก่า /
+///  สแกนตอนดึกนอกช่วงเวลางาน) ถ้าเก็บแต่ครั้งที่สำเร็จ เราจะมองไม่เห็นอะไรเลย
+///
+/// ⚠ ทุกคอลัมน์ที่ชี้ไปตารางอื่นเป็น NULL ได้หมด โดยตั้งใจ
+///   เพราะการสแกนด้วย token มั่ว ๆ ก็ต้องถูกบันทึก ทั้งที่ยังไม่รู้ด้วยซ้ำว่าเป็นงานใบไหน
+model JobScanEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// NULL = token ที่สแกนมาไม่ตรงกับ session ใดเลย (QR ปลอม / QR ของระบบอื่น)
+  sessionId String? @map("session_id") @db.Uuid
+  /// คัดลอกมาจาก session ตอนสแกน เพื่อให้ query "งานใบนี้ถูกสแกนกี่ครั้ง" ได้ตรง ๆ
+  bookingId String? @map("booking_id") @db.Uuid
+
+  /// users.id ของคนที่กดสแกน — รู้เสมอ เพราะผ่าน SupabaseAuthGuard มาแล้ว
+  /// ไม่มี FK โดยตั้งใจ: audit ต้องอยู่รอดแม้บัญชีจะถูกลบตามคำขอ PDPA
+  scannedBy   String  @map("scanned_by")
+  /// caregivers.id ถ้าบัญชีนั้นมีโปรไฟล์ผู้ดูแล — NULL ได้ถ้าไม่มี
+  caregiverId String? @map("caregiver_id")
+
+  /// sha256 ของ token ที่สแกนมา (hex 64) — เก็บแม้ token จะผิด
+  /// ★ เก็บ "hash" ไม่ใช่ token ดิบ ด้วยเหตุผลเดียวกับ job_sessions.token_hash
+  ///   ประโยชน์: เห็นได้ว่ามีคนเอา QR ใบเดิมมาลองซ้ำ ๆ กี่ครั้ง โดยไม่ต้องเก็บของลับไว้
+  tokenHash String @map("token_hash")
+
+  /// 'CHECK_IN' | 'CHECK_OUT' | 'NONE' — action ที่ "พยายามจะทำ"
+  /// NONE = ยังไม่ทันรู้ว่าจะทำอะไร (หา session ไม่เจอ / งานถูกยกเลิก)
+  action String
+  /// รหัสผลลัพธ์ เช่น 'SUCCESS' | 'WRONG_CAREGIVER' | 'OUT_OF_WINDOW'
+  /// ค่าทั้งหมดอยู่ที่ SCAN_RESULT ใน src/monitoring/qr/qr.constants.ts
+  result String
+  /// ข้อความภาษาไทยที่ผู้สแกนเห็นบนหน้าจอ — เก็บไว้ให้แอดมินอ่านย้อนหลังได้ว่า
+  /// "ตอนนั้นระบบบอกผู้ดูแลว่าอะไร" ซึ่งสำคัญมากเวลามีข้อพิพาท
+  reason String?
+
+  /// เวลาของเซิร์ฟเวอร์เท่านั้น (ClockService) — ไม่รับเวลาจากเครื่อง client
+  /// ไม่มีคอลัมน์ created_at เพราะจะเป็นค่าเดียวกันเป๊ะ ๆ ซ้ำซ้อนเปล่า ๆ
+  scannedAt DateTime @default(now()) @map("scanned_at") @db.Timestamptz(6)
+
+  /// SetNull ไม่ใช่ Cascade โดยตั้งใจ — audit log ต้องไม่หายไปพร้อมของที่มันบันทึกไว้
+  session JobSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  booking Booking?    @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  /// การ์ด PYG-436 ระบุ index bookingId ไว้ตรง ๆ
+  @@index([bookingId], map: "job_scan_events_booking_id_idx")
+  /// ไทม์ไลน์การสแกนของ session หนึ่ง ๆ (หน้าแอดมิน / การสอบสวนข้อพิพาท)
+  @@index([sessionId, scannedAt], map: "job_scan_events_session_id_scanned_at_idx")
+  @@map("job_scan_events")
 }
 
 model CareRecipient {
@@ -443,11 +585,192 @@ model CareRecipient {
   is_self                 Boolean         @default(false)
   created_at              DateTime        @default(now()) @db.Timestamptz(6)
   updated_at              DateTime        @default(now()) @db.Timestamptz(6)
+  /// PYG-411: กลุ่มครอบครัวที่โปรไฟล์นี้ถูกแชร์เข้าไป
+  /// NULL = โปรไฟล์ส่วนตัวของ patient คนนั้น (พฤติกรรมเดิมทั้งหมดก่อนมี family group)
+  /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
+  familyGroupId           String?         @map("family_group_id") @db.Uuid
   bookings                Booking[]
   patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // FK จริงคือ ON DELETE SET NULL / ON UPDATE CASCADE ซึ่งเป็นค่า default ของ Prisma
+  // สำหรับ relation แบบ optional อยู่แล้ว → ไม่เขียนซ้ำ เพื่อให้ db pull ไม่มี diff
+  familyGroup             FamilyGroup?    @relation(fields: [familyGroupId], references: [id])
 
   @@index([patientId], map: "idx_care_recipients_patient")
+  // หมายเหตุ: index "care_recipients_family_group_id_idx" เป็น partial index
+  // (WHERE family_group_id IS NOT NULL) ซึ่ง Prisma เขียนไม่ได้ → มีเฉพาะใน migration SQL
   @@map("care_recipients")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PYG-411 — Family Group (Epic PYG-381)
+// migration: prisma/migrations/20260824000000_family_group_management
+//
+// ★ CHECK constraint และ partial index ทุกอันอยู่ในไฟล์ SQL เท่านั้น
+//   เพราะ Prisma เขียนสองอย่างนี้ไม่ได้ → `db pull` ก็มองไม่เห็น จึงไม่ทำให้เกิด diff
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// กลุ่มครอบครัวหนึ่งกลุ่ม
+///
+/// ★ ไม่มีฟิลด์ ownerId โดยตั้งใจ — "เจ้าของกลุ่ม" เก็บที่ FamilyGroupMember.role = 'OWNER'
+///   ที่เดียว ถ้าเก็บซ้ำสองที่ พอ transferOwnership อัปเดตไม่ครบจะได้กลุ่มที่เจ้าของเพี้ยนแบบเงียบ ๆ
+///   ดีบีบังคับ "OWNER ที่ ACTIVE ได้กลุ่มละคนเดียว" ด้วย partial unique index ในไฟล์ SQL
+model FamilyGroup {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// ดีบีมี CHECK: 1–80 ตัวอักษรหลัง trim (AC "rename empty or >80 chars → validation")
+  name      String
+  /// คนสร้างกลุ่ม = ประวัติ ไม่ใช่ "เจ้าของปัจจุบัน" (โอนเจ้าของได้ แต่คนสร้างเปลี่ยนไม่ได้)
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  creator        User?                 @relation(fields: [createdBy], references: [id])
+  members        FamilyGroupMember[]
+  invites        FamilyGroupInvite[]
+  /// PYG-416 — ลิงก์เข้าร่วมกลุ่ม (ACTIVE ได้ครั้งละใบเดียว บังคับด้วย partial unique index)
+  joinLinks      FamilyGroupJoinLink[]
+  activity       FamilyGroupActivity[]
+  careRecipients CareRecipient[]
+  bookings       Booking[]
+
+  @@map("family_groups")
+}
+
+/// ใครอยู่กลุ่มไหน บทบาทอะไร สถานะอะไร
+model FamilyGroupMember {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String    @map("group_id") @db.Uuid
+  userId    String    @map("user_id")
+  /// 'OWNER' | 'MEMBER' — text + CHECK ในดีบี ไม่ใช่ PG enum (กติกาของการ์ด)
+  role      String    @default("MEMBER")
+  /// 'ACTIVE' | 'REMOVED' | 'LEFT'
+  /// ★ ไม่ลบแถวทิ้งตอนออก/โดนเตะ เพราะ activity feed ต้องอ้างย้อนหลังได้ว่าใครเคยอยู่
+  /// PYG-412: ทุกการเช็คสิทธิ์ต้องกรอง status = 'ACTIVE' เสมอ
+  status    String    @default("ACTIVE")
+  /// NULL = คนสร้างกลุ่มเอง ไม่มีใครเชิญ
+  invitedBy String?   @map("invited_by")
+  /// PYG-416 — เข้ากลุ่มมาด้วยลิงก์ใบไหน (NULL = สร้างกลุ่มเอง หรือเข้ามาก่อนมีฟีเจอร์นี้)
+  /// จำเป็นเพราะลิงก์ใช้ซ้ำได้ → ความสัมพันธ์ 1:1 ระหว่างคำเชิญกับสมาชิกแบบเดิมหายไป
+  joinedViaLinkId String? @map("joined_via_link_id") @db.Uuid
+  joinedAt  DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  removedAt DateTime? @map("removed_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group   FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user    User        @relation("FamilyGroupMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  inviter User?       @relation("FamilyGroupMemberInvitedBy", fields: [invitedBy], references: [id])
+  joinedViaLink FamilyGroupJoinLink? @relation(fields: [joinedViaLinkId], references: [id])
+
+  /// คนเดียวมีได้แถวเดียวต่อกลุ่มไม่ว่าสถานะอะไร → คนที่เคยออกแล้วกลับเข้ามา
+  /// คือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง (ช่วยให้ PYG-417 idempotent)
+  @@unique([groupId, userId])
+  @@index([userId])
+  /// คิวรี่ที่ FamilyGroupGuard (PYG-412) เรียกทุก request
+  @@index([groupId, status])
+  @@index([joinedViaLinkId])
+  // partial unique "family_group_members_one_active_owner_key"
+  // (WHERE role='OWNER' AND status='ACTIVE') อยู่ในไฟล์ SQL — Prisma เขียนไม่ได้
+  @@map("family_group_members")
+}
+
+/// คำเชิญทางอีเมล (FG-2 / PYG-416, PYG-417)
+model FamilyGroupInvite {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String @map("group_id") @db.Uuid
+  /// เทียบแบบ case-insensitive ผ่าน index บน lower(email) ในไฟล์ SQL
+  email     String
+  /// ★ sha256(token) เป็น hex 64 ตัว — ห้ามเก็บ token ดิบ (โชว์ครั้งเดียวตอนสร้างลิงก์)
+  ///   ดีบีมี CHECK char_length = 64 กันเผลอเก็บ token ดิบลงมา
+  tokenHash String @unique @map("token_hash")
+  /// 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED'
+  status    String @default("PENDING")
+
+  invitedBy  String?   @map("invited_by")
+  acceptedBy String?   @map("accepted_by")
+  /// now() + FAMILY_INVITE_TTL_HOURS (168 ชม.) — คำนวณฝั่ง app เพราะ TTL เป็น config (PYG-428)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt DateTime? @map("accepted_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group    FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  inviter  User?       @relation("FamilyGroupInviteInvitedBy", fields: [invitedBy], references: [id])
+  acceptor User?       @relation("FamilyGroupInviteAcceptedBy", fields: [acceptedBy], references: [id])
+
+  // acceptInvite(token) หา invite จาก sha256(token) — unique อยู่ที่ฟิลด์ tokenHash ด้านบน
+  @@index([groupId, status])
+  // partial unique "family_group_invites_pending_group_email_key"
+  // บน (group_id, lower(email)) WHERE status='PENDING' อยู่ในไฟล์ SQL — Prisma เขียนไม่ได้
+  @@map("family_group_invites")
+}
+
+/// ฟีดกิจกรรมของกลุ่ม แบบ append-only (FG-3 / PYG-421)
+/// ทุกแถวต้องเขียนใน transaction เดียวกับการเปลี่ยนแปลงจริง (AC A5) ห้าม fire-and-forget
+/// PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่มแบบใช้ซ้ำได้
+///
+/// แทนที่ FamilyGroupInvite (คำเชิญรายอีเมล) ตาม SCR-FG2-001
+/// ตารางเดิมยังอยู่ในไฟล์นี้เพราะ branch dev ยังอ้างถึง — ถอนออกเป็น migration แยก
+model FamilyGroupJoinLink {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId   String @map("group_id") @db.Uuid
+  /// sha256(token) hex 64 ตัว — ใช้ค้นหาแถวตอนมีคนกดลิงก์ (ดีบีมี CHECK char_length = 64)
+  tokenHash String @unique @map("token_hash")
+  /// ★ token ดิบ — ตั้งใจเก็บ ต่างจากตาราง invites เดิมที่ห้ามเก็บ
+  ///   เหตุผลเต็มอยู่ในไฟล์ migration 20260902000000 (ข้อตัดสินใจ ก. ของ SCR-FG2-001)
+  ///   ห้าม select ฟิลด์นี้ออกไปให้ใครที่ไม่ใช่ OWNER ของกลุ่มนั้น
+  tokenRaw  String? @map("token_raw")
+  /// 'ACTIVE' | 'REVOKED' — ไม่มี EXPIRED เพราะหมดอายุคำนวณจาก expiresAt ตอนอ่าน
+  /// (ถ้าทำเป็นสถานะจะต้องมี cron มาไล่เปลี่ยน แล้วช่วงที่ cron ยังไม่วิ่งจะโกหก)
+  status    String @default("ACTIVE")
+
+  /// NULL = ไม่จำกัดจำนวนครั้ง (ค่าเริ่มต้นมาจาก env FAMILY_JOIN_LINK_MAX_USES)
+  maxUses   Int? @map("max_uses")
+  /// ★ เพิ่มค่าด้วย conditional UPDATE เท่านั้น ห้ามอ่านมาบวกแล้วเขียนกลับ
+  ///   ไม่งั้นสองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้ายจะเข้าได้ทั้งคู่ (PYG-417)
+  usedCount Int @default(0) @map("used_count")
+
+  /// now() + FAMILY_JOIN_LINK_TTL_HOURS — คำนวณฝั่ง app เพราะ TTL เป็น config (PYG-428)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by")
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  group   FamilyGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  creator User?               @relation("FamilyGroupJoinLinkCreatedBy", fields: [createdBy], references: [id])
+  members FamilyGroupMember[]
+
+  @@index([groupId, status])
+  // partial unique "family_group_join_links_one_active_key"
+  // (WHERE status='ACTIVE') อยู่ในไฟล์ SQL — Prisma เขียน partial index ไม่ได้
+  @@map("family_group_join_links")
+}
+
+model FamilyGroupActivity {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId    String   @map("group_id") @db.Uuid
+  /// ★ ลบ user แล้วเป็น NULL ไม่ใช่ลบแถวตาม — ฟีดคือหลักฐาน ห้ามลบบัญชีแล้วลบร่องรอยตัวเองได้
+  actorId    String?  @map("actor_id")
+  /// ค่าที่อนุญาตดูได้จาก CHECK "family_group_activity_action_check" ในไฟล์ SQL
+  /// (เช่น GROUP_CREATED, MEMBER_JOINED, BOOKING_ON_BEHALF)
+  action     String
+  /// 'GROUP' | 'MEMBER' | 'INVITE' | 'RECIPIENT' | 'BOOKING'
+  targetType String?  @map("target_type")
+  /// polymorphic จึง "ไม่มี FK" และเป็น TEXT เพราะเป้าหมายปนกันทั้ง UUID และ TEXT
+  targetId   String?  @map("target_id")
+  /// รายละเอียดที่ไม่คุ้มทำเป็นคอลัมน์ เช่น {"oldName":"บ้านยาย","newName":"บ้านย่า"}
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  group FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  actor User?       @relation(fields: [actorId], references: [id])
+
+  /// keyset pagination ของ PYG-421 (created_at DESC)
+  /// ★ ต้องมี id ต่อท้าย เพราะ activity ที่เขียนใน transaction เดียวกันได้ created_at เท่ากันเป๊ะ
+  ///   cursor ที่ดูแค่ created_at จะข้ามแถวหายหรือวนซ้ำ → cursor ต้องเป็นคู่ (createdAt, id)
+  @@index([groupId, createdAt(sort: Desc), id(sort: Desc)], map: "family_group_activity_group_id_created_at_idx")
+  @@map("family_group_activity")
 }
 
 model SavedCaregiver {

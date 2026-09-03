@@ -567,6 +567,76 @@ type CompleteBookingResult {
   status: String!
 }
 
+input CreateBookingOnBehalfInput {
+  """
+  วันที่ให้บริการ รูปแบบ ISO: "2026-09-15"
+  """
+  bookingDate: String!
+
+  """
+  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ
+  """
+  careRecipientId: ID!
+
+  """
+  ผู้ดูแลที่เลือกไว้ — ส่งมา = booking เป็น pending ทันที, ไม่ส่ง = unmatched รอ matching
+  """
+  caregiverId: ID
+
+  """ชื่อผู้ติดต่อวันให้บริการ"""
+  dayOfContactName: String
+
+  """เบอร์ผู้ติดต่อวันให้บริการ"""
+  dayOfContactPhone: String
+
+  """ความสัมพันธ์ของผู้ติดต่อกับผู้รับบริการ"""
+  dayOfContactRelationship: String
+
+  """จำนวนชั่วโมง (ขั้นต่ำ 0.5)"""
+  durationHours: Float!
+
+  """กลุ่มครอบครัวที่ใช้จอง — ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้"""
+  groupId: ID!
+
+  """ละติจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lat: Float
+
+  """ลองจิจูดจุดงาน (จากหมุดบนแผนที่)"""
+  lng: Float
+
+  """ที่อยู่จุดให้บริการ"""
+  locationAddress: String!
+
+  """บันทึกเพิ่มเติมถึงผู้ดูแล"""
+  notes: String
+
+  """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
+  serviceLocations: [String!]!
+
+  """
+  ประเภทบริการ เช่น "elderly_care"
+  """
+  serviceType: String!
+
+  """
+  เวลาเริ่ม รูปแบบ "09:00:00"
+  """
+  startTime: String!
+
+  """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
+  tasks: [String!]!
+
+  """
+  ช่วงเวลา: "morning" | "afternoon" | "evening"
+  """
+  timeSlot: String!
+}
+
+input CreateFamilyGroupInput {
+  """ชื่อกลุ่ม 1–80 ตัวอักษร (ตัดช่องว่างหัวท้ายให้อัตโนมัติ)"""
+  name: String!
+}
+
 input CreatePaymentInput {
   """UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)"""
   bookingId: ID!
@@ -618,6 +688,14 @@ scalar DateTime
 input DeclineBookingInput {
   bookingId: ID!
   reason: String!
+}
+
+type DeleteFamilyGroupResult {
+  """true เสมอเมื่อลบสำเร็จ (ล้มเหลวจะเป็น error ไม่ใช่ false)"""
+  deleted: Boolean!
+
+  """id ของกลุ่มที่ถูกลบ"""
+  id: ID!
 }
 
 type DisputeBooking {
@@ -725,6 +803,59 @@ enum EntityTypeEnum {
   USER
 }
 
+type FamilyGroup {
+  createdAt: DateTime!
+
+  """
+  users.id ของ "คนสร้าง" — เป็นประวัติ ไม่ใช่เจ้าของปัจจุบัน (โอนสิทธิ์แล้วค่านี้ไม่เปลี่ยน)
+  """
+  createdBy: ID
+  id: ID!
+
+  """จำนวนสมาชิกที่ยัง ACTIVE (รวมเจ้าของ)"""
+  memberCount: Int!
+
+  """
+  รายชื่อสมาชิกที่ยัง ACTIVE — เจ้าของมาก่อนเสมอ แล้วเรียงตามวันเข้ากลุ่ม
+  """
+  members: [FamilyGroupMemberItem!]!
+
+  """'OWNER' | 'MEMBER' — บทบาทของผู้เรียก API ในกลุ่มนี้"""
+  myRole: String!
+
+  """ชื่อกลุ่ม (1–80 ตัวอักษรหลังตัดช่องว่างหัวท้าย)"""
+  name: String!
+  updatedAt: DateTime!
+}
+
+type FamilyGroupMemberItem {
+  """รูปโปรไฟล์"""
+  avatarUrl: String
+
+  """ชื่อที่แสดง (null ได้ถ้าผู้ใช้ยังไม่ตั้งชื่อ)"""
+  displayName: String
+
+  """อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้"""
+  email: String!
+
+  """family_group_members.id"""
+  id: ID!
+
+  """
+  true = สมาชิกคนนี้คือผู้เรียก API ครั้งนี้เอง — FE ใช้ตัดสินว่าจะโชว์ปุ่ม "ออกจากกลุ่ม" หรือ "นำออก"
+  """
+  isMe: Boolean!
+
+  """เข้ากลุ่มเมื่อไหร่"""
+  joinedAt: DateTime!
+
+  """'OWNER' | 'MEMBER' — บทบาทเฉพาะในกลุ่มนี้ ไม่ใช่ role ของทั้งระบบ"""
+  role: String!
+
+  """users.id — ใช้เป็นเป้าหมายของ removeMember / transferOwnership"""
+  userId: ID!
+}
+
 """A single field change record"""
 type FieldChange {
   """Field name that was changed"""
@@ -757,6 +888,21 @@ type FieldLockResult {
 input FlagDisputeInput {
   bookingId: ID!
   reason: String!
+}
+
+type GroupCareRecipient {
+  id: ID!
+
+  """ชื่อ-นามสกุลของผู้รับบริการ"""
+  name: String!
+
+  """ชื่อเล่น (ถ้ามี) — FE ใช้โชว์ในลิสต์ให้อ่านง่าย"""
+  nickname: String
+
+  """
+  users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"
+  """
+  ownerUserId: ID!
 }
 
 type HealthStatus {
@@ -844,6 +990,82 @@ type JobEvent {
   true = อยู่ในรัศมีปกติ (≤ WARN_RADIUS_M). false = นอกรัศมีแนะนำ แต่ยังไม่ถึงขั้นติดธง. null = ตัดสินไม่ได้
   """
   withinWarnRadius: Boolean
+}
+
+type JobQr {
+  """booking ที่ QR ใบนี้ผูกอยู่"""
+  bookingId: ID!
+
+  """
+  true = ตอนนี้สแกนได้จริง (อยู่ในช่วงเวลา + ยังไม่ปิดงาน). FE เอาไปตัดสินว่าจะโชว์ QR หรือโชว์ข้อความ "ยังไม่ถึงเวลา / หมดเวลาแล้ว"
+  """
+  isActive: Boolean!
+
+  """
+  สแกนครั้งต่อไปจะเป็น action อะไร: CHECK_IN | CHECK_OUT | null (ปิดงานแล้ว ไม่เหลือ action). FE เอาไปเขียนหัวข้อบนหน้าจอ. ★ ใช้ enum ตัวเดียวกับที่ scanJobQr คืนกลับมา จะได้ไม่ต้องมีคำศัพท์สองชุด
+  """
+  nextAction: ScanAction
+
+  """
+  PENDING = ยังไม่เช็คอิน | CHECKED_IN = กำลังทำงาน | CHECKED_OUT = ปิดงานแล้ว
+  """
+  status: JobSessionStatus!
+
+  """
+  ★ ข้อความลับที่เอาไปวาดเป็น QR — วาดตรง ๆ ทั้งสตริง ห้ามเติม prefix/URL. เฉพาะ patient เจ้าของงานเท่านั้นที่ขอค่านี้ได้
+  """
+  token: String!
+
+  """สแกนได้ตั้งแต่เมื่อไหร่ (ก่อนเวลานัดได้ตามค่า config)"""
+  validFrom: DateTime!
+
+  """สแกนได้ถึงเมื่อไหร่ (เลยเวลาเลิกงานได้ตามค่า config)"""
+  validUntil: DateTime!
+}
+
+type JobScanResult {
+  """
+  สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ) — ตัดสินจากสถานะของ QR ไม่ใช่จากตัว QR เอง
+  """
+  action: ScanAction!
+
+  """งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)"""
+  bookingId: ID
+
+  """
+  หลักฐานการทำงานที่เพิ่งถูกบันทึก (มีเฉพาะตอน ok = true) — เอาไปโชว์ระยะทาง/ธงต่อได้เลย โดยไม่ต้องยิง proofOfWork ซ้ำ
+  """
+  jobEvent: JobEvent
+
+  """
+  ข้อความภาษาไทยที่แสดงให้ผู้ดูแลอ่านได้ทันที (แสดงตรง ๆ ได้เลย ไม่ต้องแปลง)
+  """
+  message: String!
+
+  """
+  true = งานขยับจริง (เช็คอินหรือเช็คเอาท์สำเร็จ). false = ถูกปฏิเสธ ดูสาเหตุที่ result
+  """
+  ok: Boolean!
+
+  """รหัสผลลัพธ์ — ใช้ค่านี้เลือกหน้าจอ ไม่ใช่ message"""
+  result: ScanResult!
+
+  """เวลาที่เซิร์ฟเวอร์บันทึกการสแกนครั้งนี้ — เวลาที่ถือเป็นทางการ"""
+  scannedAt: DateTime!
+
+  """
+  สถานะของ QR 'หลัง' การสแกนครั้งนี้. null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นใบไหน)
+  """
+  sessionStatus: JobSessionStatus
+}
+
+"""
+สถานะของใบ QR — เดินหน้าทางเดียว PENDING → CHECKED_IN → CHECKED_OUT. ไม่มีสถานะ "ยกเลิก" เพราะเรื่องนั้นอ่านจากสถานะของ booking
+"""
+enum JobSessionStatus {
+  CHECKED_IN
+  CHECKED_OUT
+  PENDING
 }
 
 type KycDocument {
@@ -965,6 +1187,19 @@ type KycStatusPayload {
   verifiedAt: DateTime
 }
 
+type LeaveFamilyGroupResult {
+  """id ของกลุ่มที่เพิ่งออกมา"""
+  groupId: ID!
+
+  """
+  ชื่อกลุ่ม ณ ตอนที่ออก — เอาไปโชว์ข้อความ "ออกจากกลุ่ม X แล้ว"
+  """
+  groupName: String!
+
+  """true เสมอเมื่อออกสำเร็จ (ล้มเหลวจะเป็น error ไม่ใช่ false)"""
+  left: Boolean!
+}
+
 type LockedField {
   """The locked field name (camelCase)"""
   fieldName: String!
@@ -1054,6 +1289,16 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
+  """
+  createBookingOnBehalf(input: CreateBookingOnBehalfInput!): BookingSummary!
+
+  """
+  สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
+  """
+  createFamilyGroup(input: CreateFamilyGroupInput!): FamilyGroup!
   createPayment(input: CreatePaymentInput!): Payment!
 
   """Patient เขียนรีวิวให้ caregiver หลังงาน completed (1 รีวิว/booking)"""
@@ -1063,6 +1308,11 @@ type Mutation {
   Caregiver declines a pending booking request with a required reason (pending → rejected).
   """
   declineBooking(input: DeclineBookingInput!): CaregiverBookingSummary!
+
+  """
+  ลบกลุ่ม (เจ้าของเท่านั้น). สมาชิก/คำเชิญ/ฟีดกิจกรรม ถูกลบตาม. ★ โปรไฟล์ผู้รับบริการและประวัติการจอง "ไม่ถูกลบ" — แค่ถูกตัดความเชื่อมโยงกับกลุ่ม (family_group_id = null).
+  """
+  deleteFamilyGroup(groupId: ID!): DeleteFamilyGroupResult!
 
   """Delete a KYC document (allowed only when status is rejected or none)"""
   deleteKycDocument(documentId: String!): Boolean!
@@ -1084,6 +1334,11 @@ type Mutation {
   Super Admin only: Invite a new Admin (role=3) or Super Admin (role=4). Creates Supabase auth user + DB record, sends invitation email with temp password.
   """
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
+
+  """
+  ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.
+  """
+  leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
 
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
@@ -1116,6 +1371,16 @@ type Mutation {
   rejectKyc(input: RejectKycInput!): Caregiver!
 
   """
+  นำสมาชิกออกจากกลุ่ม (เจ้าของเท่านั้น) — สิทธิ์ทั้งหมดของคนนั้นหายทันที. นำตัวเองออกไม่ได้ → LAST_OWNER.
+  """
+  removeMember(input: RemoveMemberInput!): FamilyGroup!
+
+  """
+  เปลี่ยนชื่อกลุ่ม (เจ้าของเท่านั้น). ชื่อว่างหรือเกิน 80 ตัวอักษร → GROUP_NAME_INVALID.
+  """
+  renameFamilyGroup(input: RenameFamilyGroupInput!): FamilyGroup!
+
+  """
   Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
   """
   requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
@@ -1127,6 +1392,11 @@ type Mutation {
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
+
+  """
+  ผู้ดูแลสแกน QR ของงานเพื่อเริ่มหรือจบงาน. ★ สแกนครั้งแรก = เช็คอิน, ครั้งที่สอง = เช็คเอาท์ — ผู้เรียก "ไม่ได้เลือก" ว่าจะทำอะไร สถานะของ QR เป็นตัวตัดสิน. ★ การสแกนที่ถูกปฏิเสธจะ "ไม่ throw error" แต่คืน ok=false พร้อมรหัสเหตุผลใน result (ทุกครั้งถูกบันทึกไว้เสมอ ทั้งสำเร็จและล้มเหลว).
+  """
+  scanJobQr(input: ScanJobQrInput!): JobScanResult!
 
   """
   Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
@@ -1156,6 +1426,11 @@ type Mutation {
   Admin only: Lock or unlock a specific field of a caregiver profile or user. Locked fields cannot be edited by the user until unlocked. Records audit log.
   """
   toggleFieldLock(input: ToggleFieldLockInput!): FieldLockResult!
+
+  """
+  โอนสิทธิ์เจ้าของให้สมาชิกคนอื่นในกลุ่ม (เจ้าของเท่านั้น) — ผู้เรียกจะกลายเป็นสมาชิกธรรมดาทันที. เป้าหมายต้องเป็นสมาชิก ACTIVE อยู่แล้ว มิฉะนั้น MEMBER_NOT_FOUND.
+  """
+  transferOwnership(input: TransferOwnershipInput!): FamilyGroup!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -1416,8 +1691,23 @@ type Query {
   """
   caregiverReviews(input: CaregiverReviewsInput!): CaregiverReviewsResponse!
 
+  """
+  รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
+  """
+  familyGroup(groupId: ID!): FamilyGroup!
+
+  """
+  โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้ (เรียงตามชื่อ) — ใช้เติมตัวเลือก "จองให้ใคร". กลุ่มที่ยังไม่มีใครแชร์โปรไฟล์ = array ว่าง ไม่ใช่ error.
+  """
+  groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
+
+  """
+  QR ของงาน 1 ใบ สำหรับให้ผู้รับบริการเปิดโชว์ให้ผู้ดูแลสแกน. ★ คืน token ดิบ จึงเปิดให้เฉพาะ patient เจ้าของ booking เท่านั้น — ผู้ดูแลเรียก query นี้ไม่ได้. QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ระบบดูจากสถานะปัจจุบันว่าสแกนครั้งต่อไปคือ action ไหน.
+  """
+  jobQr(bookingId: ID!): JobQr!
 
   """Get KYC status with full details for the Status Page"""
   kycStatus: KycStatusPayload!
@@ -1440,6 +1730,11 @@ type Query {
 
   """Get current caregiver profile"""
   myCaregiverProfile: Caregiver!
+
+  """
+  กลุ่มครอบครัวทั้งหมดที่ฉันเป็นสมาชิกอยู่ (ใหม่สุดก่อน) พร้อมรายชื่อสมาชิกและบทบาทของฉันในแต่ละกลุ่ม. ไม่มีกลุ่ม = คืน array ว่าง ไม่ใช่ error.
+  """
+  myFamilyGroups: [FamilyGroup!]!
 
   """
   Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.
@@ -1591,6 +1886,24 @@ input RejectionReasonItem {
   title: String!
 }
 
+input RemoveMemberInput {
+  """กลุ่มที่จะนำสมาชิกออก — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """
+  users.id ของสมาชิกที่จะนำออก (ไม่ใช่ family_group_members.id) — นำตัวเองออกไม่ได้ จะได้ LAST_OWNER
+  """
+  userId: ID!
+}
+
+input RenameFamilyGroupInput {
+  """กลุ่มที่จะเปลี่ยนชื่อ — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """ชื่อใหม่ 1–80 ตัวอักษร"""
+  name: String!
+}
+
 input RequestPasswordResetInput {
   """Email address to send the password reset link to"""
   email: String!
@@ -1656,6 +1969,63 @@ enum RoleFilter {
 
   """Role 4: Super Admin"""
   super_admin
+}
+
+"""
+สิ่งที่การสแกนครั้งนี้ทำ (หรือพยายามจะทำ). NONE = ยังไม่ทันรู้ว่าจะทำอะไร เช่น หา QR ไม่เจอ
+"""
+enum ScanAction {
+  CHECK_IN
+  CHECK_OUT
+  NONE
+}
+
+input ScanJobQrInput {
+  """position.coords.accuracy หน่วยเมตร — ยิ่งมากยิ่งมั่ว"""
+  accuracyM: Int
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """ละติจูดตอนสแกน (null ได้ ถ้าไม่ได้ให้สิทธิ์ตำแหน่ง)"""
+  lat: Float
+
+  """ลองจิจูดตอนสแกน"""
+  lng: Float
+
+  """
+  บันทึกปิดงาน — ใช้เฉพาะเมื่อการสแกนนี้กลายเป็นเช็คเอาท์ ยาวไม่เกิน 500 ตัวอักษร
+  """
+  note: String
+
+  """
+  รูปหลักฐาน 1 รูป — ใช้เฉพาะตอนเช็คเอาท์ ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของงานใบนั้น
+  """
+  photoUrl: String
+
+  """
+  ข้อความดิบที่อ่านได้จาก QR — ส่งมาตามที่อ่านได้เป๊ะ ๆ ห้ามตัด/เติม/แปลงตัวพิมพ์
+  """
+  token: String!
+}
+
+"""
+ผลของการสแกน. SUCCESS เท่านั้นที่แปลว่างานขยับจริง ค่าอื่นทั้งหมดคือถูกปฏิเสธ (แต่ถูกบันทึกไว้ทุกครั้ง)
+"""
+enum ScanResult {
+  ALREADY_COMPLETED
+  BOOKING_INACTIVE
+  DUPLICATE
+  JOB_NOT_READY
+  NOT_A_CAREGIVER
+  OUT_OF_WINDOW
+  SUCCESS
+  TOKEN_NOT_FOUND
+  TOO_SOON
+  WRONG_CAREGIVER
+  WRONG_SEQUENCE
 }
 
 input ScheduleDeleteAdminInput {
@@ -1852,6 +2222,16 @@ enum TransactionType {
   payment
   payout
   refund
+}
+
+input TransferOwnershipInput {
+  """กลุ่มที่จะโอนสิทธิ์ — ต้องเป็นเจ้าของกลุ่มปัจจุบัน"""
+  groupId: ID!
+
+  """
+  users.id ของเจ้าของคนใหม่ — ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้ว (เชิญคนนอกมาเป็นเจ้าของตรง ๆ ไม่ได้)
+  """
+  newOwnerUserId: ID!
 }
 
 input UpdateCaregiverInput {

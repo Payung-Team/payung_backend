@@ -12,6 +12,8 @@ import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
+// PYG-434: สูตรคำนวณ "เวลานัด" ที่ระบบ QR กับระบบเช็คอินต้องใช้ร่วมกัน
+import { scheduledStartOf } from './booking-schedule.util';
 import { CheckInInput } from './dto/check-in.input';
 import { CheckOutInput } from './dto/check-out.input';
 import { JobEvent } from './entities/job-event.entity';
@@ -51,6 +53,22 @@ interface EvaluationResult {
 }
 
 /**
+ * ตัวเลือกภายในของ checkInBooking / checkOutBooking (PYG-435)
+ *
+ * ★★ อ่านก่อนใช้: พารามิเตอร์นี้ "ห้ามรับค่ามาจาก client เด็ดขาด" ★★
+ *    มันไม่ได้อยู่ใน CheckInInput / CheckOutInput ด้วยเหตุผลนี้ล้วน ๆ —
+ *    ถ้าวันหนึ่งมีใครย้ายมันเข้าไปเป็นฟิลด์ของ GraphQL input
+ *    ประตูที่การ์ดนี้เพิ่งใส่กลอนไว้จะเปิดออกทันที ใครก็ส่ง viaScan: true มาเองได้
+ */
+export interface JobActionOptions {
+  /**
+   * true = คำสั่งนี้มาจากการสแกน QR ที่ตรวจสอบผ่านแล้ว
+   * ตอนนี้มีที่เดียวในระบบที่ส่งค่านี้: JobScanService (src/monitoring/qr/job-scan.service.ts)
+   */
+  viaScan?: boolean;
+}
+
+/**
  * MonitoringService — ตรรกะทั้งหมดของ proof-of-work (PYG-352)
  *
  * หลักคิดที่สำคัญที่สุดของไฟล์นี้ มีอยู่ประโยคเดียว:
@@ -79,7 +97,11 @@ export class MonitoringService {
    *
    * @param userId  users.id ที่มาจาก JWT (ปลอมผ่าน input ไม่ได้)
    */
-  async checkInBooking(userId: string, input: CheckInInput): Promise<JobEvent> {
+  async checkInBooking(
+    userId: string,
+    input: CheckInInput,
+    options?: JobActionOptions,
+  ): Promise<JobEvent> {
     const caregiverId = await this.resolveCaregiverId(userId);
 
     const booking = await this.prisma.booking.findUnique({
@@ -87,6 +109,8 @@ export class MonitoringService {
       include: {
         payment: { select: { paymentStatus: true } },
         jobEvents: { where: { eventType: JOB_EVENT_TYPE.CHECK_IN } },
+        // PYG-435: ดึงมาเพื่อตอบคำถามเดียว — "งานใบนี้มี QR ไหม"
+        jobSession: { select: { id: true } },
       },
     });
 
@@ -99,6 +123,9 @@ export class MonitoringService {
     if (booking.caregiverId !== caregiverId) {
       throw new ForbiddenException('งานนี้ไม่ใช่ของคุณ');
     }
+
+    // ─── ด่านที่ 2.5: ต้องสแกน QR มาก่อน (PYG-435) ───────────────────
+    this.assertScanned(booking.jobSession !== null, options);
 
     // ─── ด่านที่ 3: เช็คอินไปแล้วหรือยัง (idempotent) ─────────────────
     //
@@ -256,12 +283,17 @@ export class MonitoringService {
   async checkOutBooking(
     userId: string,
     input: CheckOutInput,
+    options?: JobActionOptions,
   ): Promise<JobEvent> {
     const caregiverId = await this.resolveCaregiverId(userId);
 
     const booking = await this.prisma.booking.findUnique({
       where: { id: input.bookingId },
-      include: { jobEvents: true }, // เอามาทั้งสองแถว (check_in + check_out ถ้ามี)
+      include: {
+        jobEvents: true, // เอามาทั้งสองแถว (check_in + check_out ถ้ามี)
+        // PYG-435: ดึงมาเพื่อตอบคำถามเดียว — "งานใบนี้มี QR ไหม"
+        jobSession: { select: { id: true } },
+      },
     });
 
     if (!booking) {
@@ -271,6 +303,9 @@ export class MonitoringService {
     if (booking.caregiverId !== caregiverId) {
       throw new ForbiddenException('งานนี้ไม่ใช่ของคุณ');
     }
+
+    // PYG-435: ต้องสแกน QR มาก่อน (ด่านเดียวกับตอนเช็คอิน)
+    this.assertScanned(booking.jobSession !== null, options);
 
     const checkIn = booking.jobEvents.find(
       (e) => e.eventType === JOB_EVENT_TYPE.CHECK_IN,
@@ -677,6 +712,36 @@ export class MonitoringService {
   }
 
   /**
+   * ★ ประตูของการ์ด PYG-435: "การเริ่ม/จบงานต้องผ่าน scan เท่านั้น"
+   *
+   * กติกามีบรรทัดเดียว — งานใบไหน "มี QR" งานใบนั้นต้องสแกนเท่านั้น
+   *
+   *   มี QR + มาจากการสแกน   → ผ่าน
+   *   มี QR + เรียก mutation ตรง ๆ → ปฏิเสธ  ← กลอนที่เพิ่งใส่
+   *   ไม่มี QR (ใบเก่า)        → ผ่าน (ทางเดิม)
+   *
+   * ⚠ ทำไมไม่ปิดประตูทุกใบไปเลย:
+   *   booking ที่จองไว้ก่อน migration 20260828000000 ไม่มีแถวใน job_sessions
+   *   (การ์ด PYG-436 เขียนไว้ตรง ๆ ว่า prototype นี้ "ข้าม" การ backfill)
+   *   ถ้าปิดหมด งานที่ค้างอยู่ในระบบตอน deploy จะเช็คอินไม่ได้ทั้งหมดทันที
+   *   → ผูกเงื่อนไขไว้กับ "มี QR ไหม" แทนที่จะเป็น "วันไหน" จึงไม่ต้องมีวันตัดตอน
+   *
+   * ⚠ ผลข้างเคียงที่ FE ต้องรู้ (PYG-438): mutation checkInBooking / checkOutBooking
+   *   ยังอยู่ใน schema เหมือนเดิม แต่จะใช้ได้เฉพาะกับงานเก่าเท่านั้น
+   *   งานใหม่ทุกใบต้องเรียก scanJobQr แทน
+   */
+  private assertScanned(
+    hasQr: boolean,
+    options: JobActionOptions | undefined,
+  ): void {
+    if (hasQr && !options?.viaScan) {
+      throw new BadRequestException(
+        'งานนี้ต้องสแกน QR ของผู้รับบริการก่อนจึงจะเริ่มหรือจบงานได้',
+      );
+    }
+  }
+
+  /**
    * ระยะทางระหว่างสองพิกัดบนผิวโลก หน่วยเมตร (สูตร haversine)
    *
    * ความคลาดเคลื่อนของสูตรนี้ระดับ < 0.5% ซึ่งละเอียดเกินพอ
@@ -704,22 +769,14 @@ export class MonitoringService {
   /**
    * รวม bookingDate (คอลัมน์ DATE) กับ startTime (คอลัมน์ TIME) ให้เป็นเวลาจริง 1 จุด
    *
-   * ทั้งสองคอลัมน์ถูกอ่านกลับมาเป็น Date ที่ฐาน UTC:
-   *   bookingDate → 2026-06-13T00:00:00Z
-   *   startTime   → 1970-01-01T09:00:00Z
-   * ความหมายจริงคือ "9 โมงเช้าเวลาไทย" → ลบ 7 ชม. เพื่อได้ instant จริง
-   * (ไทยเป็น UTC+7 คงที่ ไม่มี DST จึงบวกลบตรง ๆ ได้ ไม่ต้องใช้ library)
+   * PYG-434: ย้ายตัวสูตรออกไปไว้ที่ booking-schedule.util.ts แล้ว
+   * เพราะระบบ QR ต้องใช้สูตรเดียวกันเป๊ะ ๆ ในการคำนวณช่วงเวลาที่ QR ใช้ได้
+   * ถ้าปล่อยให้มีสูตรสองชุด วันที่แก้ไม่ครบทั้งคู่ QR จะหมดอายุคนละเวลากับเช็คอิน
+   *
+   * เก็บ method นี้ไว้เป็นตัวต่อ (delegate) เพื่อไม่ต้องแก้จุดเรียกทั้งไฟล์
    */
   private scheduledStartOf(bookingDate: Date, startTime: Date | null): Date {
-    const utcMidnight = Date.UTC(
-      bookingDate.getUTCFullYear(),
-      bookingDate.getUTCMonth(),
-      bookingDate.getUTCDate(),
-      startTime ? startTime.getUTCHours() : 0,
-      startTime ? startTime.getUTCMinutes() : 0,
-      startTime ? startTime.getUTCSeconds() : 0,
-    );
-    return new Date(utcMidnight - 7 * 60 * 60 * 1000);
+    return scheduledStartOf(bookingDate, startTime);
   }
 
   /** bookingDate ตรงกับ "วันนี้" ตามเวลาไทยหรือไม่ */

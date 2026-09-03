@@ -10,6 +10,7 @@ import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
 import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -74,7 +75,16 @@ describe('BookingService — new REST methods', () => {
 
   beforeEach(async () => {
     // PYG-286: cancelBooking ใช้ $transaction → ใส่ tx mock ที่ส่ง booking.update ของ prisma ให้ callback
-    const tx = { booking: { update: jest.fn((args) => prisma.booking.update(args)) } };
+    //
+    // PYG-434: createBooking ก็ใช้ $transaction แล้วเช่นกัน (booking + ใบ QR ต้องเกิดพร้อมกัน)
+    //   → ต่อ tx.booking.create ให้วิ่งกลับไปที่ prisma.booking.create ตัวเดิม
+    //     เทสด้านล่างทั้งหมดจึงยัง assert ผ่าน prisma.booking.create ได้เหมือนเดิม ไม่ต้องแก้
+    const tx = {
+      booking: {
+        update: jest.fn((args) => prisma.booking.update(args)),
+        create: jest.fn((args) => prisma.booking.create(args)),
+      },
+    };
     prisma = {
       booking: {
         findUnique: jest.fn(),
@@ -97,6 +107,8 @@ describe('BookingService — new REST methods', () => {
         // PYG-286: cancelBooking auto-void deps (ไม่ถูกเรียกใน create/search tests แต่ต้อง inject ให้ DI ผ่าน)
         { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        // PYG-434: สร้างใบ QR พร้อม booking — mock ไว้ ตรรกะจริงเทสที่ job-qr.service.spec.ts
+        { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
       ],
     }).compile();
 

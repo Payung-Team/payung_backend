@@ -22,7 +22,6 @@ import { ReviewModule } from './review/review.module';
 import { DisputeModule } from './dispute/dispute.module';
 import { TransactionModule } from './transaction/transaction.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
-import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { FamilyGroupModule } from './family-group/family-group.module';
 
 @Module({
@@ -76,8 +75,7 @@ import { FamilyGroupModule } from './family-group/family-group.module';
     DisputeModule,       // PYG-287: flag / adminDisputes / resolveDispute
     TransactionModule,   // PYG-333: admin transactions list/detail/summary (read-only)
     MonitoringModule,    // PYG-352: proof-of-work — checkInBooking + job_events
-    ReconciliationModule, // PYG-376: payments vs Omise vs payouts recon report + alert cron
-    FamilyGroupModule,   // PYG-392: family group — acceptInvite / join group
+    FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
