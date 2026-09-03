@@ -80,6 +80,16 @@ describe('ReconciliationCron', () => {
     expect(email.sendAdminAlert).not.toHaveBeenCalled();
   });
 
+  it('INFO-tier only (HELD_AWAITING_PROOF) → NO email, even in bulk', async () => {
+    const heldRows = Array.from({ length: 33 }, () => ({
+      flags: [ReconFlag.HELD_AWAITING_PROOF],
+      primaryFlag: ReconFlag.HELD_AWAITING_PROOF,
+    }));
+    const { cron, email } = makeCron(report(heldRows));
+    await cron.run();
+    expect(email.sendAdminAlert).not.toHaveBeenCalled(); // 33 held rows must never alert
+  });
+
   it('clean report → NO email', async () => {
     const { cron, email } = makeCron(report([{}]));
     await cron.run();

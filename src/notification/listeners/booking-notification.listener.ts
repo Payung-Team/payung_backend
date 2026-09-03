@@ -87,8 +87,13 @@ const SERVICE_LABEL: Record<booking_service_type, string> = {
 /**
  * Recipient matrix + เนื้อหา ของทุก event
  * (อ้างอิง Figma anatomy + ทิศทางการนำทางของ FE: booking_new/confirmed/cancelled → caregiver)
+ *
+ * Partial: บาง event ไม่ได้ให้ listener นี้จัดการ (เช่น PYG-359 'job.no_checkout' — sweeper
+ * แจ้ง caregiver+admin เองโดยตรง เพราะ recipient matrix นี้รองรับได้แค่ patient/caregiver/both/admin
+ * ไม่ใช่ "caregiver+admin"). handleBookingEvent มี null-guard ข้าม event ที่ไม่มี config อยู่แล้ว
+ * — และเราไม่ผูก @OnEvent ของ event พวกนั้นด้วย จึงไม่มีทางถูกเรียก
  */
-const EVENT_CONFIG: Record<BookingEventType, EventConfig> = {
+const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
   [BOOKING_EVENTS.CREATED]: {
     type: NotificationType.booking_new,
     recipient: 'caregiver',

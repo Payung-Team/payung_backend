@@ -19,7 +19,7 @@ import { ClockService } from '../common/clock.service';
 import { EmailService } from '../email/email.service';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { ReconciliationService } from './reconciliation.service';
-import { ReconFlag, ALERT_FLAGS, type ReconRow } from './reconciliation.types';
+import { ReconFlag, ALERT_FLAGS, isInfoTierOnly, type ReconRow } from './reconciliation.types';
 
 /** how far back each daily run looks. */
 const RECON_WINDOW_HOURS = 24;
@@ -64,12 +64,26 @@ export class ReconciliationCron {
       return;
     }
 
-    if (report.flaggedRows > 0 || report.unreachableRows > 0) {
-      // lesser flags → warning with per-flag counts
+    // rows carrying a non-alert, non-INFO flag (3/4/5/6) → warn (no email)
+    const warnRows = report.rows.filter(
+      (r) => r.flags.length > 0 && !isInfoTierOnly(r.flags),
+    );
+    if (warnRows.length > 0 || report.unreachableRows > 0) {
       this.logger.warn({
         event: 'recon.flags',
-        flaggedRows: report.flaggedRows,
+        warnRows: warnRows.length,
         unreachableRows: report.unreachableRows,
+        counts: Object.fromEntries(counts),
+      });
+      return;
+    }
+
+    // INFO-tier only (e.g. HELD_AWAITING_PROOF) → info log, NEVER emails
+    const infoRows = report.rows.filter((r) => r.flags.length > 0);
+    if (infoRows.length > 0) {
+      this.logger.log({
+        event: 'recon.info',
+        infoRows: infoRows.length,
         counts: Object.fromEntries(counts),
       });
       return;

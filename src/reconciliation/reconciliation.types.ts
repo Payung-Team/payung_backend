@@ -4,7 +4,7 @@
  * Read-only: this module compares payments (+payouts) vs Omise vs the proof/verdict
  * side and flags disagreements. It NEVER mutates a row.
  */
-import { Field, ID, InputType, ObjectType, registerEnumType } from '@nestjs/graphql';
+import { Field, Float, ID, Int, InputType, ObjectType, registerEnumType } from '@nestjs/graphql';
 import { IsDateString } from 'class-validator';
 
 /**
@@ -24,6 +24,13 @@ export enum ReconFlag {
   STATUS_MISMATCH_OMISE_PAID_DB_PENDING = 'STATUS_MISMATCH_OMISE_PAID_DB_PENDING',
   /** refunded_amount > captured_amount */
   REFUND_EXCEEDS_CAPTURED = 'REFUND_EXCEEDS_CAPTURED',
+  /**
+   * INFO-tier (PYG-376 Flag 1 refinement): captured + verdict=incomplete + NOT paid out +
+   * no override = money HELD in escrow awaiting proof-of-work. NOT a leak (nothing released).
+   * Kept visible to watch the backlog before the escrow gate (PYG-366/367) is enforced —
+   * but never alerts / never emails. See ALERT_FLAGS vs INFO_FLAGS.
+   */
+  HELD_AWAITING_PROOF = 'HELD_AWAITING_PROOF',
 }
 
 registerEnumType(ReconFlag, { name: 'ReconFlag' });
@@ -36,13 +43,23 @@ export const RECON_FLAG_SEVERITY: ReconFlag[] = [
   ReconFlag.STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID,
   ReconFlag.STATUS_MISMATCH_OMISE_PAID_DB_PENDING,
   ReconFlag.REFUND_EXCEEDS_CAPTURED,
+  // INFO-tier — least severe, sorts last, clean rows still sort after it
+  ReconFlag.HELD_AWAITING_PROOF,
 ];
 
-/** the two flags that trigger an immediate admin email (STEP 4). */
+/** ALERT tier — fires an immediate admin email + error log (STEP 4). */
 export const ALERT_FLAGS: ReconFlag[] = [
   ReconFlag.CAPTURE_WITHOUT_PROOF,
   ReconFlag.PAYOUT_WITHOUT_CAPTURE,
 ];
+
+/** INFO tier — visible in report/CSV, but NEVER emails and never counts as an alert. */
+export const INFO_FLAGS: ReconFlag[] = [ReconFlag.HELD_AWAITING_PROOF];
+
+/** true when a row's flags are all INFO-tier (or none) — used to keep the cron quiet. */
+export function isInfoTierOnly(flags: ReconFlag[]): boolean {
+  return flags.every((f) => INFO_FLAGS.includes(f));
+}
 
 @ObjectType()
 export class ReconRow {
@@ -51,10 +68,10 @@ export class ReconRow {
   /** payment.created_at ISO */
   @Field() date!: string;
 
-  // ── amounts (baht, for display) ──
-  @Field(() => Number) amount!: number;
-  @Field(() => Number, { nullable: true }) capturedAmount?: number | null;
-  @Field(() => Number) refundedAmount!: number;
+  // ── amounts (baht, for display — Float like transaction.types money fields) ──
+  @Field(() => Float) amount!: number;
+  @Field(() => Float, { nullable: true }) capturedAmount?: number | null;
+  @Field(() => Float) refundedAmount!: number;
 
   @Field() paymentStatus!: string;
   /** Omise charge.status, or null when no charge id / unreachable */
@@ -65,9 +82,9 @@ export class ReconRow {
   @Field(() => [String]) reviewReasons!: string[];
 
   // ── payout money columns for the CSV (baht) ──
-  @Field(() => Number, { nullable: true }) grossAmount?: number | null;
-  @Field(() => Number, { nullable: true }) platformFee?: number | null;
-  @Field(() => Number, { nullable: true }) netAmount?: number | null;
+  @Field(() => Float, { nullable: true }) grossAmount?: number | null;
+  @Field(() => Float, { nullable: true }) platformFee?: number | null;
+  @Field(() => Float, { nullable: true }) netAmount?: number | null;
 
   /** Omise charge couldn't be fetched — flags 3/4/5 are NOT evaluated for this row. */
   @Field() omiseUnreachable!: boolean;
@@ -81,9 +98,9 @@ export class ReconRow {
 export class ReconReport {
   @Field() dateFrom!: string;
   @Field() dateTo!: string;
-  @Field(() => Number) totalRows!: number;
-  @Field(() => Number) flaggedRows!: number;
-  @Field(() => Number) unreachableRows!: number;
+  @Field(() => Int) totalRows!: number;
+  @Field(() => Int) flaggedRows!: number;
+  @Field(() => Int) unreachableRows!: number;
   @Field(() => [ReconRow]) rows!: ReconRow[];
 }
 

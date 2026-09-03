@@ -22,6 +22,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
+import { PayoutEligibilityService } from './payout-eligibility.service';
 
 @Injectable()
 export class PayoutService {
@@ -32,6 +33,8 @@ export class PayoutService {
     private readonly config: ConfigService,
     // PYG-331: สร้าง payout + log initial history อยู่ใน tx เดียวกัน (atomic)
     private readonly stateMachine: PayoutStateMachine,
+    // gate ชั้นที่ 2: capture = เงินเข้าระบบ, payout = เงินออกจากระบบ — คนละประตูกัน
+    private readonly eligibility: PayoutEligibilityService,
   ) {}
 
   /**
@@ -95,6 +98,20 @@ export class PayoutService {
       return;
     }
 
+    // ── 2b. Payout gate — "งานนี้มีหลักฐานว่าทำจริงไหม" ───────────────────────
+    // ประตูที่สองต่อจาก capture: capture = เงินเข้า, payout = เงินออก
+    // ⚠️ ห้าม throw: เรามาจาก listener ที่ swallow error อยู่แล้ว — throw = ล้มเงียบ
+    // ⚠️ ไม่สร้าง row เลย (ไม่ใช่สร้างแล้ว mark failed) — payouts.booking_id เป็น
+    //    UNIQUE ถ้าสร้างทิ้งไว้แล้วอยากยกเลิก จะสร้างใบใหม่ให้ booking นี้ไม่ได้อีก
+    const verdict = await this.eligibility.check(bookingId);
+    if (verdict.kind !== 'eligible') {
+      this.logger.warn(
+        `[PayoutService] skip booking=${bookingId} — payout gate says "${verdict.kind}" ` +
+          `(reason=${verdict.reason}, evidence=${JSON.stringify(verdict.evidence)}) — no payout row created`,
+      );
+      return;
+    }
+
     // ── 3. Calc — Prisma.Decimal end-to-end ───────────────────────────────
     // grossAmount = payments.amount (Decimal from Prisma)
     // feeRate     = env, snapshot ลง row (ห้าม default DB)
@@ -146,6 +163,10 @@ export class PayoutService {
               platformFee: platformFee.toString(),
               amount: amount.toString(),
               feeRate: feeRate.toString(),
+              // ★ audit trail: หลักฐานที่ใช้ตัดสินใจจ่าย (checkInId / checkOutId /
+              //   verdict) — ตอนมีคนร้องเรียนจะตอบได้ว่า "จ่ายเพราะหลักฐานชุดนี้"
+              gate: verdict.reason,
+              ...verdict.evidence,
             },
           },
           tx,

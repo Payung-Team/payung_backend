@@ -1501,6 +1501,7 @@ type RecentActivity {
 enum ReconFlag {
   AMOUNT_MISMATCH
   CAPTURE_WITHOUT_PROOF
+  HELD_AWAITING_PROOF
   PAYOUT_WITHOUT_CAPTURE
   REFUND_EXCEEDS_CAPTURED
   STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
@@ -1510,10 +1511,10 @@ enum ReconFlag {
 type ReconReport {
   dateFrom: String!
   dateTo: String!
-  flaggedRows: Float!
+  flaggedRows: Int!
   rows: [ReconRow!]!
-  totalRows: Float!
-  unreachableRows: Float!
+  totalRows: Int!
+  unreachableRows: Int!
 }
 
 type ReconRow {
