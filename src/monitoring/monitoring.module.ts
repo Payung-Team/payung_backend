@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { MonitoringResolver } from './monitoring.resolver';
+import { NoCheckoutSweeperService } from './no-checkout-sweeper.service';
 import { JobQrService } from './qr/job-qr.service';
 import { JobQrResolver } from './qr/job-qr.resolver';
 import { JobScanService } from './qr/job-scan.service';
 import { JobScanResolver } from './qr/job-scan.resolver';
 import { CommonModule } from '../common/common.module';
+import { NotificationModule } from '../notification/notification.module';
 
 /**
  * MonitoringModule — proof-of-work: เช็คอิน / เช็คเอาท์ / หลักฐานการทำงาน (PYG-352)
@@ -32,10 +34,12 @@ import { CommonModule } from '../common/common.module';
  *     (ต่างจาก JobQrService ที่ BookingModule ต้องใช้จริง ๆ ตอนสร้าง booking)
  */
 @Module({
-  imports: [CommonModule],
+  imports: [CommonModule, NotificationModule],
   providers: [
     MonitoringResolver,
     MonitoringService,
+    // PYG-359: cron ปิดงานที่ลืมเช็คเอาท์ → บังคับ needs_review
+    NoCheckoutSweeperService,
     // PYG-434: สร้าง/อ่านใบ QR ของงาน
     JobQrResolver,
     JobQrService,
