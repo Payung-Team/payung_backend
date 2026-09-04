@@ -76,7 +76,7 @@ export class JoinLinkPreview {
   @Field({ description: 'ชื่อกลุ่มที่กำลังจะเข้าร่วม' })
   groupName: string;
 
-  @Field({
+  @Field(() => String, {
     nullable: true,
     description: 'ชื่อที่แสดงของเจ้าของกลุ่ม — null ถ้าบัญชีนั้นถูกลบไปแล้ว',
   })
@@ -91,7 +91,7 @@ export class JoinLinkPreview {
   })
   isUsable: boolean;
 
-  @Field({
+  @Field(() => String, {
     nullable: true,
     description:
       "เหตุผลที่กดไม่ได้ — 'EXPIRED' | 'REVOKED' | 'EXHAUSTED' | 'GROUP_FULL' (null เมื่อ isUsable = true)",
