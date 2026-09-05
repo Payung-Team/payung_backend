@@ -14,11 +14,17 @@
  * - setSearchable() — เปิด/ปิดการแสดงในผลค้นหา
  */
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { KycDocument } from './entities/kyc-document.entity';
+import {
+  KYC_BUCKET,
+  KYC_SIGNED_URL_TTL_SECONDS,
+  toStoragePathForSigning,
+} from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 
 /** Profile fields ที่ track ได้ใน updateProfile */
@@ -67,6 +73,7 @@ export class CaregiverService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly supabaseService: SupabaseService,
+    private readonly configService: ConfigService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -436,7 +443,50 @@ export class CaregiverService {
    * @param caregiverId - UUID ของ caregiver
    * @returns รายการเอกสารพร้อม signedUrl (array ว่างถ้าไม่มีเอกสาร)
    */
-  async getDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+  /**
+   * getOwnDocumentsWithSignedUrls — caregiver ดูเอกสารของตัวเอง
+   *
+   * ★ แยกจากเส้นของ admin โดยตั้งใจ ไม่ใช่แค่เรื่องความสวยงามของโค้ด:
+   *   "คนเปิดดูรูปบัตรประชาชนของคนอื่น" คือสิ่งที่ต้องมีร่องรอยที่สุดในระบบนี้
+   *   ถ้าเหลือ method กลางตัวเดียว วันหนึ่งจะมีคนเรียกไปอ่านของคนอื่นโดยไม่ลง audit
+   *   แล้วไม่มีใครรู้ว่าเกิดขึ้น — สองประตูทำให้ "ลืมลง audit" เป็นไปไม่ได้
+   */
+  async getOwnDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+    return this.signDocuments(caregiverId);
+  }
+
+  /**
+   * getDocumentsForAdminReview — admin เปิดดูเอกสารของ caregiver คนอื่น
+   *
+   * ลง admin_audit_logs "ก่อน" ออก signed URL เสมอ ถ้าเขียน audit ไม่สำเร็จ
+   * ให้ throw ออกไปเลย ไม่ต้องออก URL — ยอมให้แอดมินเปิดดูไม่ได้ชั่วคราว
+   * ดีกว่ามีคนเปิดดูรูปบัตรประชาชนแล้วไม่เหลือหลักฐาน
+   */
+  async getDocumentsForAdminReview(
+    caregiverId: string,
+    adminId: string,
+  ): Promise<KycDocument[]> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { id: caregiverId },
+      select: { userId: true },
+    });
+
+    const details = JSON.stringify({
+      caregiverId,
+      ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
+      bucket: KYC_BUCKET,
+    });
+
+    await this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${adminId}, 'kyc_documents_viewed',
+              ${caregiver?.userId ?? null}, ${details}::jsonb, NOW())
+    `;
+
+    return this.signDocuments(caregiverId);
+  }
+
+  private async signDocuments(caregiverId: string): Promise<KycDocument[]> {
     const docs = await this.prismaService.kycDocument.findMany({
       where: { caregiverId },
       orderBy: { uploadedAt: 'desc' },
@@ -453,7 +503,9 @@ export class CaregiverService {
           caregiverId: doc.caregiverId ?? undefined,
           userId: doc.userId,
           docType: doc.documentType,
-          fileUrl: doc.fileUrl,
+          // ★ ไม่คืน storage path ดิบให้ client — FE ต้องใช้ signedUrl เท่านั้น
+          //   path ดิบเป็นข้อมูลที่ช่วยให้เดาไฟล์ของคนอื่นได้ ไม่มีเหตุให้เปิดเผย
+          fileUrl: '',
           fileName: doc.fileName,
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
@@ -461,31 +513,31 @@ export class CaregiverService {
         };
 
         try {
-          // fileUrl format: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
-          // หรือ: https://<project>.supabase.co/storage/v1/object/<bucket>/<path>
-          // ต้องดึง bucket name และ object path ออกมา
-          const storageSegment = doc.fileUrl.split('/storage/v1/object/')[1];
-          if (storageSegment) {
-            // ตัด "public/" ออกถ้ามี
-            const withoutPublic = storageSegment.startsWith('public/')
-              ? storageSegment.slice('public/'.length)
-              : storageSegment;
-            const slashIndex = withoutPublic.indexOf('/');
-            if (slashIndex !== -1) {
-              const bucket = withoutPublic.slice(0, slashIndex);
-              const objectPath = withoutPublic.slice(slashIndex + 1);
+          // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก
+          //   ของเดิมอ่านชื่อ bucket ออกจาก fileUrl แล้วเซ็นด้วย service role
+          //   ซึ่ง bypass Storage RLS → ใครยัด path ของ bucket ไหนมาก็เซ็นให้หมด
+          const objectPath = toStoragePathForSigning(
+            doc.fileUrl,
+            this.configService.getOrThrow<string>('SUPABASE_URL'),
+          );
 
-              const { data, error } = await supabase.storage
-                .from(bucket)
-                .createSignedUrl(objectPath, 3600); // 1 hour
+          if (objectPath) {
+            const { data, error } = await supabase.storage
+              .from(KYC_BUCKET)
+              .createSignedUrl(objectPath, KYC_SIGNED_URL_TTL_SECONDS);
 
-              if (!error && data?.signedUrl) {
-                entity.signedUrl = data.signedUrl;
-              }
+            if (!error && data?.signedUrl) {
+              entity.signedUrl = data.signedUrl;
             }
+          } else {
+            // ค่าที่เก็บไว้ไม่ใช่ของ bucket KYC (เช่นแถวเก่าที่เป็น URL ภายนอก)
+            // → ไม่เซ็นให้ และไม่คืน path ดิบออกไป
+            this.logger.warn(
+              `[KYC] เอกสาร ${doc.id} มี storage path ที่ไม่รองรับ — ไม่ออก signed URL`,
+            );
           }
         } catch {
-          // ถ้า sign URL ล้มเหลว → ใช้ fileUrl เดิม (ไม่ให้ query พัง)
+          // sign ไม่สำเร็จ → ไม่มี signedUrl (ไม่ throw ให้ query ทั้งก้อนพัง)
         }
 
         return entity;
