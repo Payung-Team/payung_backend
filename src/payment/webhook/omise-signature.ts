@@ -73,16 +73,24 @@ export function verifyOmiseSignature(
     .update(`${timestampHeader}.${rawBody.toString('utf8')}`)
     .digest();
 
-  // header อาจมีหลายลายเซ็นคั่นด้วย comma (ตอนหมุน secret) — ผ่านตัวใดตัวหนึ่งก็พอ
+  // header อาจมีหลายลายเซ็นคั่นด้วย comma — เกิดตอนหมุน secret (rotation)
+  // ช่วงนั้น Omise ส่งทั้งลายเซ็นของ secret เก่าและใหม่มาพร้อมกัน ผ่านตัวใดตัวหนึ่งก็ยอมรับ
+  //
+  // ★ สะสมผลด้วย bitwise OR แล้วค่อยตัดสินตอนจบ ไม่ return ทันทีที่เจอตัวถูก
+  //   `||` จะ short-circuit ทำให้เวลาที่ใช้ต่างกันตามตำแหน่งของลายเซ็นที่ถูก
+  //   ซึ่งเป็นข้อมูลที่รั่วออกไปได้ — เทียบให้ครบทุกตัวเสมอ
+  let matched = 0;
   for (const candidate of signatureHeader.split(',')) {
     const trimmed = candidate.trim();
+    // ความยาว/รูปแบบ hex ไม่ใช่ความลับ (ผู้โจมตีเป็นคนส่งมาเอง) ข้ามได้ไม่รั่วอะไร
     if (!/^[0-9a-fA-F]+$/.test(trimmed)) continue;
 
     const provided = Buffer.from(trimmed, 'hex');
-    // timingSafeEqual โยน error ถ้าความยาวไม่เท่ากัน ต้องกันก่อนเสมอ
+    // timingSafeEqual โยน error ถ้าความยาว buffer ไม่เท่ากัน ต้องกันก่อนเสมอ
     if (provided.length !== expected.length) continue;
-    if (crypto.timingSafeEqual(provided, expected)) return { ok: true };
+
+    matched |= crypto.timingSafeEqual(provided, expected) ? 1 : 0;
   }
 
-  return { ok: false, reason: 'signature_mismatch' };
+  return matched === 1 ? { ok: true } : { ok: false, reason: 'signature_mismatch' };
 }
