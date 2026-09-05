@@ -25,6 +25,11 @@ import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
 import { PayoutAccountInput } from './dto/payout-account.input';
 import { PayoutAccountSummary } from './entities/payout-account.entity';
+import { PayoutBankOption } from './entities/payout-bank-option.entity';
+import {
+  OMISE_BANKS,
+  accountDigitRule,
+} from '../../common/constants/omise-banks.constant';
 import { UploadDocumentInput } from './dto/upload-document.input';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { Caregiver } from './entities/caregiver.entity';
@@ -219,6 +224,33 @@ export class KycResolver {
     @Args('input') input: PayoutAccountInput,
   ): Promise<PayoutAccountSummary> {
     return this.kycService.updatePayoutAccount(user, input);
+  }
+
+  /**
+   * payoutBankOptions — รายชื่อธนาคาร + กฎความยาวเลขบัญชี ให้ FE ดึงไปสร้าง dropdown
+   *
+   * มีไว้เพื่อฆ่า hardcode ซ้ำสองที่ (TASK 4): เดิม FE ตรึง "10 หลัก" ไว้เอง
+   * ขณะที่ชุดธนาคารฝั่ง BE มีออมสิน/ธ.ก.ส. ที่ไม่ใช่ 10 หลัก → กรอกไม่ผ่านทั้งคู่
+   *
+   * ไม่แตะ DB ไม่มีข้อมูลส่วนบุคคล — เป็น static config ล้วน จึงไม่จำกัด role
+   * (ยังต้องผ่าน SupabaseAuthGuard ระดับคลาสอยู่)
+   */
+  @Query(() => [PayoutBankOption], {
+    description:
+      'รายชื่อธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี — FE ต้องดึงจากที่นี่ ห้าม hardcode',
+  })
+  payoutBankOptions(): PayoutBankOption[] {
+    return OMISE_BANKS.map((bank) => {
+      const { min, max } = accountDigitRule(bank.code);
+      return {
+        code: bank.code,
+        nameTh: bank.nameTh,
+        nameEn: bank.nameEn,
+        minDigits: min,
+        maxDigits: max,
+        exactDigits: bank.digits ? [...bank.digits] : null,
+      };
+    });
   }
 }
 

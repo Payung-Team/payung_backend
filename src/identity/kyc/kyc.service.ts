@@ -34,6 +34,10 @@ import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
+import {
+  normalizeAccountNumber,
+  validateAccountNumberForBank,
+} from '../../common/constants/omise-banks.constant';
 
 /** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
 const KYC_TRACKED_FIELDS = [
@@ -540,8 +544,18 @@ export class KycService {
       where: { caregiverId },
     });
 
-    const accountNumberEnc = this.payoutEncryption.encrypt(input.accountNumber);
-    const accountNumberLast4 = this.payoutEncryption.last4(input.accountNumber);
+    // ── ชั้นที่สองของการตรวจเลขบัญชี (TASK 4) ────────────────────────────────
+    // DTO ตรวจได้แค่ช่วงกว้าง เพราะ class-validator ไม่เห็น bankCode ตอนตรวจ accountNumber
+    // ตรงนี้รู้ทั้งคู่แล้ว จึงใช้กฎรายธนาคารได้ — และ normalize ซ้ำเพื่อกันเส้นทางที่
+    // เรียก helper นี้ตรง ๆ โดยไม่ผ่าน DTO (submitKyc ผ่าน KycInput ก็มาลงที่นี่)
+    const accountNumber = normalizeAccountNumber(input.accountNumber);
+    const invalidReason = validateAccountNumberForBank(input.bankCode, accountNumber);
+    if (invalidReason) {
+      throw new BadRequestException(invalidReason);
+    }
+
+    const accountNumberEnc = this.payoutEncryption.encrypt(accountNumber);
+    const accountNumberLast4 = this.payoutEncryption.last4(accountNumber);
 
     const account = await tx.caregiverPayoutAccount.upsert({
       where: { caregiverId },
