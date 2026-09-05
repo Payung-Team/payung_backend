@@ -2328,7 +2328,7 @@ input UploadDocumentInput {
   """File size in bytes"""
   fileSize: Int!
 
-  """File URL in Supabase Storage"""
+  """Storage path (<uid>/<file>) หรือ URL เต็มของ bucket kyc-documents"""
   fileUrl: String!
 
   """MIME type: image/jpeg | image/png | application/pdf"""
