@@ -1,4 +1,3 @@
-import * as crypto from 'crypto';
 import {
   Body,
   Controller,
@@ -6,10 +5,14 @@ import {
   HttpCode,
   Logger,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { RawBodyRequest } from '@nestjs/common';
+import type { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from '../payment.service';
 import { RefundService } from '../refund.service';
+import { verifyOmiseSignature } from './omise-signature';
 
 interface OmiseWebhookBody {
   key: string;
@@ -26,32 +29,48 @@ export class OmiseController {
     private readonly refundService: RefundService,
   ) {}
 
+  /**
+   * ⚠️ header ต้องเป็น `Omise-Signature` / `Omise-Signature-Timestamp` ตามสเปคจริง
+   *    ของเดิมอ่าน `x-omise-signature` ซึ่งไม่มีอยู่จริง → ค่าเป็น undefined เสมอ
+   *    → ตกเข้า else ที่ปล่อยผ่าน แปลว่าต่อให้ตั้ง secret แล้วก็ยังไม่ได้ตรวจอะไร
+   *
+   *    rawBody มาจาก NestFactory.create(AppModule, { rawBody: true }) ใน main.ts
+   *    ห้ามกลับไปใช้ JSON.stringify(body) เด็ดขาด — re-serialise แล้วไบต์ไม่ตรงของเดิม
+   */
   @Post('omise')
   @HttpCode(200)
   async handle(
+    @Req() req: RawBodyRequest<Request>,
     @Body() body: OmiseWebhookBody,
-    @Headers('x-omise-signature') signature?: string,
+    @Headers('omise-signature') signature?: string,
+    @Headers('omise-signature-timestamp') signatureTimestamp?: string,
   ): Promise<{ received: boolean }> {
     const secret = this.configService.get<string>('OMISE_WEBHOOK_SECRET');
 
     if (!secret) {
-      // TODO: set OMISE_WEBHOOK_SECRET in .env to enable signature verification
-      this.logger.warn('[OmiseWebhook] OMISE_WEBHOOK_SECRET not configured — skipping signature check');
-    } else if (signature) {
-      // NOTE: for byte-accurate verification, configure NestJS to preserve rawBody
-      // (app.use(express.json({ verify: (req, _, buf) => { req['rawBody'] = buf; } })))
-      // Current implementation re-serialises the parsed JSON which may differ from the original bytes.
-      const expected = crypto
-        .createHmac('sha256', secret)
-        .update(JSON.stringify(body))
-        .digest('hex');
-      const sigBuffer = Buffer.from(signature);
-      const expBuffer = Buffer.from(expected);
-      if (
-        sigBuffer.length !== expBuffer.length ||
-        !crypto.timingSafeEqual(sigBuffer, expBuffer)
-      ) {
-        this.logger.warn('[OmiseWebhook] Signature mismatch — ignoring payload (returning 200 to prevent retry flood)');
+      // dev/local เท่านั้น — บน environment ที่มีเงินจริงต้องตั้งเสมอ
+      // webhook recipient.verified เป็นประตูเดียวที่ปลดล็อกบัญชีรับเงินให้พร้อมรับโอน
+      // ไม่ตั้ง secret = ใครก็ปลอม event นี้เข้ามาได้
+      this.logger.warn(
+        '[OmiseWebhook] ⚠️ OMISE_WEBHOOK_SECRET ไม่ได้ตั้ง — ข้ามการตรวจลายเซ็น ' +
+          '(ห้ามใช้สภาพนี้บน production)',
+      );
+    } else {
+      const verdict = verifyOmiseSignature(
+        req.rawBody,
+        signature,
+        signatureTimestamp,
+        secret,
+      );
+
+      if (!verdict.ok) {
+        // ตอบ 200 เพื่อไม่ให้ Omise retry ถล่ม แต่ log เป็น ERROR ไม่ใช่ WARN:
+        // ถ้าการตรวจของเราพังเอง อาการจะเหมือนกันเป๊ะ (webhook ถูกทิ้งเงียบ ๆ)
+        // แล้วบัญชีรับเงินจะไม่มีวันเป็น active — ต้องเห็นใน log ทันที
+        this.logger.error(
+          `[OmiseWebhook] ปฏิเสธ webhook — ลายเซ็นไม่ผ่าน (${verdict.reason}) ` +
+            `key=${body?.key ?? 'unknown'} — ไม่ประมวลผล payload`,
+        );
         return { received: true };
       }
     }

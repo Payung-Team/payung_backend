@@ -3,7 +3,10 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: true → เก็บไบต์ดิบของ request ไว้ที่ req.rawBody
+  // จำเป็นสำหรับตรวจลายเซ็น webhook ของ Omise ซึ่งเซ็นจาก "<timestamp>.<raw body>"
+  // ถ้าใช้ body ที่ parse แล้ว re-serialise ไบต์จะไม่ตรง → ลายเซ็นไม่มีวันผ่าน
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   app.useGlobalPipes(
     new ValidationPipe({
       // transform: true → แปลง plain object จาก request เป็น class instance อัตโนมัติ
