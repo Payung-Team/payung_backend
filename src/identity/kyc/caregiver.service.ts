@@ -443,7 +443,50 @@ export class CaregiverService {
    * @param caregiverId - UUID ของ caregiver
    * @returns รายการเอกสารพร้อม signedUrl (array ว่างถ้าไม่มีเอกสาร)
    */
-  async getDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+  /**
+   * getOwnDocumentsWithSignedUrls — caregiver ดูเอกสารของตัวเอง
+   *
+   * ★ แยกจากเส้นของ admin โดยตั้งใจ ไม่ใช่แค่เรื่องความสวยงามของโค้ด:
+   *   "คนเปิดดูรูปบัตรประชาชนของคนอื่น" คือสิ่งที่ต้องมีร่องรอยที่สุดในระบบนี้
+   *   ถ้าเหลือ method กลางตัวเดียว วันหนึ่งจะมีคนเรียกไปอ่านของคนอื่นโดยไม่ลง audit
+   *   แล้วไม่มีใครรู้ว่าเกิดขึ้น — สองประตูทำให้ "ลืมลง audit" เป็นไปไม่ได้
+   */
+  async getOwnDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+    return this.signDocuments(caregiverId);
+  }
+
+  /**
+   * getDocumentsForAdminReview — admin เปิดดูเอกสารของ caregiver คนอื่น
+   *
+   * ลง admin_audit_logs "ก่อน" ออก signed URL เสมอ ถ้าเขียน audit ไม่สำเร็จ
+   * ให้ throw ออกไปเลย ไม่ต้องออก URL — ยอมให้แอดมินเปิดดูไม่ได้ชั่วคราว
+   * ดีกว่ามีคนเปิดดูรูปบัตรประชาชนแล้วไม่เหลือหลักฐาน
+   */
+  async getDocumentsForAdminReview(
+    caregiverId: string,
+    adminId: string,
+  ): Promise<KycDocument[]> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { id: caregiverId },
+      select: { userId: true },
+    });
+
+    const details = JSON.stringify({
+      caregiverId,
+      ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
+      bucket: KYC_BUCKET,
+    });
+
+    await this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${adminId}, 'kyc_documents_viewed',
+              ${caregiver?.userId ?? null}, ${details}::jsonb, NOW())
+    `;
+
+    return this.signDocuments(caregiverId);
+  }
+
+  private async signDocuments(caregiverId: string): Promise<KycDocument[]> {
     const docs = await this.prismaService.kycDocument.findMany({
       where: { caregiverId },
       orderBy: { uploadedAt: 'desc' },

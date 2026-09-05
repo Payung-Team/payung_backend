@@ -53,3 +53,41 @@ BEGIN
       'ยังเหลือ % แถวที่เก็บ URL เต็มอยู่ — migration ไม่ครบ ยกเลิกทั้งชุด', leftover;
   END IF;
 END $$;
+
+-- ─── guard ระดับ DB: file_url ต้องเป็น storage path เท่านั้น ─────────────────
+-- validator ใน service กัน "ของใหม่" ที่จะเขียนเข้ามา
+-- CHECK ตัวนี้กัน "ของเก่าที่หลุดมา" และกันเส้นทางเขียนอื่นที่อาจโผล่มาวันหลัง
+-- (เช่น seed script, งาน migration ในอนาคต, หรือคนแก้มือผ่าน SQL editor)
+--
+-- ★ ยกเว้นแถว example.com ที่จงใจเก็บไว้เป็น fixture ของช่องโหว่
+--   จึงใช้ NOT VALID: constraint มีผลกับ INSERT/UPDATE ทุกแถวตั้งแต่วินาทีนี้
+--   แต่ไม่ย้อนไปตรวจแถวเดิม → แถว fixture อยู่ต่อได้โดยไม่ต้องปิดการป้องกัน
+--   ถ้าวันหนึ่งลบแถวนั้นแล้ว ค่อยรัน VALIDATE CONSTRAINT เพื่อปิดให้สนิท
+ALTER TABLE "kyc_documents"
+  ADD CONSTRAINT "kyc_documents_file_url_is_storage_path_check"
+  CHECK (
+    "file_url" NOT LIKE '%://%'      -- ห้ามเป็น URL เต็ม (ทุก scheme)
+    AND "file_url" NOT LIKE '%..%'   -- ห้าม path traversal
+    AND "file_url" NOT LIKE '/%'     -- ห้ามขึ้นต้นด้วย /
+    AND "file_url" LIKE '%/%'        -- ต้องมีโฟลเดอร์ ไม่ใช่ชื่อไฟล์ลอย ๆ
+  ) NOT VALID;
+
+-- ─── assertion: โฟลเดอร์แรกต้องเป็นของเจ้าของแถว ────────────────────────────
+-- ตรวจ ณ เวลา deploy ถ้ามีแถวที่ชี้ข้ามคนอยู่ = มีคนใช้ช่องโหว่ไปแล้ว
+-- ให้ migration ล้มทั้งชุด ดีกว่าปล่อยผ่านแล้วไม่มีใครเห็น
+DO $$
+DECLARE
+  mismatched integer;
+BEGIN
+  SELECT count(*) INTO mismatched
+  FROM "kyc_documents" d
+  JOIN "users" u ON u.id = d.user_id
+  WHERE d."file_url" NOT LIKE '%://%'
+    AND split_part(d."file_url", '/', 1) <> u."supabase_uid";
+
+  IF mismatched > 0 THEN
+    RAISE EXCEPTION
+      'พบ % แถวที่ file_url ชี้ไปโฟลเดอร์ของผู้ใช้รายอื่น — หยุด migration เพื่อตรวจสอบก่อน',
+      mismatched;
+  END IF;
+END $$;

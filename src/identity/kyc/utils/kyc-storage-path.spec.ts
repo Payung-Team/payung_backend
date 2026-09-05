@@ -16,6 +16,14 @@ import {
 } from './kyc-storage-path';
 
 const SUPABASE_URL = 'https://evsewucpighcbnhofmug.supabase.co';
+
+/**
+ * ★ ค่าจริงจากแถว fixture ใน staging
+ *   id = 87d7fa1c-caf2-4de5-ac0c-e4315a5c76b8  doc_type = id_card_front
+ *   จงใจไม่ลบแถวนี้ออกจาก DB — มันคือหลักฐานว่า @IsUrl() ปล่อยอะไรผ่านได้บ้าง
+ *   ถ้าวันหนึ่งมีคนลบแถวนั้นทิ้ง เทสต์ตรงนี้ยังตรึงพฤติกรรมไว้แทน
+ */
+const FIXTURE_EXTERNAL_URL = 'https://example.com/id-card.jpg';
 const ME = 'dcc37326-2625-4ba0-bfd9-ff0da2b099b4';
 const SOMEONE_ELSE = '8863204a-328c-43e7-8d07-f53644f0426d';
 
@@ -39,8 +47,8 @@ describe('normalizeKycStoragePath — ปิด IDOR', () => {
   });
 
   // ── เคสที่เคยหลุดเข้า DB จริง ────────────────────────────────────────────
-  it('URL ภายนอก (example.com) → ปฏิเสธ — นี่คือแถวที่หลุดเข้า staging จริง', () => {
-    expect(() => norm('https://example.com/id-card.jpg')).toThrow(BadRequestException);
+  it('URL ภายนอก (example.com) → ปฏิเสธ — นี่คือค่าจริงของแถว fixture ใน staging', () => {
+    expect(() => norm(FIXTURE_EXTERNAL_URL)).toThrow(BadRequestException);
   });
 
   it('โปรเจกต์ Supabase อื่น → ปฏิเสธ', () => {
@@ -110,8 +118,8 @@ describe('toStoragePathForSigning — ใช้ตอนอ่านแถวเ
     ).toBe(`${ME}/id_card_front.jpg`);
   });
 
-  it('แถว example.com → null ไม่ออก signed URL ให้', () => {
-    expect(sign('https://example.com/id-card.jpg')).toBeNull();
+  it('แถว fixture example.com → null ไม่ออก signed URL ให้ แม้จะอยู่ใน DB แล้ว', () => {
+    expect(sign(FIXTURE_EXTERNAL_URL)).toBeNull();
   });
 
   it('bucket อื่น → null (ไม่เซ็นข้าม bucket แม้เป็นแถวที่อยู่ใน DB แล้ว)', () => {

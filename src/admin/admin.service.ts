@@ -230,7 +230,7 @@ export class AdminService {
    * @returns AdminKycDetailPayload
    * @throws NotFoundException ถ้าไม่พบ caregiver
    */
-  async adminKycDetail(caregiverId: string): Promise<AdminKycDetailPayload> {
+  async adminKycDetail(caregiverId: string, adminId: string): Promise<AdminKycDetailPayload> {
     // ─── 1. Fetch caregiver ───────────────────────────────────────────────
     const raw = await this.prismaService.caregiver.findUnique({
       where: { id: caregiverId },
@@ -244,7 +244,11 @@ export class AdminService {
     const caregiver = this.mapToCaregiver(raw);
 
     // ─── 2. Fetch documents with signed URLs ─────────────────────────────
-    const documents = await this.caregiverService.getDocumentsWithSignedUrls(caregiverId);
+    // ★ ลง admin_audit_logs ทุกครั้งที่ออก signed URL ของเอกสารคนอื่น (อยู่ใน method นี้)
+    const documents = await this.caregiverService.getDocumentsForAdminReview(
+      caregiverId,
+      adminId,
+    );
 
     // ─── 3. Fetch review history (newest first) + reviewer name via JOIN ──
     const rawReviews = await this.prismaService.kycReview.findMany({

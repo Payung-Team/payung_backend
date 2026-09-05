@@ -251,7 +251,7 @@ export class KycService {
       };
     }
 
-    const documents = await this.caregiverService.getDocumentsWithSignedUrls(
+    const documents = await this.caregiverService.getOwnDocumentsWithSignedUrls(
       caregiver.id,
     );
 
