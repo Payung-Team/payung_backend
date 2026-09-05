@@ -33,6 +33,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { PayoutEncryptionService } from '../common/crypto/payout-encryption.service';
 import { OmiseService } from './omise/omise.service';
+import { PaymentError } from './errors/omise-error-mapper';
+
+/**
+ * error code ที่ FE ใช้แยกเคส "เลขบัญชีผิด ผู้ใช้ต้องแก้เอง" ออกจาก "ระบบขัดข้อง รอได้"
+ * (TASK 4 — ตัวตัดสินสุดท้ายเรื่องความถูกต้องของเลขบัญชีคือ Omise ไม่ใช่กฎที่เราเดา)
+ */
+export const PAYOUT_ACCOUNT_NUMBER_INVALID = 'PAYOUT_ACCOUNT_NUMBER_INVALID';
 
 @Injectable()
 export class PayoutAccountService {
@@ -101,8 +108,33 @@ export class PayoutAccountService {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const httpStatus =
+        err instanceof PaymentError ? (err.details.httpStatus ?? 0) : 0;
+
+      // ── แยก "ผู้ใช้ต้องแก้เอง" ออกจาก "ระบบขัดข้อง รอได้" ────────────────────
+      // 4xx = Omise ปฏิเสธข้อมูลบัญชี (เลขผิด/ชื่อไม่ตรง/ธนาคารไม่รับ) → ไม่มีทาง
+      //       สำเร็จเองถ้าลองใหม่ด้วยข้อมูลเดิม ต้องให้ caregiver แก้
+      //       ปล่อยค้าง 'unverified' = เงียบหาย ไม่มีใครรู้ว่าต้องทำอะไรต่อ
+      // 5xx / network = Omise ล่มชั่วคราว → คง 'unverified' ไว้ให้ลองใหม่รอบหน้า
+      const isPermanent = httpStatus >= 400 && httpStatus < 500;
+      if (isPermanent) {
+        try {
+          await this.prisma.caregiverPayoutAccount.update({
+            where: { caregiverId },
+            data: { recipientStatus: 'failed', status: 'pending' },
+          });
+        } catch (markErr) {
+          const m = markErr instanceof Error ? markErr.message : String(markErr);
+          this.logger.error(
+            `[PayoutAccount] mark failed ไม่สำเร็จ caregiverId=${caregiverId}: ${m}`,
+          );
+        }
+      }
+
       this.logger.error(
-        `[PayoutAccount] createRecipientForCaregiver failed caregiverId=${caregiverId}: ${msg}`,
+        `[PayoutAccount] createRecipientForCaregiver failed caregiverId=${caregiverId} ` +
+          `httpStatus=${httpStatus || 'n/a'} ` +
+          `code=${isPermanent ? PAYOUT_ACCOUNT_NUMBER_INVALID : 'transient'}: ${msg}`,
       );
       // ไม่ throw — ดู class doc ด้านบน
     }

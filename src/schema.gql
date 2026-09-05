@@ -1599,10 +1599,12 @@ input PayoutAccountInput {
   """Account holder name"""
   accountName: String!
 
-  """Bank account number (10 digits, Thai bank accounts)"""
+  """
+  Bank account number — ตัวเลขเท่านั้น 10–15 หลัก (กฎเฉพาะธนาคารดูที่ payoutBankOptions)
+  """
   accountNumber: String!
 
-  """Omise bank code (e.g. kbank, scb, bbl)"""
+  """Omise bank code — ดึงรายการจาก query payoutBankOptions"""
   bankCode: String!
 }
 
@@ -1615,6 +1617,31 @@ type PayoutAccountSummary {
   bankCode: String!
   recipientStatus: String!
   status: String!
+}
+
+"""
+ธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี (source of truth ฝั่ง BE)
+"""
+type PayoutBankOption {
+  """bank code ที่ต้องส่งกลับมาใน PayoutAccountInput.bankCode"""
+  code: String!
+
+  """
+  ความยาวที่ทีมยืนยันกับธนาคารแล้ว — null = ยังไม่ยืนยัน ให้ใช้ช่วง minDigits–maxDigits แทน
+  """
+  exactDigits: [Int!]
+
+  """จำนวนหลักสูงสุดที่ยอมรับ"""
+  maxDigits: Int!
+
+  """จำนวนหลักต่ำสุดที่ยอมรับ"""
+  minDigits: Int!
+
+  """ชื่อธนาคารภาษาอังกฤษ"""
+  nameEn: String!
+
+  """ชื่อธนาคารภาษาไทย — ใช้แสดงใน dropdown"""
+  nameTh: String!
 }
 
 type ProofOfWorkSummary {
@@ -1795,6 +1822,11 @@ type Query {
 
   """ประวัติการเปลี่ยนสถานะของ payment (เรียงเก่า → ใหม่)"""
   paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
+
+  """
+  รายชื่อธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี — FE ต้องดึงจากที่นี่ ห้าม hardcode
+  """
+  payoutBankOptions: [PayoutBankOption!]!
 
   """
   สรุปหลักฐานการทำงานของงาน 1 ใบ — เป็น "แหล่งความจริงเดียว" ที่ระบบเงินอ่านก่อนตัดสินใจโอน. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
