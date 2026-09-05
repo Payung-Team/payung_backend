@@ -25,12 +25,14 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { KycModule } from '../identity/kyc/kyc.module';
 import { NotificationModule } from '../notification/notification.module';
 import { EmailModule } from '../email/email.module';
+import { PaymentModule } from '../payment/payment.module';
 
 @Module({
   imports: [
     KycModule,           // exports CaregiverService
     NotificationModule,  // exports NotificationService
     EmailModule,         // exports EmailService
+    PaymentModule,       // PYG-266: exports PayoutAccountService (createRecipientForCaregiver after approveKyc)
   ],
   providers: [
     AdminResolver,

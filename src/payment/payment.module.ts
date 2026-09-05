@@ -8,6 +8,7 @@ import { OmiseService } from './omise/omise.service';
 import { CompleteBookingService } from './complete-booking.service';
 import { CompleteBookingResolver } from './complete-booking.resolver';
 import { PaymentCronService } from './payment-cron.service';
+import { PayoutAccountService } from './payout-account.service';
 import { OmiseController } from './webhook/omise.controller';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -25,9 +26,17 @@ import { RolesGuard } from '../common/guards/roles.guard';
     CompleteBookingService,
     CompleteBookingResolver,
     PaymentCronService,
+    // PYG-266: Omise Recipient creation + webhook handling for payout accounts
+    PayoutAccountService,
     SupabaseAuthGuard,
     RolesGuard,
   ],
-  exports: [PaymentStateMachine, OmiseService, PaymentService, RefundService],
+  exports: [
+    PaymentStateMachine,
+    OmiseService,
+    PaymentService,
+    RefundService,
+    PayoutAccountService,
+  ],
 })
 export class PaymentModule {}

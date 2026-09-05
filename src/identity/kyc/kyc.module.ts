@@ -25,11 +25,14 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { NotificationModule } from '../../notification/notification.module';
 import { EmailModule } from '../../email/email.module';
+import { PaymentModule } from '../../payment/payment.module';
 
 @Module({
   // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
   // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
-  imports: [NotificationModule, EmailModule],
+  // PYG-266: PaymentModule exports PayoutAccountService (สร้าง Omise recipient หลัง
+  // updatePayoutAccount) — PaymentModule ไม่ import KycModule/AdminModule กลับ จึงไม่ circular
+  imports: [NotificationModule, EmailModule, PaymentModule],
   providers: [
     KycResolver,
     CaregiverResolver,

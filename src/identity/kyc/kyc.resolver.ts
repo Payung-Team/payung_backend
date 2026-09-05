@@ -23,6 +23,13 @@ import { KycDocumentService } from './kyc-document.service';
 import { CaregiverService } from './caregiver.service';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
+import { PayoutAccountInput } from './dto/payout-account.input';
+import { PayoutAccountSummary } from './entities/payout-account.entity';
+import { PayoutBankOption } from './entities/payout-bank-option.entity';
+import {
+  OMISE_BANKS,
+  accountDigitRule,
+} from '../../common/constants/omise-banks.constant';
 import { UploadDocumentInput } from './dto/upload-document.input';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { Caregiver } from './entities/caregiver.entity';
@@ -32,6 +39,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { FieldLock } from '../../common/decorators/field-lock.decorator';
+import { ROLE_ID } from '../../common/constants/roles.constant';
 import {
   CurrentUser,
   AuthUser,
@@ -200,6 +208,48 @@ export class KycResolver {
       fileName: input.fileName,
       fileSize: input.fileSize,
       mimeType: input.mimeType,
+    });
+  }
+
+  /**
+   * updatePayoutAccount mutation — PYG-266: caregiver ที่ verified แล้วเพิ่ม/แก้บัญชีรับเงินเอง
+   * (นอก flow submitKyc/resubmitKyc ที่ถูกบล็อกไว้เมื่อ kycStatus='verified')
+   */
+  @Mutation(() => PayoutAccountSummary, {
+    description: 'Add or update payout bank account (verified caregiver only)',
+  })
+  @Roles(ROLE_ID.CAREGIVER)
+  async updatePayoutAccount(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: PayoutAccountInput,
+  ): Promise<PayoutAccountSummary> {
+    return this.kycService.updatePayoutAccount(user, input);
+  }
+
+  /**
+   * payoutBankOptions — รายชื่อธนาคาร + กฎความยาวเลขบัญชี ให้ FE ดึงไปสร้าง dropdown
+   *
+   * มีไว้เพื่อฆ่า hardcode ซ้ำสองที่ (TASK 4): เดิม FE ตรึง "10 หลัก" ไว้เอง
+   * ขณะที่ชุดธนาคารฝั่ง BE มีออมสิน/ธ.ก.ส. ที่ไม่ใช่ 10 หลัก → กรอกไม่ผ่านทั้งคู่
+   *
+   * ไม่แตะ DB ไม่มีข้อมูลส่วนบุคคล — เป็น static config ล้วน จึงไม่จำกัด role
+   * (ยังต้องผ่าน SupabaseAuthGuard ระดับคลาสอยู่)
+   */
+  @Query(() => [PayoutBankOption], {
+    description:
+      'รายชื่อธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี — FE ต้องดึงจากที่นี่ ห้าม hardcode',
+  })
+  payoutBankOptions(): PayoutBankOption[] {
+    return OMISE_BANKS.map((bank) => {
+      const { min, max } = accountDigitRule(bank.code);
+      return {
+        code: bank.code,
+        nameTh: bank.nameTh,
+        nameEn: bank.nameEn,
+        minDigits: min,
+        maxDigits: max,
+        exactDigits: bank.digits ? [...bank.digits] : null,
+      };
     });
   }
 }

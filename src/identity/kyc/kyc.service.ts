@@ -22,6 +22,8 @@ import {
 import { PrismaService } from '../../common/prisma.service';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
+import { PayoutAccountInput } from './dto/payout-account.input';
+import { PayoutAccountSummary } from './entities/payout-account.entity';
 import { Caregiver } from './entities/caregiver.entity';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CaregiverService } from './caregiver.service';
@@ -30,12 +32,24 @@ import { EmailService } from '../../email/email.service';
 import { NotificationType } from '../../notification/entities/notification-type.enum';
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
+import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
+import { PayoutAccountService } from '../../payment/payout-account.service';
+import {
+  normalizeAccountNumber,
+  validateAccountNumberForBank,
+} from '../../common/constants/omise-banks.constant';
 
 /** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
   'phone', 'skills', 'experienceYears', 'hourlyRate', 'bio',
 ];
+
+/**
+ * PYG-266: fields ของบัญชีรับเงินที่ track ใน caregiver_edit_logs
+ * ห้ามเพิ่ม 'accountNumber' ที่นี่เด็ดขาด — เลขบัญชีต้องไม่ปรากฏใน log แม้แต่ diff
+ */
+const PAYOUT_TRACKED_FIELDS = ['bankCode', 'accountName'];
 
 /** สถานะที่อนุญาตให้ยื่น KYC ได้ (first time หรือ resubmit) */
 const SUBMITTABLE_STATUSES = new Set(['none', 'rejected']);
@@ -49,6 +63,8 @@ export class KycService {
     private caregiverService: CaregiverService,
     private notificationService: NotificationService,
     private emailService: EmailService,
+    private payoutEncryption: PayoutEncryptionService,
+    private payoutAccountService: PayoutAccountService,
   ) {}
 
   /**
@@ -202,7 +218,12 @@ export class KycService {
         }
       }
 
-      const allChanges = [...fieldChanges, ...docChanges];
+      // PYG-266: upsert บัญชีรับเงิน — เฉพาะตอนที่ caregiver แนบ payoutAccount มาด้วย
+      const payoutChanges = input.payoutAccount
+        ? (await this.upsertPayoutAccountInTx(tx, upserted.id, input.payoutAccount)).changes
+        : [];
+
+      const allChanges = [...fieldChanges, ...docChanges, ...payoutChanges];
       const action = isResubmit ? 'resubmit' : 'first_submit';
 
       // resubmit → log เสมอ; first_submit → log ถ้ามี changes
@@ -237,6 +258,56 @@ export class KycService {
   }
 
   /**
+   * updatePayoutAccount — PYG-266: caregiver ที่ verified แล้วเพิ่ม/แก้บัญชีรับเงินเอง
+   *
+   * นอก flow submitKyc/resubmitKyc ที่ถูกบล็อกไว้เมื่อ kycStatus='verified'
+   * (SUBMITTABLE_STATUSES = none/rejected เท่านั้น) — caregiver ที่ผ่านการยืนยันแล้ว
+   * (รวมถึงคนที่ verified ก่อนฟีเจอร์นี้จะมีอยู่) ใช้ mutation นี้แทน
+   */
+  async updatePayoutAccount(
+    user: AuthUser,
+    input: PayoutAccountInput,
+  ): Promise<PayoutAccountSummary> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId: user.id },
+    });
+
+    if (!caregiver) {
+      throw new NotFoundException('ไม่พบข้อมูล caregiver ของคุณ');
+    }
+
+    if (caregiver.kycStatus !== 'verified') {
+      throw new BadRequestException(
+        'ต้องผ่านการยืนยันตัวตน (KYC) ก่อนจึงจะแก้ไขบัญชีรับเงินได้ — กรุณาส่งหรือแก้ไข KYC ผ่านหน้ายืนยันตัวตนแทน',
+      );
+    }
+
+    const { account } = await this.prismaService.$transaction(async (tx) => {
+      const result = await this.upsertPayoutAccountInTx(tx, caregiver.id, input);
+
+      if (result.changes.length > 0) {
+        const changesJson = JSON.stringify(result.changes);
+        await tx.$executeRaw`
+          INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+          VALUES (gen_random_uuid(), ${caregiver.id}, ${user.id}, 'payout_account_update', ${changesJson}::jsonb, NOW())
+        `;
+      }
+
+      return result;
+    });
+
+    // Fire-and-forget: สร้าง Omise recipient ใหม่เสมอ (upsertPayoutAccountInTx reset
+    // omiseRecipientId เป็น null ทุกครั้งที่แตะบัญชีนี้ — no-op ถ้าดันมี id อยู่แล้ว)
+    void this.payoutAccountService.createRecipientForCaregiver(
+      caregiver.id,
+      caregiver.fullName ?? '',
+      user.email,
+    );
+
+    return this.mapPayoutAccountSummary(account);
+  }
+
+  /**
    * getKycStatus — ดึงข้อมูล KYC status ครบชุดสำหรับ Status Page
    */
   async getKycStatus(userId: string): Promise<KycStatusPayload> {
@@ -255,12 +326,19 @@ export class KycService {
       caregiver.id,
     );
 
+    const payoutAccountRow = await this.prismaService.caregiverPayoutAccount.findUnique({
+      where: { caregiverId: caregiver.id },
+    });
+
     return {
       status: caregiver.kycStatus,
       submittedAt: caregiver.kycSubmittedAt ?? undefined,
       verifiedAt: caregiver.kycVerifiedAt ?? undefined,
       caregiver: this.mapToEntity(caregiver),
       documents,
+      payoutAccount: payoutAccountRow
+        ? this.mapPayoutAccountSummary(payoutAccountRow)
+        : undefined,
     };
   }
 
@@ -432,6 +510,106 @@ export class KycService {
       `Failed to trigger ${action} for user ${userId}: ${error.message}`,
       error.stack,
     );
+  }
+
+  /**
+   * upsertPayoutAccountInTx — PYG-266: encrypt + upsert บัญชีรับเงิน (ใช้ร่วมกันโดย
+   * submitKyc และ updatePayoutAccount — logic เดียวกันเป๊ะ ไม่อยาก duplicate)
+   *
+   * DECISION: ไม่เช็คว่า "เปลี่ยนจริงไหม" ด้วยการเทียบ accountNumberLast4 — เลขบัญชี
+   * สองเลขที่ต่างกันอาจบังเอิญ (หรือตั้งใจ) ลงท้ายเหมือนกัน ซึ่งจะทำให้พลาด reset
+   * omiseRecipientId ทิ้งไว้ชี้ไปบัญชีเก่า จึง reset ทุกครั้งที่แตะ payoutAccount
+   * โดยไม่มีเงื่อนไข (ถูกกว่าความเสี่ยงเงินโอนผิดบัญชีมาก)
+   */
+  private async upsertPayoutAccountInTx(
+    tx: Prisma.TransactionClient,
+    caregiverId: string,
+    input: PayoutAccountInput,
+  ): Promise<{
+    account: {
+      id: string;
+      caregiverId: string;
+      bankCode: string;
+      accountName: string;
+      accountNumberEnc: string;
+      accountNumberLast4: string;
+      omiseRecipientId: string | null;
+      recipientStatus: string;
+      status: string;
+      verifiedAt: Date | null;
+    };
+    changes: Array<{ field: string; oldValue: string | null; newValue: string | null }>;
+  }> {
+    const existingPayout = await tx.caregiverPayoutAccount.findUnique({
+      where: { caregiverId },
+    });
+
+    // ── ชั้นที่สองของการตรวจเลขบัญชี (TASK 4) ────────────────────────────────
+    // DTO ตรวจได้แค่ช่วงกว้าง เพราะ class-validator ไม่เห็น bankCode ตอนตรวจ accountNumber
+    // ตรงนี้รู้ทั้งคู่แล้ว จึงใช้กฎรายธนาคารได้ — และ normalize ซ้ำเพื่อกันเส้นทางที่
+    // เรียก helper นี้ตรง ๆ โดยไม่ผ่าน DTO (submitKyc ผ่าน KycInput ก็มาลงที่นี่)
+    const accountNumber = normalizeAccountNumber(input.accountNumber);
+    const invalidReason = validateAccountNumberForBank(input.bankCode, accountNumber);
+    if (invalidReason) {
+      throw new BadRequestException(invalidReason);
+    }
+
+    const accountNumberEnc = this.payoutEncryption.encrypt(accountNumber);
+    const accountNumberLast4 = this.payoutEncryption.last4(accountNumber);
+
+    const account = await tx.caregiverPayoutAccount.upsert({
+      where: { caregiverId },
+      create: {
+        caregiverId,
+        bankCode: input.bankCode,
+        accountName: input.accountName,
+        accountNumberEnc,
+        accountNumberLast4,
+        status: 'pending',
+        recipientStatus: 'unverified',
+      },
+      update: {
+        bankCode: input.bankCode,
+        accountName: input.accountName,
+        accountNumberEnc,
+        accountNumberLast4,
+        status: 'pending',
+        recipientStatus: 'unverified',
+        omiseRecipientId: null,
+        verifiedAt: null,
+      },
+    });
+
+    const fieldChanges = computeFieldChanges(
+      (existingPayout ?? {}) as unknown as Record<string, unknown>,
+      input as unknown as Record<string, unknown>,
+      PAYOUT_TRACKED_FIELDS,
+    );
+
+    // เลขบัญชีถูก resupply ทุกครั้งที่แตะ — บันทึกแค่ last4 เท่านั้น ไม่ใช่ค่าจริง/เข้ารหัส
+    fieldChanges.push({
+      field: 'accountNumber',
+      oldValue: existingPayout ? `***${existingPayout.accountNumberLast4}` : null,
+      newValue: `***${accountNumberLast4}`,
+    });
+
+    return { account, changes: fieldChanges };
+  }
+
+  private mapPayoutAccountSummary(account: {
+    bankCode: string;
+    accountName: string;
+    accountNumberLast4: string;
+    status: string;
+    recipientStatus: string;
+  }): PayoutAccountSummary {
+    return {
+      bankCode: account.bankCode,
+      accountName: account.accountName,
+      accountNumberLast4: account.accountNumberLast4,
+      status: account.status,
+      recipientStatus: account.recipientStatus,
+    };
   }
 
   private mapToEntity(caregiver: any): Caregiver {
