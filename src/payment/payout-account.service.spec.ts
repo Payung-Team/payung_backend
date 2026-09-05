@@ -98,7 +98,7 @@ describe('PayoutAccountService (PYG-266)', () => {
       });
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { caregiverId: CAREGIVER_ID },
-        data: { omiseRecipientId: RECIPIENT_ID, status: 'active' },
+        data: { omiseRecipientId: RECIPIENT_ID, recipientStatus: 'pending' },
       });
     });
 
@@ -134,6 +134,7 @@ describe('PayoutAccountService (PYG-266)', () => {
       prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
         id: 'payout-1',
         recipientStatus: 'verified',
+        status: 'active',
         verifiedAt: new Date(),
       });
 
@@ -141,6 +142,34 @@ describe('PayoutAccountService (PYG-266)', () => {
 
       expect(omise.retrieveRecipient).not.toHaveBeenCalled();
       expect(prisma.caregiverPayoutAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('recipientStatus=verified แล้วแต่ status ยังค้าง pending → ไม่ skip ต้องซ่อมให้ active', async () => {
+      // เคสรอบก่อนเขียน recipientStatus สำเร็จแต่ล้มก่อนตั้ง status —
+      // ถ้า idempotency เช็คแค่ recipientStatus แถวนี้จะค้างไม่สอดคล้องถาวร
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
+        id: 'payout-1',
+        recipientStatus: 'verified',
+        status: 'pending',
+        verifiedAt: null,
+      });
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID,
+        verified: true,
+        active: true,
+        bankAccount: { brand: 'kbank', lastDigits: '6789', name: 'x' },
+      });
+
+      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
+
+      expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
+        where: { id: 'payout-1' },
+        data: {
+          recipientStatus: 'verified',
+          status: 'active',
+          verifiedAt: expect.any(Date),
+        },
+      });
     });
 
     it('recipient.verified + re-fetch ยืนยัน verified=true → recipientStatus=verified + verifiedAt set', async () => {
@@ -160,7 +189,11 @@ describe('PayoutAccountService (PYG-266)', () => {
 
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { id: 'payout-1' },
-        data: { recipientStatus: 'verified', verifiedAt: expect.any(Date) },
+        data: {
+          recipientStatus: 'verified',
+          status: 'active',
+          verifiedAt: expect.any(Date),
+        },
       });
     });
 
@@ -181,7 +214,7 @@ describe('PayoutAccountService (PYG-266)', () => {
 
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { id: 'payout-1' },
-        data: { recipientStatus: 'failed', verifiedAt: null },
+        data: { recipientStatus: 'failed', status: 'pending', verifiedAt: null },
       });
     });
 
@@ -197,7 +230,11 @@ describe('PayoutAccountService (PYG-266)', () => {
 
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { id: 'payout-1' },
-        data: { recipientStatus: 'verified', verifiedAt: expect.any(Date) },
+        data: {
+          recipientStatus: 'verified',
+          status: 'active',
+          verifiedAt: expect.any(Date),
+        },
       });
     });
   });

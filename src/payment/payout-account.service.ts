@@ -7,6 +7,27 @@
  * - createRecipientForCaregiver — เรียก fire-and-forget จาก AdminService.approveKyc
  *   และจาก KycService.updatePayoutAccount หลัง upsert สำเร็จ
  * - handleRecipientWebhook — เรียกจาก OmiseController ตอนรับ recipient.verified/failed
+ *
+ * ── state machine ของบัญชีรับเงิน (ห้ามให้ resolver ตั้ง status ตรง ๆ) ───────────
+ *
+ *   กรอกบัญชี          status='pending'  recipient_status='unverified'
+ *        │
+ *        ├─ createRecipient สำเร็จ ──→ status='pending'  recipient_status='pending'
+ *        │                             (ส่งให้ Omise ตรวจแล้ว ยังไม่ใช่ตรวจผ่าน)
+ *        │
+ *        ├─ webhook verified ────────→ status='active'   recipient_status='verified'
+ *        │                             + verified_at
+ *        │
+ *        └─ webhook failed ──────────→ status='pending'  recipient_status='failed'
+ *                                      (คง pending ไว้ให้แก้บัญชีใหม่ได้)
+ *
+ * ⚠️ status='active' มีประตูเดียวคือ handleRecipientWebhook เท่านั้น
+ *    เดิม createRecipientForCaregiver ตั้ง status='active' ทันทีที่สร้าง recipient สำเร็จ
+ *    ทำให้เกิดแถวที่ active แต่ recipient ยังไม่ผ่านการตรวจ — ซึ่งแปลว่าเงินออกไปหา
+ *    บัญชีที่ธนาคารยังไม่ยืนยันได้ (แถว scb/6789 ใน DB คือของจริงที่ค้างอยู่แบบนั้น)
+ *
+ * PayoutWorkerService เช็ค recipient_status='verified' อยู่แล้วก่อนโอน — TASK 5
+ * จะเพิ่มเงื่อนไข status='active' เข้าไปคู่กันให้ครบตาม DoD
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
@@ -63,11 +84,15 @@ export class PayoutAccountService {
         accountName: account.accountName,
       });
 
+      // ★ สร้าง recipient สำเร็จ = "ส่งให้ Omise ตรวจแล้ว" ยังไม่ใช่ "ตรวจผ่าน"
+      //   status ต้องคง 'pending' ไว้ — คนที่มีสิทธิ์ตั้ง 'active' คือ webhook เท่านั้น
+      //   (เดิมตั้ง status='active' ตรงนี้ ทำให้ได้แถวที่ active แต่ recipient ยัง unverified
+      //    ซึ่งเป็นสภาพของแถว scb/6789 ใน DB ตอนนี้)
       await this.prisma.caregiverPayoutAccount.update({
         where: { caregiverId },
         data: {
           omiseRecipientId: recipient.id,
-          status: 'active',
+          recipientStatus: 'pending',
         },
       });
 
@@ -107,10 +132,14 @@ export class PayoutAccountService {
 
     const targetFromEvent = eventKey === 'recipient.verified' ? 'verified' : 'failed';
 
-    // Idempotency — ถ้าอยู่ในสถานะเดียวกันอยู่แล้ว ไม่ต้องทำอะไรต่อ
-    if (account.recipientStatus === targetFromEvent) {
+    // Idempotency — เช็คทั้ง recipientStatus และ status ที่ต้องมาคู่กัน
+    // ไม่เช็คแค่ recipientStatus อย่างเดียว เพราะถ้ารอบก่อนเขียน recipientStatus สำเร็จ
+    // แต่ล้มก่อนตั้ง status แถวนั้นจะค้างไม่สอดคล้องถาวร (webhook ซ้ำจะ return ทิ้ง)
+    const settledStatus = targetFromEvent === 'verified' ? 'active' : 'pending';
+    if (account.recipientStatus === targetFromEvent && account.status === settledStatus) {
       this.logger.log(
-        `[PayoutAccount] recipientId=${recipientId} already '${account.recipientStatus}' — skipping`,
+        `[PayoutAccount] recipientId=${recipientId} already '${account.recipientStatus}'/` +
+          `'${account.status}' — skipping`,
       );
       return;
     }
@@ -128,16 +157,21 @@ export class PayoutAccountService {
       );
     }
 
+    // ★ ประตูเดียวที่ตั้ง status='active' ได้ — และตั้งได้ก็ต่อเมื่อ recipient verified แล้ว
+    //   verified → active + verified_at ; failed → คง pending ไว้ให้ caregiver แก้บัญชีใหม่ได้
+    //   เขียนสามช่องพร้อมกันใน update เดียว ไม่มีจังหวะที่แถวไม่สอดคล้อง
     await this.prisma.caregiverPayoutAccount.update({
       where: { id: account.id },
       data: {
         recipientStatus: target,
+        status: target === 'verified' ? 'active' : 'pending',
         verifiedAt: target === 'verified' ? new Date() : account.verifiedAt,
       },
     });
 
     this.logger.log(
-      `[PayoutAccount] recipientId=${recipientId} → recipientStatus='${target}'`,
+      `[PayoutAccount] recipientId=${recipientId} → recipientStatus='${target}' ` +
+        `status='${target === 'verified' ? 'active' : 'pending'}'`,
     );
   }
 }
