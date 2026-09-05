@@ -123,7 +123,21 @@ model Caregiver {
 
 /// PYG-306 — Payout bank account 1:1 กับ Caregiver (foundation ของ Auto-Payout epic PYG-329)
 /// account_number_enc = ciphertext เข้ารหัสที่ app layer; แสดงผลใช้ account_number_last4 เท่านั้น
-/// omise_recipient_id + recipient_status จะถูกกรอกโดย webhook PYG-304 (ยังไม่ implement)
+/// omise_recipient_id + recipient_status ถูกกรอกโดย PayoutAccountService (PYG-307)
+///
+/// ⚠️ DB มี CHECK constraint 4 ตัว (Prisma ไม่ support declare) — PYG-307 TASK 4:
+///    `caregiver_payout_accounts_bank_code_check`
+///        bank_code ต้องอยู่ในชุด 18 รหัสที่ Omise รองรับ (lowercase)
+///        ★ ต้องตรงกับ src/common/constants/omise-banks.constant.ts เป๊ะ แก้ที่ไหนแก้ทั้งคู่
+///    `caregiver_payout_accounts_status_check`
+///        status IN ('pending','active','inactive')
+///    `caregiver_payout_accounts_recipient_status_check`
+///        recipient_status IN ('unverified','pending','verified','failed')
+///    `caregiver_payout_accounts_last4_check`
+///        account_number_last4 ~ '^[0-9]{4}$' — ด่านสุดท้ายกันเลขบัญชีเต็มรั่วลงช่องนี้
+///
+/// state machine ของสองคอลัมน์สถานะอยู่ที่ PayoutAccountService (ห้าม set ตรงจาก resolver):
+///   status='active' ตั้งได้จาก webhook recipient.verified เท่านั้น
 model CaregiverPayoutAccount {
   id                 String    @id @default(uuid())
   caregiverId        String    @unique @map("caregiver_id")
