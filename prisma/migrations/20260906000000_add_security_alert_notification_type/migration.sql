@@ -1,0 +1,23 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PYG-307 — NotificationType: security_alert
+--
+-- ใช้กับการแจ้งเตือนเชิงความปลอดภัยที่ระบบตรวจพบเอง (ไม่ใช่ event ของผู้ใช้)
+-- เคสแรกที่ใช้: KycStorageAuditCron พบ kyc_documents ที่ชี้ไปโฟลเดอร์ของผู้ใช้รายอื่น
+-- ซึ่งแปลว่ามีคนใช้ช่องโหว่ IDOR ไปแล้ว → แจ้ง super admin ทันที
+--
+-- ทำไมไม่ reuse dispute_created ที่ส่งหา admin อยู่แล้ว:
+-- คนละความหมายกันคนละเรื่อง ถ้าปนกันจะกรองหาเหตุการณ์ความปลอดภัยไม่ได้
+--
+-- ★ PG 17 รองรับ ALTER TYPE ... ADD VALUE ใน transaction ได้
+--   และ migration นี้ "ไม่ใช้" ค่าใหม่ในไฟล์เดียวกัน จึงไม่ติดข้อจำกัดของ Postgres
+--   (precedent: 20260714154848 ทำแบบเดียวกันกับ payment_transferred)
+--
+-- ROLLBACK: Postgres ถอน enum value ไม่ได้โดยตรง ถ้าต้องถอนจริงต้อง
+--   1) UPDATE notifications SET type='dispute_created' WHERE type='security_alert';
+--   2) สร้าง type ใหม่ที่ไม่มีค่านี้ + ALTER COLUMN ... USING + DROP TYPE เดิม
+--   ในทางปฏิบัติ enum value ที่ไม่มีใครใช้ไม่ได้สร้างปัญหา แนะนำให้ปล่อยไว้
+--
+-- deploy ด้วย `prisma migrate deploy` เท่านั้น
+-- ═══════════════════════════════════════════════════════════════════════════
+
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'security_alert';

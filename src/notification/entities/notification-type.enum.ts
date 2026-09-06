@@ -38,6 +38,11 @@ export enum NotificationType {
   // ─── Payout lifecycle (PYG-330 ก้อน B) ────────────────────────────────
   // ⚠️ Prisma enum มีมาตั้งแต่ PYG-306 แต่ TS enum พึ่ง sync ที่นี่ (ก่อนหน้านี้ไม่มีใครใช้)
   payment_transferred = 'payment_transferred',  // ค่าตอบแทนโอนสำเร็จ (→ caregiver)
+
+  // ─── Security (PYG-307) ───────────────────────────────────────────────
+  // เหตุการณ์ที่ระบบตรวจพบเอง ไม่ใช่ event ของผู้ใช้ — ส่งหา super admin
+  // ไม่ reuse dispute_created เพราะคนละเรื่อง ปนกันแล้วกรองหาไม่เจอ
+  security_alert = 'security_alert',            // ระบบพบความผิดปกติเชิงความปลอดภัย (→ super admin)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

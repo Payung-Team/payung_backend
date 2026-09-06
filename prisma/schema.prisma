@@ -972,6 +972,7 @@ enum NotificationType {
   payment_voided
   payment_transferred
   job_checked_in // PYG-353
+  security_alert // PYG-307 — ระบบตรวจพบความผิดปกติเชิงความปลอดภัย (→ super admin)
 }
 
 enum booking_service_type {

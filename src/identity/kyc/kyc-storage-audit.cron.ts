@@ -18,6 +18,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma.service';
+import { NotificationService } from '../../notification/notification.service';
+import { NotificationType } from '../../notification/entities/notification-type.enum';
+import { ROLE_ID } from '../../common/constants/roles.constant';
 
 /**
  * แถว fixture ที่จงใจเก็บไว้เป็นหลักฐานของช่องโหว่เดิม (URL ภายนอก)
@@ -37,7 +40,10 @@ type InvariantRow = {
 export class KycStorageAuditCron {
   private readonly logger = new Logger(KycStorageAuditCron.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   @Cron(process.env['CRON_KYC_STORAGE_AUDIT'] ?? '30 4 * * *')
   async run(): Promise<void> {
@@ -61,6 +67,10 @@ export class KycStorageAuditCron {
               ? ' ← มีเอกสารชี้ไปโฟลเดอร์ของผู้ใช้รายอื่น ตรวจสอบด่วน'
               : ''),
         );
+
+        // ★ log ERROR ที่ไม่มีใครเปิดอ่านตอนตีสี่ครึ่ง = สคริปต์ที่ไม่มีใครรัน
+        //   ต้องมีเส้นที่คนเห็นจริง → notification เข้าระบบให้ super admin
+        await this.alertSuperAdmins(result);
         return;
       }
 
@@ -70,6 +80,70 @@ export class KycStorageAuditCron {
       // ตรวจไม่ได้ ≠ ไม่มีปัญหา — ต้องดังพอให้มีคนมาดูว่าทำไม cron อ่านไม่ได้
       this.logger.error(`[KycStorageAudit] ตรวจ invariant ไม่สำเร็จ: ${msg}`);
     }
+  }
+
+  /**
+   * alertSuperAdmins — ส่ง notification เข้าระบบให้ super admin (role 4) ทุกคน
+   *
+   * ใช้ของที่มีอยู่แล้วทั้งคู่ (NotificationService + notifications table)
+   * ไม่ต้องต่อ infra ใหม่ ไม่ต้องพึ่งใครเปิดอ่าน log
+   *
+   * ส่งไม่สำเร็จรายคน → log แล้วไปต่อ ไม่ให้คนเดียวทำให้ทั้งรอบล้ม
+   */
+  private async alertSuperAdmins(result: InvariantRow): Promise<void> {
+    const superAdmins = await this.prisma.user.findMany({
+      where: { role: ROLE_ID.SUPER_ADMIN, isActive: true, is_deleted: false },
+      select: { id: true },
+    });
+
+    if (superAdmins.length === 0) {
+      this.logger.error(
+        '[KycStorageAudit] ไม่พบ super admin ที่ active — ไม่มีใครได้รับแจ้งเตือน',
+      );
+      return;
+    }
+
+    const urgent = result.cross_user > 0n;
+    const title = urgent
+      ? 'พบเอกสาร KYC ชี้ไปบัญชีผู้ใช้รายอื่น'
+      : 'พบความผิดปกติของเส้นทางไฟล์เอกสาร KYC';
+    const body = urgent
+      ? `พบ ${result.cross_user} เอกสารที่ชี้ไปโฟลเดอร์ของผู้ใช้รายอื่น ` +
+        'ซึ่งอาจแปลว่ามีการใช้ช่องโหว่เข้าถึงเอกสารข้ามบัญชี กรุณาตรวจสอบทันที'
+      : `พบเอกสารที่เส้นทางไฟล์ผิดรูปแบบ ` +
+        `(url เต็ม ${result.full_urls}, traversal ${result.traversal}, ` +
+        `ขึ้นต้นด้วย / ${result.leading_slash}, ไม่มีโฟลเดอร์ ${result.no_folder})`;
+
+    // ตัวเลขเป็น bigint — แปลงเป็น number ก่อนลง JSON ไม่งั้น serialize ไม่ได้
+    const data = {
+      source: 'KycStorageAuditCron',
+      fullUrls: Number(result.full_urls),
+      traversal: Number(result.traversal),
+      leadingSlash: Number(result.leading_slash),
+      noFolder: Number(result.no_folder),
+      crossUser: Number(result.cross_user),
+    };
+
+    for (const admin of superAdmins) {
+      try {
+        await this.notifications.create(
+          admin.id,
+          NotificationType.security_alert,
+          title,
+          body,
+          data,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `[KycStorageAudit] ส่งแจ้งเตือนให้ super admin ${admin.id} ไม่สำเร็จ: ${msg}`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `[KycStorageAudit] แจ้งเตือน super admin แล้ว ${superAdmins.length} คน`,
+    );
   }
 
   /** แยกออกมาให้เทสต์ยิงตรงได้ */
