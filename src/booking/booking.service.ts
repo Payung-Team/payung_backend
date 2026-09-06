@@ -192,36 +192,57 @@ export class BookingService {
       }
     }
 
-    const booking = await this.prisma.booking.create({
-      data: {
-        patientId,
-        caregiverId:      resolvedCaregiverId,
-        careRecipientId:  dto.careRecipientId ?? null,
-        tasks:            dto.tasks,
-        serviceLocations: dto.serviceLocations,
-        serviceType:      dto.serviceType as booking_service_type,
-        timeSlot:         dto.timeSlot as time_slot,
-        startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
-        durationHours:    dto.durationHours,
-        locationAddress:  dto.locationAddress,
-        // PYG-352: เก็บพิกัดจุดงานที่ลูกค้าปักหมุดไว้ — ก่อนหน้านี้ค่านี้ถูกทิ้งทุกครั้ง
-        // ระบบเช็คอินใช้พิกัดคู่นี้คำนวณระยะ ถ้าไม่มีก็ไม่คำนวณและไม่ติดธง
-        locationLat:      dto.lat ?? null,
-        locationLng:      dto.lng ?? null,
-        bookingDate:      new Date(dto.bookingDate),
-        notes:            dto.notes ?? null,
-        patientName:              dto.patientName              ?? null,
-        dayOfContactName:         dto.dayOfContactName         ?? null,
-        dayOfContactPhone:        dto.dayOfContactPhone        ?? null,
-        dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
-        estimatedCost:    estimatedCost,
-        // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
-        status: resolvedCaregiverId ? 'pending' : 'unmatched',
-      },
-      include: {
-        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-      },
+    // PYG-361: booking_tasks เป็นแหล่งข้อมูลใหม่สำหรับ per-task completion state
+    // (bookings.tasks ด้านล่างยังเขียนไว้เหมือนเดิม ไม่ถูกลบ — legacy display field ที่ตอนนี้
+    // ไม่ใช่แหล่งเดียวอีกต่อไป) ต้องอยู่ใน transaction เดียวกับ booking.create: ถ้า insert แถว
+    // task ล้ม ต้อง rollback booking ด้วย ไม่งั้นจะได้ booking ที่มี tasks (TEXT[]) แต่
+    // booking_tasks ว่างเปล่า → หน้าติดตามงานของ PYG-361 จะโชว์ "0 จาก 0 รายการ" ทั้งที่จองมี task จริง
+    const suggestedForType = TASK_SUGGESTIONS[dto.serviceType] ?? [];
+
+    const booking = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.booking.create({
+        data: {
+          patientId,
+          caregiverId:      resolvedCaregiverId,
+          careRecipientId:  dto.careRecipientId ?? null,
+          tasks:            dto.tasks,
+          serviceLocations: dto.serviceLocations,
+          serviceType:      dto.serviceType as booking_service_type,
+          timeSlot:         dto.timeSlot as time_slot,
+          startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
+          durationHours:    dto.durationHours,
+          locationAddress:  dto.locationAddress,
+          // PYG-352: เก็บพิกัดจุดงานที่ลูกค้าปักหมุดไว้ — ก่อนหน้านี้ค่านี้ถูกทิ้งทุกครั้ง
+          // ระบบเช็คอินใช้พิกัดคู่นี้คำนวณระยะ ถ้าไม่มีก็ไม่คำนวณและไม่ติดธง
+          locationLat:      dto.lat ?? null,
+          locationLng:      dto.lng ?? null,
+          bookingDate:      new Date(dto.bookingDate),
+          notes:            dto.notes ?? null,
+          patientName:              dto.patientName              ?? null,
+          dayOfContactName:         dto.dayOfContactName         ?? null,
+          dayOfContactPhone:        dto.dayOfContactPhone        ?? null,
+          dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
+          estimatedCost:    estimatedCost,
+          // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
+          status: resolvedCaregiverId ? 'pending' : 'unmatched',
+        },
+        include: {
+          caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+      });
+
+      await tx.booking_tasks.createMany({
+        data: dto.tasks.map((description, index) => ({
+          booking_id:   created.id,
+          description,
+          is_suggested: suggestedForType.includes(description),
+          is_custom:    !suggestedForType.includes(description),
+          sort_order:   index,
+        })),
+      });
+
+      return created;
     });
 
     this.logger.log({

@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { MonitoringResolver } from './monitoring.resolver';
 import { NoCheckoutSweeperService } from './no-checkout-sweeper.service';
+import { JobEvidenceService } from './job-evidence.service';
+import { CareLogService } from './care-log.service';
 import { CommonModule } from '../common/common.module';
 import { NotificationModule } from '../notification/notification.module';
 
@@ -18,7 +20,15 @@ import { NotificationModule } from '../notification/notification.module';
  */
 @Module({
   imports: [CommonModule, NotificationModule],
-  providers: [MonitoringResolver, MonitoringService, NoCheckoutSweeperService],
+  providers: [
+    MonitoringResolver,
+    MonitoringService,
+    NoCheckoutSweeperService,
+    // PYG-358/PYG-361: ตรวจ/เซ็น photoUrl ของ bucket job-evidence — ใช้ร่วมกันสองที่
+    JobEvidenceService,
+    // PYG-361: "บันทึกจากผู้ดูแล" — display-only, ไม่แตะ verdict
+    CareLogService,
+  ],
   exports: [MonitoringService],
 })
 export class MonitoringModule {}

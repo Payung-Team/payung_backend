@@ -1,10 +1,13 @@
-import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
+import { CareLogService } from './care-log.service';
 import { CheckInInput } from './dto/check-in.input';
 import { CheckOutInput } from './dto/check-out.input';
+import { AddCareLogInput } from './dto/add-care-log.input';
 import { JobEvent } from './entities/job-event.entity';
 import { ProofOfWorkSummary } from './entities/proof-of-work.entity';
+import { CareLog } from './entities/care-log.entity';
 import {
   AuthUser,
   CurrentUser,
@@ -19,10 +22,14 @@ import { ROLE_ID } from '../common/constants/roles.constant';
  *
  * ตอนนี้มีแค่ checkInBooking
  * PYG-358 จะมาเพิ่ม checkOutBooking + query proofOfWork ในไฟล์เดียวกันนี้
+ * PYG-361 เพิ่ม addCareLog / careLogs ("บันทึกจากผู้ดูแล") — display-only ไม่แตะ verdict
  */
 @Resolver(() => JobEvent)
 export class MonitoringResolver {
-  constructor(private readonly monitoringService: MonitoringService) {}
+  constructor(
+    private readonly monitoringService: MonitoringService,
+    private readonly careLogService: CareLogService,
+  ) {}
 
   @Mutation(() => JobEvent, {
     description:
@@ -63,5 +70,36 @@ export class MonitoringResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<ProofOfWorkSummary> {
     return this.monitoringService.proofOfWork(user.id, user.role, bookingId);
+  }
+
+  // ── PYG-361: บันทึกจากผู้ดูแล — display-only, ไม่แตะ proofOfWork.verdict เด็ดขาด ────────────
+
+  @Mutation(() => CareLog, {
+    description:
+      'PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.',
+  })
+  @UseGuards(SupabaseAuthGuard, RolesGuard)
+  @Roles(ROLE_ID.CAREGIVER)
+  async addCareLog(
+    @Args('input') input: AddCareLogInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<CareLog> {
+    return this.careLogService.addCareLog(user.id, input);
+  }
+
+  @Query(() => [CareLog], {
+    description:
+      'PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.',
+  })
+  @UseGuards(SupabaseAuthGuard, RolesGuard)
+  // 1=patient 2=caregiver 3=admin — service ตรวจซ้ำอีกชั้นว่าเป็นคู่กรณีของงานนี้จริง
+  @Roles(ROLE_ID.PATIENT, ROLE_ID.CAREGIVER, ROLE_ID.ADMIN)
+  async careLogs(
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @Args('limit', { type: () => Int, nullable: true }) limit: number | undefined,
+    @Args('offset', { type: () => Int, nullable: true }) offset: number | undefined,
+    @CurrentUser() user: AuthUser,
+  ): Promise<CareLog[]> {
+    return this.careLogService.careLogs(user.id, user.role, bookingId, limit, offset);
   }
 }

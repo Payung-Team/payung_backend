@@ -106,40 +106,6 @@ export class OmiseController {
           );
         }
         break;
-
-      case 'charge.reverse':
-        // TODO (out of scope ของ PYG-278): handler ของ async reverse จาก Omise dashboard
-        // — PYG-286 ทำ void/refund ผ่าน mutation อยู่แล้ว ครอบคลุม flow ปัจจุบัน
-        this.logger.log(`[OmiseWebhook] charge.reverse: ${JSON.stringify(data)}`);
-        break;
-
-      case 'refund.create':
-        // refund ที่ทำ "นอกแอป" (เช่น admin กด refund ผ่าน Omise dashboard) → sync กลับเข้า DB
-        // data = Refund object (ต่างจาก Charge object) → chargeId = data.charge
-        await this.dispatch(key, data, 'charge', (chargeId) =>
-          this.refundService.reconcileFromWebhook(chargeId),
-        );
-        break;
-
-      case 'recipient.verified':
-      case 'recipient.failed': {
-        // PYG-266: Omise ยืนยัน/ปฏิเสธบัญชีรับเงินของ caregiver
-        const recipientId = typeof data?.id === 'string' ? data.id : undefined;
-        if (recipientId) {
-          try {
-            await this.payoutAccountService.handleRecipientWebhook(recipientId, key);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.logger.error(
-              `[OmiseWebhook] ${key} handler failed recipientId=${recipientId}: ${msg}`,
-            );
-          }
-        } else {
-          this.logger.warn(
-            `[OmiseWebhook] ${key} missing data.id — payload: ${JSON.stringify(data)}`,
-          );
-        }
-        break;
       }
 
       default:

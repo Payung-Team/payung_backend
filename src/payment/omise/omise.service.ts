@@ -682,6 +682,9 @@ export class OmiseService {
         typeof body.failure_message === 'string'
           ? body.failure_message
           : undefined,
+      // PYG-375: expires_at ใช้ยืนยันว่า PromptPay charge ตายจริงก่อน mark expired
+      expiresAt: typeof body.expires_at === 'string' ? body.expires_at : null,
+      refunded: typeof body.refunded === 'number' ? body.refunded : undefined,
     };
   }
 
@@ -702,9 +705,6 @@ export class OmiseService {
             : '',
         name: typeof bankAccount.name === 'string' ? bankAccount.name : '',
       },
-      // PYG-375: expires_at ใช้ยืนยันว่า PromptPay charge ตายจริงก่อน mark expired
-      expiresAt: typeof body.expires_at === 'string' ? body.expires_at : null,
-      refunded: typeof body.refunded === 'number' ? body.refunded : undefined,
     };
   }
 

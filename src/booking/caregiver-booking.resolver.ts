@@ -1,6 +1,7 @@
-import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Mutation, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { CaregiverBookingService } from './caregiver-booking.service';
+import { BookingTaskService } from './booking-task.service';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -9,6 +10,8 @@ import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
 import { DeclineBookingInput } from './dto/decline-booking.input';
 import { CancelAcceptanceInput } from './dto/cancel-acceptance.input';
+import { SetTaskDoneInput } from './dto/set-task-done.input';
+import { BookingTask } from './dto/booking-task.types';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -25,11 +28,14 @@ import { ROLE_ID } from '../common/constants/roles.constant';
  *           แยก resolver ออกจาก BookingResolver (ที่เป็น role=PATIENT)
  *           เพราะ @Roles กำหนดได้ครั้งเดียวต่อ class
  */
-@Resolver()
+@Resolver(() => CaregiverBookingSummary)
 @UseGuards(SupabaseAuthGuard, RolesGuard)
 @Roles(ROLE_ID.CAREGIVER)
 export class CaregiverBookingResolver {
-  constructor(private readonly service: CaregiverBookingService) {}
+  constructor(
+    private readonly service: CaregiverBookingService,
+    private readonly bookingTaskService: BookingTaskService,
+  ) {}
 
   // ─── Queries ──────────────────────────────────────────────────────────────
 
@@ -102,5 +108,25 @@ export class CaregiverBookingResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<CaregiverBookingSummary> {
     return this.service.cancelAcceptance(user.id, input);
+  }
+
+  @Mutation(() => BookingTask, {
+    description:
+      'PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.',
+  })
+  async setTaskDone(
+    @Args('input') input: SetTaskDoneInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<BookingTask> {
+    return this.bookingTaskService.setTaskDone(user.id, input);
+  }
+
+  // ── PYG-361: bookingTasks field บน CaregiverBookingSummary ────────────────────────────────────
+
+  @ResolveField(() => [BookingTask], {
+    description: 'PYG-361: เหมือนกับฝั่ง patient แต่มุมมอง caregiver',
+  })
+  async bookingTasks(@Parent() booking: CaregiverBookingSummary): Promise<BookingTask[]> {
+    return this.bookingTaskService.listForBooking(booking.id);
   }
 }

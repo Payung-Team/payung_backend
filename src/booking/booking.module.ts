@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import { BookingResolver } from './booking.resolver';
+import { BookingTaskService } from './booking-task.service';
 import { BookingController, BookingTaskSuggestionsController } from './booking.controller';
 import { CaregiverBookingService } from './caregiver-booking.service';
 import { CaregiverBookingResolver } from './caregiver-booking.resolver';
@@ -19,6 +20,8 @@ import { PaymentModule } from '../payment/payment.module';
     // ฝั่ง caregiver (PYG-206): รับ/ปฏิเสธ + รายการงาน + ลูกค้าประจำ
     CaregiverBookingService,
     CaregiverBookingResolver,
+    // PYG-361: รายการงานย่อยต่อ booking (booking_tasks) — ใช้ร่วมกันทั้งฝั่ง patient/caregiver
+    BookingTaskService,
   ],
 })
 export class BookingModule {}

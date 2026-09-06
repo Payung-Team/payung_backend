@@ -18,6 +18,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MonitoringService } from './monitoring.service';
+import { JobEvidenceService } from './job-evidence.service';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
@@ -129,6 +130,9 @@ describe('MonitoringService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MonitoringService,
+        // ตรรกะตรวจ/เซ็น photoUrl ถูกย้ายไป JobEvidenceService แล้ว (PYG-361) — ใช้ตัวจริง
+        // เพราะมันฉีด ConfigService/SupabaseService ที่ mock ไว้ด้านล่างอยู่แล้วเหมือนเดิม
+        JobEvidenceService,
         { provide: PrismaService, useValue: prisma },
         { provide: SupabaseService, useValue: { getClient: jest.fn() } },
         {

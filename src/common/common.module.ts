@@ -17,7 +17,7 @@ import { PayoutEncryptionService } from './crypto/payout-encryption.service';
 
 @Global()
 @Module({
-  providers: [SupabaseService, PrismaService],
-  exports: [SupabaseService, PrismaService],
+  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
+  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
 })
 export class CommonModule {}

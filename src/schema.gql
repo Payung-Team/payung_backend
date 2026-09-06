@@ -108,17 +108,6 @@ input AdminPaymentsInput {
   status: PaymentStatus
 }
 
-input AdminTransactionsInput {
-  dateFrom: DateTime
-  dateTo: DateTime
-  limit: Int
-  page: Int
-  q: String
-  sortBy: TransactionSortBy
-  status: String
-  type: TransactionType
-}
-
 """Caregiver payout bank account summary for admin review"""
 type AdminPayoutAccountSummary {
   accountName: String!
@@ -1332,6 +1321,28 @@ type PaymentStatusHistory {
   toStatus: PaymentStatus!
 }
 
+input PayoutAccountInput {
+  """Account holder name"""
+  accountName: String!
+
+  """Bank account number (10 digits, Thai bank accounts)"""
+  accountNumber: String!
+
+  """Omise bank code (e.g. kbank, scb, bbl)"""
+  bankCode: String!
+}
+
+"""
+Caregiver payout bank account summary (masked — never the full account number)
+"""
+type PayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  recipientStatus: String!
+  status: String!
+}
+
 type ProofOfWorkSummary {
   """
   เวลาทำงานจริง (นาที) คำนวณจาก server_ts ทั้งสองฝั่ง. null เมื่อยังไม่ปิดงาน หรือเมื่อระบบปิดให้เอง
@@ -1374,28 +1385,6 @@ type ProofOfWorkSummary {
 
   """'valid' | 'needs_review' | 'incomplete'"""
   verdict: String!
-}
-
-input PayoutAccountInput {
-  """Account holder name"""
-  accountName: String!
-
-  """Bank account number (10 digits, Thai bank accounts)"""
-  accountNumber: String!
-
-  """Omise bank code (e.g. kbank, scb, bbl)"""
-  bankCode: String!
-}
-
-"""
-Caregiver payout bank account summary (masked — never the full account number)
-"""
-type PayoutAccountSummary {
-  accountName: String!
-  accountNumberLast4: String!
-  bankCode: String!
-  recipientStatus: String!
-  status: String!
 }
 
 type Query {
@@ -1552,6 +1541,50 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
+}
+
+enum ReconFlag {
+  AMOUNT_MISMATCH
+  CAPTURE_WITHOUT_PROOF
+  HELD_AWAITING_PROOF
+  PAYOUT_WITHOUT_CAPTURE
+  REFUND_EXCEEDS_CAPTURED
+  STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
+  STATUS_MISMATCH_OMISE_PAID_DB_PENDING
+}
+
+type ReconReport {
+  dateFrom: String!
+  dateTo: String!
+  flaggedRows: Int!
+  rows: [ReconRow!]!
+  totalRows: Int!
+  unreachableRows: Int!
+}
+
+type ReconRow {
+  amount: Float!
+  bookingId: ID!
+  capturedAmount: Float
+  date: String!
+  flags: [ReconFlag!]!
+  grossAmount: Float
+  netAmount: Float
+  omiseStatus: String
+  omiseUnreachable: Boolean!
+  paymentId: String!
+  paymentStatus: String!
+  payoutStatus: String
+  platformFee: Float
+  primaryFlag: ReconFlag
+  refundedAmount: Float!
+  reviewReasons: [String!]!
+  verdict: String!
+}
+
+input ReconciliationReportInput {
+  dateFrom: String!
+  dateTo: String!
 }
 
 input RefundPaymentInput {

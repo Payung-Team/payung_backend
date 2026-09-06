@@ -16,6 +16,7 @@ import { CheckInInput } from './dto/check-in.input';
 import { CheckOutInput } from './dto/check-out.input';
 import { JobEvent } from './entities/job-event.entity';
 import { ProofOfWorkSummary } from './entities/proof-of-work.entity';
+import { JobEvidenceService } from './job-evidence.service';
 import {
   BOOKING_STATUS,
   BUSINESS_TIMEZONE,
@@ -24,11 +25,9 @@ import {
   GPS_ACCURACY_TRUST_M,
   JOB_EVENT_SOURCE,
   JOB_EVENT_TYPE,
-  JOB_EVIDENCE_BUCKET,
   LATE_VERDICT_MIN,
   MIN_DURATION_RATIO,
   REVIEW_REASON,
-  SIGNED_URL_TTL_SEC,
   VERDICT,
   VERDICT_RADIUS_M,
   WARN_RADIUS_M,
@@ -68,6 +67,7 @@ export class MonitoringService {
     private readonly clock: ClockService,
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly jobEvidenceService: JobEvidenceService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════════
@@ -299,8 +299,8 @@ export class MonitoringService {
       throw new BadRequestException('ยังไม่ได้เช็คอิน จึงเช็คเอาท์ไม่ได้');
     }
 
-    // ── ตรวจไฟล์แนบก่อนเขียนอะไรทั้งสิ้น ─────────────────────────────
-    const photoPath = this.validateEvidencePath(input.photoUrl, booking.id);
+    // ── ตรวจไฟล์แนบก่อนเขียนอะไรทั้งสิ้น (ใช้ตัวเดียวกับ CareLogService — PYG-361) ──
+    const photoPath = this.jobEvidenceService.validatePath(input.photoUrl, booking.id);
 
     const now = this.clock.now();
     const deviceTs = input.deviceTs ? new Date(input.deviceTs) : null;
@@ -738,79 +738,6 @@ export class MonitoringService {
     return Math.round(Number(durationHours) * 60);
   }
 
-  /**
-   * ตรวจไฟล์แนบให้ปลอดภัย แล้วคืนค่าเป็น "path" ที่จะเก็บลงฐานข้อมูล (PYG-358 STEP 2)
-   *
-   * ทำไมต้องตรวจเข้มขนาดนี้: ถ้ารับ URL อะไรก็ได้ ใครก็ตามที่ยิง API เป็น
-   * จะแปะลิงก์จากเว็บไหนก็ได้ลงในบันทึกหลักฐาน — หลักฐานก็หมดความหมายทันที
-   * และแย่กว่านั้นคือแอดมินที่กดดูอาจโดนพาไปเว็บอันตราย
-   *
-   * เงื่อนไขที่ต้องผ่าน "ครบทั้งสามข้อ" ถ้าส่งมาเป็น URL เต็ม:
-   *   a) host ตรงกับโปรเจกต์ Supabase ของเรา
-   *   b) bucket ใน path คือ 'job-evidence'
-   *   c) path ขึ้นต้นด้วย '{bookingId}/'  ← กัน booking หนึ่งไปอ้างรูปของอีก booking
-   *
-   * ถ้าส่งมาเป็น path เปล่า ๆ ('{bookingId}/xxx.jpg') ก็รับได้
-   * เพราะ path เปล่าชี้ออกนอกโดเมนเราไม่ได้อยู่แล้ว แต่ยังต้องผ่านข้อ (c)
-   *
-   * @returns path ที่จะเก็บ (ไม่ใช่ URL) หรือ null ถ้าไม่ได้แนบรูปมา
-   */
-  private validateEvidencePath(
-    photoUrl: string | undefined,
-    bookingId: string,
-  ): string | null {
-    // ไม่แนบรูปมา = ปกติ รูปเป็นของไม่บังคับ
-    if (!photoUrl) return null;
-
-    const rejected = new BadRequestException('ไฟล์แนบไม่ถูกต้อง');
-
-    let objectPath: string;
-
-    if (photoUrl.includes('://')) {
-      // ── ส่งมาเป็น URL เต็ม → ตรวจครบสามข้อ ──
-      let parsed: URL;
-      try {
-        parsed = new URL(photoUrl);
-      } catch {
-        throw rejected; // แปลงเป็น URL ไม่ได้เลย
-      }
-
-      // (a) host ต้องเป็นของโปรเจกต์เรา
-      const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
-      if (!supabaseUrl) {
-        // ไม่มี config = ตรวจไม่ได้ = ไม่รับ (ปลอดภัยไว้ก่อน)
-        this.logger.error('SUPABASE_URL ไม่ได้ตั้งค่า — ปฏิเสธไฟล์แนบทั้งหมด');
-        throw rejected;
-      }
-      if (parsed.host !== new URL(supabaseUrl).host) throw rejected;
-
-      // (b) bucket ใน path ต้องเป็น job-evidence
-      // path จริงของ Supabase หน้าตาประมาณ
-      //   /storage/v1/object/sign/job-evidence/{bookingId}/check-out-123.jpg
-      const marker = `/${JOB_EVIDENCE_BUCKET}/`;
-      const markerAt = parsed.pathname.indexOf(marker);
-      if (markerAt === -1) throw rejected;
-
-      objectPath = decodeURIComponent(
-        parsed.pathname.slice(markerAt + marker.length),
-      );
-    } else {
-      // ── ส่งมาเป็น path เปล่า ──
-      // เผื่อ FE ส่งมาแบบมีชื่อ bucket นำหน้า ก็ตัดออกให้
-      objectPath = photoUrl.startsWith(`${JOB_EVIDENCE_BUCKET}/`)
-        ? photoUrl.slice(JOB_EVIDENCE_BUCKET.length + 1)
-        : photoUrl;
-    }
-
-    // (c) ต้องอยู่ใต้โฟลเดอร์ของ booking นี้เท่านั้น
-    if (!objectPath.startsWith(`${bookingId}/`)) throw rejected;
-
-    // กัน path traversal (../) ที่อาจพาออกนอกโฟลเดอร์ตัวเอง
-    if (objectPath.includes('..')) throw rejected;
-
-    return objectPath;
-  }
-
   /** Prisma Decimal → number (null คงเป็น null) */
   private toNumber(value: Prisma.Decimal | null): number | null {
     if (value === null || value === undefined) return null;
@@ -873,23 +800,11 @@ export class MonitoringService {
 
   /**
    * สร้าง signed URL ให้รูปหลักฐาน (bucket เป็น private)
-   *
-   * ⚠ ห้ามเก็บ public URL ลงฐานข้อมูลเด็ดขาด — โปรเจกต์นี้เคยพลาดมาแล้วกับเอกสาร KYC
-   *   เก็บเป็น path เปล่า ๆ แล้วค่อย sign ตอนอ่านทุกครั้ง
-   *
-   * ยังไม่มีใครเรียกใน PYG-352 (เช็คอินไม่มีรูป) — PYG-358 (เช็คเอาท์) จะใช้
+   * ตรรกะย้ายไปอยู่ที่ JobEvidenceService แล้ว (ใช้ร่วมกับ CareLogService — PYG-361)
+   * เมธอดนี้เก็บไว้เป็น thin wrapper เพื่อไม่ให้กระทบ public API เดิมของ service นี้
    */
   async signEvidenceUrl(path: string): Promise<string | null> {
-    const supabase = this.supabaseService.getClient();
-    const { data, error } = await supabase.storage
-      .from(JOB_EVIDENCE_BUCKET)
-      .createSignedUrl(path, SIGNED_URL_TTL_SEC);
-
-    if (error || !data?.signedUrl) {
-      this.logger.warn({ event: 'monitoring.sign_url_failed', path });
-      return null;
-    }
-    return data.signedUrl;
+    return this.jobEvidenceService.sign(path);
   }
 
   /** ค่าคงที่ที่ FE ต้องใช้วาดวงกลมสองวงบนแผนที่ (ดีไซน์วาดไว้ก่อนเช็คอินด้วยซ้ำ) */
