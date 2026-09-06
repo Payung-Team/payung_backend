@@ -20,6 +20,7 @@ import { KycService } from './kyc.service';
 import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
+import { KycStorageAuditCron } from './kyc-storage-audit.cron';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
@@ -38,6 +39,9 @@ import { EmailModule } from '../../email/email.module';
     CaregiverService, // CRUD สำหรับ caregivers table
     WorkConditionService, // PYG-188: availability + jobTypes + serviceArea (3 tables)
     KycDocumentService, // CRUD สำหรับ kyc_documents table
+    // PYG-307: ตรวจ invariant ของ file_url ทุกวัน — repo นี้ยังไม่มี CI
+    // ถ้าวางไว้เป็นสคริปต์ให้ CI รัน จะไม่มีใครรันจริง
+    KycStorageAuditCron,
     SupabaseAuthGuard,
     RolesGuard,
     FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile

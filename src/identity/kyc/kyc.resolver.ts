@@ -195,6 +195,9 @@ export class KycResolver {
   ): Promise<KycDocument> {
     return this.kycDocumentService.create({
       userId: user.id,
+      // supabaseUid มาจาก guard (session) ไม่ใช่จาก input — เป็นตัวตัดสินว่า
+      // path ที่ส่งมาเป็นโฟลเดอร์ของคนนี้จริงไหม
+      ownerUid: user.supabaseUid,
       documentType: input.docType,
       fileUrl: input.fileUrl,
       fileName: input.fileName,
