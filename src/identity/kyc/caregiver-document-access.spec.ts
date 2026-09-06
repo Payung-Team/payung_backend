@@ -10,6 +10,7 @@
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { ForbiddenException } from '@nestjs/common';
 import { CaregiverService } from './caregiver.service';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
@@ -31,7 +32,7 @@ describe('CaregiverService — การเข้าถึงเอกสาร 
   let createSignedUrl: jest.Mock;
   let from: jest.Mock;
 
-  const docRow = (fileUrl: string) => ({
+  const docRow = (fileUrl: string, ownerUid: string = OWNER_UID) => ({
     id: 'doc-1',
     caregiverId: CAREGIVER_ID,
     userId: CAREGIVER_USER_ID,
@@ -41,6 +42,7 @@ describe('CaregiverService — การเข้าถึงเอกสาร 
     fileSize: 1234,
     mimeType: 'image/jpeg',
     uploadedAt: new Date(),
+    user: { supabaseUid: ownerUid },
   });
 
   beforeEach(async () => {
@@ -82,6 +84,20 @@ describe('CaregiverService — การเข้าถึงเอกสาร 
       const sqlText = (prisma.$executeRaw.mock.calls[0][0] as string[]).join('');
       expect(sqlText).toContain('admin_audit_logs');
       expect(sqlText).toContain('kyc_documents_viewed');
+
+      // details ต้องตอบได้ว่า "เปิดดูอะไรบ้าง" ไม่ใช่แค่ "เปิดดูของใคร"
+      const detailsJson = params.find(
+        (p): p is string => typeof p === 'string' && p.startsWith('{'),
+      );
+      expect(detailsJson).toBeDefined();
+      const details = JSON.parse(detailsJson as string) as Record<string, unknown>;
+      expect(details).toMatchObject({
+        caregiverId: CAREGIVER_ID,
+        bucket: KYC_BUCKET,
+        ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
+        documentCount: 1,
+        documents: [{ id: 'doc-1', docType: 'id_card_front' }],
+      });
 
       expect(docs[0].signedUrl).toBe('https://signed.example/x');
     });
@@ -154,6 +170,57 @@ describe('CaregiverService — การเข้าถึงเอกสาร 
 
       expect(createSignedUrl).not.toHaveBeenCalled();
       expect(docs[0].signedUrl).toBeUndefined();
+    });
+  });
+
+  describe('ยามเจ้าของบนเส้น sign (ไม่เชื่อว่า caller กรองมาแล้ว)', () => {
+    it('path ชี้ไปโฟลเดอร์ที่ไม่ใช่ของเจ้าของแถว → throw ไม่ออก signed URL', async () => {
+      // จำลองแถวเสียที่หลุดเข้ามาก่อนมี validator: file_url เป็นของ uid อื่น
+      prisma.kycDocument.findMany.mockResolvedValueOnce([
+        { ...docRow(`8863204a-328c-43e7-8d07-f53644f0426d/id.jpg`), user: { supabaseUid: OWNER_UID } },
+      ]);
+
+      await expect(service.getOwnDocumentsWithSignedUrls(CAREGIVER_ID)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(createSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('แถวไม่มี supabase_uid ของเจ้าของ → throw (ไม่เดาว่าปลอดภัย)', async () => {
+      prisma.kycDocument.findMany.mockResolvedValueOnce([
+        { ...docRow(`${OWNER_UID}/id.jpg`), user: null },
+      ]);
+
+      await expect(service.getOwnDocumentsWithSignedUrls(CAREGIVER_ID)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(createSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('ยามอยู่นอก try — ต้อง throw จริง ไม่ถูกกลืนเป็น "ไม่มี signedUrl"', async () => {
+      prisma.kycDocument.findMany.mockResolvedValueOnce([
+        { ...docRow(`8863204a-328c-43e7-8d07-f53644f0426d/id.jpg`), user: { supabaseUid: OWNER_UID } },
+      ]);
+
+      // ถ้าถูก catch กลืน จะ resolve พร้อม signedUrl=undefined แทนที่จะ reject
+      const result = await service
+        .getOwnDocumentsWithSignedUrls(CAREGIVER_ID)
+        .then(() => 'resolved')
+        .catch(() => 'rejected');
+      expect(result).toBe('rejected');
+    });
+
+    it('เส้น admin ก็โดนยามตัวเดียวกัน', async () => {
+      prisma.kycDocument.findMany.mockResolvedValueOnce([
+        { ...docRow(`8863204a-328c-43e7-8d07-f53644f0426d/id.jpg`), user: { supabaseUid: OWNER_UID } },
+      ]);
+
+      await expect(
+        service.getDocumentsForAdminReview(CAREGIVER_ID, ADMIN_ID),
+      ).rejects.toThrow(ForbiddenException);
+      expect(createSignedUrl).not.toHaveBeenCalled();
+      // audit ยังถูกเขียนไว้ก่อน — มีร่องรอยว่ามีคนพยายามเปิด
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     });
   });
 

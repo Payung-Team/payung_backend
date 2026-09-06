@@ -452,7 +452,7 @@ export class CaregiverService {
    *   แล้วไม่มีใครรู้ว่าเกิดขึ้น — สองประตูทำให้ "ลืมลง audit" เป็นไปไม่ได้
    */
   async getOwnDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
-    return this.signDocuments(caregiverId);
+    return this.signDocuments(await this.loadDocs(caregiverId));
   }
 
   /**
@@ -471,10 +471,15 @@ export class CaregiverService {
       select: { userId: true },
     });
 
+    // โหลดเอกสารก่อนลง audit เพื่อให้ log ตอบได้ว่า "เปิดดูอะไรบ้าง" ไม่ใช่แค่ "เปิดดูของใคร"
+    const docs = await this.loadDocs(caregiverId);
+
     const details = JSON.stringify({
       caregiverId,
-      ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
       bucket: KYC_BUCKET,
+      ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
+      documentCount: docs.length,
+      documents: docs.map((d) => ({ id: d.id, docType: d.documentType })),
     });
 
     await this.prismaService.$executeRaw`
@@ -483,15 +488,52 @@ export class CaregiverService {
               ${caregiver?.userId ?? null}, ${details}::jsonb, NOW())
     `;
 
-    return this.signDocuments(caregiverId);
+    return this.signDocuments(docs);
   }
 
-  private async signDocuments(caregiverId: string): Promise<KycDocument[]> {
-    const docs = await this.prismaService.kycDocument.findMany({
+  /**
+   * loadDocs — โหลดเอกสาร + supabase_uid ของ "เจ้าของแถว" มาด้วยเสมอ
+   *
+   * ★ join users เข้ามาเพื่อให้เส้น sign ตรวจเจ้าของได้เอง ไม่ต้องเชื่อ caller
+   *   (ดูเหตุผลใน assertPathBelongsToOwner)
+   */
+  private loadDocs(caregiverId: string) {
+    return this.prismaService.kycDocument.findMany({
       where: { caregiverId },
       orderBy: { uploadedAt: 'desc' },
+      include: { user: { select: { supabaseUid: true } } },
     });
+  }
 
+  /**
+   * assertPathBelongsToOwner — ยามราคาถูกบนเส้น sign
+   *
+   * ★ ทำไมต้องมีทั้งที่ query กรองด้วย caregiver_id มาแล้ว:
+   *   "ด่านก่อนหน้ากรองแล้ว" คือ reasoning แบบเดียวกับที่ทำให้เกิดบั๊กเดิม
+   *   (uploadKycDocument เชื่อว่า @IsUrl กรองแล้ว / signer เชื่อว่า upload กรองแล้ว)
+   *   ยามตัวนี้ไม่เชื่อใครเลย ตรวจกับความจริงในแถวเอง:
+   *     โฟลเดอร์แรกของ path ต้อง = supabase_uid ของ user ที่เป็นเจ้าของแถวนั้น
+   *   จับได้ทั้ง 2 กรณีพร้อมกัน:
+   *     - แถวเสีย (ชี้ข้ามคน) ที่หลุดเข้ามาก่อนมี validator
+   *     - caller ที่หลุดมา (ถ้าวันหนึ่งมีใครส่ง caregiverId จาก args)
+   */
+  private assertPathBelongsToOwner(
+    objectPath: string,
+    ownerUid: string | undefined,
+    docId: string,
+  ): void {
+    const folder = objectPath.split('/')[0];
+    if (!ownerUid || folder !== ownerUid) {
+      this.logger.error(
+        `[KYC] เอกสาร ${docId} มี path ที่ไม่ตรงกับเจ้าของแถว — ปฏิเสธการออก signed URL`,
+      );
+      throw new ForbiddenException('เอกสารนี้ไม่ตรงกับเจ้าของ — ไม่สามารถออกลิงก์ได้');
+    }
+  }
+
+  private async signDocuments(
+    docs: Awaited<ReturnType<CaregiverService['loadDocs']>>,
+  ): Promise<KycDocument[]> {
     if (docs.length === 0) return [];
 
     const supabase = this.supabaseService.getAdminClient();
@@ -512,32 +554,39 @@ export class CaregiverService {
           uploadedAt: doc.uploadedAt,
         };
 
-        try {
-          // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก
-          //   ของเดิมอ่านชื่อ bucket ออกจาก fileUrl แล้วเซ็นด้วย service role
-          //   ซึ่ง bypass Storage RLS → ใครยัด path ของ bucket ไหนมาก็เซ็นให้หมด
-          const objectPath = toStoragePathForSigning(
-            doc.fileUrl,
-            this.configService.getOrThrow<string>('SUPABASE_URL'),
+        // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก
+        //   ของเดิมอ่านชื่อ bucket ออกจาก fileUrl แล้วเซ็นด้วย service role
+        //   ซึ่ง bypass Storage RLS → ใครยัด path ของ bucket ไหนมาก็เซ็นให้หมด
+        const objectPath = toStoragePathForSigning(
+          doc.fileUrl,
+          this.configService.getOrThrow<string>('SUPABASE_URL'),
+        );
+
+        if (!objectPath) {
+          // ค่าที่เก็บไว้ไม่ใช่ของ bucket KYC (เช่นแถว fixture ที่เป็น URL ภายนอก)
+          // → ไม่เซ็นให้ และไม่คืน path ดิบออกไป
+          this.logger.warn(
+            `[KYC] เอกสาร ${doc.id} มี storage path ที่ไม่รองรับ — ไม่ออก signed URL`,
           );
+          return entity;
+        }
 
-          if (objectPath) {
-            const { data, error } = await supabase.storage
-              .from(KYC_BUCKET)
-              .createSignedUrl(objectPath, KYC_SIGNED_URL_TTL_SECONDS);
+        // ★ อยู่ "นอก" try โดยตั้งใจ — ยามตัวนี้ต้อง throw ออกไปจริง ๆ
+        //   ถ้าวางไว้ในบล็อกที่ catch ทิ้ง มันจะกลายเป็นแค่ "ไม่มี signedUrl" เงียบ ๆ
+        //   ซึ่งแปลว่าเอกสารที่ชี้ข้ามคนจะผ่านไปโดยไม่มีใครรู้ — ตรงข้ามกับที่ต้องการ
+        this.assertPathBelongsToOwner(objectPath, doc.user?.supabaseUid, doc.id);
 
-            if (!error && data?.signedUrl) {
-              entity.signedUrl = data.signedUrl;
-            }
-          } else {
-            // ค่าที่เก็บไว้ไม่ใช่ของ bucket KYC (เช่นแถวเก่าที่เป็น URL ภายนอก)
-            // → ไม่เซ็นให้ และไม่คืน path ดิบออกไป
-            this.logger.warn(
-              `[KYC] เอกสาร ${doc.id} มี storage path ที่ไม่รองรับ — ไม่ออก signed URL`,
-            );
+        try {
+          const { data, error } = await supabase.storage
+            .from(KYC_BUCKET)
+            .createSignedUrl(objectPath, KYC_SIGNED_URL_TTL_SECONDS);
+
+          if (!error && data?.signedUrl) {
+            entity.signedUrl = data.signedUrl;
           }
         } catch {
-          // sign ไม่สำเร็จ → ไม่มี signedUrl (ไม่ throw ให้ query ทั้งก้อนพัง)
+          // เรียก storage ไม่สำเร็จ (network ฯลฯ) → ไม่มี signedUrl
+          // อันนี้ catch ได้ เพราะเป็นเรื่องปลายทางล่ม ไม่ใช่เรื่องสิทธิ์
         }
 
         return entity;
