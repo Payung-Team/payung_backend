@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from '../payment.service';
 import { RefundService } from '../refund.service';
+import { PayoutAccountService } from '../payout-account.service';
 
 interface OmiseWebhookBody {
   key: string;
@@ -24,6 +25,7 @@ export class OmiseController {
     private readonly configService: ConfigService,
     private readonly paymentService: PaymentService,
     private readonly refundService: RefundService,
+    private readonly payoutAccountService: PayoutAccountService,
   ) {}
 
   @Post('omise')
@@ -84,6 +86,27 @@ export class OmiseController {
           this.refundService.reconcileFromWebhook(chargeId),
         );
         break;
+
+      case 'recipient.verified':
+      case 'recipient.failed': {
+        // PYG-266: Omise ยืนยัน/ปฏิเสธบัญชีรับเงินของ caregiver
+        const recipientId = typeof data?.id === 'string' ? data.id : undefined;
+        if (recipientId) {
+          try {
+            await this.payoutAccountService.handleRecipientWebhook(recipientId, key);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.error(
+              `[OmiseWebhook] ${key} handler failed recipientId=${recipientId}: ${msg}`,
+            );
+          }
+        } else {
+          this.logger.warn(
+            `[OmiseWebhook] ${key} missing data.id — payload: ${JSON.stringify(data)}`,
+          );
+        }
+        break;
+      }
 
       default:
         this.logger.log(`[OmiseWebhook] unhandled event key=${key ?? 'undefined'}`);

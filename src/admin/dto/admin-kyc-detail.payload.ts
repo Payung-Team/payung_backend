@@ -12,6 +12,13 @@ import { Caregiver } from '../../identity/kyc/entities/caregiver.entity';
 import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
 import { CaregiverEditLog } from '../../identity/kyc/entities/caregiver-edit-log.entity';
+import { PayoutAccountSummary } from '../../identity/kyc/entities/payout-account.entity';
+
+/** PYG-266: payout summary สำหรับ admin — เพิ่ม hasOmiseRecipient เหนือ base summary */
+@ObjectType({ description: 'Caregiver payout bank account summary for admin review' })
+export class AdminPayoutAccountSummary extends PayoutAccountSummary {
+  @Field(() => Boolean) hasOmiseRecipient!: boolean;
+}
 
 @ObjectType({ description: 'Full KYC detail for a single caregiver (admin only)' })
 export class AdminKycDetailPayload {
@@ -34,4 +41,11 @@ export class AdminKycDetailPayload {
     /** ประวัติการแก้ไขข้อมูล/เอกสารของ caregiver — admin เห็นว่าแก้อะไรบ้าง เรียงล่าสุดก่อน */
     @Field(() => [CaregiverEditLog], { description: 'Edit history showing field changes, newest first' })
     editHistory!: CaregiverEditLog[];
+
+    /** บัญชีธนาคารรับเงิน (masked) — undefined ถ้า caregiver ยังไม่เคยกรอก (optional) */
+    @Field(() => AdminPayoutAccountSummary, {
+        nullable: true,
+        description: 'Payout bank account summary (masked — never the full account number)',
+    })
+    payoutAccount?: AdminPayoutAccountSummary;
 }
