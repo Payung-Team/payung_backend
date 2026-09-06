@@ -83,7 +83,7 @@ describe('KycService — payout account (PYG-266)', () => {
           provide: CaregiverService,
           useValue: {
             generateCaregiverNumber: jest.fn().mockResolvedValue('CG-260101-0001'),
-            getDocumentsWithSignedUrls: jest.fn().mockResolvedValue([]),
+            getOwnDocumentsWithSignedUrls: jest.fn().mockResolvedValue([]),
           },
         },
         { provide: NotificationService, useValue: { create: jest.fn() } },
