@@ -2,6 +2,10 @@ import { Module } from '@nestjs/common';
 import { MonitoringService } from './monitoring.service';
 import { MonitoringResolver } from './monitoring.resolver';
 import { NoCheckoutSweeperService } from './no-checkout-sweeper.service';
+import { JobQrService } from './qr/job-qr.service';
+import { JobQrResolver } from './qr/job-qr.resolver';
+import { JobScanService } from './qr/job-scan.service';
+import { JobScanResolver } from './qr/job-scan.resolver';
 import { JobEvidenceService } from './job-evidence.service';
 import { CareLogService } from './care-log.service';
 import { CommonModule } from '../common/common.module';
@@ -17,18 +21,34 @@ import { NotificationModule } from '../notification/notification.module';
  *
  * exports MonitoringService เพราะ PYG-366 / PYG-367 (escrow gate + cron ปล่อยเงิน)
  * ต้องอ่านหลักฐานไปตัดสินว่าจะโอนเงินให้ผู้ดูแลหรือยัง
+ *
+ * PYG-434: เพิ่มระบบ QR (โฟลเดอร์ qr/) เข้ามาใน module เดียวกัน
+ *   เพราะ QR คือ "ประตูหน้า" ของการเช็คอิน/เช็คเอาท์ ซึ่งเป็นเรื่องเดียวกับ proof-of-work
+ *   และ PYG-435 จะให้ scanJobQr เรียก MonitoringService ต่อ — อยู่ module เดียวกันแล้วไม่ต้อง import ข้าม
+ *
+ *   exports JobQrService เพราะ BookingModule ต้องเรียกตอนสร้าง booking
+ *   ⚠ ทิศทางเดียว: BookingModule → MonitoringModule
+ *     ห้ามให้ MonitoringModule import BookingModule กลับ ไม่งั้นเกิด circular dependency
+ *
+ * PYG-435: เพิ่ม JobScanService/JobScanResolver (สแกน QR แล้วเริ่ม/จบงาน)
+ *   JobScanService เรียก MonitoringService ต่อ — อยู่ module เดียวกันจึงไม่ต้อง import ข้าม
+ *   ★ ไม่ได้ export ออกไปโดยตั้งใจ: ไม่มีโมดูลอื่นควรสแกนแทนผู้ดูแลได้
+ *     (ต่างจาก JobQrService ที่ BookingModule ต้องใช้จริง ๆ ตอนสร้าง booking)
  */
 @Module({
   imports: [CommonModule, NotificationModule],
   providers: [
     MonitoringResolver,
     MonitoringService,
+    // PYG-359: cron ปิดงานที่ลืมเช็คเอาท์ → บังคับ needs_review
     NoCheckoutSweeperService,
-    // PYG-358/PYG-361: ตรวจ/เซ็น photoUrl ของ bucket job-evidence — ใช้ร่วมกันสองที่
-    JobEvidenceService,
-    // PYG-361: "บันทึกจากผู้ดูแล" — display-only, ไม่แตะ verdict
-    CareLogService,
+    // PYG-434: สร้าง/อ่านใบ QR ของงาน
+    JobQrResolver,
+    JobQrService,
+    // PYG-435: สแกน QR → เช็คอิน/เช็คเอาท์
+    JobScanResolver,
+    JobScanService,
   ],
-  exports: [MonitoringService],
+  exports: [MonitoringService, JobQrService],
 })
 export class MonitoringModule {}

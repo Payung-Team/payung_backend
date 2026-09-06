@@ -34,6 +34,10 @@ import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
+import {
+  normalizeAccountNumber,
+  validateAccountNumberForBank,
+} from '../../common/constants/omise-banks.constant';
 
 /** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
 const KYC_TRACKED_FIELDS = [
@@ -110,14 +114,6 @@ export class KycService {
           `Document IDs not found or not owned by user: ${missingIds.join(', ')}`,
         );
       }
-    }
-
-    // PYG-266: ชื่อบัญชีรับเงินต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ submit มาด้วยกัน
-    if (input.payoutAccount) {
-      this.assertAccountNameMatchesLegalName(
-        input.payoutAccount.accountName,
-        input.fullName,
-      );
     }
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
@@ -286,9 +282,6 @@ export class KycService {
       );
     }
 
-    // PYG-266: ชื่อบัญชีรับเงินต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ยืนยันไว้ตอน KYC
-    this.assertAccountNameMatchesLegalName(input.accountName, caregiver.fullName ?? '');
-
     const { account } = await this.prismaService.$transaction(async (tx) => {
       const result = await this.upsertPayoutAccountInTx(tx, caregiver.id, input);
 
@@ -329,7 +322,7 @@ export class KycService {
       };
     }
 
-    const documents = await this.caregiverService.getDocumentsWithSignedUrls(
+    const documents = await this.caregiverService.getOwnDocumentsWithSignedUrls(
       caregiver.id,
     );
 
@@ -520,24 +513,6 @@ export class KycService {
   }
 
   /**
-   * assertAccountNameMatchesLegalName — PYG-266: กันโอนเงินผิดบัญชี/ผิดคน โดยบังคับ
-   * ให้ชื่อบัญชีธนาคารที่ caregiver แจ้งตรงกับชื่อ-นามสกุลตามบัตรประชาชน (fullName)
-   * เทียบแบบ normalize (ตัด whitespace ซ้ำ/หัวท้าย, ไม่สนตัวพิมพ์เล็ก-ใหญ่) เพราะ
-   * เป็นการพิมพ์มือทั้งสองฝั่ง ไม่ควรเข้มงวดจนช่องว่างเกินต่างกันแล้ว false reject
-   */
-  private assertAccountNameMatchesLegalName(
-    accountName: string,
-    legalName: string,
-  ): void {
-    const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
-    if (normalize(accountName) !== normalize(legalName)) {
-      throw new BadRequestException(
-        'ชื่อบัญชีธนาคารต้องตรงกับชื่อ-นามสกุลตามบัตรประชาชนที่ยืนยันตัวตนไว้',
-      );
-    }
-  }
-
-  /**
    * upsertPayoutAccountInTx — PYG-266: encrypt + upsert บัญชีรับเงิน (ใช้ร่วมกันโดย
    * submitKyc และ updatePayoutAccount — logic เดียวกันเป๊ะ ไม่อยาก duplicate)
    *
@@ -569,8 +544,18 @@ export class KycService {
       where: { caregiverId },
     });
 
-    const accountNumberEnc = this.payoutEncryption.encrypt(input.accountNumber);
-    const accountNumberLast4 = this.payoutEncryption.last4(input.accountNumber);
+    // ── ชั้นที่สองของการตรวจเลขบัญชี (TASK 4) ────────────────────────────────
+    // DTO ตรวจได้แค่ช่วงกว้าง เพราะ class-validator ไม่เห็น bankCode ตอนตรวจ accountNumber
+    // ตรงนี้รู้ทั้งคู่แล้ว จึงใช้กฎรายธนาคารได้ — และ normalize ซ้ำเพื่อกันเส้นทางที่
+    // เรียก helper นี้ตรง ๆ โดยไม่ผ่าน DTO (submitKyc ผ่าน KycInput ก็มาลงที่นี่)
+    const accountNumber = normalizeAccountNumber(input.accountNumber);
+    const invalidReason = validateAccountNumberForBank(input.bankCode, accountNumber);
+    if (invalidReason) {
+      throw new BadRequestException(invalidReason);
+    }
+
+    const accountNumberEnc = this.payoutEncryption.encrypt(accountNumber);
+    const accountNumberLast4 = this.payoutEncryption.last4(accountNumber);
 
     const account = await tx.caregiverPayoutAccount.upsert({
       where: { caregiverId },

@@ -338,7 +338,7 @@ export class BookingNotificationListener {
       const refundAmountRaw =
         typeof event.metadata?.amount === 'number' ? event.metadata.amount : undefined;
 
-      // PYG-266: transferAmountSatangs (ยอดสุทธิหลังหักค่าธรรมเนียม) มากับ event metadata
+      // PYG-307: transferAmountSatangs (ยอดสุทธิหลังหักค่าธรรมเนียม) มากับ event metadata
       // เท่านั้น — event อื่นไม่มีค่านี้ จึง fallback ไปใช้ amountText เดิม (ไม่ถูกใช้จริงนอก
       // PAYMENT_TRANSFERRED template แต่ต้องมีค่าเสมอเพราะ NotifyContext บังคับ field นี้)
       const transferAmountSatangs = event.metadata?.transferAmountSatangs;

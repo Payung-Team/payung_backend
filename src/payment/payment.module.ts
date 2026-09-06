@@ -31,6 +31,12 @@ import { RolesGuard } from '../common/guards/roles.guard';
     SupabaseAuthGuard,
     RolesGuard,
   ],
-  exports: [PaymentStateMachine, OmiseService, PaymentService, RefundService, PayoutAccountService],
+  exports: [
+    PaymentStateMachine,
+    OmiseService,
+    PaymentService,
+    RefundService,
+    PayoutAccountService,
+  ],
 })
 export class PaymentModule {}

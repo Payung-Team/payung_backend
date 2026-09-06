@@ -147,6 +147,10 @@ describe('OmiseService — Recipient/Transfer (PYG-266)', () => {
   });
 
   // ─── createTransfer ──────────────────────────────────────────────────
+  //
+  // ⚠️ ลำดับ argument คือ (amountSatangs, recipientId, idempotencyKey) ตาม PYG-330
+  //    เคยมี createTransfer อีกตัวใน PYG-307 ที่รับ (recipientId, amountSatangs) สลับกัน
+  //    สองตัวนั้นชื่อชนกันได้โดย TS ไม่เตือน → เทสต์นี้ต้องยืนยันว่าค่าลงถูกช่องเสมอ
 
   describe('createTransfer', () => {
     it('POST /transfers พร้อม recipient + amount และ Omise-Idempotency-Key header', async () => {
@@ -154,35 +158,46 @@ describe('OmiseService — Recipient/Transfer (PYG-266)', () => {
         ok({ object: 'transfer', id: 'trsf_test_1', amount: 108000, recipient: RECIPIENT_ID }),
       );
 
-      const result = await service.createTransfer(RECIPIENT_ID, 108000, 'transfer:pay-0001');
+      const result = await service.createTransfer(108000, RECIPIENT_ID, 'payout:pay-0001');
 
       const [url, init] = fetchSpy.mock.calls[0];
       expect(url).toBe(`${API_BASE}/transfers`);
       const headers = init?.headers as Record<string, string>;
-      expect(headers['Omise-Idempotency-Key']).toBe('transfer:pay-0001');
-      const body = (init?.body as URLSearchParams).toString();
-      expect(body).toContain(`recipient=${RECIPIENT_ID}`);
-      expect(body).toContain('amount=108000');
+      expect(headers['Omise-Idempotency-Key']).toBe('payout:pay-0001');
 
-      expect(result).toEqual({ id: 'trsf_test_1', amount: 108000, recipient: RECIPIENT_ID });
+      // ★ กันบั๊ก args สลับ: recipient ต้องเป็น recp_*, amount ต้องเป็นตัวเลข satangs
+      const params = init?.body as URLSearchParams;
+      expect(params.get('recipient')).toBe(RECIPIENT_ID);
+      expect(params.get('amount')).toBe('108000');
+
+      // normalize ของ PYG-330 เติม status/sent/paid/currency ให้ครบเสมอ (ดู OmiseTransferResult)
+      expect(result).toMatchObject({
+        id: 'trsf_test_1',
+        amount: 108000,
+        recipient: RECIPIENT_ID,
+      });
     });
 
-    it('ไม่ส่ง idempotencyKey → ไม่มี header Omise-Idempotency-Key', async () => {
-      fetchSpy.mockResolvedValue(
-        ok({ object: 'transfer', id: 'trsf_test_2', amount: 5000, recipient: RECIPIENT_ID }),
-      );
+    it('ไม่ส่ง idempotencyKey → throw (กันโอนซ้ำ ห้ามยิง Omise โดยไม่มี key)', async () => {
+      await expect(
+        service.createTransfer(5000, RECIPIENT_ID, ''),
+      ).rejects.toThrow();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
 
-      await service.createTransfer(RECIPIENT_ID, 5000);
-
-      const [, init] = fetchSpy.mock.calls[0];
-      const headers = init?.headers as Record<string, string>;
-      expect(headers['Omise-Idempotency-Key']).toBeUndefined();
+    it('ไม่มี recipientId → throw ก่อนยิง Omise', async () => {
+      await expect(
+        service.createTransfer(5000, '', 'payout:pay-0002'),
+      ).rejects.toThrow();
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
 
     it('Omise ตอบ error → throw', async () => {
       fetchSpy.mockResolvedValue(omiseError('recipient not verified'));
 
-      await expect(service.createTransfer(RECIPIENT_ID, 1000)).rejects.toThrow();
+      await expect(
+        service.createTransfer(1000, RECIPIENT_ID, 'payout:pay-0003'),
+      ).rejects.toThrow();
     });
   });
 });

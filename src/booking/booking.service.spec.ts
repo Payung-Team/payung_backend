@@ -10,6 +10,7 @@ import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
 import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { PaymentStatus } from '../payment/entities/payment-status.enum';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { BookingStatusEnum } from './dto/booking-summary.types';
@@ -87,6 +88,9 @@ describe('BookingService', () => {
         // PYG-286: cancelBooking auto-void deps
         { provide: OmiseService, useValue: omise },
         { provide: PaymentStateMachine, useValue: fsm },
+        // PYG-434: createBooking สร้างใบ QR ด้วย — ไฟล์นี้ไม่ได้เทส createBooking
+        // แต่ต้อง provide ให้ DI ผ่าน (มีเทสของตัวเองที่ job-qr.service.spec.ts)
+        { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
       ],
     }).compile();
 

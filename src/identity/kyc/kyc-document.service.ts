@@ -10,7 +10,9 @@
  * - findById()           — ดึงเอกสารเดียวตาม id
  */
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma.service';
+import { normalizeKycStoragePath } from './utils/kyc-storage-path';
 import { KycDocument } from './entities/kyc-document.entity';
 
 /** Shape ของ KycDocument ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
@@ -29,6 +31,8 @@ type PrismaKycDocument = {
 /** ข้อมูลสำหรับสร้าง document record ใหม่ */
 type CreateDocumentData = {
   userId: string;
+  /** supabase_uid ของคนที่เรียก — มาจาก session ไม่ใช่จาก input (ใช้เช็คเจ้าของโฟลเดอร์) */
+  ownerUid: string;
   documentType: string;
   fileUrl: string;
   fileName: string;
@@ -38,7 +42,10 @@ type CreateDocumentData = {
 
 @Injectable()
 export class KycDocumentService {
-  constructor(private prismaService: PrismaService) {}
+  constructor(
+    private prismaService: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
 
@@ -74,11 +81,22 @@ export class KycDocumentService {
    * @param data - ข้อมูลเอกสาร (userId, documentType, fileUrl, fileName, fileSize, mimeType)
    */
   async create(data: CreateDocumentData): Promise<KycDocument> {
+    // ★ ด่านความปลอดภัยของ flow นี้ทั้งหมดอยู่บรรทัดนี้
+    //   เดิมเก็บ fileUrl ที่ client ส่งมาดิบ ๆ (validate แค่ @IsUrl) แล้วตอนอ่าน
+    //   ระบบแกะ bucket จากค่านั้นไปเซ็นด้วย service role ซึ่ง bypass Storage RLS
+    //   → caregiver ชี้ไปโฟลเดอร์ของคนอื่นแล้วขอ signed URL ของรูปบัตรคนนั้นได้
+    //   ตอนนี้แปลงเป็น storage path + บังคับว่าโฟลเดอร์ต้องเป็นของคนที่เรียกเท่านั้น
+    const storagePath = normalizeKycStoragePath(
+      data.fileUrl,
+      data.ownerUid,
+      this.config.getOrThrow<string>('SUPABASE_URL'),
+    );
+
     const doc = await this.prismaService.kycDocument.create({
       data: {
         userId: data.userId,
         documentType: data.documentType,
-        fileUrl: data.fileUrl,
+        fileUrl: storagePath,
         fileName: data.fileName,
         fileSize: data.fileSize,
         mimeType: data.mimeType,

@@ -106,12 +106,14 @@ export class AdminResolver {
   @Query(() => AdminKycDetailPayload, {
     description:
       'Admin only: Get full KYC detail for a single caregiver. ' +
-      'Includes profile, documents with signed URLs (1hr), and review history.',
+      'Includes profile, documents with signed URLs (15 min), and review history. ' +
+      'การเปิดดูถูกบันทึกลง admin_audit_logs ทุกครั้ง (action=kyc_documents_viewed).',
   })
   async adminKycDetail(
     @Args('caregiverId', { type: () => ID }) caregiverId: string,
+    @CurrentUser() admin: AuthUser,
   ): Promise<AdminKycDetailPayload> {
-    return this.adminService.adminKycDetail(caregiverId);
+    return this.adminService.adminKycDetail(caregiverId, admin.id);
   }
 
   /**
