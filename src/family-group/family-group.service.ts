@@ -729,6 +729,103 @@ export class FamilyGroupService {
   }
 
   /**
+   * เข้าร่วมกลุ่มด้วยลิงก์ (PYG-417) — token ดิบจาก URL
+   *
+   * ★ used_count เพิ่มด้วย conditional UPDATE ใน SQL ไม่ใช่อ่านมาบวกแล้วเขียนกลับ
+   *   สองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้าย จะมีคนเดียวที่ UPDATE ติด
+   */
+  async joinGroupByLink(userId: string, token: string): Promise<FamilyGroup> {
+    const tokenHash = this.hashJoinToken(token);
+
+    const link = await this.prisma.familyGroupJoinLink.findUnique({
+      where: { tokenHash },
+      include: {
+        group: {
+          include: {
+            members: {
+              where: { status: MEMBER_STATUS.ACTIVE },
+              select: { userId: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!link) {
+      throw new JoinLinkInvalidError();
+    }
+
+    const activeMembers = link.group.members;
+    const memberCount = activeMembers.length;
+
+    // กดลิงก์ซ้ำทั้งที่อยู่ในกลุ่มแล้ว = no-op ไม่กิน used_count (idempotent)
+    if (activeMembers.some((m) => m.userId === userId)) {
+      return this.familyGroup(userId, link.groupId);
+    }
+
+    this.assertJoinLinkUsable(link, memberCount);
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE family_group_join_links
+           SET used_count = used_count + 1
+         WHERE token_hash = ${tokenHash}
+           AND status = 'ACTIVE'
+           AND expires_at > now()
+           AND (max_uses IS NULL OR used_count < max_uses)
+        RETURNING id;
+      `;
+
+      // UPDATE ไม่ติด = ลิงก์เปลี่ยนสถานะไประหว่างที่เราเช็คกับที่เรากด
+      // อ่านแถวสดมาโยน error ที่ตรงเหตุผลจริง แทนที่จะบอกแค่ "ลิงก์ใช้ไม่ได้"
+      if (claimed.length === 0) {
+        const freshLink = await tx.familyGroupJoinLink.findUnique({
+          where: { id: link.id },
+        });
+        if (!freshLink) throw new JoinLinkInvalidError();
+        const freshCount = await tx.familyGroupMember.count({
+          where: { groupId: link.groupId, status: MEMBER_STATUS.ACTIVE },
+        });
+        this.assertJoinLinkUsable(freshLink, freshCount);
+        throw new JoinLinkInvalidError();
+      }
+
+      // upsert เพราะคนที่เคยออก/โดนเตะยังมีแถวเดิมค้างอยู่ (unique groupId+userId)
+      // → กลับเข้ามาคือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง
+      await tx.familyGroupMember.upsert({
+        where: { groupId_userId: { groupId: link.groupId, userId } },
+        create: {
+          groupId: link.groupId,
+          userId,
+          role: GROUP_ROLE.MEMBER,
+          status: MEMBER_STATUS.ACTIVE,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+        },
+        update: {
+          status: MEMBER_STATUS.ACTIVE,
+          role: GROUP_ROLE.MEMBER,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+          joinedAt: new Date(),
+          removedAt: null,
+        },
+      });
+
+      await this.writeActivity(tx, {
+        groupId: link.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.MEMBER_JOINED,
+        targetType: ACTIVITY_TARGET.MEMBER,
+        targetId: userId,
+        metadata: { joinedViaLinkId: link.id },
+      });
+    });
+
+    return this.familyGroup(userId, link.groupId);
+  }
+
+  /**
    * token ดิบ → sha256 hex สำหรับค้นหาแถว
    *
    * public เพราะ PYG-417 (joinGroupByLink) ต้องใช้ตัวนี้เป๊ะ ๆ

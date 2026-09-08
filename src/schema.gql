@@ -1426,6 +1426,11 @@ type Mutation {
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
 
   """
+  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์
+  """
+  joinGroupByLink(token: String!): FamilyGroup!
+
+  """
   ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.
   """
   leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
