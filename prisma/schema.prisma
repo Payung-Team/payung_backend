@@ -106,6 +106,8 @@ model Caregiver {
   bookings            Booking[]
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
+  care_logs           care_logs[] // PYG-361: บันทึกที่ผู้ดูแลคนนี้เขียน (FK RESTRICT — ลบ caregiver ที่ยังมีบันทึกไม่ได้)
+  booking_tasks       booking_tasks[] // PYG-361: รายการงานย่อยที่ผู้ดูแลคนนี้ติ๊กว่าทำแล้ว (done_by)
   jobTypes            CaregiverJobType[]
   serviceLocations    CaregiverServiceLocation[]
   user                User                       @relation(fields: [userId], references: [id])
@@ -383,6 +385,8 @@ model Booking {
   // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
   memberDetails            Json?             @map("member_details")
   booking_tasks            booking_tasks[]
+  // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
+  care_logs                care_logs[]
   // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
   jobEvents                JobEvent[]
   // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
@@ -898,9 +902,59 @@ model booking_tasks {
   time_note    String?
   sort_order   Int      @default(0)
   created_at   DateTime @default(now()) @db.Timestamptz(6)
+  /// PYG-361 — NULL = ยังไม่ติ๊ก, มีค่า = ติ๊กแล้วเมื่อไหร่ (ไม่ใช่ boolean เพื่อให้แอดมินเห็นเวลาจริง)
+  /// ⚠ สองคอลัมน์นี้ถูก apply ลง live DB ผ่าน Supabase CLI (20260829132846) ก่อนมีไฟล์ในรีโป
+  ///    ไฟล์ที่ track ไว้จริงคือ prisma/migrations/20260906000000_pyg361_booking_tasks_done_state
+  done_at      DateTime? @db.Timestamptz(6)
+  done_by      String?
   bookings     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregivers   Caregiver? @relation(fields: [done_by], references: [id], onDelete: SetNull, onUpdate: Cascade)
 
   @@index([booking_id], map: "idx_booking_tasks_booking")
+}
+
+/// PYG-361 — "บันทึกจากผู้ดูแล" ระหว่างปฏิบัติงาน (display-only)
+///
+/// ★ SCOPE BOUNDARY: จำนวน/เนื้อหาของ care log ต้องไม่มีผลต่อ proofOfWork.verdict
+///   หรือ review_reasons หรือการปล่อยเงิน — เป็น display-only ล้วน ๆ
+/// ★ append-only: ไม่มี update/delete (audit trail ของการดูแลผู้ป่วย)
+///
+/// ⚠️ photo_url เก็บ "storage path" เท่านั้น ('{bookingId}/xxx.jpg') ห้ามเก็บ URL เต็ม
+///    bucket 'job-evidence' เป็น private — signed URL ออกตอนอ่านทุกครั้งที่ JobEvidenceService.sign()
+///    (กฎเดียวกับที่ PR #39 แก้ kyc_documents)
+///
+/// ⚠️ DB มี CHECK constraint 3 ตัวที่ Prisma declare ในไฟล์นี้ไม่ได้ —
+///    นิยามอยู่ใน prisma/migrations/20260906010000_pyg361_care_logs/migration.sql:
+///      `care_logs_category_check`
+///          category IN ('vitals','food','medication','activity','other')
+///          ★ ต้องตรงกับ CARE_LOG_CATEGORY_VALUES ใน src/monitoring/monitoring.constants.ts
+///      `care_logs_body_length_check`
+///          char_length(body) <= 500
+///      `care_logs_photo_url_not_full_url_check`
+///          photo_url IS NULL OR (NOT ILIKE 'http%' AND NOT LIKE '//%')
+///          ด่านสุดท้ายกัน public URL หลุดลงคอลัมน์นี้
+///
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model care_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id   String    @db.Uuid
+  caregiver_id String
+  /// 'vitals' | 'food' | 'medication' | 'activity' | 'other' (บังคับด้วย CHECK ฝั่ง DB)
+  category     String
+  /// ไม่เกิน 500 ตัวอักษร (บังคับด้วย CHECK ฝั่ง DB)
+  body         String
+  /// storage path เท่านั้น ห้าม URL เต็ม — ดูหมายเหตุบน model
+  photo_url    String?
+  /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
+  server_ts    DateTime  @default(now()) @db.Timestamptz(6)
+  /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น
+  device_ts    DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  bookings     Booking   @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  /// ON DELETE RESTRICT (ตั้งใจ): ลบ caregiver ที่ยังมีบันทึกการดูแลอยู่ไม่ได้
+  caregivers   Caregiver @relation(fields: [caregiver_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([booking_id, server_ts(sort: Desc)], map: "idx_care_logs_booking_ts")
 }
 
 model Payment {
