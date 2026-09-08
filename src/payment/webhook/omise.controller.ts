@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from '../payment.service';
+import { RefundService } from '../refund.service';
+import { PayoutAccountService } from '../payout-account.service';
 
 interface OmiseWebhookBody {
   key: string;
@@ -22,6 +24,8 @@ export class OmiseController {
   constructor(
     private readonly configService: ConfigService,
     private readonly paymentService: PaymentService,
+    private readonly refundService: RefundService,
+    private readonly payoutAccountService: PayoutAccountService,
   ) {}
 
   @Post('omise')
@@ -58,43 +62,86 @@ export class OmiseController {
     this.logger.log(`[OmiseWebhook] received event key=${key}`);
 
     switch (key) {
-      case 'charge.complete': {
+      case 'charge.complete':
         // PYG-278: PromptPay async confirm — Omise webhook = user สแกน + bank ยืนยันแล้ว
         // captureFromWebhook idempotent + re-fetch จาก Omise (กัน tamper) + skip ถ้า process แล้ว
-        const chargeId = typeof data?.id === 'string' ? data.id : undefined;
-        if (chargeId) {
+        // data = Charge object → chargeId = data.id
+        await this.dispatch(key, data, 'id', (chargeId) =>
+          this.paymentService.captureFromWebhook(chargeId),
+        );
+        break;
+
+      case 'charge.reverse':
+        // charge ถูก reverse "นอกแอป" (เช่น admin กดผ่าน Omise dashboard) → sync ให้ตรงความจริง
+        // data = Charge object → chargeId = data.id
+        await this.dispatch(key, data, 'id', (chargeId) =>
+          this.paymentService.voidFromWebhook(chargeId),
+        );
+        break;
+
+      case 'refund.create':
+        // refund ที่ทำ "นอกแอป" (เช่น admin กด refund ผ่าน Omise dashboard) → sync กลับเข้า DB
+        // data = Refund object (ต่างจาก Charge object) → chargeId = data.charge
+        await this.dispatch(key, data, 'charge', (chargeId) =>
+          this.refundService.reconcileFromWebhook(chargeId),
+        );
+        break;
+
+      case 'recipient.verified':
+      case 'recipient.failed': {
+        // PYG-266: Omise ยืนยัน/ปฏิเสธบัญชีรับเงินของ caregiver
+        const recipientId = typeof data?.id === 'string' ? data.id : undefined;
+        if (recipientId) {
           try {
-            await this.paymentService.captureFromWebhook(chargeId);
+            await this.payoutAccountService.handleRecipientWebhook(recipientId, key);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             this.logger.error(
-              `[OmiseWebhook] charge.complete handler failed chargeId=${chargeId}: ${msg}`,
+              `[OmiseWebhook] ${key} handler failed recipientId=${recipientId}: ${msg}`,
             );
-            // ตอบ 200 เพื่อกัน retry flood — error ถูก log ไปแล้ว
           }
         } else {
           this.logger.warn(
-            `[OmiseWebhook] charge.complete missing data.id — payload: ${JSON.stringify(data)}`,
+            `[OmiseWebhook] ${key} missing data.id — payload: ${JSON.stringify(data)}`,
           );
         }
         break;
       }
-
-      case 'charge.reverse':
-        // TODO (out of scope ของ PYG-278): handler ของ async reverse จาก Omise dashboard
-        // — PYG-286 ทำ void/refund ผ่าน mutation อยู่แล้ว ครอบคลุม flow ปัจจุบัน
-        this.logger.log(`[OmiseWebhook] charge.reverse: ${JSON.stringify(data)}`);
-        break;
-
-      case 'refund.create':
-        // TODO (out of scope ของ PYG-278): sync refund ที่ทำใน Omise dashboard กลับเข้า DB
-        this.logger.log(`[OmiseWebhook] refund.create: ${JSON.stringify(data)}`);
-        break;
 
       default:
         this.logger.log(`[OmiseWebhook] unhandled event key=${key ?? 'undefined'}`);
     }
 
     return { received: true };
+  }
+
+  /**
+   * dispatch — ดึง chargeId จาก data[idField], เรียก handler, log error แบบ 200 เสมอ
+   * (กัน retry flood — Omise ยิงซ้ำถ้า response ไม่ใช่ 2xx)
+   */
+  private async dispatch(
+    key: string,
+    data: Record<string, unknown> | undefined,
+    idField: 'id' | 'charge',
+    handler: (chargeId: string) => Promise<void>,
+  ): Promise<void> {
+    const rawId = data?.[idField];
+    const chargeId = typeof rawId === 'string' ? rawId : undefined;
+    if (!chargeId) {
+      this.logger.warn(
+        `[OmiseWebhook] ${key} missing data.${idField} — payload: ${JSON.stringify(data)}`,
+      );
+      return;
+    }
+
+    try {
+      await handler(chargeId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[OmiseWebhook] ${key} handler failed chargeId=${chargeId}: ${msg}`,
+      );
+      // ตอบ 200 เพื่อกัน retry flood — error ถูก log ไปแล้ว
+    }
   }
 }

@@ -182,17 +182,6 @@ export class FamilyGroupResolver {
     return this.familyGroupService.joinLinkPreview(user.id, token);
   }
 
-  @Mutation(() => FamilyGroup, {
-    description:
-      'เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL',
-  })
-  async joinGroupByLink(
-    @Args('token') token: string,
-    @CurrentUser() user: AuthUser,
-  ): Promise<FamilyGroup> {
-    return this.familyGroupService.joinGroupByLink(user.id, token);
-  }
-
   @Mutation(() => FamilyGroupJoinLink, {
     description:
       'สร้างลิงก์เข้าร่วมของกลุ่ม (เจ้าของเท่านั้น) — ถ้ามีลิงก์ที่ใช้ได้อยู่แล้วจะคืนใบเดิม ' +

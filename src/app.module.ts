@@ -77,7 +77,7 @@ import { FamilyGroupModule } from './family-group/family-group.module';
     TransactionModule,   // PYG-333: admin transactions list/detail/summary (read-only)
     MonitoringModule,    // PYG-352: proof-of-work — checkInBooking + job_events
     ReconciliationModule, // PYG-376: payments vs Omise vs payouts recon report + alert cron
-    FamilyGroupModule,   // PYG-392: family group — acceptInvite / join group
+    FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

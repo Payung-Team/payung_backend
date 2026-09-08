@@ -765,6 +765,77 @@ export class PaymentService {
   }
 
   /**
+   * voidFromWebhook — sync payment → voided เมื่อ Omise ส่ง charge.reverse
+   *
+   * ต่างจาก booking.cancelBooking (PYG-286) ที่แอปเป็นคนสั่ง omiseService.voidCharge() เอง —
+   * เคสนี้คือ charge ถูก reverse "นอกแอป" (เช่น admin กดยกเลิกตรงบน Omise dashboard) ดังนั้น
+   * handler นี้ "ไม่" เรียก voidCharge ซ้ำ แค่ sync สถานะในระบบให้ตรงกับความจริงที่ Omise
+   *
+   * Idempotent: sync ได้เฉพาะ payment ที่ยัง 'held' (ตาม FSM held → voided เท่านั้น) —
+   * สถานะอื่นแปลว่า sync ไปแล้ว หรือเป็น charge ที่ capture ไปแล้ว (reverse ไม่ควรเกิดกับ captured)
+   */
+  async voidFromWebhook(omiseChargeId: string): Promise<void> {
+    if (!omiseChargeId) {
+      this.logger.warn(
+        '[Omise/webhook] charge.reverse missing omiseChargeId — skipping',
+      );
+      return;
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: { omiseChargeId },
+    });
+    if (!payment) {
+      this.logger.warn(
+        `[Omise/webhook] charge.reverse: no payment found for chargeId=${omiseChargeId} — skipping`,
+      );
+      return;
+    }
+
+    if ((payment.paymentStatus as PaymentStatus) !== PaymentStatus.held) {
+      this.logger.log(
+        `[Omise/webhook] charge.reverse: payment ${payment.id} is '${payment.paymentStatus}' (not held) — skipping`,
+      );
+      return;
+    }
+
+    // Re-fetch จาก Omise เพื่อกันใช้ webhook body ที่ tamper (เหมือน captureFromWebhook)
+    const omiseCharge = await this.omiseService.retrieveCharge(omiseChargeId);
+    if (omiseCharge.status !== 'reversed') {
+      this.logger.warn(
+        `[Omise/webhook] charge.reverse: charge ${omiseChargeId} status=${omiseCharge.status} (ไม่ใช่ reversed จริง) — skipping`,
+      );
+      return;
+    }
+
+    await this.fsm.transition(payment.id, PaymentStatus.voided, {
+      reason:
+        'Omise charge.reverse webhook — voided outside app (e.g. Omise dashboard)',
+      metadata: {
+        omiseChargeId,
+        source: 'omise_dashboard',
+        voidedAt: new Date().toISOString(),
+      },
+    });
+
+    this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_VOIDED, {
+      bookingId: payment.bookingId,
+      eventType: BOOKING_EVENTS.PAYMENT_VOIDED,
+      patientId: payment.patientId,
+      caregiverId: payment.caregiverId,
+      metadata: {
+        amount: payment.amount,
+        omiseChargeId,
+        source: 'omise_dashboard',
+      },
+    });
+
+    this.logger.log(
+      `[Omise/webhook] payment ${payment.id} → voided (chargeId=${omiseChargeId}, source=dashboard)`,
+    );
+  }
+
+  /**
    * paymentByBooking — PYG-278: query สำหรับ FE polling
    *
    * Patient/caregiver/admin เรียกเพื่อดูสถานะ payment ของ booking หนึ่ง — โดยเฉพาะ

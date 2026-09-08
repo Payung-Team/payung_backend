@@ -58,6 +58,12 @@ export class CaregiverBookingSummary {
   // ชื่อผู้รับการดูแล — ถ้า null แปลว่าจองให้ "ตัวเอง" (สำหรับตัวเอง)
   @Field({ nullable: true }) careRecipientName?: string;
 
+  // ผู้ติดต่อในวันนัดหมาย — หน้ารายละเอียดงาน/หน้าปฏิบัติงานของผู้ดูแลต้องใช้
+  // (การ์ด "ผู้ติดต่อในวันนัดหมาย" และ EmergencyContactCard)
+  @Field({ nullable: true }) dayOfContactName?: string;
+  @Field({ nullable: true }) dayOfContactPhone?: string;
+  @Field({ nullable: true }) dayOfContactRelationship?: string;
+
   @Field({ nullable: true }) acceptedAt?: Date; // เวลาที่ caregiver กดรับงาน (ticket #2)
   @Field({ nullable: true }) confirmedAt?: Date; // เวลาที่ patient ยืนยัน
   @Field({ nullable: true }) rejectionReason?: string; // เหตุผลที่ปฏิเสธ (ถ้ามี)

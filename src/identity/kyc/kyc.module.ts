@@ -20,16 +20,20 @@ import { KycService } from './kyc.service';
 import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
+import { KycStorageAuditCron } from './kyc-storage-audit.cron';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { NotificationModule } from '../../notification/notification.module';
 import { EmailModule } from '../../email/email.module';
+import { PaymentModule } from '../../payment/payment.module';
 
 @Module({
   // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
   // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
-  imports: [NotificationModule, EmailModule],
+  // PYG-266: PaymentModule exports PayoutAccountService (สร้าง Omise recipient หลัง
+  // updatePayoutAccount) — PaymentModule ไม่ import KycModule/AdminModule กลับ จึงไม่ circular
+  imports: [NotificationModule, EmailModule, PaymentModule],
   providers: [
     KycResolver,
     CaregiverResolver,
@@ -38,6 +42,9 @@ import { EmailModule } from '../../email/email.module';
     CaregiverService, // CRUD สำหรับ caregivers table
     WorkConditionService, // PYG-188: availability + jobTypes + serviceArea (3 tables)
     KycDocumentService, // CRUD สำหรับ kyc_documents table
+    // PYG-307: ตรวจ invariant ของ file_url ทุกวัน — repo นี้ยังไม่มี CI
+    // ถ้าวางไว้เป็นสคริปต์ให้ CI รัน จะไม่มีใครรันจริง
+    KycStorageAuditCron,
     SupabaseAuthGuard,
     RolesGuard,
     FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile

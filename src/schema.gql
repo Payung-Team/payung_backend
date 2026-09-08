@@ -63,6 +63,9 @@ type AdminKycDetailPayload {
   """Edit history showing field changes, newest first"""
   editHistory: [CaregiverEditLog!]!
 
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: AdminPayoutAccountSummary
+
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
 
@@ -103,6 +106,16 @@ input AdminPaymentsInput {
   limit: Int
   page: Int
   status: PaymentStatus
+}
+
+"""Caregiver payout bank account summary for admin review"""
+type AdminPayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  hasOmiseRecipient: Boolean!
+  recipientStatus: String!
+  status: String!
 }
 
 input AdminTransactionsInput {
@@ -253,9 +266,12 @@ type BookingPagination {
 
 enum BookingStatus {
   ACCEPTED
+  AWAITING_RELEASE
   CANCELLED
   COMPLETED
   CONFIRMED
+  IN_PROGRESS
+  NEEDS_REVIEW
   PENDING
   REJECTED
   UNMATCHED
@@ -368,6 +384,9 @@ type CaregiverBookingSummary {
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
   durationHours: Float!
   estimatedCost: Float
   id: ID!
@@ -1183,6 +1202,9 @@ input KycInput {
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!
 
+  """Payout bank account (optional)"""
+  payoutAccount: PayoutAccountInput
+
   """Contact phone number (Thai format)"""
   phone: String!
 
@@ -1230,6 +1252,9 @@ type KycStatusPayload {
 
   """KYC documents with temporary signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
+
+  """Payout bank account summary (masked — never the full account number)"""
+  payoutAccount: PayoutAccountSummary
 
   """When KYC was rejected by admin"""
   rejectedAt: DateTime
@@ -1401,11 +1426,6 @@ type Mutation {
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
 
   """
-  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL
-  """
-  joinGroupByLink(token: String!): FamilyGroup!
-
-  """
   ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.
   """
   leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
@@ -1522,6 +1542,9 @@ type Mutation {
   Update the current user's password. Requires a valid session established via the password-reset magic link.
   """
   updatePassword(input: UpdatePasswordInput!): UpdatePasswordResponse!
+
+  """Add or update payout bank account (verified caregiver only)"""
+  updatePayoutAccount(input: PayoutAccountInput!): PayoutAccountSummary!
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
@@ -1653,6 +1676,55 @@ type PaymentStatusHistory {
   toStatus: PaymentStatus!
 }
 
+input PayoutAccountInput {
+  """Account holder name"""
+  accountName: String!
+
+  """
+  Bank account number — ตัวเลขเท่านั้น 10–15 หลัก (กฎเฉพาะธนาคารดูที่ payoutBankOptions)
+  """
+  accountNumber: String!
+
+  """Omise bank code — ดึงรายการจาก query payoutBankOptions"""
+  bankCode: String!
+}
+
+"""
+Caregiver payout bank account summary (masked — never the full account number)
+"""
+type PayoutAccountSummary {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  recipientStatus: String!
+  status: String!
+}
+
+"""
+ธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี (source of truth ฝั่ง BE)
+"""
+type PayoutBankOption {
+  """bank code ที่ต้องส่งกลับมาใน PayoutAccountInput.bankCode"""
+  code: String!
+
+  """
+  ความยาวที่ทีมยืนยันกับธนาคารแล้ว — null = ยังไม่ยืนยัน ให้ใช้ช่วง minDigits–maxDigits แทน
+  """
+  exactDigits: [Int!]
+
+  """จำนวนหลักสูงสุดที่ยอมรับ"""
+  maxDigits: Int!
+
+  """จำนวนหลักต่ำสุดที่ยอมรับ"""
+  minDigits: Int!
+
+  """ชื่อธนาคารภาษาอังกฤษ"""
+  nameEn: String!
+
+  """ชื่อธนาคารภาษาไทย — ใช้แสดงใน dropdown"""
+  nameTh: String!
+}
+
 type ProofOfWorkSummary {
   """
   เวลาทำงานจริง (นาที) คำนวณจาก server_ts ทั้งสองฝั่ง. null เมื่อยังไม่ปิดงาน หรือเมื่อระบบปิดให้เอง
@@ -1709,7 +1781,7 @@ type Query {
   adminDisputes(input: AdminDisputesInput): DisputeSummaryConnection!
 
   """
-  Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (1hr), and review history.
+  Admin only: Get full KYC detail for a single caregiver. Includes profile, documents with signed URLs (15 min), and review history. การเปิดดูถูกบันทึกลง admin_audit_logs ทุกครั้ง (action=kyc_documents_viewed).
   """
   adminKycDetail(caregiverId: ID!): AdminKycDetailPayload!
 
@@ -1750,6 +1822,11 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
+  """
+  caregiverBooking(id: ID!): CaregiverBookingSummary
 
   """
   Caregiver's full booking history (all statuses), optionally filtered by status and date range, newest first.
@@ -1838,9 +1915,24 @@ type Query {
   paymentHistory(paymentId: ID!): [PaymentStatusHistory!]!
 
   """
+  รายชื่อธนาคารที่ใช้เป็นบัญชีรับเงินได้ + กฎความยาวเลขบัญชี — FE ต้องดึงจากที่นี่ ห้าม hardcode
+  """
+  payoutBankOptions: [PayoutBankOption!]!
+
+  """
   สรุปหลักฐานการทำงานของงาน 1 ใบ — เป็น "แหล่งความจริงเดียว" ที่ระบบเงินอ่านก่อนตัดสินใจโอน. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
   """
   proofOfWork(bookingId: ID!): ProofOfWorkSummary!
+
+  """
+  Admin only: reconciliation report (payments vs Omise vs payouts) for a date window.
+  """
+  reconciliationReport(input: ReconciliationReportInput!): ReconReport!
+
+  """
+  Admin only: the same reconciliation report as a UTF-8-with-BOM CSV string.
+  """
+  reconciliationReportCsv(input: ReconciliationReportInput!): String!
 
   """
   Search caregivers with filters (province, district, job type, price range, min rating). Only returns verified + searchable caregivers who have at least one active availability slot.
@@ -1866,6 +1958,50 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
+}
+
+enum ReconFlag {
+  AMOUNT_MISMATCH
+  CAPTURE_WITHOUT_PROOF
+  HELD_AWAITING_PROOF
+  PAYOUT_WITHOUT_CAPTURE
+  REFUND_EXCEEDS_CAPTURED
+  STATUS_MISMATCH_DB_CAPTURED_OMISE_UNPAID
+  STATUS_MISMATCH_OMISE_PAID_DB_PENDING
+}
+
+type ReconReport {
+  dateFrom: String!
+  dateTo: String!
+  flaggedRows: Int!
+  rows: [ReconRow!]!
+  totalRows: Int!
+  unreachableRows: Int!
+}
+
+type ReconRow {
+  amount: Float!
+  bookingId: ID!
+  capturedAmount: Float
+  date: String!
+  flags: [ReconFlag!]!
+  grossAmount: Float
+  netAmount: Float
+  omiseStatus: String
+  omiseUnreachable: Boolean!
+  paymentId: String!
+  paymentStatus: String!
+  payoutStatus: String
+  platformFee: Float
+  primaryFlag: ReconFlag
+  refundedAmount: Float!
+  reviewReasons: [String!]!
+  verdict: String!
+}
+
+input ReconciliationReportInput {
+  dateFrom: String!
+  dateTo: String!
 }
 
 input RefundPaymentInput {
@@ -2359,7 +2495,7 @@ input UploadDocumentInput {
   """File size in bytes"""
   fileSize: Int!
 
-  """File URL in Supabase Storage"""
+  """Storage path (<uid>/<file>) หรือ URL เต็มของ bucket kyc-documents"""
   fileUrl: String!
 
   """MIME type: image/jpeg | image/png | application/pdf"""
