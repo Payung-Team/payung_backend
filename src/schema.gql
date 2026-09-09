@@ -631,6 +631,19 @@ input CreateFamilyGroupInput {
   name: String!
 }
 
+input CreateJoinLinkInput {
+  """กลุ่มที่จะสร้างลิงก์ — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """
+  จำนวนคนสูงสุดที่เข้าได้ด้วยลิงก์ใบนี้ — ไม่ส่งมาจะใช้ค่า default จาก config
+  """
+  maxUses: Int
+
+  """อายุลิงก์เป็นชั่วโมง — ไม่ส่งมาจะใช้ค่า default (168 ชม.)"""
+  ttlHours: Int
+}
+
 input CreatePaymentInput {
   """UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)"""
   bookingId: ID!
@@ -822,6 +835,33 @@ type FamilyGroup {
   updatedAt: DateTime!
 }
 
+type FamilyGroupJoinLink {
+  createdAt: DateTime!
+
+  """ลิงก์ใช้ได้ถึงเมื่อไหร่"""
+  expiresAt: DateTime!
+  groupId: ID!
+  id: ID!
+
+  """ลิงก์ยังใช้ได้อยู่หรือไม่ (ยังไม่หมดอายุ/ยังไม่เต็ม)"""
+  isUsable: Boolean!
+
+  """จำนวนคนสูงสุดที่เข้าได้ด้วยลิงก์ใบนี้ — null = ไม่จำกัด"""
+  maxUses: Int
+
+  """จำนวนสมาชิก ACTIVE ในกลุ่มตอนนี้ (ไว้เทียบกับ memberLimit)"""
+  memberCount: Int!
+
+  """เพดานสมาชิกของกลุ่ม (FAMILY_GROUP_MAX_MEMBERS)"""
+  memberLimit: Int!
+
+  """เหลืออีกกี่คนถึงจะเต็มโควตา — null = ไม่จำกัด"""
+  remainingUses: Int
+
+  """URL เต็มสำหรับคัดลอกไปส่งต่อ — เจ้าของกลุ่มเท่านั้นที่เห็นค่านี้"""
+  url: String!
+}
+
 type FamilyGroupMemberItem {
   """รูปโปรไฟล์"""
   avatarUrl: String
@@ -1010,6 +1050,11 @@ type JobQr {
   """
   token: String!
 
+  """
+  PYG-437 — QR ชุดที่เห็นอยู่นี้ถูกออกเมื่อไหร่. เปลี่ยนค่าเมื่อ: ผู้รับบริการกดออก QR ใหม่ · เช็คอินสำเร็จ (token ของ "จบงาน" เป็นคนละใบกับ "เริ่มงาน"). FE เอาไปโชว์ว่า "ออก QR ใหม่เมื่อ HH:MM" เพราะตัว QR เปลี่ยนลายนิดเดียว มองด้วยตาแทบไม่ออก
+  """
+  tokenIssuedAt: DateTime!
+
   """สแกนได้ตั้งแต่เมื่อไหร่ (ก่อนเวลานัดได้ตามค่า config)"""
   validFrom: DateTime!
 
@@ -1023,7 +1068,9 @@ type JobScanResult {
   """
   action: ScanAction!
 
-  """งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)"""
+  """
+  งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)
+  """
   bookingId: ID
 
   """
@@ -1060,6 +1107,30 @@ enum JobSessionStatus {
   CHECKED_IN
   CHECKED_OUT
   PENDING
+}
+
+type JoinLinkPreview {
+  """ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้วหรือไม่"""
+  alreadyMember: Boolean!
+
+  """ชื่อกลุ่มที่กำลังจะเข้าร่วม"""
+  groupName: String!
+
+  """
+  ลิงก์นี้ยังกดเข้าร่วมได้อยู่ไหม — false แปลว่าหมดอายุ/ถูกยกเลิก/เต็มแล้ว
+  """
+  isUsable: Boolean!
+
+  """ตอนนี้ในกลุ่มมีกี่คน"""
+  memberCount: Int!
+
+  """ชื่อที่แสดงของเจ้าของกลุ่ม — null ถ้าบัญชีนั้นถูกลบไปแล้ว"""
+  ownerName: String
+
+  """
+  เหตุผลที่กดไม่ได้ — 'EXPIRED' | 'REVOKED' | 'EXHAUSTED' | 'GROUP_FULL' (null เมื่อ isUsable = true)
+  """
+  unusableReason: String
 }
 
 type KycDocument {
@@ -1293,6 +1364,11 @@ type Mutation {
   สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
   """
   createFamilyGroup(input: CreateFamilyGroupInput!): FamilyGroup!
+
+  """
+  สร้างลิงก์เข้าร่วมของกลุ่ม (เจ้าของเท่านั้น) — ถ้ามีลิงก์ที่ใช้ได้อยู่แล้วจะคืนใบเดิม ไม่สร้างทับ เพื่อไม่ให้การกดปุ่มซ้ำฆ่าลิงก์ที่ส่งออกไปแล้ว
+  """
+  createJoinLink(input: CreateJoinLinkInput!): FamilyGroupJoinLink!
   createPayment(input: CreatePaymentInput!): Payment!
 
   """Patient เขียนรีวิวให้ caregiver หลังงาน completed (1 รีวิว/booking)"""
@@ -1386,6 +1462,21 @@ type Mutation {
 
   """Resubmit KYC after rejection (caregiver only, status must be rejected)"""
   resubmitKyc(input: KycInput!): Caregiver!
+
+  """
+  ยกเลิกลิงก์เข้าร่วมโดยไม่ออกใบใหม่ (เจ้าของเท่านั้น) — หลังจากนี้กลุ่มจะไม่มีลิงก์ จนกว่าจะกดสร้างใหม่ โยน JOIN_LINK_NOT_FOUND ถ้าไม่มีลิงก์ให้ยกเลิก
+  """
+  revokeJoinLink(groupId: ID!): Boolean!
+
+  """
+  ออก QR ใบใหม่ให้งานนี้ — ★ ใบเก่าใช้ไม่ได้ทันที. ใช้ตอน QR หลุด (ถูกถ่ายรูป/ส่งต่อ) หรือผู้ดูแลสแกนไม่ผ่านโดยไม่ทราบสาเหตุ. เฉพาะ patient เจ้าของงานเท่านั้น. งานที่ปิดไปแล้วออกใหม่ไม่ได้ (ไม่เหลือ action ให้สแกน).
+  """
+  rotateJobQr(bookingId: ID!): JobQr!
+
+  """
+  ออกลิงก์ใหม่แทนใบเดิม (เจ้าของเท่านั้น) — ลิงก์เดิมใช้ไม่ได้ทันที ใช้ตอนลิงก์หลุดไปในที่ที่ไม่ตั้งใจ
+  """
+  rotateJoinLink(input: CreateJoinLinkInput!): FamilyGroupJoinLink!
 
   """
   ผู้ดูแลสแกน QR ของงานเพื่อเริ่มหรือจบงาน. ★ สแกนครั้งแรก = เช็คอิน, ครั้งที่สอง = เช็คเอาท์ — ผู้เรียก "ไม่ได้เลือก" ว่าจะทำอะไร สถานะของ QR เป็นตัวตัดสิน. ★ การสแกนที่ถูกปฏิเสธจะ "ไม่ throw error" แต่คืน ok=false พร้อมรหัสเหตุผลใน result (ทุกครั้งถูกบันทึกไว้เสมอ ทั้งสำเร็จและล้มเหลว).
@@ -1690,6 +1781,11 @@ type Query {
   """
   groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
 
+  """
+  ลิงก์เข้าร่วมที่ยังใช้ได้ของกลุ่ม (เจ้าของเท่านั้น) — ใช้ตอนกดปุ่มคัดลอกลิงก์ซ้ำ โยน JOIN_LINK_NOT_FOUND ถ้ากลุ่มยังไม่เคยสร้างลิงก์ หรือลิงก์ถูกยกเลิกไปแล้ว
+  """
+  groupJoinLink(groupId: ID!): FamilyGroupJoinLink!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
 
@@ -1697,6 +1793,11 @@ type Query {
   QR ของงาน 1 ใบ สำหรับให้ผู้รับบริการเปิดโชว์ให้ผู้ดูแลสแกน. ★ คืน token ดิบ จึงเปิดให้เฉพาะ patient เจ้าของ booking เท่านั้น — ผู้ดูแลเรียก query นี้ไม่ได้. QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ระบบดูจากสถานะปัจจุบันว่าสแกนครั้งต่อไปคือ action ไหน.
   """
   jobQr(bookingId: ID!): JobQr!
+
+  """
+  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย
+  """
+  joinLinkPreview(token: String!): JoinLinkPreview!
 
   """Get KYC status with full details for the Status Page"""
   kycStatus: KycStatusPayload!
