@@ -37,6 +37,8 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     createdAt: new Date('2026-06-01T08:00:00Z'),
     patient: { id: PATIENT_ID, displayName: 'สมศรี วงค์ดี', avatarUrl: null },
     careRecipient: null,
+    // PYG-460: booking เก่าทุกใบเป็น null — เป็นค่า default ที่ถูกต้อง
+    memberDetails: null,
     ...overrides,
   };
 }
@@ -316,6 +318,34 @@ describe('CaregiverBookingService', () => {
       expect(row.startTime).toBe('09:00');
       expect(row.bookingDate).toBe('2026-07-01');
       expect(row.careRecipientName).toBeUndefined(); // careRecipient=null → "สำหรับตัวเอง"
+      // PYG-460: booking ก่อนหน้านี้ไม่มี snapshot → หน้าจอต้องรับมือกับ undefined ได้
+      expect(row.patientProfile).toBeUndefined();
+    });
+
+    // ── PYG-460 ────────────────────────────────────────────────────────────
+    it('ส่งข้อมูลสุขภาพ ณ วันจองให้ผู้ดูแลเห็น', async () => {
+      // นี่คือหัวใจของบั๊ก: หน้าจอฝั่งลูกค้าเขียนว่า "ผู้ดูแลเห็นข้อมูลนี้ก่อนเริ่มงาน"
+      // แต่ก่อน PYG-460 ไม่มี response ไหนคืนข้อมูลสุขภาพให้ผู้ดูแลเลย
+      const snapshot = {
+        age: 80,
+        gender: 'ชาย',
+        supportLevel: 'ช่วยเหลือตัวเองไม่ได้ / ติดเตียง',
+        allergies: 'แพ้เพนิซิลลิน',
+        conditions: ['โรคหัวใจ'],
+        careInstructions: 'พลิกตัวทุก 2 ชั่วโมง',
+      };
+      prisma.booking.findMany.mockResolvedValue([fakeBooking({ memberDetails: snapshot })]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const result = await service.caregiverBookings(USER_ID, {
+        status: BookingStatusEnum.PENDING,
+      });
+      const row = result.data[0];
+
+      expect(row.patientProfile).toEqual(snapshot);
+      // ข้อมูลที่มีผลต่อความปลอดภัยคนไข้ต้องมาถึงจริง ไม่ใช่แค่มี key
+      expect(row.patientProfile!.allergies).toBe('แพ้เพนิซิลลิน');
+      expect(row.patientProfile!.supportLevel).toBe('ช่วยเหลือตัวเองไม่ได้ / ติดเตียง');
     });
   });
 

@@ -18,6 +18,8 @@ import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
 import { DeclineBookingInput } from './dto/decline-booking.input';
 import { CancelAcceptanceInput } from './dto/cancel-acceptance.input';
+// PYG-460: type ของ snapshot ข้อมูลสุขภาพที่คืนให้ผู้ดูแล
+import { PatientProfileType } from './dto/patient-profile.type';
 
 /**
  * รูปทรงของ booking ที่ดึงมาพร้อม relation (patient + careRecipient)
@@ -50,6 +52,9 @@ type CaregiverBookingRow = {
   createdAt: Date;
   patient: { id: string; displayName: string | null; avatarUrl: string | null };
   careRecipient: { name: string } | null;
+  // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (JSONB) — null สำหรับ booking ก่อน PYG-460
+  // มาพร้อม BOOKING_INCLUDE โดยอัตโนมัติเพราะ include คืน scalar ทุกคอลัมน์อยู่แล้ว
+  memberDetails: unknown;
 };
 
 /**
@@ -427,6 +432,14 @@ export class CaregiverBookingService {
         avatarUrl: b.patient.avatarUrl ?? undefined,
       },
       careRecipientName: b.careRecipient?.name ?? undefined,
+      /**
+       * PYG-460 — ข้อมูลสุขภาพที่ผู้ดูแลต้องเห็นก่อนเริ่มงาน
+       *
+       * ส่งต่อตามรูปทรงที่เก็บไว้ ไม่แปลงอะไรเพิ่ม เพราะ snapshot ถูกเก็บด้วย
+       * รูปทรงเดียวกับที่ฟอร์มส่งมาตั้งแต่แรก (ดู create-booking.dto.ts)
+       * cast เพราะคอลัมน์เป็น JSONB ซึ่ง Prisma ให้ type เป็น JsonValue
+       */
+      patientProfile: (b.memberDetails as PatientProfileType | null) ?? undefined,
       dayOfContactName: b.dayOfContactName ?? undefined,
       dayOfContactPhone: b.dayOfContactPhone ?? undefined,
       dayOfContactRelationship: b.dayOfContactRelationship ?? undefined,
