@@ -33,3 +33,13 @@ export class GroupCareRecipient {
   })
   ownerUserId: string;
 }
+
+/**
+ * PYG-385 — ผลของการนำโปรไฟล์ออกจากกลุ่ม (unshare)
+ * removed=true เสมอเมื่อสำเร็จ; FE ใช้ id เพื่อ evict ออกจาก cache แล้ว refetch ลิสต์
+ */
+@ObjectType()
+export class RemoveGroupCareRecipientResult {
+  @Field(() => ID) recipientId: string;
+  @Field() removed: boolean;
+}
