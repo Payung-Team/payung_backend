@@ -37,6 +37,8 @@ import {
   ACTIVITY_TARGET,
 } from '../family-group/family-group.constants';
 import { RecipientNotInGroupError } from '../family-group/family-group.errors';
+// PYG-460: แปลงข้อความไทยจากฟอร์ม → คอลัมน์/enum ของ care_recipients (ตาราง mapping ที่เดียว)
+import { toCareRecipientColumns } from '../patient/patient-profile.mapper';
 // PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 
@@ -187,11 +189,15 @@ export class BookingService {
    *     ถ้าดีไซน์สรุปว่า "เจ้าของโปรไฟล์เป็นคนจ่าย" ให้แก้ค่า patientId ที่ส่งเข้า
    *     createBookingRecord บรรทัดเดียว แล้วต้องแก้เงื่อนไขฝั่ง payment ตามไปด้วย
    *
-   * ── ทำไมยังไม่รับ memberDetails ────────────────────────────────────────────
-   *   คอลัมน์ bookings.member_details (JSONB) มีอยู่แล้วจาก PYG-411 แต่ยังไม่รับค่า
-   *   ในเวอร์ชันนี้ เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ (PYG-426 ยัง To Do) และ repo
-   *   ยังไม่มี graphql-type-json ให้ประกาศ scalar JSON
-   *   คอลัมน์เป็น nullable → เติมทีหลังได้โดยไม่ต้องแก้ migration หรือรื้อ mutation นี้
+   * ── memberDetails (อัปเดต PYG-460) ─────────────────────────────────────────
+   *   คอลัมน์ bookings.member_details (JSONB) เตรียมไว้ตั้งแต่ PYG-411 แต่ว่างเปล่า
+   *   มาตลอด (dry-run ตอนทำ PYG-460: 0 แถวจาก 101 ใบ)
+   *   PYG-460 เริ่มเขียนคอลัมน์นี้จากเส้นทาง REST — เก็บ snapshot ข้อมูลสุขภาพ
+   *   ณ วันจอง ซึ่งเป็นข้อมูลชุดเดียวกับที่ FG-4 ตั้งใจจะเก็บ จึงใช้คอลัมน์เดียวกัน
+   *   ไม่เปิดคอลัมน์ที่สอง
+   *
+   *   เส้นทาง GraphQL (จองแทน) ยังไม่รับ เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ (PYG-426)
+   *   และ repo ยังไม่มี graphql-type-json ให้ประกาศ scalar JSON
    */
   async createBookingOnBehalf(
     bookerId: string,
@@ -331,6 +337,10 @@ export class BookingService {
       dayOfContactName:         dto.dayOfContactName         ?? null,
       dayOfContactPhone:        dto.dayOfContactPhone         ?? null,
       dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
+      // PYG-460: ข้อมูลสุขภาพ ณ วันจอง — เก็บรูปทรงเดียวกับที่ FE ส่งมาเป๊ะ ๆ
+      // (SavedRecipient.details) เพื่อให้ฝั่งอ่านไม่ต้องแปลงอีกชั้น
+      // เป็น snapshot โดยตั้งใจ: แก้โปรไฟล์วันหลังต้องไม่ย้อนไปเปลี่ยนงานที่ทำไปแล้ว
+      memberDetails:    (dto.patientProfile as Prisma.InputJsonValue | undefined) ?? undefined,
       estimatedCost:    estimatedCost,
       // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
       status: resolvedCaregiverId ? 'pending' : 'unmatched',
@@ -362,6 +372,35 @@ export class BookingService {
      *   และไม่มีอะไรในระบบคอยตามซ่อมให้ — ค่า transaction หนึ่งครั้งถูกกว่ามาก
      */
     const booking = await this.prisma.$transaction(async (tx) => {
+      /**
+       * ⓪ PYG-460 — ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" → สร้างโปรไฟล์ก่อน แล้วผูกกับ booking
+       *
+       * อยู่ใน transaction เดียวกันเพราะถ้าแยกกันแล้ว booking พังทีหลัง จะเหลือ
+       * โปรไฟล์ค้างในลิสต์ที่ผู้ใช้ไม่ได้ตั้งใจสร้าง และกดจองใหม่จะได้ซ้ำอีกใบ
+       *
+       * ข้ามเมื่อ:
+       *   - ส่ง careRecipientId มาแล้ว = เลือกโปรไฟล์เดิมอยู่ ไม่ต้องสร้างซ้ำ
+       *   - จองแทน (onBehalf) = โปรไฟล์เป็นของสมาชิกในกลุ่ม มีอยู่ก่อนแล้วเสมอ
+       *   - ไม่มีชื่อคนไข้ = ไม่มีอะไรจะตั้งเป็น name ซึ่งเป็นคอลัมน์ NOT NULL
+       */
+      if (dto.saveAsProfile && !dto.careRecipientId && !onBehalf && dto.patientName) {
+        const savedProfile = await tx.careRecipient.create({
+          data: {
+            patientId,
+            name: dto.patientName,
+            ...(dto.patientProfile ? toCareRecipientColumns(dto.patientProfile) : {}),
+          },
+          select: { id: true },
+        });
+        data.careRecipientId = savedProfile.id;
+
+        this.logger.log({
+          event: 'care_recipient.created_from_booking',
+          careRecipientId: savedProfile.id,
+          patientId,
+        });
+      }
+
       const created = await tx.booking.create({ data, include });
 
       // ② จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก

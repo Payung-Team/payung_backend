@@ -600,7 +600,16 @@ model CareRecipient {
   emergency_contact_phone String?
   emergency_contact_rel   String?
   preferred_hospital      String?
+  /// PYG-460: "คำแนะนำการดูแล" จากฟอร์มตอนจอง — ช่องเดียวในฟอร์มที่ไม่มีคอลัมน์รองรับมาก่อน
+  /// TEXT ไม่ใช่ VARCHAR เพราะเป็นความเรียงที่ไม่มีเพดานตามธรรมชาติ
+  care_notes              String?
   is_self                 Boolean         @default(false)
+  /// PYG-460: soft delete — FE มีปุ่มลบโปรไฟล์อยู่แล้วแต่ยังลบแค่ใน state
+  /// ห้ามลบจริง เพราะ bookings.care_recipient_id เป็น ON DELETE SET NULL
+  /// → ลบทีเดียวประวัติการจองทุกใบของคนไข้คนนั้นขาดการเชื่อมโยงถาวรแบบเงียบ ๆ
+  /// ใช้ชื่อคอลัมน์ชุดเดียวกับ users เพื่อให้ admin cleanup อ่านรูปแบบเดียวกันทั้งระบบ
+  is_deleted              Boolean         @default(false)
+  deleted_at              DateTime?       @db.Timestamptz(6)
   created_at              DateTime        @default(now()) @db.Timestamptz(6)
   updated_at              DateTime        @default(now()) @db.Timestamptz(6)
   /// PYG-411: กลุ่มครอบครัวที่โปรไฟล์นี้ถูกแชร์เข้าไป
@@ -614,6 +623,8 @@ model CareRecipient {
   familyGroup             FamilyGroup?    @relation(fields: [familyGroupId], references: [id])
 
   @@index([patientId], map: "idx_care_recipients_patient")
+  // PYG-460: index "idx_care_recipients_active" เป็น partial index เช่นกัน
+  // (patient_id WHERE is_deleted = FALSE) → เขียนใน Prisma ไม่ได้ มีเฉพาะใน migration SQL
   // หมายเหตุ: index "care_recipients_family_group_id_idx" เป็น partial index
   // (WHERE family_group_id IS NOT NULL) ซึ่ง Prisma เขียนไม่ได้ → มีเฉพาะใน migration SQL
   @@map("care_recipients")

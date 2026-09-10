@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -23,6 +24,7 @@ import { ROLE_ID } from '../common/constants/roles.constant';
  * GET /api/v1/patient/care-recipients        — list profiles
  * POST /api/v1/patient/care-recipients       — สร้าง profile ใหม่
  * PUT  /api/v1/patient/care-recipients/:id   — แก้ไข profile
+ * DELETE /api/v1/patient/care-recipients/:id — ลบ profile (soft delete)
  */
 @Controller('api/v1/patient/care-recipients')
 @UseGuards(SupabaseHttpAuthGuard, HttpRolesGuard)
@@ -51,5 +53,15 @@ export class CareRecipientsController {
     @CurrentHttpUser() user: AuthUser,
   ) {
     return this.service.update(user.id, id, dto);
+  }
+
+  /**
+   * PYG-460 — 204 ไม่ใช่ 200 เพราะ soft delete ไม่มีอะไรให้คืน
+   * FE ลบแถวออกจากลิสต์ในหน้าอยู่แล้ว (confirmDeleteRecipient) ไม่ได้รอ body
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(@Param('id') id: string, @CurrentHttpUser() user: AuthUser) {
+    return this.service.remove(user.id, id);
   }
 }

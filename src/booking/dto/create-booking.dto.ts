@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsLatitude,
   IsLongitude,
@@ -11,8 +12,10 @@ import {
   MaxLength,
   Min,
   ArrayMinSize,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PatientProfileDto } from '../../patient/dto/patient-profile.dto';
 
 export class CreateBookingDto {
   /** ผู้รับบริการ (optional — ถ้าไม่ส่งมา = ผู้ป่วยเอง) */
@@ -128,4 +131,39 @@ export class CreateBookingDto {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  // ── PYG-460 — ข้อมูลสุขภาพผู้รับบริการ ───────────────────────────────────────
+  //
+  // ฟอร์ม "ผู้รับบริการคือใคร" ให้กรอก 15 ช่อง แต่ก่อนหน้านี้ DTO นี้มีช่องรับแค่ 4
+  // (patientName + dayOfContact อีกสาม) อีก 11 ช่องจึงถูก validator ตัดทิ้งที่
+  // API boundary ทุกครั้ง — ผู้ดูแลไม่เคยเห็นประวัติแพ้ยาหรือโรคประจำตัวเลย
+  // ทั้งที่หน้าจอเขียนว่า "ผู้ดูแลเห็นข้อมูลนี้ก่อนเริ่มงาน"
+
+  /**
+   * ข้อมูลสุขภาพ ณ วันที่จอง
+   *
+   * ★ เก็บเป็น snapshot ลง bookings.member_details ไม่ใช่อ่านสดจาก care_recipients
+   *   เพราะข้อมูลยา/ประวัติแพ้ยาที่ผู้ดูแล "ได้รับแจ้ง" ในงานที่ทำไปแล้ว คือหลักฐาน
+   *   ถ้าอ่านสด วันที่เจ้าของโปรไฟล์แก้ยา ประวัติงานเก่าทุกใบจะเปลี่ยนตามย้อนหลัง
+   *   แบบเงียบ ๆ ซึ่งตรวจสอบไม่ได้ว่าตอนนั้นผู้ดูแลรู้อะไร
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PatientProfileDto)
+  patientProfile?: PatientProfileDto;
+
+  /**
+   * ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" ในฟอร์ม → สร้าง care_recipients ให้ด้วย
+   *
+   * ★ ทำไมเป็นฟิลด์ของ POST /bookings แทนที่จะให้ FE ยิง POST /care-recipients เอง
+   *   ก่อน: ถ้าแยกสอง request จะมีช่องที่โปรไฟล์ถูกสร้างสำเร็จแล้ว booking พัง
+   *   → ผู้ใช้เห็น error ทั้งที่ครึ่งหนึ่งเกิดขึ้นจริงแล้ว และเหลือโปรไฟล์ค้างใน
+   *   ลิสต์ที่เขาไม่ได้ตั้งใจสร้าง กดจองใหม่อีกรอบก็ได้ซ้ำอีกใบ
+   *   รวมไว้ที่นี่แล้วสร้างใน transaction เดียวกับ booking → เกิดพร้อมกันหรือไม่เกิดทั้งคู่
+   *
+   * ไม่มีผลเมื่อส่ง careRecipientId มาด้วย (เลือกโปรไฟล์เดิมอยู่แล้ว ไม่ต้องสร้างซ้ำ)
+   */
+  @IsOptional()
+  @IsBoolean()
+  saveAsProfile?: boolean;
 }

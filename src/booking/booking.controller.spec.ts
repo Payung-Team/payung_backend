@@ -68,7 +68,7 @@ describe('BookingService — new REST methods', () => {
       findMany:   jest.Mock;
       count:      jest.Mock;
     };
-    careRecipient: { findUnique: jest.Mock };
+    careRecipient: { findUnique: jest.Mock; create: jest.Mock };
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
@@ -84,6 +84,10 @@ describe('BookingService — new REST methods', () => {
         update: jest.fn((args) => prisma.booking.update(args)),
         create: jest.fn((args) => prisma.booking.create(args)),
       },
+      // PYG-460: ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" → สร้างโปรไฟล์ใน tx เดียวกัน
+      careRecipient: {
+        create: jest.fn((args) => prisma.careRecipient.create(args)),
+      },
     };
     prisma = {
       booking: {
@@ -93,7 +97,7 @@ describe('BookingService — new REST methods', () => {
         findMany:   jest.fn(),
         count:      jest.fn(),
       },
-      careRecipient: { findUnique: jest.fn() },
+      careRecipient: { findUnique: jest.fn(), create: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
@@ -147,6 +151,93 @@ describe('BookingService — new REST methods', () => {
       );
       expect(result.status).toBe('unmatched');
       expect(result.caregiver).toBeUndefined();
+    });
+
+    // ── PYG-460: ข้อมูลสุขภาพผู้รับบริการ ─────────────────────────────────────
+
+    it('เก็บ patientProfile เป็น snapshot ลง member_details', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        patientProfile: { age: 72, gender: 'หญิง', allergies: 'แพ้ยากลุ่มซัลฟา' },
+      });
+
+      const call = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      // เก็บรูปทรงเดิมที่ FE ส่งมา ไม่แปลงเป็น enum — เพราะเป็นสำเนาไว้อ่าน ไม่ใช่ไว้ query
+      expect(call.data.memberDetails).toEqual({
+        age: 72, gender: 'หญิง', allergies: 'แพ้ยากลุ่มซัลฟา',
+      });
+    });
+
+    it('ไม่ส่ง patientProfile มา → ไม่แตะ member_details', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      await service.createBooking(PATIENT_ID, dto);
+
+      const call = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(call.data.memberDetails).toBeUndefined();
+    });
+
+    it('saveAsProfile → สร้าง care_recipient แล้วผูกกับ booking ใบเดียวกัน', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+      prisma.careRecipient.create.mockResolvedValue({ id: 'new-recipient-id' });
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        patientName:    'คุณย่า',
+        saveAsProfile:  true,
+        patientProfile: { supportLevel: 'ช่วยเหลือตัวเองไม่ได้ / ติดเตียง' },
+      });
+
+      // โปรไฟล์เขียนลงคอลัมน์จริง (แปลงเป็น enum) ไม่ใช่เก็บเป็นข้อความไทย
+      const profileCall = prisma.careRecipient.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(profileCall.data.name).toBe('คุณย่า');
+      expect(profileCall.data.mobility_level).toBe('bedridden');
+
+      // ★ หัวใจของเรื่อง: booking ที่เพิ่งสร้างต้องผูกกับโปรไฟล์ที่เพิ่งสร้าง
+      //   ก่อน PYG-460 คอลัมน์นี้ว่างทั้งตาราง (dry-run: 0 จาก 101 ใบ)
+      const bookingCall = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(bookingCall.data.careRecipientId).toBe('new-recipient-id');
+
+      // ทั้งคู่ต้องอยู่ใน transaction เดียว ไม่งั้น booking พังแล้วเหลือโปรไฟล์ค้าง
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('saveAsProfile ไม่สร้างซ้ำเมื่อเลือกโปรไฟล์เดิมอยู่แล้ว', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID });
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        careRecipientId: 'r-uuid',
+        patientName:     'คุณย่า',
+        saveAsProfile:   true,
+      });
+
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+    });
+
+    it('saveAsProfile ไม่สร้างโปรไฟล์ไร้ชื่อ', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      // name เป็นคอลัมน์ NOT NULL — ไม่มีชื่อก็ไม่มีอะไรจะบันทึก
+      await service.createBooking(PATIENT_ID, { ...dto, saveAsProfile: true });
+
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
     });
 
     it('validates careRecipientId ownership', async () => {
