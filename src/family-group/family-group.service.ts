@@ -49,7 +49,15 @@ import {
   JoinLinkInvalidError,
   JoinLinkNotFoundError,
   JoinLinkRevokedError,
+  RecipientNotInGroupError,
+  RecipientNotOwnerError,
 } from './family-group.errors';
+import {
+  AddGroupCareRecipientInput,
+  UpdateGroupCareRecipientInput,
+  RemoveGroupCareRecipientInput,
+} from './dto/manage-care-recipient.input';
+import { RemoveGroupCareRecipientResult } from './entities/care-recipient.entity';
 
 /**
  * field set มาตรฐานของ "สมาชิก 1 คน" — ใช้ที่เดียวทุกที่ กันลืม join users
@@ -505,6 +513,98 @@ export class FamilyGroupService {
     }));
   }
 
+  // ── PYG-385: เพิ่ม/แก้ไข/นำออกโปรไฟล์ผู้รับบริการในกลุ่ม ────────────────────
+  //
+  //  สิทธิ์ระดับกลุ่ม (เป็นสมาชิก ACTIVE) ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
+  //  ที่นี่เหลือแค่สิทธิ์ระดับโปรไฟล์: "เจ้าของเท่านั้นที่แก้/ลบได้"
+  //  (เพิ่มได้ทุกสมาชิก — คนที่เพิ่มกลายเป็นเจ้าของโปรไฟล์นั้น)
+
+  /** เพิ่มโปรไฟล์ใหม่เข้ากลุ่ม — patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ */
+  async addGroupCareRecipient(
+    userId: string,
+    input: AddGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const r = await this.prisma.careRecipient.create({
+      data: {
+        patientId: userId,
+        familyGroupId: input.groupId,
+        name: input.name.trim(),
+        nickname: input.nickname?.trim() || null,
+      },
+      select: { id: true, name: true, nickname: true, patientId: true },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.added',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+  }
+
+  /** แก้ไขโปรไฟล์ — เฉพาะเจ้าของ (คนที่เพิ่ม) เท่านั้น */
+  async updateGroupCareRecipient(
+    userId: string,
+    input: UpdateGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const existing = await this.prisma.careRecipient.findUnique({
+      where: { id: input.recipientId },
+      select: { patientId: true, familyGroupId: true },
+    });
+    // ไม่มีจริง หรือไม่ได้อยู่ในกลุ่มนี้ → ตอบเหมือนกัน (กันเดา id ข้ามกลุ่ม, PDPA)
+    if (!existing || existing.familyGroupId !== input.groupId) {
+      throw new RecipientNotInGroupError();
+    }
+    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+    const r = await this.prisma.careRecipient.update({
+      where: { id: input.recipientId },
+      data: {
+        ...(input.name !== undefined && { name: input.name.trim() }),
+        ...(input.nickname !== undefined && { nickname: input.nickname.trim() || null }),
+      },
+      select: { id: true, name: true, nickname: true, patientId: true },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.updated',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+  }
+
+  /**
+   * นำโปรไฟล์ออกจากกลุ่ม (unshare) — set familyGroupId = null ไม่ใช่ลบทิ้ง
+   * โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ และ booking เก่ายังอ้าง careRecipientId ได้เหมือนเดิม
+   * (booking เก็บ familyGroupId ของตัวเอง จึงไม่กระทบฟีดย้อนหลัง)
+   */
+  async removeGroupCareRecipient(
+    userId: string,
+    input: RemoveGroupCareRecipientInput,
+  ): Promise<RemoveGroupCareRecipientResult> {
+    const existing = await this.prisma.careRecipient.findUnique({
+      where: { id: input.recipientId },
+      select: { patientId: true, familyGroupId: true },
+    });
+    if (!existing || existing.familyGroupId !== input.groupId) {
+      throw new RecipientNotInGroupError();
+    }
+    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+    await this.prisma.careRecipient.update({
+      where: { id: input.recipientId },
+      data: { familyGroupId: null },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.removed',
+      id: input.recipientId,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { recipientId: input.recipientId, removed: true };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════════
@@ -726,6 +826,103 @@ export class FamilyGroupService {
       unusableReason: this.joinLinkUnusableReason(link, memberCount),
       alreadyMember: activeMembers.some((m) => m.userId === userId),
     };
+  }
+
+  /**
+   * เข้าร่วมกลุ่มด้วยลิงก์ (PYG-417) — token ดิบจาก URL
+   *
+   * ★ used_count เพิ่มด้วย conditional UPDATE ใน SQL ไม่ใช่อ่านมาบวกแล้วเขียนกลับ
+   *   สองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้าย จะมีคนเดียวที่ UPDATE ติด
+   */
+  async joinGroupByLink(userId: string, token: string): Promise<FamilyGroup> {
+    const tokenHash = this.hashJoinToken(token);
+
+    const link = await this.prisma.familyGroupJoinLink.findUnique({
+      where: { tokenHash },
+      include: {
+        group: {
+          include: {
+            members: {
+              where: { status: MEMBER_STATUS.ACTIVE },
+              select: { userId: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!link) {
+      throw new JoinLinkInvalidError();
+    }
+
+    const activeMembers = link.group.members;
+    const memberCount = activeMembers.length;
+
+    // กดลิงก์ซ้ำทั้งที่อยู่ในกลุ่มแล้ว = no-op ไม่กิน used_count (idempotent)
+    if (activeMembers.some((m) => m.userId === userId)) {
+      return this.familyGroup(userId, link.groupId);
+    }
+
+    this.assertJoinLinkUsable(link, memberCount);
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE family_group_join_links
+           SET used_count = used_count + 1
+         WHERE token_hash = ${tokenHash}
+           AND status = 'ACTIVE'
+           AND expires_at > now()
+           AND (max_uses IS NULL OR used_count < max_uses)
+        RETURNING id;
+      `;
+
+      // UPDATE ไม่ติด = ลิงก์เปลี่ยนสถานะไประหว่างที่เราเช็คกับที่เรากด
+      // อ่านแถวสดมาโยน error ที่ตรงเหตุผลจริง แทนที่จะบอกแค่ "ลิงก์ใช้ไม่ได้"
+      if (claimed.length === 0) {
+        const freshLink = await tx.familyGroupJoinLink.findUnique({
+          where: { id: link.id },
+        });
+        if (!freshLink) throw new JoinLinkInvalidError();
+        const freshCount = await tx.familyGroupMember.count({
+          where: { groupId: link.groupId, status: MEMBER_STATUS.ACTIVE },
+        });
+        this.assertJoinLinkUsable(freshLink, freshCount);
+        throw new JoinLinkInvalidError();
+      }
+
+      // upsert เพราะคนที่เคยออก/โดนเตะยังมีแถวเดิมค้างอยู่ (unique groupId+userId)
+      // → กลับเข้ามาคือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง
+      await tx.familyGroupMember.upsert({
+        where: { groupId_userId: { groupId: link.groupId, userId } },
+        create: {
+          groupId: link.groupId,
+          userId,
+          role: GROUP_ROLE.MEMBER,
+          status: MEMBER_STATUS.ACTIVE,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+        },
+        update: {
+          status: MEMBER_STATUS.ACTIVE,
+          role: GROUP_ROLE.MEMBER,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+          joinedAt: new Date(),
+          removedAt: null,
+        },
+      });
+
+      await this.writeActivity(tx, {
+        groupId: link.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.MEMBER_JOINED,
+        targetType: ACTIVITY_TARGET.MEMBER,
+        targetId: userId,
+        metadata: { joinedViaLinkId: link.id },
+      });
+    });
+
+    return this.familyGroup(userId, link.groupId);
   }
 
   /**

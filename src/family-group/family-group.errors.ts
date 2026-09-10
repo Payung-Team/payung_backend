@@ -42,6 +42,14 @@ export const FG_ERROR = {
    *   ซึ่งเป็นข้อมูลสุขภาพของคนอื่น (PDPA) → ตอบเหมือนกันหมดปลอดภัยกว่า
    */
   RECIPIENT_NOT_IN_GROUP: 'RECIPIENT_NOT_IN_GROUP',
+  /**
+   * PYG-385 — แก้ไข/นำออกโปรไฟล์ที่ "สมาชิกคนอื่น" เป็นคนเพิ่ม
+   *
+   * ★ ต่างจาก RECIPIENT_NOT_IN_GROUP: ตัวนี้ยอมรับว่าโปรไฟล์มีอยู่ในกลุ่มจริง — ไม่ใช่การรั่ว
+   *   ข้อมูล เพราะสมาชิกทุกคนเห็นโปรไฟล์นั้นในลิสต์อยู่แล้ว (groupCareRecipients คืน ownerUserId)
+   *   สิ่งที่ห้ามคือ "แก้ของคนอื่น" เท่านั้น → เจ้าของโปรไฟล์เท่านั้นที่แก้/ลบได้
+   */
+  RECIPIENT_NOT_OWNER: 'RECIPIENT_NOT_OWNER',
 
   // ── PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม ─────────────────────────
   /**
@@ -152,6 +160,16 @@ export class RecipientNotInGroupError extends FamilyGroupError {
     super(
       'ไม่พบโปรไฟล์ผู้รับบริการนี้ในกลุ่มของคุณ',
       FG_ERROR.RECIPIENT_NOT_IN_GROUP,
+    );
+  }
+}
+
+/** PYG-385 — เฉพาะเจ้าของโปรไฟล์เท่านั้นที่แก้ไข/นำออกได้ (สมาชิกอื่นแก้ของคนอื่นไม่ได้) */
+export class RecipientNotOwnerError extends FamilyGroupError {
+  constructor() {
+    super(
+      'แก้ไขหรือนำออกได้เฉพาะโปรไฟล์ที่คุณเป็นคนเพิ่มเท่านั้น',
+      FG_ERROR.RECIPIENT_NOT_OWNER,
     );
   }
 }
