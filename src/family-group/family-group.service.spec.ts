@@ -83,7 +83,10 @@ describe('FamilyGroupService', () => {
     };
     familyGroupActivity: { create: jest.Mock };
   };
-  let prisma: typeof tx & { $transaction: jest.Mock };
+  let prisma: typeof tx & {
+    $transaction: jest.Mock;
+    careRecipient: { create: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+  };
 
   beforeEach(async () => {
     tx = {
@@ -104,6 +107,11 @@ describe('FamilyGroupService', () => {
     };
     prisma = {
       ...tx,
+      careRecipient: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
 
@@ -584,6 +592,127 @@ describe('FamilyGroupService', () => {
       ).rejects.toMatchObject({
         extensions: { code: FG_ERROR.GROUP_NOT_FOUND },
       });
+    });
+  });
+
+  // ═══ PYG-385 · จัดการโปรไฟล์ผู้รับบริการในกลุ่ม ═════════════════════════
+  describe('addGroupCareRecipient', () => {
+    it('สร้างโปรไฟล์ patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ และ trim ชื่อ', async () => {
+      prisma.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'สมศรี วงศ์ดี',
+        nickname: 'ยายศรี',
+        patientId: OWNER_ID,
+      });
+
+      const res = await service.addGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        name: '  สมศรี วงศ์ดี  ',
+        nickname: '  ยายศรี ',
+      });
+
+      const data = prisma.careRecipient.create.mock.calls[0][0].data;
+      expect(data.patientId).toBe(OWNER_ID);
+      expect(data.familyGroupId).toBe(GROUP_ID);
+      expect(data.name).toBe('สมศรี วงศ์ดี');
+      expect(data.nickname).toBe('ยายศรี');
+      expect(res).toMatchObject({ id: 'r-new', ownerUserId: OWNER_ID });
+    });
+
+    it('ไม่ส่งชื่อเล่น → เก็บเป็น null', async () => {
+      prisma.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'ประยูร',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+      await service.addGroupCareRecipient(OWNER_ID, { groupId: GROUP_ID, name: 'ประยูร' });
+      expect(prisma.careRecipient.create.mock.calls[0][0].data.nickname).toBeNull();
+    });
+  });
+
+  describe('updateGroupCareRecipient', () => {
+    const input = { groupId: GROUP_ID, recipientId: 'r1', name: 'ชื่อใหม่' };
+
+    it('ไม่พบโปรไฟล์ → RECIPIENT_NOT_IN_GROUP (ไม่แก้อะไร)', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue(null);
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+    });
+
+    it('โปรไฟล์อยู่คนละกลุ่ม → RECIPIENT_NOT_IN_GROUP', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: 'other-group',
+      });
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+    });
+
+    it('คนที่ไม่ใช่เจ้าของ → RECIPIENT_NOT_OWNER (ห้ามแก้ของคนอื่น)', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: 'someone-else',
+        familyGroupId: GROUP_ID,
+      });
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+    });
+
+    it('เจ้าของแก้ได้ + trim ค่า', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: GROUP_ID,
+      });
+      prisma.careRecipient.update.mockResolvedValue({
+        id: 'r1',
+        name: 'ชื่อใหม่',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+      await service.updateGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        recipientId: 'r1',
+        name: '  ชื่อใหม่ ',
+        nickname: '   ',
+      });
+      const data = prisma.careRecipient.update.mock.calls[0][0].data;
+      expect(data.name).toBe('ชื่อใหม่');
+      expect(data.nickname).toBeNull(); // ชื่อเล่นว่างหลัง trim → ล้างเป็น null
+    });
+  });
+
+  describe('removeGroupCareRecipient', () => {
+    const input = { groupId: GROUP_ID, recipientId: 'r1' };
+
+    it('คนที่ไม่ใช่เจ้าของ → RECIPIENT_NOT_OWNER', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: 'someone-else',
+        familyGroupId: GROUP_ID,
+      });
+      await expect(service.removeGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+    });
+
+    it('เจ้าของนำออก = unshare (set familyGroupId = null) ไม่ใช่ลบทิ้ง', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: GROUP_ID,
+      });
+      prisma.careRecipient.update.mockResolvedValue({});
+      const res = await service.removeGroupCareRecipient(OWNER_ID, input);
+
+      expect(prisma.careRecipient.update).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+        data: { familyGroupId: null },
+      });
+      expect(res).toEqual({ recipientId: 'r1', removed: true });
     });
   });
 });

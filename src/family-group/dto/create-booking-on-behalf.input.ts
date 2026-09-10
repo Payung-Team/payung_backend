@@ -13,7 +13,47 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+
+/**
+ * PYG-385 — อาการ/รายละเอียดที่สมาชิกกรอกตอน "จองแทน" (memberDetails)
+ *
+ * ทำไมเป็น input type ที่มีฟิลด์ชัด แทนที่จะเป็น JSON scalar:
+ *   repo จงใจไม่พึ่ง graphql-type-json (ดูคอมเมนต์เดียวกันใน notification/payment entity)
+ *   → ประกาศฟิลด์ตรง ๆ ได้ type-safe และ FE อ่าน schema รู้ทันทีว่ากรอกอะไรได้บ้าง
+ *   ทุกฟิลด์ optional เพราะเป็น "รายละเอียดเสริมถึงผู้ดูแล" ไม่ใช่ข้อมูลบังคับของ booking
+ *   ทั้งก้อนถูกเก็บลงคอลัมน์ bookings.member_details (JSONB, nullable) ตามเดิม — ไม่แตะ migration
+ */
+@InputType()
+export class MemberDetailsInput {
+  @Field(() => [String], {
+    nullable: true,
+    description: 'อาการ/โรคประจำตัวที่ผู้ดูแลควรรู้ เช่น ["เบาหวาน", "ความดัน"]',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  conditions?: string[];
+
+  @Field({ nullable: true, description: 'ยาประจำที่ใช้อยู่' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  medicines?: string;
+
+  @Field({ nullable: true, description: 'ประวัติแพ้ยา/อาหาร' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  allergies?: string;
+
+  @Field({ nullable: true, description: 'ข้อควรระวัง/วิธีดูแลเฉพาะของผู้รับบริการคนนี้' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  careInstructions?: string;
+}
 
 /**
  * PYG-424 — input ของ mutation createBookingOnBehalf
@@ -25,8 +65,10 @@ import {
  *
  * ★ ฟิลด์ที่ "จงใจไม่มี" ในนี้:
  *   - patientName    ชื่อคนไข้มาจากโปรไฟล์ผู้รับบริการอยู่แล้ว ให้กรอกซ้ำจะขัดกันเอง
- *   - memberDetails  รอ PYG-426 (ดีไซน์ฟอร์ม FG-4) + repo ยังไม่มี graphql-type-json
- *                    คอลัมน์ member_details เป็น nullable → เติมทีหลังได้ ไม่ต้องแก้ migration
+ *
+ * ── memberDetails (PYG-385) ────────────────────────────────────────────────
+ *   รับแล้วผ่าน MemberDetailsInput ด้านบน → เก็บลง bookings.member_details (JSONB)
+ *   คอลัมน์ nullable มาตั้งแต่ PYG-411 จึงไม่ต้องแก้ migration
  */
 @InputType()
 export class CreateBookingOnBehalfInput {
@@ -137,4 +179,14 @@ export class CreateBookingOnBehalfInput {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  @Field(() => MemberDetailsInput, {
+    nullable: true,
+    description:
+      'PYG-385: อาการ/รายละเอียดของผู้รับบริการที่กรอกตอนจองแทน — เก็บลง bookings.member_details (JSONB)',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MemberDetailsInput)
+  memberDetails?: MemberDetailsInput;
 }

@@ -2,6 +2,17 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+input AddGroupCareRecipientInput {
+  """กลุ่มที่จะเพิ่มโปรไฟล์เข้าไป — ผู้เรียกต้องเป็นสมาชิก ACTIVE"""
+  groupId: ID!
+
+  """ชื่อ-นามสกุลของผู้รับบริการ"""
+  name: String!
+
+  """ชื่อเล่น (ถ้ามี)"""
+  nickname: String
+}
+
 """
 Admin dashboard data: summary stats, trends, review time, and recent activity
 """
@@ -620,6 +631,11 @@ input CreateBookingOnBehalfInput {
   """ที่อยู่จุดให้บริการ"""
   locationAddress: String!
 
+  """
+  PYG-385: อาการ/รายละเอียดของผู้รับบริการที่กรอกตอนจองแทน — เก็บลง bookings.member_details (JSONB)
+  """
+  memberDetails: MemberDetailsInput
+
   """บันทึกเพิ่มเติมถึงผู้ดูแล"""
   notes: String
 
@@ -941,6 +957,54 @@ type FieldLockResult {
 input FlagDisputeInput {
   bookingId: ID!
   reason: String!
+}
+
+type GroupBookingSummary {
+  """
+  true = ผู้เรียกเป็นคนจองเอง — FE ใช้ไฮไลต์ "คุณ"
+  """
+  bookedByMe: Boolean!
+
+  """ชื่อสมาชิกที่กดจอง"""
+  bookedByName: String
+
+  """
+  userId ของสมาชิกที่กดจอง — FE ใช้กรอง "การจองของสมาชิกคนนี้"
+  """
+  bookedByUserId: String
+
+  """
+  วันที่ให้บริการ ISO "2026-09-15"
+  """
+  bookingDate: String!
+
+  """ชื่อผู้รับบริการที่ถูกจองให้"""
+  careRecipientName: String
+  caregiver: CaregiverBriefDto
+
+  """เวลาเช็คอินจริง "09:04" (เขต Asia/Bangkok) ถ้ามี"""
+  checkInTime: String
+  durationHours: Float
+
+  """ราคาประเมิน (บาท)"""
+  estimatedCost: Float
+  id: ID!
+
+  """ที่อยู่จุดให้บริการ"""
+  locationAddress: String
+
+  """สถานะการชำระเงิน เช่น 'held' = พักเงินไว้ (escrow)"""
+  paymentStatus: String
+
+  """รูปแบบบริการ เช่น at_home / accompany_outside"""
+  serviceLocations: [String!]!
+  serviceType: String!
+
+  """
+  เวลาเริ่ม "09:00"
+  """
+  startTime: String
+  status: String!
 }
 
 type GroupCareRecipient {
@@ -1307,6 +1371,20 @@ input LoginInput {
   password: String!
 }
 
+input MemberDetailsInput {
+  """ประวัติแพ้ยา/อาหาร"""
+  allergies: String
+
+  """ข้อควรระวัง/วิธีดูแลเฉพาะของผู้รับบริการคนนี้"""
+  careInstructions: String
+
+  """อาการ/โรคประจำตัวที่ผู้ดูแลควรรู้ เช่น ["เบาหวาน", "ความดัน"]"""
+  conditions: [String!]
+
+  """ยาประจำที่ใช้อยู่"""
+  medicines: String
+}
+
 type Mutation {
   """Caregiver accepts a pending booking request (pending → accepted)."""
   acceptBooking(bookingId: ID!): CaregiverBookingSummary!
@@ -1318,6 +1396,11 @@ type Mutation {
     """UUID of the user to activate"""
     userId: ID!
   ): User!
+
+  """
+  เพิ่มโปรไฟล์ผู้รับบริการเข้ากลุ่ม — ผู้เรียกกลายเป็นเจ้าของโปรไฟล์นั้น. NOT_A_MEMBER ถ้าไม่ใช่สมาชิก ACTIVE
+  """
+  addGroupCareRecipient(input: AddGroupCareRecipientInput!): GroupCareRecipient!
 
   """
   Admin only: Edit a regular user profile (displayName, email, phone, address, bio). Cannot be used on admin/super_admin accounts — use editAdminInfo instead. Syncs email to Supabase Auth if changed. Records audit log.
@@ -1466,6 +1549,11 @@ type Mutation {
   rejectKyc(input: RejectKycInput!): Caregiver!
 
   """
+  นำโปรไฟล์ออกจากกลุ่ม (unshare — โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ) — เฉพาะเจ้าของโปรไฟล์
+  """
+  removeGroupCareRecipient(input: RemoveGroupCareRecipientInput!): RemoveGroupCareRecipientResult!
+
+  """
   นำสมาชิกออกจากกลุ่ม (เจ้าของเท่านั้น) — สิทธิ์ทั้งหมดของคนนั้นหายทันที. นำตัวเองออกไม่ได้ → LAST_OWNER.
   """
   removeMember(input: RemoveMemberInput!): FamilyGroup!
@@ -1542,6 +1630,11 @@ type Mutation {
 
   """Toggle email notification preference"""
   updateEmailPreference(enabled: Boolean!): User!
+
+  """
+  แก้ไขชื่อ/ชื่อเล่นของโปรไฟล์ในกลุ่ม — เฉพาะเจ้าของโปรไฟล์ (RECIPIENT_NOT_OWNER ถ้าไม่ใช่, RECIPIENT_NOT_IN_GROUP ถ้าไม่พบ/คนละกลุ่ม)
+  """
+  updateGroupCareRecipient(input: UpdateGroupCareRecipientInput!): GroupCareRecipient!
 
   """
   Update the current user's password. Requires a valid session established via the password-reset magic link.
@@ -1854,6 +1947,11 @@ type Query {
   familyGroup(groupId: ID!): FamilyGroup!
 
   """
+  PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง
+  """
+  groupBookings(groupId: ID!): [GroupBookingSummary!]!
+
+  """
   โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้ (เรียงตามชื่อ) — ใช้เติมตัวเลือก "จองให้ใคร". กลุ่มที่ยังไม่มีใครแชร์โปรไฟล์ = array ว่าง ไม่ใช่ error.
   """
   groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
@@ -2056,6 +2154,19 @@ input RejectionReasonItem {
   Short title e.g. "เอกสารไม่ชัดเจน", "ข้อมูลไม่ตรงกัน"
   """
   title: String!
+}
+
+input RemoveGroupCareRecipientInput {
+  """กลุ่มที่โปรไฟล์อยู่"""
+  groupId: ID!
+
+  """โปรไฟล์ที่จะนำออกจากกลุ่ม"""
+  recipientId: ID!
+}
+
+type RemoveGroupCareRecipientResult {
+  recipientId: ID!
+  removed: Boolean!
 }
 
 input RemoveMemberInput {
@@ -2427,6 +2538,20 @@ input UpdateCaregiverInput {
 
   """List of caregiver skills"""
   skills: [String!]
+}
+
+input UpdateGroupCareRecipientInput {
+  """กลุ่มที่โปรไฟล์อยู่"""
+  groupId: ID!
+
+  """ชื่อ-นามสกุลใหม่"""
+  name: String
+
+  """ชื่อเล่นใหม่ (ส่งค่าว่างเพื่อลบชื่อเล่น)"""
+  nickname: String
+
+  """โปรไฟล์ที่จะแก้ไข"""
+  recipientId: ID!
 }
 
 input UpdatePasswordInput {

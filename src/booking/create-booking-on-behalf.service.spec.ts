@@ -227,6 +227,28 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(result.bookingDate).toBe('2026-09-15');
       expect(result.careRecipientName).toBe('คุณยายสมศรี');
     });
+
+    // ── PYG-385 (D2): memberDetails ลง bookings.member_details (JSONB) ────────
+    it('บันทึก memberDetails ลง booking เมื่อสมาชิกกรอกอาการ/รายละเอียดมา', async () => {
+      const memberDetails = {
+        conditions: ['เบาหวาน', 'ความดัน'],
+        medicines: 'ยาลดความดัน เช้า-เย็น',
+        allergies: 'แพ้เพนิซิลลิน',
+        careInstructions: 'ต้องพยุงเดิน ห้ามอยู่คนเดียว',
+      };
+
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput({ memberDetails }));
+
+      const data = tx.booking.create.mock.calls[0][0].data;
+      expect(data.memberDetails).toEqual(memberDetails);
+    });
+
+    it('ไม่กรอก memberDetails → ไม่แตะคอลัมน์ (คง NULL ตามพฤติกรรมเดิม)', async () => {
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput());
+
+      const data = tx.booking.create.mock.calls[0][0].data;
+      expect(data.memberDetails).toBeUndefined();
+    });
   });
 
   // ── บั๊กที่แก้ไปพร้อมกัน: เช็คเวลาชนต่อ "ผู้รับบริการ" ───────────────────

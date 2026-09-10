@@ -37,6 +37,8 @@ import {
   ACTIVITY_TARGET,
 } from '../family-group/family-group.constants';
 import { RecipientNotInGroupError } from '../family-group/family-group.errors';
+import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-behalf.input';
+import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
 // PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 
@@ -132,6 +134,11 @@ export interface OnBehalfContext {
   bookedBy: string;
   /** ชื่อผู้รับบริการ ณ เวลาที่จอง — เก็บลงฟีดกิจกรรมเพื่อให้อ่านย้อนหลังได้เสมอ */
   recipientName: string;
+  /**
+   * PYG-385: อาการ/รายละเอียดที่สมาชิกกรอกตอนจองแทน → คอลัมน์ bookings.member_details (JSONB).
+   * undefined = ไม่ได้กรอก → คอลัมน์เป็น NULL (พฤติกรรมเดิม)
+   */
+  memberDetails?: MemberDetailsInput;
 }
 
 @Injectable()
@@ -187,15 +194,18 @@ export class BookingService {
    *     ถ้าดีไซน์สรุปว่า "เจ้าของโปรไฟล์เป็นคนจ่าย" ให้แก้ค่า patientId ที่ส่งเข้า
    *     createBookingRecord บรรทัดเดียว แล้วต้องแก้เงื่อนไขฝั่ง payment ตามไปด้วย
    *
-   * ── ทำไมยังไม่รับ memberDetails ────────────────────────────────────────────
-   *   คอลัมน์ bookings.member_details (JSONB) มีอยู่แล้วจาก PYG-411 แต่ยังไม่รับค่า
-   *   ในเวอร์ชันนี้ เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ (PYG-426 ยัง To Do) และ repo
-   *   ยังไม่มี graphql-type-json ให้ประกาศ scalar JSON
-   *   คอลัมน์เป็น nullable → เติมทีหลังได้โดยไม่ต้องแก้ migration หรือรื้อ mutation นี้
+   * ── memberDetails (PYG-385) ────────────────────────────────────────────────
+   *   รับผ่าน MemberDetailsInput (structured input แทน JSON scalar — repo จงใจไม่พึ่ง
+   *   graphql-type-json) แล้วส่งลงคอลัมน์ bookings.member_details (JSONB) ที่มีมาแต่ PYG-411
+   *   ไม่ได้กรอก → คอลัมน์เป็น NULL เหมือนเดิม ไม่ต้องแก้ migration
    */
   async createBookingOnBehalf(
     bookerId: string,
-    input: CreateBookingDto & { groupId: string; careRecipientId: string },
+    input: CreateBookingDto & {
+      groupId: string;
+      careRecipientId: string;
+      memberDetails?: MemberDetailsInput;
+    },
   ): Promise<BookingSummary> {
     // สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
     // ที่นี่จึงเหลือคำถามเดียวที่ guard ตอบให้ไม่ได้: โปรไฟล์คนไข้อยู่ในกลุ่มนี้จริงไหม
@@ -213,6 +223,8 @@ export class BookingService {
       familyGroupId: input.groupId,
       bookedBy: bookerId,
       recipientName: recipient.name,
+      // PYG-385: undefined เมื่อไม่ได้กรอก — createBookingRecord จะไม่แตะคอลัมน์ให้ (คง NULL)
+      memberDetails: input.memberDetails,
     });
 
     return this.toSummary(booking);
@@ -338,6 +350,13 @@ export class BookingService {
       familyGroupId: onBehalf?.familyGroupId ?? null,
       bookedBy:      onBehalf?.bookedBy      ?? null,
     };
+
+    // PYG-385: เซ็ต member_details เฉพาะตอนจองแทนและมีการกรอกจริง — ไม่งั้นปล่อยคอลัมน์เป็น NULL
+    // (แตะเฉพาะเมื่อมีค่า เพราะ Prisma แยก JSON null กับ DB null; การไม่กรอก = DB null)
+    if (onBehalf?.memberDetails !== undefined) {
+      // MemberDetailsInput มีเฉพาะฟิลด์ string/string[]/undefined → เก็บเป็น JSON ได้ตรง ๆ
+      data.memberDetails = onBehalf.memberDetails as unknown as Prisma.InputJsonValue;
+    }
 
     const include = {
       caregiver:     { include: { user: { select: { avatarUrl: true } } } },
@@ -757,6 +776,84 @@ export class BookingService {
     ]);
 
     return this.toListResponse(items as unknown as BookingWithIncludes[], { page, limit, total });
+  }
+
+  // ── ①.6 PYG-385: ฟีดนัดหมายของกลุ่มครอบครัว (GraphQL) ──────────────────────
+
+  /**
+   * นัดหมาย "จองแทน" ทั้งหมดของกลุ่ม — ทุกสมาชิกเห็นร่วมกัน (family group §2: ฟีดต้องตรงกัน
+   * ทุกคน). กรองด้วย familyGroupId เท่านั้น เพราะการจองปกติ (familyGroupId = null) ไม่เกี่ยว
+   * กับกลุ่ม. เรียงล่าสุดก่อน; take 100 พอสำหรับกลุ่มครอบครัว (เพดานสมาชิก 10 คน) โดยไม่ต้อง
+   * ทำ pagination ให้ FE ในเวอร์ชันนี้.
+   *
+   * สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่ม" ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว.
+   */
+  async groupBookings(
+    groupId: string,
+    viewerUserId: string,
+  ): Promise<GroupBookingSummary[]> {
+    const items = await this.prisma.booking.findMany({
+      where: { familyGroupId: groupId },
+      include: {
+        caregiver: { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+        bookedByUser: { select: { displayName: true } },
+        payment: { select: { paymentStatus: true } },
+        // เวลาเช็คอินจริงสำหรับการ์ด "กำลังบริการ" — JOB_EVENT_TYPE.CHECK_IN ('check_in')
+        jobEvents: {
+          where: { eventType: 'check_in' },
+          select: { deviceTs: true, serverTs: true },
+          take: 1,
+        },
+      },
+      orderBy: [{ bookingDate: 'desc' }, { startTime: 'desc' }],
+      take: 100,
+    });
+
+    // เวลาเช็คอินเก็บเป็น timestamptz (UTC) → แสดงเป็นเวลาไทยเสมอ ไม่พึ่ง TZ ของเซิร์ฟเวอร์
+    const bkkTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Bangkok',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    return items.map((b) => ({
+      id: b.id,
+      bookingDate:
+        b.bookingDate instanceof Date
+          ? b.bookingDate.toISOString().slice(0, 10)
+          : String(b.bookingDate),
+      startTime:
+        b.startTime instanceof Date
+          ? b.startTime.toISOString().slice(11, 16)
+          : undefined,
+      status: b.status,
+      serviceType: b.serviceType,
+      durationHours: b.durationHours != null ? Number(b.durationHours) : undefined,
+      careRecipientName: b.careRecipient?.name ?? undefined,
+      caregiver: b.caregiver
+        ? {
+            id: b.caregiver.id,
+            fullName: b.caregiver.fullName ?? undefined,
+            avatarUrl: b.caregiver.user.avatarUrl ?? undefined,
+            hourlyRate:
+              b.caregiver.hourlyRate != null ? Number(b.caregiver.hourlyRate) : undefined,
+          }
+        : undefined,
+      bookedByName: b.bookedByUser?.displayName ?? undefined,
+      bookedByUserId: b.bookedBy ?? undefined,
+      bookedByMe: b.bookedBy === viewerUserId,
+      estimatedCost: b.estimatedCost != null ? Number(b.estimatedCost) : undefined,
+      serviceLocations: b.serviceLocations ?? [],
+      locationAddress: b.locationAddress ?? undefined,
+      paymentStatus: b.payment?.paymentStatus ?? undefined,
+      checkInTime: (() => {
+        const ev = b.jobEvents?.[0];
+        const ts = ev?.deviceTs ?? ev?.serverTs;
+        return ts ? bkkTime.format(ts) : undefined;
+      })(),
+    }));
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────

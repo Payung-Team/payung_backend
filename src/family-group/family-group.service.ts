@@ -49,7 +49,15 @@ import {
   JoinLinkInvalidError,
   JoinLinkNotFoundError,
   JoinLinkRevokedError,
+  RecipientNotInGroupError,
+  RecipientNotOwnerError,
 } from './family-group.errors';
+import {
+  AddGroupCareRecipientInput,
+  UpdateGroupCareRecipientInput,
+  RemoveGroupCareRecipientInput,
+} from './dto/manage-care-recipient.input';
+import { RemoveGroupCareRecipientResult } from './entities/care-recipient.entity';
 
 /**
  * field set มาตรฐานของ "สมาชิก 1 คน" — ใช้ที่เดียวทุกที่ กันลืม join users
@@ -503,6 +511,98 @@ export class FamilyGroupService {
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
     }));
+  }
+
+  // ── PYG-385: เพิ่ม/แก้ไข/นำออกโปรไฟล์ผู้รับบริการในกลุ่ม ────────────────────
+  //
+  //  สิทธิ์ระดับกลุ่ม (เป็นสมาชิก ACTIVE) ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
+  //  ที่นี่เหลือแค่สิทธิ์ระดับโปรไฟล์: "เจ้าของเท่านั้นที่แก้/ลบได้"
+  //  (เพิ่มได้ทุกสมาชิก — คนที่เพิ่มกลายเป็นเจ้าของโปรไฟล์นั้น)
+
+  /** เพิ่มโปรไฟล์ใหม่เข้ากลุ่ม — patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ */
+  async addGroupCareRecipient(
+    userId: string,
+    input: AddGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const r = await this.prisma.careRecipient.create({
+      data: {
+        patientId: userId,
+        familyGroupId: input.groupId,
+        name: input.name.trim(),
+        nickname: input.nickname?.trim() || null,
+      },
+      select: { id: true, name: true, nickname: true, patientId: true },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.added',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+  }
+
+  /** แก้ไขโปรไฟล์ — เฉพาะเจ้าของ (คนที่เพิ่ม) เท่านั้น */
+  async updateGroupCareRecipient(
+    userId: string,
+    input: UpdateGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const existing = await this.prisma.careRecipient.findUnique({
+      where: { id: input.recipientId },
+      select: { patientId: true, familyGroupId: true },
+    });
+    // ไม่มีจริง หรือไม่ได้อยู่ในกลุ่มนี้ → ตอบเหมือนกัน (กันเดา id ข้ามกลุ่ม, PDPA)
+    if (!existing || existing.familyGroupId !== input.groupId) {
+      throw new RecipientNotInGroupError();
+    }
+    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+    const r = await this.prisma.careRecipient.update({
+      where: { id: input.recipientId },
+      data: {
+        ...(input.name !== undefined && { name: input.name.trim() }),
+        ...(input.nickname !== undefined && { nickname: input.nickname.trim() || null }),
+      },
+      select: { id: true, name: true, nickname: true, patientId: true },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.updated',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+  }
+
+  /**
+   * นำโปรไฟล์ออกจากกลุ่ม (unshare) — set familyGroupId = null ไม่ใช่ลบทิ้ง
+   * โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ และ booking เก่ายังอ้าง careRecipientId ได้เหมือนเดิม
+   * (booking เก็บ familyGroupId ของตัวเอง จึงไม่กระทบฟีดย้อนหลัง)
+   */
+  async removeGroupCareRecipient(
+    userId: string,
+    input: RemoveGroupCareRecipientInput,
+  ): Promise<RemoveGroupCareRecipientResult> {
+    const existing = await this.prisma.careRecipient.findUnique({
+      where: { id: input.recipientId },
+      select: { patientId: true, familyGroupId: true },
+    });
+    if (!existing || existing.familyGroupId !== input.groupId) {
+      throw new RecipientNotInGroupError();
+    }
+    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+    await this.prisma.careRecipient.update({
+      where: { id: input.recipientId },
+      data: { familyGroupId: null },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.removed',
+      id: input.recipientId,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { recipientId: input.recipientId, removed: true };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
