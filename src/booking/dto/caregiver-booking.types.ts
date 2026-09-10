@@ -1,6 +1,7 @@
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
 import { BookingPagination } from './booking-summary.types';
+import { PatientProfileType } from './patient-profile.type';
 
 /**
  * PatientBriefDto — ข้อมูล "ผู้ป่วย/ลูกค้า" แบบย่อ ที่ caregiver เห็นบนการ์ดงาน
@@ -57,6 +58,16 @@ export class CaregiverBookingSummary {
 
   // ชื่อผู้รับการดูแล — ถ้า null แปลว่าจองให้ "ตัวเอง" (สำหรับตัวเอง)
   @Field({ nullable: true }) careRecipientName?: string;
+  /**
+   * PYG-460 — ข้อมูลสุขภาพที่ผู้จองกรอกไว้ ณ วันจอง
+   *
+   * ก่อนหน้านี้ฟอร์มให้กรอก 15 ช่องแต่เก็บลง DB แค่ 4 และไม่มี response ไหน
+   * คืนข้อมูลสุขภาพให้ผู้ดูแลเลย ทั้งที่หน้าจอฝั่งลูกค้าเขียนว่า
+   * "ผู้ดูแลเห็นข้อมูลนี้ก่อนเริ่มงาน" — ฟิลด์นี้คือสิ่งที่ทำให้ประโยคนั้นเป็นจริง
+   *
+   * undefined = booking ที่สร้างก่อน PYG-460 (ไม่มี snapshot ให้แสดง)
+   */
+  @Field(() => PatientProfileType, { nullable: true }) patientProfile?: PatientProfileType;
 
   // ผู้ติดต่อในวันนัดหมาย — หน้ารายละเอียดงาน/หน้าปฏิบัติงานของผู้ดูแลต้องใช้
   // (การ์ด "ผู้ติดต่อในวันนัดหมาย" และ EmergencyContactCard)

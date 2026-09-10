@@ -395,6 +395,7 @@ type CaregiverBookingSummary {
   locationLng: Float
   notes: String
   patient: PatientBriefDto!
+  patientProfile: PatientProfileType
   rejectionReason: String
   serviceLocations: [String!]!
   serviceType: String!
@@ -1610,6 +1611,20 @@ type PatientBriefDto {
   avatarUrl: String
   displayName: String
   id: ID!
+}
+
+type PatientProfileType {
+  age: Int
+  allergies: String
+  bloodGroup: String
+  careInstructions: String
+  conditions: [String!]
+  gender: String
+  height: Float
+  medicines: String
+  regularHospital: String
+  supportLevel: String
+  weight: Float
 }
 
 type Payment {
