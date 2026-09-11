@@ -394,6 +394,8 @@ model Booking {
   jobSession               JobSession?
   // PYG-435: บันทึกการสแกน QR ทุกครั้ง (สำเร็จและล้มเหลว) — ไม่จำกัดจำนวนแถว
   jobScanEvents            JobScanEvent[]
+  // PYG-461/462: audit trail ของการเปลี่ยน status (append-only) — back-relation เฉย ๆ ไม่มีคอลัมน์ใหม่ใน bookings
+  statusHistory            BookingStatusHistory[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -1015,6 +1017,26 @@ model PaymentStatusHistory {
 
   @@index([paymentId], map: "idx_psh_payment")
   @@map("payment_status_history")
+}
+
+/// PYG-461/462 — Audit trail ของการเปลี่ยน booking status (append-only, mirror payment_status_history)
+/// เขียนผ่าน recordBookingStatusChange() (src/booking/booking-status-history.ts) เท่านั้น
+/// ผู้เขียนมีแค่ cron หมดอายุ booking (เฟส 1) + BookingSettlementService (เฟส 2)
+/// call site เดิมที่เปลี่ยน bookings.status (accept/decline/confirm/cancel/check-in ฯลฯ) ยังไม่เขียนที่นี่ — เป็นการ์ดแยก
+/// from/to เป็น String เพราะ bookings.status เป็น TEXT · changedBy ไม่มี FK โดยตั้งใจ (null = ระบบ/cron)
+model BookingStatusHistory {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId  String   @map("booking_id") @db.Uuid
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  changedBy  String?  @map("changed_by")
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_bsh_booking")
+
+  @@index([bookingId, createdAt], map: "idx_bsh_booking_created")
+  @@map("booking_status_history")
 }
 
 /// PYG-375: deterministic once-only execution for money commands (capture/refund/payout/transfer).
