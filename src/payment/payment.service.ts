@@ -11,7 +11,13 @@ import {
 import type { Prisma, Payment as PrismaPayment } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
+// PYG-461/462: deadline ชำระเงิน — สูตรเดียวกับ acceptBooking และ cron หมดอายุ
+import {
+  paymentDeadlineOf,
+  toBangkokText,
+} from '../booking/booking-deadline.config';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { PaymentStatus } from './entities/payment-status.enum';
@@ -78,6 +84,8 @@ export class PaymentService {
     private readonly omiseService: OmiseService,
     private readonly eventEmitter: EventEmitter2,
     private readonly refundService: RefundService,
+    // PYG-461/462: guard เวลาใน createPayment
+    private readonly clock: ClockService,
   ) {}
 
   // ── PYG-277: audit history query ─────────────────────────────────────────
@@ -258,6 +266,20 @@ export class PaymentService {
     if (booking.patientId !== user.id) throw new ForbiddenException('Access denied');
     if (booking.status !== 'accepted') {
       throw new UnprocessableEntityException('Booking must be in accepted status to make a payment');
+    }
+    // PYG-461/462 เฟส 1: เลยกำหนดชำระ (เวลาเริ่มงาน + PAYMENT_GRACE_MINUTES) → ห้ามสร้าง payment
+    // เดิมเช็คแค่ status → จ่ายให้งานที่ผ่านไปแล้วได้ แล้ว booking กลายเป็น confirmed ทั้งที่ทำงานไม่ได้แล้ว
+    // ตรวจก่อนแตะ Omise ทุกทาง (ทั้ง reconcile PromptPay ค้าง และสร้าง charge ใหม่)
+    // ⚠ ไม่ครอบ: QR PromptPay ที่สร้างไปแล้วก่อน deadline แล้วมาสแกนจ่ายหลัง deadline —
+    //   captureFromWebhook ยังพลิก booking เป็น confirmed ได้ ส่งต่อเฟส 2 (BookingSettlementService)
+    const paymentDeadline = paymentDeadlineOf(
+      booking.bookingDate,
+      booking.startTime,
+    );
+    if (this.clock.now().getTime() > paymentDeadline.getTime()) {
+      throw new UnprocessableEntityException(
+        `เลยกำหนดชำระเงินแล้ว (ต้องชำระภายใน ${toBangkokText(paymentDeadline)}) — ไม่สามารถชำระเงินให้การจองนี้ได้`,
+      );
     }
     if (!booking.caregiverId || !booking.caregiver) {
       throw new UnprocessableEntityException('Booking has no caregiver assigned');

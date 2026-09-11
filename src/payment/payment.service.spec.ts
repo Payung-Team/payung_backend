@@ -18,11 +18,25 @@ import {
   ForbiddenException,
   NotFoundException,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
+
+// PYG-461/462: createPayment มี guard เวลา — ตรึงนาฬิกาไว้ "ก่อน" วันงานของ fixture ทุกตัว
+// (booking 2026-07-01 09:00 เวลาไทย = 02:00Z) เพื่อให้เทสเดิมทดสอบสิ่งเดิมต่อได้
+const NOW_BEFORE_START = new Date('2026-06-30T00:00:00.000Z');
+const fixedClock = {
+  now: () => NOW_BEFORE_START,
+  nowMs: () => NOW_BEFORE_START.getTime(),
+};
+const BOOKING_SCHEDULE = {
+  bookingDate: new Date('2026-07-01'),
+  startTime: new Date('1970-01-01T09:00:00.000Z'),
+};
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
 import { PaymentStatus } from './entities/payment-status.enum';
@@ -80,6 +94,7 @@ describe('PaymentService.refundPayment (PYG-374 — thin wrapper over RefundServ
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
         { provide: OmiseService, useValue: { createRefund: jest.fn() } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: refundService },
       ],
     }).compile();
@@ -143,6 +158,7 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     durationHours: 2,
     caregiverId: CAREGIVER_ID,
     caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+    ...BOOKING_SCHEDULE, // PYG-461/462: guard เวลาต้องมีวัน/เวลาเริ่มงาน (NOT NULL ในของจริง)
   };
 
   // sentinel error thrown by createCharge — reaching it proves the guard let us through
@@ -168,6 +184,7 @@ describe('PaymentService.createPayment — duplicate guard', () => {
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();
@@ -176,6 +193,36 @@ describe('PaymentService.createPayment — duplicate guard', () => {
   });
 
   const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
+
+  // ── PYG-461/462 เฟส 1: guard เวลา ──────────────────────────────────────
+  // fixture: booking 2026-07-01 09:00 เวลาไทย = 2026-07-01T02:00:00Z, PAYMENT_GRACE_MINUTES default 0
+
+  it('PYG-461: เลยกำหนดชำระแล้ว → 422 ก่อนแตะ payment/Omise ใด ๆ', async () => {
+    jest
+      .spyOn(fixedClock, 'now')
+      .mockReturnValueOnce(new Date('2026-07-01T02:00:00.001Z'));
+
+    const err = await service
+      .createPayment(cardInput, patient)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain('2026-07-01 09:00 (เวลาไทย)');
+    expect(prisma.payment.findUnique).not.toHaveBeenCalled();
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
+
+  it('PYG-461: ตรงกำหนดพอดี → ยังผ่าน guard เวลา (reaches createCharge)', async () => {
+    jest
+      .spyOn(fixedClock, 'now')
+      .mockReturnValueOnce(new Date('2026-07-01T02:00:00.000Z'));
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.createPayment(cardInput, patient)).rejects.toBe(
+      CHARGE_REACHED,
+    );
+    expect(omise.createCharge).toHaveBeenCalledTimes(1);
+  });
 
   it('no existing payment → passes guard (reaches createCharge)', async () => {
     prisma.payment.findUnique.mockResolvedValueOnce(null);
@@ -251,6 +298,7 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
         { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
         { provide: OmiseService, useValue: { createRefund: jest.fn() } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();
@@ -302,6 +350,7 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
     durationHours: 2,
     caregiverId: CAREGIVER_ID,
     caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+    ...BOOKING_SCHEDULE, // PYG-461/462: guard เวลาต้องมีวัน/เวลาเริ่มงาน (NOT NULL ในของจริง)
   };
   const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
   const cardInput = { bookingId: BOOKING_ID, paymentMethod: 'credit_card', omiseToken: 'tokn_1' };
@@ -323,6 +372,7 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();
