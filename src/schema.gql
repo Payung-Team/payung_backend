@@ -599,9 +599,9 @@ input CreateBookingOnBehalfInput {
   bookingDate: String!
 
   """
-  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ
+  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. (เส้นทางเดิม; แนะนำให้ส่ง memberUserId แทน)
   """
-  careRecipientId: ID!
+  careRecipientId: ID
 
   """
   ผู้ดูแลที่เลือกไว้ — ส่งมา = booking เป็น pending ทันที, ไม่ส่ง = unmatched รอ matching
@@ -637,8 +637,16 @@ input CreateBookingOnBehalfInput {
   """
   memberDetails: MemberDetailsInput
 
+  """
+  สมาชิกในกลุ่มที่เป็นผู้รับบริการ (patient) — ระบบจะหา/สร้างโปรไฟล์ในกลุ่มให้อัตโนมัติ
+  """
+  memberUserId: ID
+
   """บันทึกเพิ่มเติมถึงผู้ดูแล"""
   notes: String
+
+  """ชื่อผู้รับบริการ — ใช้ตอนคนจองกรอกข้อมูลให้สมาชิกที่ยังไม่มีข้อมูล"""
+  patientName: String
 
   """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
   serviceLocations: [String!]!
@@ -1021,6 +1029,11 @@ type GroupCareRecipient {
   users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"
   """
   ownerUserId: ID!
+
+  """
+  PYG-500: true = ข้อมูลจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก), false = คนอื่นในกลุ่มกรอกให้ — FE ใช้เลือกป้ายกำกับ
+  """
+  selfReported: Boolean!
 }
 
 type HealthStatus {

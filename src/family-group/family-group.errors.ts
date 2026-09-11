@@ -70,6 +70,11 @@ export const FG_ERROR = {
   GROUP_MEMBER_LIMIT_REACHED: 'GROUP_MEMBER_LIMIT_REACHED',
   /** กลุ่มยังไม่มีลิงก์ที่ใช้งานได้ — เจ้าของต้องกดสร้างก่อน */
   JOIN_LINK_NOT_FOUND: 'JOIN_LINK_NOT_FOUND',
+  /**
+   * PYG-500 — จองแทนสมาชิกที่ "ยังไม่เคยมีข้อมูล" แต่คนจองไม่ได้กรอกชื่อผู้รับบริการมาให้
+   * (โมเดลสมาชิก=patient: ถ้าสมาชิกมีโปรไฟล์/ข้อมูลเดิมอยู่แล้วจะไม่เจอ error นี้เลย)
+   */
+  PATIENT_NAME_REQUIRED: 'PATIENT_NAME_REQUIRED',
   /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
   JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
 } as const;
@@ -160,6 +165,19 @@ export class RecipientNotInGroupError extends FamilyGroupError {
     super(
       'ไม่พบโปรไฟล์ผู้รับบริการนี้ในกลุ่มของคุณ',
       FG_ERROR.RECIPIENT_NOT_IN_GROUP,
+    );
+  }
+}
+
+/**
+ * PYG-500 — จองแทนสมาชิกที่ยังไม่เคยมีข้อมูล แต่ไม่ได้ส่งชื่อผู้รับบริการมา
+ * (ปกติ FE จะบังคับกรอกชื่อในฟอร์ม "กรอกข้อมูลให้สมาชิก" อยู่แล้ว — เป็นด่านกันพลาดฝั่ง BE)
+ */
+export class PatientNameRequiredError extends FamilyGroupError {
+  constructor() {
+    super(
+      'กรุณากรอกชื่อผู้รับบริการ เนื่องจากสมาชิกคนนี้ยังไม่มีข้อมูลในระบบ',
+      FG_ERROR.PATIENT_NAME_REQUIRED,
     );
   }
 }
