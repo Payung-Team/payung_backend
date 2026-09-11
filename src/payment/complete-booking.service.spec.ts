@@ -142,6 +142,26 @@ describe('CompleteBookingService', () => {
 
   // ─── happy path ────────────────────────────────────────────────────────────
 
+  it('PYG-461/462: LOCK ORDER — ล็อก bookings ก่อน payments (กัน deadlock กับ BookingSettlementService)', async () => {
+    prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+    omise.captureCharge.mockResolvedValue(fakeCaptureOk());
+    fsm.transition.mockResolvedValue({});
+
+    await service.completeBooking(asUser(PATIENT_ID, ROLE_ID.PATIENT), BOOKING_ID);
+
+    const sqls = tx.$queryRaw.mock.calls.map((c: unknown[]) =>
+      (c[0] as TemplateStringsArray).join('?'),
+    );
+    expect(sqls[0]).toContain('FROM "bookings"');
+    expect(sqls[0]).toContain('FOR UPDATE');
+    expect(tx.$queryRaw.mock.calls[0][1]).toBe(BOOKING_ID);
+    expect(sqls[1]).toContain('FROM "payments"');
+    // ล็อกทั้งคู่ก่อนเรียก Omise capture
+    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+      omise.captureCharge.mock.invocationCallOrder[0],
+    );
+  });
+
   it('capture + ปิดงาน เมื่อ booking=confirmed และ payment=held (เรียกโดย patient)', async () => {
     prisma.booking.findUnique.mockResolvedValue(fakeBooking());
     omise.captureCharge.mockResolvedValue(fakeCaptureOk());

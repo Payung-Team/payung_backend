@@ -731,6 +731,9 @@ export class PaymentService {
 
     // FSM-driven transition + booking → confirmed (atomic)
     await this.prisma.$transaction(async (tx) => {
+      // PYG-461/462 ★ LOCK ORDER ทั้ง repo: bookings → payments (เหมือน BookingSettlementService)
+      // เดิม FSM update payment ก่อนแล้วค่อย update booking = ลำดับกลับด้าน → deadlock กับ settle ได้
+      await tx.$queryRaw`SELECT 1 FROM "bookings" WHERE "id" = ${payment.bookingId}::uuid FOR UPDATE`;
       await this.fsm.transition(
         payment.id,
         PaymentStatus.captured,

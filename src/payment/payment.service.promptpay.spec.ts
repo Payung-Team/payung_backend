@@ -76,6 +76,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
     payment: { findUnique: jest.Mock; findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
     paymentStatusHistory: { create: jest.Mock };
     $transaction: jest.Mock;
+    $queryRaw?: jest.Mock; // PYG-461/462: มีเฉพาะบน tx (lock booking ใน captureFromWebhook)
   };
   let tx: typeof prisma;
   let fsm: { transition: jest.Mock };
@@ -97,6 +98,8 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
       },
       paymentStatusHistory: { create: jest.fn() },
       $transaction: jest.fn(),
+      // PYG-461/462: captureFromWebhook ล็อก booking ก่อน (LOCK ORDER bookings → payments)
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
     prisma = {
       booking: { findUnique: jest.fn(), update: jest.fn() },
@@ -203,6 +206,26 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
   // ─── captureFromWebhook ────────────────────────────────────────────────
 
   describe('captureFromWebhook', () => {
+    it('PYG-461/462: LOCK ORDER — ล็อก booking ก่อน FSM อัปเดต payment (กัน deadlock กับ settle)', async () => {
+      prisma.payment.findFirst.mockResolvedValue(fakePromptPayPayment());
+      omise.retrieveCharge.mockResolvedValue({
+        id: CHARGE_ID,
+        status: 'successful',
+        paid: true,
+      });
+
+      await service.captureFromWebhook(CHARGE_ID);
+
+      const lock = tx.$queryRaw!;
+      const sql = (lock.mock.calls[0][0] as TemplateStringsArray).join('?');
+      expect(sql).toContain('FROM "bookings"');
+      expect(sql).toContain('FOR UPDATE');
+      expect(lock.mock.calls[0][1]).toBe(BOOKING_ID);
+      expect(lock.mock.invocationCallOrder[0]).toBeLessThan(
+        fsm.transition.mock.invocationCallOrder[0],
+      );
+    });
+
     it('pending → captured + emit CONFIRMED + booking → confirmed', async () => {
       prisma.payment.findFirst.mockResolvedValue(fakePromptPayPayment());
       omise.retrieveCharge.mockResolvedValue({
