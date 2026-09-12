@@ -1704,6 +1704,7 @@ enum NotificationType {
   booking_new
   dispute_created
   dispute_resolved
+  job_care_log_added
   kyc_rejected
   kyc_resubmitted
   kyc_submitted
