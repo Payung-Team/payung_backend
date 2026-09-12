@@ -35,6 +35,10 @@ export enum NotificationType {
   dispute_created = 'dispute_created',           // แจ้งปัญหาใหม่ (→ admin)
   dispute_resolved = 'dispute_resolved',        // ผลตรวจสอบปัญหา (→ patient + caregiver)
   payment_transferred = 'payment_transferred',  // PYG-266: admin โอนเงินให้ caregiver แล้ว (→ caregiver)
+
+  // ─── Job / care log ──────────────────────────────────────────────────────
+  // ⚠️ job_checked_in (PYG-353) มีใน Prisma enum + DB แล้วแต่ยังไม่ได้ sync มาที่นี่ — แยกการ์ด
+  job_care_log_added = 'job_care_log_added',    // มีการบันทึก care log (→ patient)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap
