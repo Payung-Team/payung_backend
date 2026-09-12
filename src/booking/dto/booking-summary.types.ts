@@ -15,6 +15,10 @@ export enum BookingStatusEnum {
   REJECTED  = 'rejected',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled', // patient cancelled
+  // PYG-461/462: ระบบปิดให้เพราะเลยเวลา (ไม่มีผู้ดูแลรับ / ไม่ได้ชำระ) — ค่าเดียว สาเหตุย่อยอยู่ใน
+  // booking_status_history.reason · แยกจาก CANCELLED เพราะเฟส 3 นโยบายคืนเงินต่างกัน
+  // ⚠ breaking change ของ GraphQL enum ฝั่ง FE — cron ที่เขียนค่านี้ปิดไว้ (BOOKING_EXPIRY_CRON_ENABLED)
+  EXPIRED   = 'expired',
 }
 registerEnumType(BookingStatusEnum, { name: 'BookingStatus' });
 
