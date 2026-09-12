@@ -475,6 +475,13 @@ export class BookingService {
       }
     }
 
+    // PYG-361: booking_tasks เป็นแหล่งข้อมูลใหม่สำหรับ per-task completion state
+    // (bookings.tasks ด้านล่างยังเขียนไว้เหมือนเดิม ไม่ถูกลบ — legacy display field ที่ตอนนี้
+    // ไม่ใช่แหล่งเดียวอีกต่อไป) ต้องอยู่ใน transaction เดียวกับ booking.create: ถ้า insert แถว
+    // task ล้ม ต้อง rollback booking ด้วย ไม่งั้นจะได้ booking ที่มี tasks (TEXT[]) แต่
+    // booking_tasks ว่างเปล่า → หน้าติดตามงานของ PYG-361 จะโชว์ "0 จาก 0 รายการ" ทั้งที่จองมี task จริง
+    const suggestedForType = TASK_SUGGESTIONS[dto.serviceType] ?? [];
+
     const data: Prisma.BookingUncheckedCreateInput = {
       patientId,
       caregiverId:      resolvedCaregiverId,
@@ -530,11 +537,13 @@ export class BookingService {
      * ทุกอย่างที่ "ต้องเกิดพร้อม booking" อยู่ใน transaction เดียวกันหมด
      *
      * ① ตัว booking เอง
-     * ② PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
+     * ② PYG-361 — แถว booking_tasks ต่อ 1 task (per-task completion state; bookings.tasks
+     *    ด้านบนยังเขียนไว้เหมือนเดิม เป็น legacy display field ที่ไม่ใช่แหล่งเดียวอีกต่อไป)
+     * ③ PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
      *    กติกาข้อ 2 ของโมดูล family group (ดูหัวไฟล์ family-group.service.ts)
      *    ถ้าเขียนแยกกันแล้วอันใดอันหนึ่งพัง จะได้ฟีดที่โกหกว่ามีการจองที่ไม่เคยเกิดขึ้น
      *    หรือมีการจองที่ไม่โผล่ในฟีดเลย ซึ่งทั้งสองแบบตรวจสอบย้อนหลังไม่ได้
-     * ③ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
+     * ④ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
      *
      * ⚠ ก่อนหน้านี้ "จองปกติ" ใช้ create เดี่ยว ๆ เพื่อไม่จ่ายค่า transaction ฟรี ๆ
      *   PYG-434 เปลี่ยนให้ใช้ transaction ทุกเส้นทาง เพราะ AC เขียนว่า
@@ -575,7 +584,19 @@ export class BookingService {
 
       const created = await tx.booking.create({ data, include });
 
-      // ② จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
+      // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
+      // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
+      await tx.booking_tasks.createMany({
+        data: dto.tasks.map((description, index) => ({
+          booking_id:   created.id,
+          description,
+          is_suggested: suggestedForType.includes(description),
+          is_custom:    !suggestedForType.includes(description),
+          sort_order:   index,
+        })),
+      });
+
+      // ③ จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
       if (onBehalf) {
         await tx.familyGroupActivity.create({
           data: {
@@ -595,7 +616,7 @@ export class BookingService {
         });
       }
 
-      // ③ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
+      // ④ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
       //    ส่ง tx เข้าไปเพื่อให้อยู่ใน transaction เดียวกัน (service บังคับรับ tx)
       await this.jobQrService.createForBooking(tx, created);
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import { BookingResolver } from './booking.resolver';
+import { BookingTaskService } from './booking-task.service';
 import { BookingController, BookingTaskSuggestionsController } from './booking.controller';
 import { CaregiverBookingService } from './caregiver-booking.service';
 import { CaregiverBookingResolver } from './caregiver-booking.resolver';
@@ -28,6 +29,8 @@ import { BookingExpiryService } from './booking-expiry.service';
     CaregiverBookingResolver,
     // PYG-461/462 เฟส 1: cron ปิด booking ที่เลยเวลาและไม่มีเงินค้าง (ปิดเป็น default)
     BookingExpiryService,
+    // PYG-361: รายการงานย่อยต่อ booking (booking_tasks) — ใช้ร่วมกันทั้งฝั่ง patient/caregiver
+    BookingTaskService,
   ],
   // PYG-424: FamilyGroupModule เรียก createBookingOnBehalf ต่อจากที่นี่
   // (ทิศทางเดียว BookingModule ไม่รู้จัก FamilyGroupModule → ไม่มี circular dependency)

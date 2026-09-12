@@ -6,6 +6,8 @@ import { JobQrService } from './qr/job-qr.service';
 import { JobQrResolver } from './qr/job-qr.resolver';
 import { JobScanService } from './qr/job-scan.service';
 import { JobScanResolver } from './qr/job-scan.resolver';
+import { JobEvidenceService } from './job-evidence.service';
+import { CareLogService } from './care-log.service';
 import { CommonModule } from '../common/common.module';
 import { NotificationModule } from '../notification/notification.module';
 
@@ -46,6 +48,8 @@ import { NotificationModule } from '../notification/notification.module';
     // PYG-435: สแกน QR → เช็คอิน/เช็คเอาท์
     JobScanResolver,
     JobScanService,
+    JobEvidenceService,
+    CareLogService,
   ],
   exports: [MonitoringService, JobQrService],
 })

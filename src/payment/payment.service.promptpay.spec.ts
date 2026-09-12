@@ -13,6 +13,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, UnprocessableEntityException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
@@ -133,6 +134,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
           provide: ClockService,
           useValue: { now: () => new Date('2026-06-30T00:00:00.000Z') },
         },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();

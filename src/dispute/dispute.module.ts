@@ -5,9 +5,11 @@ import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { DisputeService } from './dispute.service';
 import { DisputeResolver } from './dispute.resolver';
+import { DisputeController } from './dispute.controller';
 
 @Module({
   imports: [CommonModule, PaymentModule],
+  controllers: [DisputeController],
   providers: [
     SupabaseAuthGuard,
     RolesGuard,

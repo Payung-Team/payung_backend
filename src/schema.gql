@@ -2,6 +2,29 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+input AddCareLogInput {
+  """เนื้อหาบันทึก ไม่เกิน 500 ตัวอักษร"""
+  body: String!
+
+  """
+  booking ที่จะบันทึก — ต้องเป็นงานของผู้ดูแลคนนี้และอยู่ระหว่างเช็คอิน (in_progress)
+  """
+  bookingId: ID!
+
+  """หมวดหมู่: 'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — เก็บเป็น metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """
+  รูปประกอบ (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
+  """
+  photoUrl: String
+}
+
 input AddGroupCareRecipientInput {
   """กลุ่มที่จะเพิ่มโปรไฟล์เข้าไป — ผู้เรียกต้องเป็นสมาชิก ACTIVE"""
   groupId: ID!
@@ -291,6 +314,11 @@ enum BookingStatus {
 
 type BookingSummary {
   bookingDate: String!
+
+  """
+  PYG-361: รายการงานย่อยของ booking นี้ พร้อมสถานะทำแล้ว/ยัง เรียงตาม sortOrder
+  """
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
@@ -317,6 +345,15 @@ type BookingSummary {
   timeSlot: String!
 }
 
+type BookingTask {
+  description: String!
+  doneAt: DateTime
+  doneBy: ID
+  id: ID!
+  sortOrder: Int!
+  timeNote: String
+}
+
 input CancelAcceptanceInput {
   bookingId: ID!
   reason: String!
@@ -331,6 +368,24 @@ type CancelScheduledDeletePayload {
   """Whether the account was reactivated as part of the cancellation"""
   reactivated: Boolean!
   user: User!
+}
+
+type CareLog {
+  body: String!
+  bookingId: ID!
+
+  """'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """เวลาที่เครื่อง client อ้าง — metadata เท่านั้น"""
+  deviceTs: DateTime
+  id: ID!
+
+  """signed URL ของรูปประกอบ — หมดอายุใน 1 ชม."""
+  photoUrl: String
+
+  """เวลาของเซิร์ฟเวอร์ — เวลาที่ถือเป็นทางการ"""
+  serverTs: DateTime!
 }
 
 type Caregiver {
@@ -393,6 +448,9 @@ type CaregiverBookingListResponse {
 type CaregiverBookingSummary {
   acceptedAt: DateTime
   bookingDate: String!
+
+  """PYG-361: เหมือนกับฝั่ง patient แต่มุมมอง caregiver"""
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
@@ -805,6 +863,7 @@ enum DisputeStatus {
   flagged
   none
   resolved
+  under_review
 }
 
 type DisputeSummary {
@@ -1483,6 +1542,11 @@ type Mutation {
   ): User!
 
   """
+  PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.
+  """
+  addCareLog(input: AddCareLogInput!): CareLog!
+
+  """
   เพิ่มโปรไฟล์ผู้รับบริการเข้ากลุ่ม — ผู้เรียกกลายเป็นเจ้าของโปรไฟล์นั้น. NOT_A_MEMBER ถ้าไม่ใช่สมาชิก ACTIVE
   """
   addGroupCareRecipient(input: AddGroupCareRecipientInput!): GroupCareRecipient!
@@ -1542,6 +1606,14 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  Fix a fresh Google OAuth signup account's role to match what the user picked before being redirected to Google. Safe no-op for existing accounts or already-correct roles.
+  """
+  confirmOAuthRole(
+    """1 = patient, 2 = caregiver"""
+    role: Int!
+  ): User!
 
   """
   จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
@@ -1616,11 +1688,6 @@ type Mutation {
   markAsRead(id: String!): Notification!
 
   """
-  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
-  """
-  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
-
-  """
   Admin only: Refund a captured payment (full or partial). amount omitted = full refund. amount specified must be in (0, payment.amount]. Uses Omise-Idempotency-Key to prevent double-refund races.
   """
   refundPayment(input: RefundPaymentInput!): Payment!
@@ -1689,6 +1756,11 @@ type Mutation {
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
 
+  """
+  PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.
+  """
+  setTaskDone(input: SetTaskDoneInput!): BookingTask!
+
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
 
@@ -1714,6 +1786,11 @@ type Mutation {
   โอนสิทธิ์เจ้าของให้สมาชิกคนอื่นในกลุ่ม (เจ้าของเท่านั้น) — ผู้เรียกจะกลายเป็นสมาชิกธรรมดาทันที. เป้าหมายต้องเป็นสมาชิก ACTIVE อยู่แล้ว มิฉะนั้น MEMBER_NOT_FOUND.
   """
   transferOwnership(input: TransferOwnershipInput!): FamilyGroup!
+
+  """
+  Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.
+  """
+  transferPaymentToCaregiver(bookingId: ID!): Payment!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -2025,6 +2102,11 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
+  """
+  careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
 
   """
   A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
@@ -2493,6 +2575,11 @@ input ServiceAreaInput {
 
   """Service area province (จังหวัด)"""
   province: String
+}
+
+input SetTaskDoneInput {
+  done: Boolean!
+  taskId: ID!
 }
 
 """Caregiver search sort order"""

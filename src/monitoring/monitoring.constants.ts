@@ -145,3 +145,21 @@ export const JOB_EVENT_SOURCE = {
 
 /** timezone ที่ใช้ตัดสินว่า "วันนี้" คือวันไหน */
 export const BUSINESS_TIMEZONE = 'Asia/Bangkok';
+
+/**
+ * หมวดหมู่ของ "บันทึกจากผู้ดูแล" (PYG-361)
+ * TEXT + allowlist ในโค้ด ไม่ใช่ DB enum — เหตุผลเดียวกับ bookings.status:
+ * เพิ่มค่าใหม่ได้โดยไม่ต้อง ALTER TYPE
+ */
+export const CARE_LOG_CATEGORY = {
+  VITALS: 'vitals',
+  FOOD: 'food',
+  MEDICATION: 'medication',
+  ACTIVITY: 'activity',
+  OTHER: 'other',
+} as const;
+
+export type CareLogCategory =
+  (typeof CARE_LOG_CATEGORY)[keyof typeof CARE_LOG_CATEGORY];
+
+export const CARE_LOG_CATEGORY_VALUES: string[] = Object.values(CARE_LOG_CATEGORY);
