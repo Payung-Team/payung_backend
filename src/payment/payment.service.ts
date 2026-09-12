@@ -334,9 +334,23 @@ export class PaymentService {
     // payment row (FE try-again button + audit) then rethrow the SAME user-facing error.
     // Booking stays `accepted` (the confirm/held tx below never runs). Retry itself already
     // works via the non-blocking guard; this write is for the failed-state record.
+    //
+    // PYG-4xx: แปลง token เป็น Omise customer+card ก่อนกันวงเงินเสมอ (ไม่ใช้ token ตรงกับ
+    // createCharge อีกต่อไป) — token ใช้ได้ครั้งเดียวแล้วหมดอายุทันที ถ้าไม่แปลงตั้งแต่ตอนนี้
+    // จะไม่มีทาง re-authorize วงเงินใหม่ให้บัตรใบเดิมได้เลยตอน hold ใกล้หมดอายุ (ดู
+    // PaymentCronService.refreshExpiringHolds)
     let chargeResult;
+    let customerId: string;
+    let cardId: string;
     try {
-      chargeResult = await this.omiseService.createCharge(amountSatangs, omiseToken);
+      const customer = await this.omiseService.createCustomerWithCard(omiseToken);
+      customerId = customer.customerId;
+      cardId = customer.cardId;
+      chargeResult = await this.omiseService.createChargeForCustomer(
+        amountSatangs,
+        customerId,
+        cardId,
+      );
     } catch (err) {
       await this.recordFailedAuthorize(booking.id, existingPayment, user.id, err, {
         patientId: user.id,
@@ -362,6 +376,10 @@ export class PaymentService {
         paymentMethod: 'credit_card',
         omiseToken,
         omiseChargeId: chargeResult.id,
+        // PYG-4xx: เก็บไว้ให้ hold-refresh cron เรียก createChargeForCustomer ซ้ำได้โดยไม่ต้อง
+        // ขอ token ใหม่จากผู้ป่วย
+        omiseCustomerId: customerId,
+        omiseCardId: cardId,
         failureCode: chargeResult.failure_code ?? null,
         failureMessage: chargeResult.failure_message ?? null,
       };

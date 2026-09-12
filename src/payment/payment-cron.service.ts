@@ -21,6 +21,27 @@ export class PaymentCronService {
     private readonly idempotency: IdempotencyService,
   ) {}
 
+  /**
+   * PYG-4xx: หา timestamp ของ "การเข้าสถานะ held ครั้งล่าสุด" จาก payment_status_history
+   *
+   * ★ ทำไมต้องดูจาก history แทน payment.createdAt ตรงๆ: หลังจาก refreshExpiringHolds()
+   *   ต่ออายุวงเงินให้แล้ว (void ของเดิม + authorize ใหม่) แถว payment ยังเป็น row เดิม —
+   *   createdAt ไม่เปลี่ยน แต่ "อายุของ hold ปัจจุบัน" ต้องนับใหม่จากตอนต่ออายุ ไม่ใช่ตอนสร้าง
+   *   booking ครั้งแรก ถ้ายังอิง createdAt คู่นี้จะกัดกันเอง: refresh ต่ออายุไปวันนี้
+   *   พรุ่งนี้ cron นี้ (อิง createdAt เดิม) จะมาปิดวงเงินที่เพิ่งต่อทันที
+   *
+   * fallback เป็น payment.createdAt ถ้าหา history ไม่เจอ (ไม่ควรเกิด — ทุก payment ที่เคย
+   * held ต้องมีแถว toStatus=held อย่างน้อย 1 แถวเสมอ กันไว้เผื่อข้อมูลเก่าก่อนมี history)
+   */
+  private async getHeldSince(paymentId: string, fallback: Date): Promise<Date> {
+    const latest = await this.prisma.paymentStatusHistory.findFirst({
+      where: { paymentId, toStatus: PaymentStatus.held },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    return latest?.createdAt ?? fallback;
+  }
+
   @Cron(CronExpression.EVERY_DAY_AT_2AM)
   async handleExpiredHolds(): Promise<void> {
     this.logger.log('Running expired holds cron job...');
@@ -29,14 +50,20 @@ export class PaymentCronService {
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() - holdDays);
 
-    const expiredPayments = await this.prisma.payment.findMany({
-      where: {
-        paymentStatus: PaymentStatus.held,
-        createdAt: {
-          lt: expiryDate,
-        },
-      },
+    // ★ ดึง held ทั้งหมดมาก่อน แล้วกรองด้วย "held-since จริง" (ดู getHeldSince ด้านบน) —
+    //   กรองด้วย payment.createdAt ตรงๆ ในชั้น DB ไม่ได้อีกต่อไป เพราะ hold ที่ถูก
+    //   refreshExpiringHolds() ต่ออายุแล้วต้องนับอายุใหม่จากตอนต่ออายุ ไม่ใช่ตอนสร้าง booking
+    const heldPayments = await this.prisma.payment.findMany({
+      where: { paymentStatus: PaymentStatus.held },
     });
+
+    const expiredPayments: typeof heldPayments = [];
+    for (const payment of heldPayments) {
+      const heldSince = await this.getHeldSince(payment.id, payment.createdAt);
+      if (heldSince < expiryDate) {
+        expiredPayments.push(payment);
+      }
+    }
 
     if (expiredPayments.length === 0) {
       this.logger.log('No expired held payments found.');
@@ -94,6 +121,144 @@ export class PaymentCronService {
     }
 
     this.logger.log('Expired holds cron job completed.');
+  }
+
+  /**
+   * PYG-4xx — ต่ออายุวงเงิน (hold) ที่ใกล้จะหมดอายุอัตโนมัติ ก่อนถึงวันบริการจริง
+   *
+   * ทำไมต้องมี: booking จองล่วงหน้าได้หลายวัน (มากกว่า PAYMENT_HOLD_DAYS) แต่ Omise จำกัดอายุ
+   * การกันวงเงิน (authorize) ของบัตรไว้ประมาณ 7 วัน ถ้าไม่ต่ออายุ วงเงินจะถูกธนาคารปล่อยเองก่อน
+   * ถึงวันบริการ แล้ว handleExpiredHolds ด้านบนจะมา void ทิ้งไปเลย — booking ที่จ่ายเงินแล้ว
+   * จะไม่มีวงเงินเหลือให้ capture ตอนจบงาน
+   *
+   * วิธีทำงาน ต่อ 1 payment ที่เข้าเงื่อนไข:
+   *   1) void charge เดิม (best-effort — ถ้าฝั่ง Omise ปล่อยไปเองแล้วก็ถือว่าผ่าน ไม่ block)
+   *   2) createChargeForCustomer ด้วย customer/card ที่บันทึกไว้ตอน createPayment (ไม่ใช้ token
+   *      เพราะ token เดิมถูกใช้ไปครั้งเดียวตั้งแต่ตอนนั้นแล้ว) — ผ่าน IdempotencyService กัน
+   *      สร้าง charge ซ้ำถ้า cron รันซ้ำ/ล้มกลางคัน
+   *   3) held → voided → held ใน $transaction เดียว (audit ครบทั้งสองขา + สลับ chargeId)
+   *
+   * ★ payment เก่าที่สร้างก่อนมี customer/card (omiseCustomerId/omiseCardId เป็น null) จะไม่ถูก
+   *   คัดมาเลย — ต่ออายุให้ไม่ได้จริงๆ เพราะไม่มีการ์ดที่ผูกไว้ให้เรียกซ้ำ ปล่อยให้
+   *   handleExpiredHolds จัดการตามเดิม (พฤติกรรมเดิมก่อนการ์ดนี้)
+   * ★ หยุดต่ออายุถ้าถึงวันบริการแล้ว (bookingDate <= now) — ปล่อยให้ checkout/capture หรือ
+   *   safety net อื่น (no-checkout-sweeper) จัดการแทน ไม่ต่ออายุเรื่อยๆ ไม่มีที่สิ้นสุด
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_1AM)
+  async refreshExpiringHolds(): Promise<void> {
+    this.logger.log('Running hold-refresh cron job...');
+
+    const holdDays = Number(this.config.get('PAYMENT_HOLD_DAYS', 7));
+    const bufferDays = Number(this.config.get('PAYMENT_HOLD_REFRESH_BUFFER_DAYS', 2));
+    const refreshThresholdMs = Math.max(0, holdDays - bufferDays) * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const candidates = await this.prisma.payment.findMany({
+      where: {
+        paymentStatus: PaymentStatus.held,
+        paymentMethod: 'credit_card',
+        omiseCustomerId: { not: null },
+        omiseCardId: { not: null },
+      },
+      include: { booking: { select: { bookingDate: true, status: true } } },
+    });
+
+    if (candidates.length === 0) {
+      this.logger.log('No refreshable held payments found.');
+      return;
+    }
+
+    for (const payment of candidates) {
+      try {
+        const heldSince = await this.getHeldSince(payment.id, payment.createdAt);
+        if (now - heldSince.getTime() < refreshThresholdMs) {
+          continue; // ยังไม่ถึงช่วงที่ต้องต่ออายุ
+        }
+        if (payment.booking.bookingDate.getTime() <= now) {
+          this.logger.log(
+            `[hold-refresh] payment ${payment.id} ถึงวันบริการแล้ว — ข้าม ปล่อยให้ checkout/capture จัดการ`,
+          );
+          continue;
+        }
+        if (['cancelled', 'rejected'].includes(payment.booking.status)) {
+          this.logger.warn(
+            `[hold-refresh] payment ${payment.id} ยัง held อยู่แต่ booking สถานะ ${payment.booking.status} แล้ว — ข้าม (ตรวจสอบ auto-void flow)`,
+          );
+          continue;
+        }
+
+        // 1) void ของเดิม — best-effort เท่านั้น ถ้าฝั่ง Omise ปล่อยไปเองแล้วก็ไม่ block ขั้นถัดไป
+        if (payment.omiseChargeId) {
+          try {
+            await this.omise.voidCharge(payment.omiseChargeId);
+          } catch (voidErr) {
+            const m = voidErr instanceof Error ? voidErr.message : String(voidErr);
+            this.logger.warn(
+              `[hold-refresh] void ของเดิมไม่สำเร็จ (ไปต่อได้ อาจหมดอายุไปแล้วฝั่ง Omise) payment=${payment.id}: ${m}`,
+            );
+          }
+        }
+
+        // 2) authorize ใหม่ด้วย customer/card เดิม (ไม่ใช้ token) — กันซ้ำด้วย idempotency key
+        //    ที่อิง chargeId เดิมเป็นส่วนหนึ่ง: ถ้า cron รันซ้ำก่อน chargeId ในข้อ 3 จะอัปเดต
+        //    key จะยังเหมือนเดิม → ได้ผลลัพธ์เดิมกลับมา ไม่สร้าง charge ที่สอง
+        const amountSatangs = Math.round(Number(payment.amount) * 100);
+        const newCharge = await this.idempotency.runOnce({
+          key: `reauth:${payment.id}:${payment.omiseChargeId ?? 'none'}`,
+          action: 'reauth',
+          bookingId: payment.bookingId,
+          fn: (idemKey) =>
+            this.omise.createChargeForCustomer(
+              amountSatangs,
+              payment.omiseCustomerId!,
+              payment.omiseCardId!,
+              idemKey,
+            ),
+        });
+
+        // 3) held → voided → held ใน transaction เดียว (audit ครบ + สลับ chargeId แล้วเสร็จ)
+        await this.prisma.$transaction(async (tx) => {
+          await this.fsm.transition(
+            payment.id,
+            PaymentStatus.voided,
+            {
+              reason: 'พักวงเงินเดิมเพื่อต่ออายุอัตโนมัติก่อนหมดอายุ (hold refresh)',
+              metadata: { oldChargeId: payment.omiseChargeId },
+            },
+            tx,
+          );
+          await tx.payment.update({
+            where: { id: payment.id },
+            data: { omiseChargeId: newCharge.id },
+          });
+          await this.fsm.transition(
+            payment.id,
+            PaymentStatus.held,
+            {
+              reason: 'ต่ออายุวงเงินอัตโนมัติสำเร็จ (hold refresh)',
+              metadata: { newChargeId: newCharge.id },
+            },
+            tx,
+          );
+        });
+
+        this.eventEmitter.emit('payment.hold_refreshed', {
+          paymentId: payment.id,
+          bookingId: payment.bookingId,
+          oldChargeId: payment.omiseChargeId,
+          newChargeId: newCharge.id,
+        });
+
+        this.logger.log(
+          `[hold-refresh] ต่ออายุวงเงินสำเร็จ payment=${payment.id} newChargeId=${newCharge.id}`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`[hold-refresh] ต่ออายุวงเงินไม่สำเร็จ payment=${payment.id}: ${message}`);
+      }
+    }
+
+    this.logger.log('Hold-refresh cron job completed.');
   }
 
   /**
