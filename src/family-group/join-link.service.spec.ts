@@ -24,6 +24,7 @@ import {
   JOIN_LINK_STATUS,
   MEMBER_STATUS,
 } from './family-group.constants';
+import type { JoinLinkStatus } from './family-group.constants';
 import { FG_ERROR } from './family-group.errors';
 
 const GROUP_ID = '11111111-1111-1111-1111-111111111111';
@@ -423,7 +424,14 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
 
   // ═══ assertJoinLinkUsable — ตรรกะร่วมกับ PYG-417 ═════════════════════
   describe('assertJoinLinkUsable', () => {
-    const usable = {
+    // status ต้องกว้างเป็น JoinLinkStatus ไม่ใช่ literal 'ACTIVE'
+    // ไม่งั้น `typeof usable` (ที่ blocked[] ใช้) จะรับ REVOKED ไม่ได้ → TS2322
+    const usable: {
+      status: JoinLinkStatus;
+      expiresAt: Date;
+      maxUses: number;
+      usedCount: number;
+    } = {
       status: JOIN_LINK_STATUS.ACTIVE,
       expiresAt: new Date(Date.now() + HOUR),
       maxUses: 5,
