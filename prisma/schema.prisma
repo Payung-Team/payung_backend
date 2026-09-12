@@ -968,6 +968,9 @@ model Payment {
   currency       String                 @default("THB") @db.VarChar(3)
   omiseChargeId  String?                @map("omise_charge_id")
   omiseToken     String?                @map("omise_token")
+  // saved card (Christina): เก็บ customer/card id ของ Omise ไว้จ่ายซ้ำ
+  omiseCustomerId String?               @map("omise_customer_id")
+  omiseCardId     String?               @map("omise_card_id")
   paymentMethod  String                 @default("credit_card") @map("payment_method") @db.VarChar(20)
   paymentStatus  PaymentStatus          @default(pending) @map("payment_status")
   failureCode    String?                @map("failure_code")
@@ -1040,6 +1043,7 @@ enum NotificationType {
   payment_voided
   payment_transferred
   job_checked_in // PYG-353
+  job_care_log_added // มีการบันทึก care log (Christina)
 }
 
 enum booking_service_type {
