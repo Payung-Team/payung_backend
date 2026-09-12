@@ -188,6 +188,8 @@ describe('PaymentService.createPayment — duplicate guard', () => {
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: { refund: jest.fn() } },
+        // merge PYG-320: ctor รับ dep เพิ่มจากทั้งสองฝั่ง — เติมที่ขาด
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 
@@ -377,6 +379,8 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: ClockService, useValue: fixedClock }, // PYG-461/462
         { provide: RefundService, useValue: { refund: jest.fn() } },
+        // merge PYG-320: ctor รับ dep เพิ่มจากทั้งสองฝั่ง — เติมที่ขาด
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(PaymentService);
@@ -493,6 +497,10 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: emitter },
         { provide: ConfigService, useValue: config },
+        // merge PYG-320: ctor รับ dep เพิ่มจากทั้งสองฝั่ง — เติมที่ขาด
+        { provide: RefundService, useValue: { refund: jest.fn() } },
+        // merge PYG-320: ctor รับ dep เพิ่มจากทั้งสองฝั่ง — เติมที่ขาด
+        { provide: ClockService, useValue: fixedClock },
       ],
     }).compile();
 
