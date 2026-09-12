@@ -756,6 +756,11 @@ input CreatePaymentInput {
 
   """วิธีการชำระเงิน: credit_card | promptpay"""
   paymentMethod: String! = "credit_card"
+
+  """
+  เก็บบัตรใบนี้ไว้ที่ Omise เพื่อต่ออายุวงเงินอัตโนมัติหรือไม่ — ต้องให้ผู้ใช้เลือกเอง ไม่ส่ง = ไม่เก็บ
+  """
+  saveCard: Boolean! = false
 }
 
 input CreateReviewInput {
