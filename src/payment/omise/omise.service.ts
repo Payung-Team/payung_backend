@@ -15,6 +15,9 @@
  * - retrieveCharge(omiseChargeId) — PYG-278: GET /charges/:id สำหรับ polling / webhook reconciliation
  * - createTransfer(amountSatangs, recipientId, idempotencyKey) — PYG-330 ก้อน B:
  *     โอนเงินไปยัง Omise recipient (ใช้ Omise-Idempotency-Key กันโอนซ้ำ)
+ * - createCustomerWithCard(token) — PYG-4xx: แปลง token ครั้งเดียวเป็น customer+card ถาวร
+ * - createChargeForCustomer(amount, customerId, cardId) — PYG-4xx: กันวงเงินใหม่จากบัตรที่ผูก
+ *     ไว้แล้ว ไม่ใช้ token — ใช้โดย hold-refresh cron เพื่อ re-authorize ก่อนวงเงินเดิมหมดอายุ
  *
  * Auth ของ Omise = HTTP Basic โดยใช้ secret key เป็น username, password ว่าง
  *   → header: Authorization: Basic base64("<SECRET_KEY>:")
@@ -121,6 +124,18 @@ export type OmiseCaptureResult = {
    * ใช้ตอน reconcile refund.create webhook (คืนเงินที่ทำนอกแอป เช่น ผ่าน Omise dashboard)
    */
   refunded?: number;
+};
+
+/**
+ * PYG-4xx: ผลลัพธ์จาก POST /customers — token ถูก "แปลง" เป็นบัตรที่ผูกกับ customer แล้ว
+ * ใช้ customerId+cardId เปิด charge ใหม่ซ้ำได้เรื่อยๆ โดยไม่ต้องขอ token จากผู้ป่วยอีก
+ * (token เดิมใช้ได้ครั้งเดียวแล้วหมดอายุทันที — นี่คือทางเดียวที่ทำให้ "re-authorize อัตโนมัติ" เป็นไปได้)
+ */
+export type OmiseCustomerResult = {
+  /** customer id ของ Omise (เก็บลง payments.omise_customer_id) */
+  customerId: string;
+  /** card id เริ่มต้นของ customer คนนี้ (เก็บลง payments.omise_card_id) */
+  cardId: string;
 };
 
 @Injectable()
@@ -333,6 +348,179 @@ export class OmiseService {
     if (status === 'failed' || !authorized) {
       this.logger.error(
         `[Omise] createCharge not authorized status=${status} authorized=${authorized} failureCode=${failureCode}`,
+      );
+      throw mapOmiseError(failureCode || 'not_authorized', failureMessage, {
+        omiseCode: failureCode,
+        omiseMessage: failureMessage,
+      });
+    }
+
+    return {
+      id: typeof body.id === 'string' ? body.id : '',
+      status,
+      amount: typeof body.amount === 'number' ? body.amount : 0,
+      captured: body.paid === true,
+      paid: body.paid === true,
+      authorized,
+      failure_code: failureCode,
+      failure_message: failureMessage,
+    };
+  }
+
+  /**
+   * createCustomerWithCard — PYG-4xx: "แปลง" token ครั้งเดียวให้เป็นบัตรที่ผูกกับ Omise
+   * Customer ถาวร (POST /customers ด้วย card=token)
+   *
+   * ★ ทำไมต้องมีเมธอดนี้: token ของ Omise ใช้ได้ครั้งเดียวแล้วหมดอายุทันที (single-use)
+   *   ถ้าไม่แปลงเป็น customer+card ไว้ตั้งแต่ตอนกันวงเงินครั้งแรก จะไม่มีทาง re-authorize
+   *   วงเงินใหม่ให้บัตรใบเดิมได้เลยในอนาคต (เช่น ตอนวงเงินเดิมใกล้หมดอายุ) โดยไม่ให้ผู้ป่วย
+   *   กรอกบัตรซ้ำ — เรียกเมธอดนี้ "ครั้งเดียว" ตอน createPayment แรกสุด ก่อนเรียก createCharge
+   *
+   * @param token - Omise token จากการ tokenize บัตรฝั่ง client (ใช้ได้ครั้งเดียว)
+   * @throws CaptureFailedError ถ้าสร้าง customer ไม่สำเร็จ (ใช้ error type เดียวกับ charge
+   *   เพราะฝั่งเรียก createPayment จับ error ประเภทนี้อยู่แล้วเพื่อบันทึก failed payment)
+   */
+  async createCustomerWithCard(token: string): Promise<OmiseCustomerResult> {
+    if (!this.secretKey) {
+      throw new CaptureFailedError(
+        'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY — ไม่สามารถสร้าง Omise customer ได้',
+        {},
+      );
+    }
+
+    const url = `${this.apiBase}/customers`;
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ card: token }),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] createCustomerWithCard network error: ${message}`);
+      throw new CaptureFailedError('ติดต่อ Omise ไม่สำเร็จขณะสร้าง customer', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createCustomerWithCard failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw new CaptureFailedError('Omise ปฏิเสธการสร้าง customer', {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    const customerId = typeof body.id === 'string' ? body.id : '';
+    // cards.data[0] = บัตรที่เพิ่งผูกเข้าไป (customer สร้างใหม่จึงมีบัตรเดียวเสมอ)
+    const cards = body.cards as { data?: Array<{ id?: string }> } | undefined;
+    const cardId = cards?.data?.[0]?.id;
+
+    if (!customerId || !cardId) {
+      this.logger.error(
+        `[Omise] createCustomerWithCard: response missing id/card — customerId=${customerId} cardId=${cardId}`,
+      );
+      throw new CaptureFailedError('Omise ตอบกลับไม่ครบ (ไม่มี customer id หรือ card id)', {
+        omiseMessage: `customerId=${customerId || '(missing)'} cardId=${cardId || '(missing)'}`,
+      });
+    }
+
+    return { customerId, cardId };
+  }
+
+  /**
+   * createChargeForCustomer — PYG-4xx: กันวงเงิน (authorize, capture=false) จากบัตรที่ผูกกับ
+   * Omise Customer ไว้แล้ว — ไม่ใช้ token เลย จึงเรียกซ้ำได้เรื่อยๆ (ใช้โดย hold-refresh cron)
+   *
+   * @param amount     - จำนวนเงิน (satangs)
+   * @param customerId - Omise customer id (payments.omise_customer_id)
+   * @param cardId     - Omise card id ของ customer นั้น (payments.omise_card_id)
+   * @param idempotencyKey - ส่งเป็น Omise-Idempotency-Key กันสร้าง charge ซ้ำถ้า cron รันซ้ำ
+   */
+  async createChargeForCustomer(
+    amount: number,
+    customerId: string,
+    cardId: string,
+    idempotencyKey?: string,
+  ): Promise<OmiseCaptureResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+
+    const url = `${this.apiBase}/charges`;
+    const authHeader =
+      'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    const headers: Record<string, string> = {
+      Authorization: authHeader,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (idempotencyKey) {
+      headers['Omise-Idempotency-Key'] = idempotencyKey;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: new URLSearchParams({
+          amount: amount.toString(),
+          currency: 'thb',
+          customer: customerId,
+          card: cardId,
+          capture: 'false',
+        }),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] createChargeForCustomer network error: ${message}`);
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะกันวงเงินใหม่', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage =
+        typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] createChargeForCustomer failed status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode, omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    const status = typeof body.status === 'string' ? body.status : 'unknown';
+    const authorized = body.authorized === true;
+    const failureCode =
+      typeof body.failure_code === 'string' ? body.failure_code : undefined;
+    const failureMessage =
+      typeof body.failure_message === 'string' ? body.failure_message : undefined;
+
+    if (status === 'failed' || !authorized) {
+      this.logger.error(
+        `[Omise] createChargeForCustomer not authorized status=${status} authorized=${authorized} failureCode=${failureCode}`,
       );
       throw mapOmiseError(failureCode || 'not_authorized', failureMessage, {
         omiseCode: failureCode,
