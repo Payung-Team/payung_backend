@@ -357,22 +357,35 @@ export class PaymentService {
     // Booking stays `accepted` (the confirm/held tx below never runs). Retry itself already
     // works via the non-blocking guard; this write is for the failed-state record.
     //
-    // PYG-4xx: แปลง token เป็น Omise customer+card ก่อนกันวงเงินเสมอ (ไม่ใช้ token ตรงกับ
-    // createCharge อีกต่อไป) — token ใช้ได้ครั้งเดียวแล้วหมดอายุทันที ถ้าไม่แปลงตั้งแต่ตอนนี้
-    // จะไม่มีทาง re-authorize วงเงินใหม่ให้บัตรใบเดิมได้เลยตอน hold ใกล้หมดอายุ (ดู
-    // PaymentCronService.refreshExpiringHolds)
+    // PYG-4xx — เก็บบัตรเป็น opt-in ★ default = ไม่เก็บ
+    //
+    // saveCard=false / ไม่ส่ง (ทางเดิม, ค่าเริ่มต้น):
+    //   ชาร์จด้วย token ตรง ๆ — token ใช้ได้ครั้งเดียวแล้วหมดอายุทันที ไม่มีอะไรของบัตร
+    //   ค้างที่ Omise และ omiseCustomerId/omiseCardId คงเป็น null → hold-refresh cron
+    //   (ที่กรอง omiseCustomerId: { not: null }) จะข้าม payment ใบนี้ไปเอง ไม่ต้องแก้ cron
+    //
+    // saveCard=true (ผู้ใช้ติ๊กเลือกเอง):
+    //   แปลง token เป็น Omise Customer + Card ถาวร แล้วกันวงเงินจากบัตรที่ผูกไว้
+    //   เก็บ id ทั้งสองไว้บน payment ให้ cron re-authorize ได้โดยไม่ต้องขอบัตรจากผู้ป่วยซ้ำ
+    //
+    // ★ ค่า null ของ omise_customer_id คือ "ไม่ได้ยินยอมให้เก็บบัตร" — ไม่มีคอลัมน์ consent
+    //   แยกโดยตั้งใจ (ดู CreatePaymentInput.saveCard)
     let chargeResult;
-    let customerId: string;
-    let cardId: string;
+    let customerId: string | null = null;
+    let cardId: string | null = null;
     try {
-      const customer = await this.omiseService.createCustomerWithCard(omiseToken);
-      customerId = customer.customerId;
-      cardId = customer.cardId;
-      chargeResult = await this.omiseService.createChargeForCustomer(
-        amountSatangs,
-        customerId,
-        cardId,
-      );
+      if (input.saveCard) {
+        const customer = await this.omiseService.createCustomerWithCard(omiseToken);
+        customerId = customer.customerId;
+        cardId = customer.cardId;
+        chargeResult = await this.omiseService.createChargeForCustomer(
+          amountSatangs,
+          customerId,
+          cardId,
+        );
+      } else {
+        chargeResult = await this.omiseService.createCharge(amountSatangs, omiseToken);
+      }
     } catch (err) {
       await this.recordFailedAuthorize(booking.id, existingPayment, user.id, err, {
         patientId: user.id,
@@ -398,8 +411,8 @@ export class PaymentService {
         paymentMethod: 'credit_card',
         omiseToken,
         omiseChargeId: chargeResult.id,
-        // PYG-4xx: เก็บไว้ให้ hold-refresh cron เรียก createChargeForCustomer ซ้ำได้โดยไม่ต้อง
-        // ขอ token ใหม่จากผู้ป่วย
+        // PYG-4xx: null เมื่อผู้ใช้ไม่ได้เลือกเก็บบัตร (opt-in) — มีค่าเฉพาะตอน saveCard=true
+        // ให้ hold-refresh cron เรียก createChargeForCustomer ซ้ำได้โดยไม่ต้องขอ token ใหม่
         omiseCustomerId: customerId,
         omiseCardId: cardId,
         failureCode: chargeResult.failure_code ?? null,
