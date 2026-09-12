@@ -77,6 +77,16 @@ export const FG_ERROR = {
   PATIENT_NAME_REQUIRED: 'PATIENT_NAME_REQUIRED',
   /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
   JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
+
+  // ── PYG-421 — ฟีดกิจกรรม ───────────────────────────────────────────────
+  /**
+   * cursor ที่ส่งมาใน after ไม่ใช่ค่าที่เราเคยออกให้ (decode ไม่ออก / รูปทรงผิด)
+   *
+   * ★ เป็น error ไม่ใช่ "เริ่มจากหน้าแรกให้เงียบ ๆ" โดยตั้งใจ
+   *   ถ้า fallback เงียบ ๆ หน้าจอ infinite scroll จะวนซ้ำหน้าแรกไม่รู้จบ
+   *   โดยที่ไม่มีใครรู้ว่าเกิดอะไรขึ้น — ล้มดังกว่าให้ FE เห็นตอนพัฒนาเลยดีกว่า
+   */
+  ACTIVITY_CURSOR_INVALID: 'ACTIVITY_CURSOR_INVALID',
 } as const;
 
 export type FgErrorCode = (typeof FG_ERROR)[keyof typeof FG_ERROR];
@@ -272,6 +282,26 @@ export class JoinLinkConfigMissingError extends FamilyGroupError {
     super(
       'ระบบยังตั้งค่าลิงก์เข้าร่วมกลุ่มไม่ครบ กรุณาแจ้งผู้ดูแลระบบ',
       FG_ERROR.JOIN_LINK_CONFIG_MISSING,
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PYG-421 — ฟีดกิจกรรม
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * cursor พัง — ไม่แนบค่าที่ส่งมากลับไปใน extensions
+ *
+ * ค่าที่ client ส่งมาอาจเป็นอะไรก็ได้ ถ้าสะท้อนกลับไปตรง ๆ มันจะไปโผล่ใน
+ * error log และหน้าจอ error ของ FE = ช่องทาง XSS/log injection ฟรี ๆ
+ * โดยที่ไม่ได้ช่วย debug อะไรเลย (cursor ที่ผิดก็คือผิด ดูค่าแล้วก็ทำอะไรต่อไม่ได้)
+ */
+export class ActivityCursorInvalidError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ตำแหน่งหน้าที่ขอมาไม่ถูกต้อง กรุณาโหลดฟีดใหม่อีกครั้ง',
+      FG_ERROR.ACTIVITY_CURSOR_INVALID,
     );
   }
 }

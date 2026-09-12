@@ -13,6 +13,10 @@ import {
   LeaveFamilyGroupResult,
 } from './entities/family-group.entity';
 import { FamilyGroupMemberItem } from './entities/family-group-member.entity';
+import {
+  FamilyGroupActivityConnection,
+  FamilyGroupActivityItem,
+} from './entities/family-group-activity.entity';
 import { GroupCareRecipient } from './entities/care-recipient.entity';
 import {
   FamilyGroupJoinLink,
@@ -20,6 +24,9 @@ import {
 } from './entities/family-group-join-link.entity';
 import {
   ACTIVITY_ACTION,
+  ACTIVITY_CURSOR_SEPARATOR,
+  ACTIVITY_PAGE_SIZE_DEFAULT,
+  ACTIVITY_PAGE_SIZE_MAX,
   ACTIVITY_TARGET,
   ActivityAction,
   ActivityTarget,
@@ -36,6 +43,7 @@ import {
   JOIN_LINK_TTL_HOURS,
 } from './family-group.constants';
 import {
+  ActivityCursorInvalidError,
   AlreadyOwnerError,
   GroupNameInvalidError,
   GroupNotFoundError,
@@ -94,6 +102,34 @@ type MemberRow = Prisma.FamilyGroupMemberGetPayload<{
 }>;
 
 /**
+ * field set ของ "กิจกรรม 1 แถว" ในฟีด (PYG-421)
+ *
+ * ★ ระบุคอลัมน์เอง ไม่ใช้ include เปล่า ๆ — ตาราง users มีทั้งอีเมล เบอร์โทร ที่อยู่
+ *   การ join ทั้งแถวมาแล้วค่อยไปตัดทิ้งในโค้ดคือวิธีที่ข้อมูลส่วนบุคคลหลุดออก API
+ *   ตอนมีคนเผลอเติมฟิลด์ใน entity ทีหลัง (เหตุผลเดียวกับ groupCareRecipients)
+ *
+ * ★★ ไม่มี email ของ actor ในนี้ ต่างจาก MEMBER_SELECT โดยตั้งใจ
+ *    ฟีดต้องการแค่ "ชื่อกับรูปให้จำหน้าได้" ส่วนอีเมลมีที่ทางของมันอยู่แล้ว
+ *    ในหน้ารายชื่อสมาชิก ซึ่งแสดงเฉพาะคนที่ยัง ACTIVE — ฟีดย้อนหลังไปถึงคนที่
+ *    ออกจากกลุ่มไปแล้ว ถ้าใส่อีเมลมาด้วยเท่ากับเปิดสมุดที่อยู่ของอดีตสมาชิกทั้งหมด
+ */
+const ACTIVITY_SELECT = {
+  id: true,
+  actorId: true,
+  action: true,
+  targetType: true,
+  targetId: true,
+  metadata: true,
+  createdAt: true,
+  actor: { select: { displayName: true, avatarUrl: true } },
+} as const;
+
+/** รูปทรงแถวที่ ACTIVITY_SELECT คืนกลับ */
+type ActivityRow = Prisma.FamilyGroupActivityGetPayload<{
+  select: typeof ACTIVITY_SELECT;
+}>;
+
+/**
  * FamilyGroupService (PYG-412) — ตรรกะทั้งหมดของ "สร้าง/จัดการกลุ่มครอบครัว"
  *
  * ═══ กติกา 3 ข้อที่ห้ามแหก ไม่ว่าจะเพิ่มเมธอดอะไรในไฟล์นี้ต่อ ═══
@@ -110,9 +146,12 @@ type MemberRow = Prisma.FamilyGroupMemberGetPayload<{
  *    ไม่ใช่ update() เฉย ๆ — เหตุผลเต็มอยู่ที่ transferOwnership ด้านล่าง (เรื่อง race)
  *
  * ── สิ่งที่ "ไม่ได้" อยู่ในการ์ดนี้ ────────────────────────────────────────
- *   เชิญสมาชิก/ยกเลิกคำเชิญ = PYG-416 · รับคำเชิญ = PYG-417
- *   ฟีดกิจกรรมแบบแบ่งหน้า   = PYG-421 · จองแทน/ผู้รับบริการ = PYG-424
- *   ไฟล์นี้แค่ "เขียน" activity ลงตาราง แต่ยังไม่มี query ให้อ่าน
+ *   สร้าง/หมุน/ยกเลิกลิงก์เข้าร่วม = PYG-416 · กดเข้าร่วมจริง (joinGroupByLink) = PYG-417
+ *   ฟีดกิจกรรมแบบแบ่งหน้า = PYG-421 · จองแทน = PYG-424 (อยู่ที่ BookingService)
+ *   ★ ช่องว่างที่ยังเหลือของฟีด (PYG-421 อ่านได้ครบทุก action แล้ว แต่ฝั่งเขียนยังขาด):
+ *     - add/update/removeGroupCareRecipient ยังไม่เขียน RECIPIENT_ADDED/UPDATED/REMOVED
+ *       และยังไม่อยู่ใน $transaction — ขัดกับกติกาข้อ 2 ด้านบน
+ *     - คนที่เคยออกแล้วกลับเข้ามา ถูกบันทึกเป็น MEMBER_JOINED ไม่ใช่ MEMBER_REJOINED
  */
 @Injectable()
 export class FamilyGroupService {
@@ -1242,6 +1281,164 @@ export class FamilyGroupService {
       role: row.role,
       joinedAt: row.joinedAt,
       isMe: row.userId === viewerId,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-421 · FG-3 — ฟีดกิจกรรมของกลุ่ม (keyset pagination)
+  //
+  //  ── ทำไมไม่ใช้ cursor ของ Prisma (skip/cursor) ───────────────────────
+  //  cursor ของ Prisma รับได้เฉพาะฟิลด์ที่เป็น unique เดี่ยว ๆ หรือ compound
+  //  unique ที่ประกาศไว้ในสคีมา แต่คู่ (createdAt, id) ของเราไม่ใช่ unique
+  //  (มันเป็นแค่ index สำหรับเรียงลำดับ) → เขียนเงื่อนไขเอาเองใน where
+  //  ซึ่งได้ผลเหมือนกันเป๊ะและตรงกับ index ที่มีอยู่แล้ว
+  //
+  //  ── เรื่องสิทธิ์ ──────────────────────────────────────────────────────
+  //  "สมาชิก ACTIVE เท่านั้นที่อ่านได้" ถูกบังคับที่ @GroupRole('MEMBER') บน resolver
+  //  → คนที่ถูกเตะออกหมดสิทธิ์อ่านฟีดทันทีในคำขอถัดไป ไม่ต้องรออะไรหมดอายุ
+  //  ที่นี่จึงไม่เช็คซ้ำ ด้วยเหตุผลเดียวกับ familyGroup()/groupCareRecipients()
+  //  (คิวรี่ซ้ำสิ่งที่ guard เพิ่งทำ = N+1 ที่ PYG-412 สั่งให้เลี่ยง)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * ฟีดกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าด้วย keyset
+   *
+   * @param groupId กลุ่มที่จะอ่าน (guard ตรวจสิทธิ์มาแล้ว)
+   * @param first   จำนวนแถวที่ขอ — ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเหลือ 50
+   * @param after   cursor ของแถวสุดท้ายที่ได้ไปแล้ว — ไม่ส่ง = เริ่มจากใหม่สุด
+   */
+  async familyGroupActivity(
+    groupId: string,
+    first?: number | null,
+    after?: string | null,
+  ): Promise<FamilyGroupActivityConnection> {
+    const take = this.resolveActivityPageSize(first);
+    const cursor = this.decodeActivityCursor(after);
+
+    // ★ ขอเกินมา 1 แถวเสมอ เพื่อรู้ว่า "ยังมีต่อไหม" โดยไม่ต้อง COUNT(*)
+    //   แถวที่ 21 ไม่ได้ถูกส่งออกไป มันมีหน้าที่เดียวคือเป็นพยานว่ายังมีของเก่ากว่านี้อยู่
+    const rows = await this.prisma.familyGroupActivity.findMany({
+      where: {
+        groupId,
+        // เงื่อนไข keyset: (created_at, id) < (cursor.createdAt, cursor.id)
+        // เขียนแตกเป็น OR เพราะ Prisma ไม่รองรับการเทียบ tuple แบบ SQL ตรง ๆ
+        //   แถวที่เก่ากว่าชัด ๆ                     → createdAt < cursor.createdAt
+        //   แถวที่เวลาเท่ากันเป๊ะ (transaction เดียวกัน) → ตัดสินด้วย id ต่อ
+        ...(cursor
+          ? {
+              OR: [
+                { createdAt: { lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+              ],
+            }
+          : {}),
+      },
+      select: ACTIVITY_SELECT,
+      // ★ ต้องเรียงสองชั้นให้ตรงกับเงื่อนไข where ด้านบนและตรงกับ index เป๊ะ ๆ
+      //   ถ้าเรียงแค่ createdAt ลำดับของแถวที่เวลาเท่ากันจะไม่คงที่ระหว่างคำขอ
+      //   → หน้า 2 อาจส่งแถวที่หน้า 1 เคยส่งไปแล้วซ้ำอีก (TC-BS-07 "stable across pages")
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: take + 1,
+    });
+
+    const hasNextPage = rows.length > take;
+    const nodes = (hasNextPage ? rows.slice(0, take) : rows).map((row) =>
+      this.toActivityItem(row),
+    );
+
+    return {
+      nodes,
+      pageInfo: {
+        // แถวสุดท้ายของหน้านี้คือจุดเริ่มของหน้าถัดไป
+        endCursor:
+          nodes.length > 0 ? nodes[nodes.length - 1].cursor : undefined,
+        hasNextPage,
+      },
+    };
+  }
+
+  /**
+   * ตีความค่า first ที่ client ส่งมาให้เป็นจำนวนแถวที่ยอมให้ขอได้จริง
+   *
+   * ★ ค่าที่ไม่สมเหตุสมผล (0, ติดลบ, ทศนิยม, NaN) ถูกปัดกลับเป็นค่าเริ่มต้น
+   *   ไม่ใช่โยน error — ที่นี่ไม่มีเจตนาร้ายให้ป้องกัน มีแต่ client ที่ส่งค่าเพี้ยน
+   *   แล้วหน้าฟีดพังทั้งหน้าโดยไม่จำเป็น (ต่างจาก cursor ที่ผิดแปลว่าตำแหน่งผิด
+   *   ซึ่งถ้าเงียบไว้จะกลายเป็นฟีดที่วนซ้ำไม่รู้จบ จึงต้องล้มดัง)
+   */
+  private resolveActivityPageSize(first?: number | null): number {
+    if (first === undefined || first === null || !Number.isInteger(first)) {
+      return ACTIVITY_PAGE_SIZE_DEFAULT;
+    }
+    if (first <= 0) return ACTIVITY_PAGE_SIZE_DEFAULT;
+    return Math.min(first, ACTIVITY_PAGE_SIZE_MAX);
+  }
+
+  /**
+   * cursor → คู่ (createdAt, id)
+   *
+   * รูปแบบ: base64url( "<ISO-8601 ของ createdAt>|<uuid ของ id>" )
+   *
+   * ★ ทำไมต้อง encode ทั้งที่ข้างในไม่ใช่ความลับ?
+   *   ไม่ได้ทำเพื่อความลับ แต่เพื่อ "ให้มันดูทึบพอที่ FE จะไม่เอาไป parse เอง"
+   *   วันที่เราเปลี่ยนวิธีแบ่งหน้า cursor ที่ FE เคยแกะไว้จะพังทันที
+   *   ค่าทึบทำให้สัญญาระหว่างสองฝั่งมีแค่ "ส่งค่าที่ได้มากลับมาเฉย ๆ" ข้อเดียว
+   */
+  private decodeActivityCursor(
+    after?: string | null,
+  ): { createdAt: Date; id: string } | null {
+    if (after === undefined || after === null || after.trim() === '') {
+      return null;
+    }
+
+    // ★ Buffer.from() ไม่เคยโยน error กับ input ที่ไม่ใช่ base64 — มันเดาไปเรื่อย
+    //   แล้วคืนขยะออกมา จึงต้องตรวจ "รูปทรงของผลลัพธ์" ทุกชั้นเอง
+    //   ไม่ใช่แค่ห่อ try/catch แล้วคิดว่าปลอดภัย
+    const decoded = Buffer.from(after, 'base64url').toString('utf8');
+    const parts = decoded.split(ACTIVITY_CURSOR_SEPARATOR);
+    if (parts.length !== 2) {
+      throw new ActivityCursorInvalidError();
+    }
+
+    const [rawCreatedAt, id] = parts;
+    const createdAt = new Date(rawCreatedAt);
+    // Invalid Date เทียบกับตัวเองแล้วได้ NaN → getTime() เป็น NaN
+    if (Number.isNaN(createdAt.getTime()) || id.length === 0) {
+      throw new ActivityCursorInvalidError();
+    }
+
+    return { createdAt, id };
+  }
+
+  /** คู่ (createdAt, id) → cursor */
+  private encodeActivityCursor(createdAt: Date, id: string): string {
+    return Buffer.from(
+      `${createdAt.toISOString()}${ACTIVITY_CURSOR_SEPARATOR}${id}`,
+      'utf8',
+    ).toString('base64url');
+  }
+
+  /** แปลงแถวกิจกรรม 1 แถวเป็น type ที่ GraphQL ส่งออก */
+  private toActivityItem(row: ActivityRow): FamilyGroupActivityItem {
+    return {
+      id: row.id,
+      // actorId ยังอยู่แต่ actor เป็น null = บัญชีถูกลบไปแล้ว (FK ตั้ง ON DELETE SET NULL)
+      // ทั้งก้อนเป็น undefined เพื่อให้ FE แสดง "ผู้ใช้ที่ถูกลบ" ได้ด้วยเงื่อนไขเดียว
+      actor:
+        row.actorId && row.actor
+          ? {
+              userId: row.actorId,
+              displayName: row.actor.displayName ?? undefined,
+              avatarUrl: row.actor.avatarUrl ?? undefined,
+            }
+          : undefined,
+      action: row.action,
+      targetType: row.targetType ?? undefined,
+      targetId: row.targetId ?? undefined,
+      // คอลัมน์เป็น JSONB NOT NULL DEFAULT '{}' → ไม่มีทางเป็น null จากดีบี
+      // ที่ ?? '{}' ไว้เพราะชนิดฝั่ง Prisma ยังเป็น JsonValue ที่รวม null ได้
+      metadata: JSON.stringify(row.metadata ?? {}),
+      createdAt: row.createdAt,
+      cursor: this.encodeActivityCursor(row.createdAt, row.id),
     };
   }
 }
