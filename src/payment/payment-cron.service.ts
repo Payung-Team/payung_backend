@@ -8,6 +8,18 @@ import { PaymentStateMachine } from './payment-state-machine';
 import { PaymentStatus } from './entities/payment-status.enum';
 import { IdempotencyService } from './idempotency.service';
 
+/**
+ * PYG-4xx kill-switch ของ hold-refresh — ★ fail-closed: ไม่ตั้ง = ไม่ทำงาน
+ *
+ * ทิศเดียวกับ BOOKING_EXPIRY_CRON_ENABLED (ต้องตั้งเองถึงจะเดิน) ไม่ใช่ PAYOUT_KILLSWITCH_ENABLED
+ * (ที่ไม่ตั้ง = เดิน) — cron ตัวนี้ยิงธุรกรรมจริงบนบัตรผู้ใช้โดยผู้ใช้ไม่ได้สั่ง ค่า default
+ * จึงต้องเป็น "ไม่ทำ" เสมอ
+ */
+export const HOLD_REFRESH_ENABLED_ENV = 'HOLD_REFRESH_CRON_ENABLED';
+
+/** เพดานใบต่อรอบ — แพทเทิร์นเดียวกับ EXPIRY_BATCH_CAP (booking-expiry) / SWEEP_BATCH_CAP (no-checkout-sweeper) */
+export const HOLD_REFRESH_BATCH_CAP = 50;
+
 @Injectable()
 export class PaymentCronService {
   private readonly logger = new Logger(PaymentCronService.name);
@@ -40,6 +52,17 @@ export class PaymentCronService {
       select: { createdAt: true },
     });
     return latest?.createdAt ?? fallback;
+  }
+
+  /**
+   * true เฉพาะเมื่อตั้ง HOLD_REFRESH_CRON_ENABLED เป็น true / 1 / yes
+   * (parse แบบเดียวกับ PayoutKillswitch.isEnabled / BookingExpiryService.isEnabled)
+   */
+  private isHoldRefreshEnabled(): boolean {
+    const raw = (this.config.get<string>(HOLD_REFRESH_ENABLED_ENV) ?? '')
+      .trim()
+      .toLowerCase();
+    return raw === 'true' || raw === '1' || raw === 'yes';
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_2AM)
@@ -144,8 +167,17 @@ export class PaymentCronService {
    * ★ หยุดต่ออายุถ้าถึงวันบริการแล้ว (bookingDate <= now) — ปล่อยให้ checkout/capture หรือ
    *   safety net อื่น (no-checkout-sweeper) จัดการแทน ไม่ต่ออายุเรื่อยๆ ไม่มีที่สิ้นสุด
    */
-  @Cron(CronExpression.EVERY_DAY_AT_1AM)
+  // '0 1 * * *' = ค่าเดิม CronExpression.EVERY_DAY_AT_1AM — ตั้งทับได้ด้วย env แบบ cron ตัวอื่นในโปรเจกต์
+  @Cron(process.env['CRON_HOLD_REFRESH'] ?? '0 1 * * *')
   async refreshExpiringHolds(): Promise<void> {
+    // ★ ปิดอยู่ = ข้ามทั้งรอบ ไม่แตะ DB ไม่ยิง Omise — log ให้แยกออกจาก "ไม่มีงาน" ได้
+    if (!this.isHoldRefreshEnabled()) {
+      this.logger.warn(
+        `[hold-refresh] ${HOLD_REFRESH_ENABLED_ENV} ไม่ได้เปิด — ข้ามรอบนี้ (ไม่ใช่เพราะไม่มีใบที่ต้องต่ออายุ)`,
+      );
+      return;
+    }
+
     this.logger.log('Running hold-refresh cron job...');
 
     const holdDays = Number(this.config.get('PAYMENT_HOLD_DAYS', 7));
@@ -161,6 +193,9 @@ export class PaymentCronService {
         omiseCardId: { not: null },
       },
       include: { booking: { select: { bookingDate: true, status: true } } },
+      // เก่าสุดก่อน — ใบที่ใกล้หมดอายุที่สุดได้คิวก่อน ไม่ให้ใบใหม่มาเบียดจนใบเก่าอดทุกรอบ
+      orderBy: { createdAt: 'asc' },
+      take: HOLD_REFRESH_BATCH_CAP,
     });
 
     if (candidates.length === 0) {
