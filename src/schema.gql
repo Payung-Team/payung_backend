@@ -871,6 +871,71 @@ type FamilyGroup {
   updatedAt: DateTime!
 }
 
+type FamilyGroupActivityActor {
+  """รูปโปรไฟล์"""
+  avatarUrl: String
+
+  """ชื่อที่แสดง — null ถ้าผู้ใช้ยังไม่ได้ตั้งชื่อ"""
+  displayName: String
+
+  """users.id ของคนที่ทำ"""
+  userId: ID!
+}
+
+type FamilyGroupActivityConnection {
+  """กิจกรรมเรียงใหม่สุดก่อน (created_at DESC, id DESC)"""
+  nodes: [FamilyGroupActivityItem!]!
+  pageInfo: FamilyGroupActivityPageInfo!
+}
+
+type FamilyGroupActivityItem {
+  """
+  ชนิดเหตุการณ์ เช่น 'GROUP_CREATED' | 'MEMBER_JOINED' | 'JOIN_LINK_ROTATED' — ค่าเต็มดูที่ ACTIVITY_ACTION ใน family-group.constants.ts · FE เป็นคนแปลเป็นข้อความ TH/EN (PYG-422)
+  """
+  action: String!
+
+  """
+  ผู้ลงมือ — null เมื่อบัญชีถูกลบไปแล้ว (FE ต้องแสดงเป็น "ผู้ใช้ที่ถูกลบ" ไม่ใช่ซ่อนแถวทิ้ง)
+  """
+  actor: FamilyGroupActivityActor
+
+  """เกิดเมื่อไหร่"""
+  createdAt: DateTime!
+
+  """
+  cursor ของแถวนี้ — ส่งกลับมาเป็น after เพื่อขอหน้าถัดไปจากจุดนี้ (ค่าทึบ ห้าม parse ฝั่ง client)
+  """
+  cursor: String!
+
+  """family_group_activity.id"""
+  id: ID!
+
+  """
+  รายละเอียดเพิ่มเติมในรูป JSON string เช่น '{"oldName":"บ้านยาย","newName":"บ้านย่า"}' — client ใช้ JSON.parse() (ไม่มีข้อมูลเลย = "{}")
+  """
+  metadata: String!
+
+  """
+  id ของสิ่งที่เหตุการณ์ชี้ไป — polymorphic ตาม targetType (ไม่มี FK ในดีบี)
+  """
+  targetId: ID
+
+  """'GROUP' | 'MEMBER' | 'JOIN_LINK' | 'RECIPIENT' | 'BOOKING'"""
+  targetType: String
+}
+
+type FamilyGroupActivityPageInfo {
+  """
+  cursor ของแถวสุดท้ายในหน้านี้ — null เมื่อหน้านี้ว่าง · ส่งค่านี้เป็น after ของครั้งถัดไป
+  """
+  endCursor: String
+
+  """
+  ยังมีของเก่ากว่านี้ให้โหลดอีกไหม — FE ใช้ตัดสินว่าจะยิงคำขอหน้าถัดไปหรือหยุด
+  """
+  hasNextPage: Boolean!
+}
+
 type FamilyGroupJoinLink {
   createdAt: DateTime!
 
@@ -1970,6 +2035,11 @@ type Query {
   รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
   """
   familyGroup(groupId: ID!): FamilyGroup!
+
+  """
+  ประวัติกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าแบบ keyset (สมาชิก ACTIVE เท่านั้น). first = จำนวนที่ขอ (ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเป็น 50) · after = ค่า pageInfo.endCursor ที่ได้จากครั้งก่อน (ค่าทึบ ห้าม parse). กลุ่มที่ยังไม่มีกิจกรรม = nodes ว่าง ไม่ใช่ error · cursor ที่แกะไม่ออก → ACTIVITY_CURSOR_INVALID
+  """
+  familyGroupActivity(after: String, first: Int, groupId: ID!): FamilyGroupActivityConnection!
 
   """
   PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง
