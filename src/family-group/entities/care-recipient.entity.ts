@@ -32,6 +32,12 @@ export class GroupCareRecipient {
       'users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"',
   })
   ownerUserId: string;
+
+  @Field({
+    description:
+      'PYG-500: true = ข้อมูลจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก), false = คนอื่นในกลุ่มกรอกให้ — FE ใช้เลือกป้ายกำกับ',
+  })
+  selfReported: boolean;
 }
 
 /**

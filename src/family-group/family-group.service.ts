@@ -541,7 +541,7 @@ export class FamilyGroupService {
       // เลือกเฉพาะคอลัมน์ที่ GroupCareRecipient ประกาศไว้เท่านั้น
       // ★ ห้าม select ข้อมูลสุขภาพออกมา "เผื่อไว้" — การเผื่อไว้คือวิธีที่ข้อมูล
       //   อ่อนไหวหลุดออก API โดยไม่มีใครตั้งใจ (เหตุผลเต็มอยู่ที่ care-recipient.entity.ts)
-      select: { id: true, name: true, nickname: true, patientId: true },
+      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
     });
 
     return rows.map((r) => ({
@@ -549,6 +549,7 @@ export class FamilyGroupService {
       name: r.name,
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
+      selfReported: r.self_reported,
     }));
   }
 
@@ -570,7 +571,7 @@ export class FamilyGroupService {
         name: input.name.trim(),
         nickname: input.nickname?.trim() || null,
       },
-      select: { id: true, name: true, nickname: true, patientId: true },
+      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
     });
     this.logger.log({
       event: 'group_care_recipient.added',
@@ -578,7 +579,13 @@ export class FamilyGroupService {
       groupId: input.groupId,
       by: userId,
     });
-    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+    return {
+      id: r.id,
+      name: r.name,
+      nickname: r.nickname ?? undefined,
+      ownerUserId: r.patientId,
+      selfReported: r.self_reported,
+    };
   }
 
   /** แก้ไขโปรไฟล์ — เฉพาะเจ้าของ (คนที่เพิ่ม) เท่านั้น */
@@ -602,7 +609,7 @@ export class FamilyGroupService {
         ...(input.name !== undefined && { name: input.name.trim() }),
         ...(input.nickname !== undefined && { nickname: input.nickname.trim() || null }),
       },
-      select: { id: true, name: true, nickname: true, patientId: true },
+      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
     });
     this.logger.log({
       event: 'group_care_recipient.updated',
@@ -610,7 +617,13 @@ export class FamilyGroupService {
       groupId: input.groupId,
       by: userId,
     });
-    return { id: r.id, name: r.name, nickname: r.nickname ?? undefined, ownerUserId: r.patientId };
+    return {
+      id: r.id,
+      name: r.name,
+      nickname: r.nickname ?? undefined,
+      ownerUserId: r.patientId,
+      selfReported: r.self_reported,
+    };
   }
 
   /**

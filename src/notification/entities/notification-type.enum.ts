@@ -38,6 +38,10 @@ export enum NotificationType {
   // ─── Payout lifecycle (PYG-330 ก้อน B) ────────────────────────────────
   // ⚠️ Prisma enum มีมาตั้งแต่ PYG-306 แต่ TS enum พึ่ง sync ที่นี่ (ก่อนหน้านี้ไม่มีใครใช้)
   payment_transferred = 'payment_transferred',  // ค่าตอบแทนโอนสำเร็จ (→ caregiver)
+
+  // ─── Job / care log ──────────────────────────────────────────────────────
+  // ⚠️ job_checked_in (PYG-353) มีใน Prisma enum + DB แล้วแต่ยังไม่ได้ sync มาที่นี่ — แยกการ์ด
+  job_care_log_added = 'job_care_log_added',    // มีการบันทึก care log (→ patient)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap
