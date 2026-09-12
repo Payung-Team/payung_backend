@@ -173,24 +173,24 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     email: true,
     ctaLabel: 'ดูรายละเอียดงาน',
   },
-  [BOOKING_EVENTS.JOB_CARE_LOG_ADDED]: {
-    // PYG-361: ผู้ดูแลโพสต์ "บันทึกจากผู้ดูแล" รายการแรกของงานนี้ (CareLogService เป็นคนกรอง
-    // ให้ยิง event นี้เฉพาะรายการแรกเท่านั้น — ที่นี่แค่รับ event มาแปลงเป็น notification)
-    //
-    // ★ PO ตัดสินใจ 2026-09-06: แจ้งเฉพาะรายการแรกของงาน ไม่แจ้งทุกรายการ
-    //   (งาน 8 ชม. อาจมี 10 รายการ — แจ้งทุกครั้งผู้ใช้จะปิดแจ้งเตือนทั้งแอป)
-    //
-    // ใช้ enum value ใหม่ ไม่ยืม booking_confirmed ซ้ำกับ JOB_CHECKED_IN เพราะทั้งคู่อยู่ใน
-    // ช่วง in_progress ของงานเดียวกัน — ถ้ายืมซ้ำ ผู้รับบริการจะแยก "เช็คอินแล้ว" กับ
-    // "มีบันทึกใหม่" ไม่ออกจากไอคอน/ประเภทเลย
-    type: NotificationType.job_care_log_added,
-    recipient: 'patient',
-    title: 'มีบันทึกใหม่จากผู้ดูแล',
-    body: (c) => `${c.caregiverName} เพิ่มบันทึกการดูแลระหว่างปฏิบัติงาน`,
-    // in-app พอ — ไม่ใช่เหตุการณ์ที่กระทบเงินหรือเร่งด่วนพอต้องอีเมล
-    email: false,
-    ctaLabel: 'ดูรายละเอียดงาน',
-  },
+  // [BOOKING_EVENTS.JOB_CARE_LOG_ADDED]: {
+  //   // PYG-361: ผู้ดูแลโพสต์ "บันทึกจากผู้ดูแล" รายการแรกของงานนี้ (CareLogService เป็นคนกรอง
+  //   // ให้ยิง event นี้เฉพาะรายการแรกเท่านั้น — ที่นี่แค่รับ event มาแปลงเป็น notification)
+  //   //
+  //   // ★ PO ตัดสินใจ 2026-09-06: แจ้งเฉพาะรายการแรกของงาน ไม่แจ้งทุกรายการ
+  //   //   (งาน 8 ชม. อาจมี 10 รายการ — แจ้งทุกครั้งผู้ใช้จะปิดแจ้งเตือนทั้งแอป)
+  //   //
+  //   // ใช้ enum value ใหม่ ไม่ยืม booking_confirmed ซ้ำกับ JOB_CHECKED_IN เพราะทั้งคู่อยู่ใน
+  //   // ช่วง in_progress ของงานเดียวกัน — ถ้ายืมซ้ำ ผู้รับบริการจะแยก "เช็คอินแล้ว" กับ
+  //   // "มีบันทึกใหม่" ไม่ออกจากไอคอน/ประเภทเลย
+  //   type: NotificationType.job_care_log_added,
+  //   recipient: 'patient',
+  //   title: 'มีบันทึกใหม่จากผู้ดูแล',
+  //   body: (c) => `${c.caregiverName} เพิ่มบันทึกการดูแลระหว่างปฏิบัติงาน`,
+  //   // in-app พอ — ไม่ใช่เหตุการณ์ที่กระทบเงินหรือเร่งด่วนพอต้องอีเมล
+  //   email: false,
+  //   ctaLabel: 'ดูรายละเอียดงาน',
+  // },
   [BOOKING_EVENTS.CANCELLED]: {
     type: NotificationType.booking_cancelled,
     recipient: 'caregiver',

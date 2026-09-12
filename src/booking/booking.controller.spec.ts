@@ -84,6 +84,8 @@ describe('BookingService — new REST methods', () => {
         update: jest.fn((args) => prisma.booking.update(args)),
         create: jest.fn((args) => prisma.booking.create(args)),
       },
+      // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
+      booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma = {
       booking: {

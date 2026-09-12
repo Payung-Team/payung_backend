@@ -2,6 +2,29 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+input AddCareLogInput {
+  """เนื้อหาบันทึก ไม่เกิน 500 ตัวอักษร"""
+  body: String!
+
+  """
+  booking ที่จะบันทึก — ต้องเป็นงานของผู้ดูแลคนนี้และอยู่ระหว่างเช็คอิน (in_progress)
+  """
+  bookingId: ID!
+
+  """หมวดหมู่: 'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — เก็บเป็น metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """
+  รูปประกอบ (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
+  """
+  photoUrl: String
+}
+
 """
 Admin dashboard data: summary stats, trends, review time, and recent activity
 """
@@ -279,6 +302,11 @@ enum BookingStatus {
 
 type BookingSummary {
   bookingDate: String!
+
+  """
+  PYG-361: รายการงานย่อยของ booking นี้ พร้อมสถานะทำแล้ว/ยัง เรียงตาม sortOrder
+  """
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
@@ -305,6 +333,15 @@ type BookingSummary {
   timeSlot: String!
 }
 
+type BookingTask {
+  description: String!
+  doneAt: DateTime
+  doneBy: ID
+  id: ID!
+  sortOrder: Int!
+  timeNote: String
+}
+
 input CancelAcceptanceInput {
   bookingId: ID!
   reason: String!
@@ -319,6 +356,24 @@ type CancelScheduledDeletePayload {
   """Whether the account was reactivated as part of the cancellation"""
   reactivated: Boolean!
   user: User!
+}
+
+type CareLog {
+  body: String!
+  bookingId: ID!
+
+  """'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """เวลาที่เครื่อง client อ้าง — metadata เท่านั้น"""
+  deviceTs: DateTime
+  id: ID!
+
+  """signed URL ของรูปประกอบ — หมดอายุใน 1 ชม."""
+  photoUrl: String
+
+  """เวลาของเซิร์ฟเวอร์ — เวลาที่ถือเป็นทางการ"""
+  serverTs: DateTime!
 }
 
 type Caregiver {
@@ -381,6 +436,9 @@ type CaregiverBookingListResponse {
 type CaregiverBookingSummary {
   acceptedAt: DateTime
   bookingDate: String!
+
+  """PYG-361: เหมือนกับฝั่ง patient แต่มุมมอง caregiver"""
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
@@ -650,6 +708,19 @@ input CreateFamilyGroupInput {
   name: String!
 }
 
+input CreateJoinLinkInput {
+  """กลุ่มที่จะสร้างลิงก์ — ต้องเป็นเจ้าของกลุ่ม"""
+  groupId: ID!
+
+  """
+  จำนวนคนสูงสุดที่เข้าได้ด้วยลิงก์ใบนี้ — ไม่ส่งมาจะใช้ค่า default จาก config
+  """
+  maxUses: Int
+
+  """อายุลิงก์เป็นชั่วโมง — ไม่ส่งมาจะใช้ค่า default (168 ชม.)"""
+  ttlHours: Int
+}
+
 input CreatePaymentInput {
   """UUID ของ booking ที่ต้องการชำระเงิน (ต้องมีสถานะ accepted)"""
   bookingId: ID!
@@ -840,6 +911,33 @@ type FamilyGroup {
   """ชื่อกลุ่ม (1–80 ตัวอักษรหลังตัดช่องว่างหัวท้าย)"""
   name: String!
   updatedAt: DateTime!
+}
+
+type FamilyGroupJoinLink {
+  createdAt: DateTime!
+
+  """ลิงก์ใช้ได้ถึงเมื่อไหร่"""
+  expiresAt: DateTime!
+  groupId: ID!
+  id: ID!
+
+  """ลิงก์ยังใช้ได้อยู่หรือไม่ (ยังไม่หมดอายุ/ยังไม่เต็ม)"""
+  isUsable: Boolean!
+
+  """จำนวนคนสูงสุดที่เข้าได้ด้วยลิงก์ใบนี้ — null = ไม่จำกัด"""
+  maxUses: Int
+
+  """จำนวนสมาชิก ACTIVE ในกลุ่มตอนนี้ (ไว้เทียบกับ memberLimit)"""
+  memberCount: Int!
+
+  """เพดานสมาชิกของกลุ่ม (FAMILY_GROUP_MAX_MEMBERS)"""
+  memberLimit: Int!
+
+  """เหลืออีกกี่คนถึงจะเต็มโควตา — null = ไม่จำกัด"""
+  remainingUses: Int
+
+  """URL เต็มสำหรับคัดลอกไปส่งต่อ — เจ้าของกลุ่มเท่านั้นที่เห็นค่านี้"""
+  url: String!
 }
 
 type FamilyGroupMemberItem {
@@ -1043,7 +1141,9 @@ type JobScanResult {
   """
   action: ScanAction!
 
-  """งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)"""
+  """
+  งานที่ QR ใบนี้ผูกอยู่ — null เมื่อหา QR ไม่เจอ (ยังไม่รู้ว่าเป็นงานใบไหน)
+  """
   bookingId: ID
 
   """
@@ -1080,6 +1180,30 @@ enum JobSessionStatus {
   CHECKED_IN
   CHECKED_OUT
   PENDING
+}
+
+type JoinLinkPreview {
+  """ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้วหรือไม่"""
+  alreadyMember: Boolean!
+
+  """ชื่อกลุ่มที่กำลังจะเข้าร่วม"""
+  groupName: String!
+
+  """
+  ลิงก์นี้ยังกดเข้าร่วมได้อยู่ไหม — false แปลว่าหมดอายุ/ถูกยกเลิก/เต็มแล้ว
+  """
+  isUsable: Boolean!
+
+  """ตอนนี้ในกลุ่มมีกี่คน"""
+  memberCount: Int!
+
+  """ชื่อที่แสดงของเจ้าของกลุ่ม — null ถ้าบัญชีนั้นถูกลบไปแล้ว"""
+  ownerName: String
+
+  """
+  เหตุผลที่กดไม่ได้ — 'EXPIRED' | 'REVOKED' | 'EXHAUSTED' | 'GROUP_FULL' (null เมื่อ isUsable = true)
+  """
+  unusableReason: String
 }
 
 type KycDocument {
@@ -1255,6 +1379,11 @@ type Mutation {
   ): User!
 
   """
+  PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.
+  """
+  addCareLog(input: AddCareLogInput!): CareLog!
+
+  """
   Admin only: Edit a regular user profile (displayName, email, phone, address, bio). Cannot be used on admin/super_admin accounts — use editAdminInfo instead. Syncs email to Supabase Auth if changed. Records audit log.
   """
   adminEditUser(input: AdminEditUserInput!): User!
@@ -1319,6 +1448,11 @@ type Mutation {
   สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
   """
   createFamilyGroup(input: CreateFamilyGroupInput!): FamilyGroup!
+
+  """
+  สร้างลิงก์เข้าร่วมของกลุ่ม (เจ้าของเท่านั้น) — ถ้ามีลิงก์ที่ใช้ได้อยู่แล้วจะคืนใบเดิม ไม่สร้างทับ เพื่อไม่ให้การกดปุ่มซ้ำฆ่าลิงก์ที่ส่งออกไปแล้ว
+  """
+  createJoinLink(input: CreateJoinLinkInput!): FamilyGroupJoinLink!
   createPayment(input: CreatePaymentInput!): Payment!
 
   """Patient เขียนรีวิวให้ caregiver หลังงาน completed (1 รีวิว/booking)"""
@@ -1409,6 +1543,16 @@ type Mutation {
   resubmitKyc(input: KycInput!): Caregiver!
 
   """
+  ยกเลิกลิงก์เข้าร่วมโดยไม่ออกใบใหม่ (เจ้าของเท่านั้น) — หลังจากนี้กลุ่มจะไม่มีลิงก์ จนกว่าจะกดสร้างใหม่ โยน JOIN_LINK_NOT_FOUND ถ้าไม่มีลิงก์ให้ยกเลิก
+  """
+  revokeJoinLink(groupId: ID!): Boolean!
+
+  """
+  ออกลิงก์ใหม่แทนใบเดิม (เจ้าของเท่านั้น) — ลิงก์เดิมใช้ไม่ได้ทันที ใช้ตอนลิงก์หลุดไปในที่ที่ไม่ตั้งใจ
+  """
+  rotateJoinLink(input: CreateJoinLinkInput!): FamilyGroupJoinLink!
+
+  """
   ผู้ดูแลสแกน QR ของงานเพื่อเริ่มหรือจบงาน. ★ สแกนครั้งแรก = เช็คอิน, ครั้งที่สอง = เช็คเอาท์ — ผู้เรียก "ไม่ได้เลือก" ว่าจะทำอะไร สถานะของ QR เป็นตัวตัดสิน. ★ การสแกนที่ถูกปฏิเสธจะ "ไม่ throw error" แต่คืน ok=false พร้อมรหัสเหตุผลใน result (ทุกครั้งถูกบันทึกไว้เสมอ ทั้งสำเร็จและล้มเหลว).
   """
   scanJobQr(input: ScanJobQrInput!): JobScanResult!
@@ -1420,6 +1564,11 @@ type Mutation {
 
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
+
+  """
+  PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.
+  """
+  setTaskDone(input: SetTaskDoneInput!): BookingTask!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -1446,6 +1595,8 @@ type Mutation {
   โอนสิทธิ์เจ้าของให้สมาชิกคนอื่นในกลุ่ม (เจ้าของเท่านั้น) — ผู้เรียกจะกลายเป็นสมาชิกธรรมดาทันที. เป้าหมายต้องเป็นสมาชิก ACTIVE อยู่แล้ว มิฉะนั้น MEMBER_NOT_FOUND.
   """
   transferOwnership(input: TransferOwnershipInput!): FamilyGroup!
+
+  """
   Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.
   """
   transferPaymentToCaregiver(bookingId: ID!): Payment!
@@ -1742,6 +1893,11 @@ type Query {
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
 
   """
+  PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
+  """
+  careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
+
+  """
   A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
   """
   caregiverBooking(id: ID!): CaregiverBookingSummary
@@ -1771,6 +1927,11 @@ type Query {
   """
   groupCareRecipients(groupId: ID!): [GroupCareRecipient!]!
 
+  """
+  ลิงก์เข้าร่วมที่ยังใช้ได้ของกลุ่ม (เจ้าของเท่านั้น) — ใช้ตอนกดปุ่มคัดลอกลิงก์ซ้ำ โยน JOIN_LINK_NOT_FOUND ถ้ากลุ่มยังไม่เคยสร้างลิงก์ หรือลิงก์ถูกยกเลิกไปแล้ว
+  """
+  groupJoinLink(groupId: ID!): FamilyGroupJoinLink!
+
   """Health check - API & DB Status"""
   health: HealthStatus!
 
@@ -1778,6 +1939,11 @@ type Query {
   QR ของงาน 1 ใบ สำหรับให้ผู้รับบริการเปิดโชว์ให้ผู้ดูแลสแกน. ★ คืน token ดิบ จึงเปิดให้เฉพาะ patient เจ้าของ booking เท่านั้น — ผู้ดูแลเรียก query นี้ไม่ได้. QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ระบบดูจากสถานะปัจจุบันว่าสแกนครั้งต่อไปคือ action ไหน.
   """
   jobQr(bookingId: ID!): JobQr!
+
+  """
+  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย
+  """
+  joinLinkPreview(token: String!): JoinLinkPreview!
 
   """Get KYC status with full details for the Status Page"""
   kycStatus: KycStatusPayload!
@@ -2175,6 +2341,11 @@ input ServiceAreaInput {
 
   """Service area province (จังหวัด)"""
   province: String
+}
+
+input SetTaskDoneInput {
+  done: Boolean!
+  taskId: ID!
 }
 
 """Caregiver search sort order"""

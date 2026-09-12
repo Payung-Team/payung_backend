@@ -48,6 +48,8 @@ import { NotificationModule } from '../notification/notification.module';
     // PYG-435: สแกน QR → เช็คอิน/เช็คเอาท์
     JobScanResolver,
     JobScanService,
+    JobEvidenceService,
+    CareLogService,
   ],
   exports: [MonitoringService, JobQrService],
 })
