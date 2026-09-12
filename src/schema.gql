@@ -1440,6 +1440,14 @@ type Mutation {
   confirmBooking(bookingId: ID!): BookingSummary!
 
   """
+  Fix a fresh Google OAuth signup account's role to match what the user picked before being redirected to Google. Safe no-op for existing accounts or already-correct roles.
+  """
+  confirmOAuthRole(
+    """1 = patient, 2 = caregiver"""
+    role: Int!
+  ): User!
+
+  """
   จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
   """
   createBookingOnBehalf(input: CreateBookingOnBehalfInput!): BookingSummary!
