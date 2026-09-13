@@ -323,6 +323,9 @@ type BookingSummary {
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
   createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
   disputeReason: String
   disputeStatus: String
   durationHours: Float
@@ -332,6 +335,8 @@ type BookingSummary {
   locationLat: Float
   locationLng: Float
   notes: String
+  patientName: String
+  patientProfile: PatientProfileType
 
   """
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
@@ -484,9 +489,14 @@ input CaregiverBookingsInput {
 
 type CaregiverBriefDto {
   avatarUrl: String
+  averageRating: Float
+  completedJobs: Int
+  experienceYears: Int
   fullName: String
   hourlyRate: Float
   id: ID!
+  phone: String
+  reviewCount: Int
 }
 
 """Log entry for caregiver profile/document edits"""
