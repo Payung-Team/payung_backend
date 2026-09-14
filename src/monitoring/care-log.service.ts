@@ -30,7 +30,7 @@ import { scheduledStartOf } from './booking-schedule.util';
 import {
   hasJpegSignature,
   InvalidJpegError,
-  stripJpegApp1,
+  stripJpegMetadata,
 } from './care-log-photo.util';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 
@@ -344,7 +344,10 @@ export class CareLogService {
     return deviceTs;
   }
 
-  /** ตรวจไฟล์จาก byte จริง แล้วตัด Exif/XMP ทิ้ง — คืน buffer ที่จะอัปโหลด */
+  /**
+   * ตรวจไฟล์จาก byte จริง แล้วตัด Exif/XMP, MPF และทุก byte หลัง EOI ทิ้ง — คืน buffer ที่จะอัปโหลด
+   * ไม่มี EOI / โครงสร้างเสีย = 415 ชุดเดียวกับ signature ผิด
+   */
   private preparePhoto(photo: UploadedPhoto): Buffer {
     if (photo.mimetype !== CARE_LOG_PHOTO_MIME) {
       throw new UnsupportedMediaTypeException('รองรับเฉพาะรูป JPEG');
@@ -357,7 +360,7 @@ export class CareLogService {
       throw new UnsupportedMediaTypeException('ไฟล์ไม่ใช่รูป JPEG');
     }
     try {
-      return stripJpegApp1(photo.buffer);
+      return stripJpegMetadata(photo.buffer);
     } catch (err) {
       if (err instanceof InvalidJpegError) {
         throw new UnsupportedMediaTypeException('ไฟล์ JPEG เสียหาย');

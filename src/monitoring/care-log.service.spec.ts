@@ -27,9 +27,14 @@ import { CreateCareLogDto } from './dto/create-care-log.dto';
 import { AddCareLogInput } from './dto/add-care-log.input';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import {
+  APP0_JFIF,
+  APP2_ICC,
   buildJpeg,
+  DQT,
   GPS_SECRET,
   PNG_BYTES,
+  SCAN,
+  SOI,
 } from '../../test/fixtures/jpeg.fixture';
 
 const USER_ID = 'user-cg-0001';
@@ -384,6 +389,29 @@ describe('CareLogService', () => {
         service.createCareLog(USER_ID, BOOKING_ID, dto(), jpegPhoto(broken)),
       ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
       expect(upload).not.toHaveBeenCalled();
+    });
+
+    it('ไม่มี EOI (ไฟล์ถูกตัดท้าย) → 415 และไม่อัปโหลด', async () => {
+      const noEoi = buildJpeg().subarray(0, -2);
+      await expect(
+        service.createCareLog(USER_ID, BOOKING_ID, dto(), jpegPhoto(noEoi)),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      expect(upload).not.toHaveBeenCalled();
+      expect(prisma.care_logs.create).not.toHaveBeenCalled();
+    });
+
+    it('มี MPF + ภาพที่สอง + motion photo ต่อท้าย → ที่อัปโหลดจบที่ EOI ของภาพหลัก, ICC อยู่', async () => {
+      await service.createCareLog(
+        USER_ID,
+        BOOKING_ID,
+        dto(),
+        jpegPhoto(buildJpeg({ icc: true, mpf: true, trailer: true })),
+      );
+
+      const [, bytes] = upload.mock.calls[0] as [string, Buffer];
+      expect(
+        bytes.equals(Buffer.concat([SOI, APP0_JFIF, APP2_ICC, DQT, SCAN])),
+      ).toBe(true);
     });
   });
 

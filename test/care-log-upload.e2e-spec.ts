@@ -15,7 +15,13 @@ import { CareLogService } from '../src/monitoring/care-log.service';
 import { PrismaService } from '../src/common/prisma.service';
 import { SupabaseService } from '../src/common/supabase.service';
 import { ClockService } from '../src/common/clock.service';
-import { buildJpeg, GPS_SECRET, PNG_BYTES } from './fixtures/jpeg.fixture';
+import {
+  APP2_ICC,
+  buildJpeg,
+  GPS_SECRET,
+  MOTION_PHOTO_TRAILER,
+  PNG_BYTES,
+} from './fixtures/jpeg.fixture';
 
 const BOOKING_ID = '11111111-1111-4111-8111-111111111111';
 const URL = `/api/v1/monitoring/bookings/${BOOKING_ID}/care-logs`;
@@ -274,6 +280,19 @@ describe('POST /api/v1/monitoring/bookings/:bookingId/care-logs (e2e)', () => {
       expect(upload).not.toHaveBeenCalled();
     });
 
+    it('JPEG ไม่มี EOI (ไฟล์ถูกตัดท้าย) → 415', async () => {
+      const res = await withJpeg(
+        validFields(post()),
+        buildJpeg().subarray(0, -2),
+      ).expect(415);
+      expect(res.body).toMatchObject({
+        statusCode: 415,
+        message: 'ไฟล์ JPEG เสียหาย',
+      });
+      expect(upload).not.toHaveBeenCalled();
+      expect(prisma.care_logs.create).not.toHaveBeenCalled();
+    });
+
     it('ไฟล์เกิน 5 MB → 413 (multer ตัดตั้งแต่ชั้นรับ)', async () => {
       const big = Buffer.concat([buildJpeg(), Buffer.alloc(5 * 1024 * 1024)]);
       await withJpeg(validFields(post()), big).expect(413);
@@ -369,6 +388,20 @@ describe('POST /api/v1/monitoring/bookings/:bookingId/care-logs (e2e)', () => {
         serverTs: NOW.toISOString(),
         deviceTs: NOW.toISOString(),
       });
+    });
+
+    it('motion photo + MPF + ภาพที่สองต่อท้าย → ที่ขึ้น storage จบที่ FF D9 พอดี, ไม่มีพิกัด, ICC อยู่', async () => {
+      await withJpeg(
+        validFields(post()),
+        buildJpeg({ icc: true, mpf: true, trailer: true }),
+      ).expect(201);
+
+      const [, bytes] = upload.mock.calls[0] as [string, Buffer];
+      expect(bytes.subarray(-2).equals(Buffer.from([0xff, 0xd9]))).toBe(true);
+      expect(bytes.includes(MOTION_PHOTO_TRAILER)).toBe(false);
+      expect(bytes.includes(Buffer.from('+13.7768+100.5793'))).toBe(false);
+      expect(bytes.includes(Buffer.from('MPF\0', 'latin1'))).toBe(false);
+      expect(bytes.includes(APP2_ICC)).toBe(true);
     });
 
     it('ไม่มีรูป → 201 ไม่แตะ storage', async () => {

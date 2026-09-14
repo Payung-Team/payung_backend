@@ -56,3 +56,8 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+
+# PYG-466: รูปจริงที่ใช้รัน stripJpegMetadata ในเครื่อง — ห้าม commit (มีพิกัด GPS)
+# anchor ที่ root โดยตั้งใจ: `fixtures/` เปล่า ๆ จะไปจับ test/fixtures/ ที่ track อยู่ด้วย
+/fixtures/
+/out/
