@@ -20,6 +20,7 @@ import {
   CaregiverBriefDto,
 } from './dto/booking-summary.types';
 import { BookingHistoryInput } from './dto/booking-history.input';
+import { PatientProfileType } from './dto/patient-profile.type';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 import {
@@ -117,15 +118,29 @@ type BookingWithIncludes = {
   disputeStatus: string | null;
   disputeReason: string | null;
   createdAt: Date;
+  patientName: string | null;
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
+  memberDetails: unknown;
   // caregiver is nullable when booking is unmatched
   caregiver: {
     id: string;
     fullName: string | null;
     hourlyRate: number | null;
+    averageRating: number | null;
+    reviewCount: number | null;
+    experienceYears: number | null;
+    phone: string | null;
     user: { avatarUrl: string | null };
   } | null;
   careRecipient: { name: string } | null;
 };
+
+// เบอร์ผู้ดูแลเปิดให้ผู้จองเห็นหลังยืนยันการจองแล้วเท่านั้น
+const CAREGIVER_PHONE_VISIBLE_STATUSES = new Set([
+  'confirmed', 'in_progress', 'awaiting_release', 'needs_review', 'completed',
+]);
 
 /**
  * PYG-424 — บริบท "จองแทนในนามกลุ่มครอบครัว"
@@ -933,7 +948,13 @@ export class BookingService {
     });
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
-    return this.toSummary(booking as unknown as BookingWithIncludes);
+    const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    if (summary.caregiver && booking.caregiverId) {
+      summary.caregiver.completedJobs = await this.prisma.booking.count({
+        where: { caregiverId: booking.caregiverId, status: 'completed' },
+      });
+    }
+    return summary;
   }
 
   async myPendingConfirmations(
@@ -1112,6 +1133,12 @@ export class BookingService {
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
           hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          averageRating:   booking.caregiver.averageRating   ?? undefined,
+          reviewCount:     booking.caregiver.reviewCount     ?? undefined,
+          experienceYears: booking.caregiver.experienceYears ?? undefined,
+          phone: CAREGIVER_PHONE_VISIBLE_STATUSES.has(booking.status)
+            ? booking.caregiver.phone ?? undefined
+            : undefined,
         }
       : undefined;
 
@@ -1136,6 +1163,12 @@ export class BookingService {
                           : undefined,
       caregiver,
       careRecipientName: booking.careRecipient?.name ?? undefined,
+      patientName:              booking.patientName              ?? undefined,
+      dayOfContactName:         booking.dayOfContactName         ?? undefined,
+      dayOfContactPhone:        booking.dayOfContactPhone        ?? undefined,
+      dayOfContactRelationship: booking.dayOfContactRelationship ?? undefined,
+      // JSONB → ส่งต่อตามรูปทรงที่เก็บไว้ (เหมือน CaregiverBookingService.toSummary)
+      patientProfile: (booking.memberDetails as PatientProfileType | null) ?? undefined,
       confirmedAt:      booking.confirmedAt   ?? undefined,
       disputeStatus:    booking.disputeStatus ?? 'none',
       disputeReason:    booking.disputeReason ?? undefined,

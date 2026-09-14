@@ -1,4 +1,5 @@
 import { Field, Float, ID, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
+import { PatientProfileType } from './patient-profile.type';
 
 export enum BookingStatusEnum {
   UNMATCHED = 'unmatched', // booking created, no caregiver assigned yet
@@ -29,6 +30,13 @@ export class CaregiverBriefDto {
   @Field({ nullable: true })          fullName?: string;
   @Field({ nullable: true })          avatarUrl?: string;
   @Field(() => Float, { nullable: true }) hourlyRate?: number;
+  @Field(() => Float, { nullable: true }) averageRating?: number;
+  @Field(() => Int, { nullable: true })   reviewCount?: number;
+  // นับเฉพาะใน myBooking (ต้อง query เพิ่ม) — list อื่นคืน null
+  @Field(() => Int, { nullable: true })   completedJobs?: number;
+  @Field(() => Int, { nullable: true })   experienceYears?: number;
+  // เปิดให้เห็นเฉพาะหลังผู้จองยืนยันแล้ว (ดู BookingService.toSummary)
+  @Field({ nullable: true })              phone?: string;
 }
 
 @ObjectType()
@@ -53,6 +61,13 @@ export class BookingSummary {
   @Field(() => Float, { nullable: true })             estimatedCost?: number;
   @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
   @Field({ nullable: true })                          careRecipientName?: string;
+  // ข้อมูลผู้รับบริการที่กรอกตอนจอง — หน้ารายละเอียดฝั่งผู้จองแสดงครบ
+  @Field({ nullable: true })                          patientName?: string;
+  @Field({ nullable: true })                          dayOfContactName?: string;
+  @Field({ nullable: true })                          dayOfContactPhone?: string;
+  @Field({ nullable: true })                          dayOfContactRelationship?: string;
+  // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (bookings.member_details) — null = booking ก่อน PYG-460
+  @Field(() => PatientProfileType, { nullable: true }) patientProfile?: PatientProfileType;
   @Field({ nullable: true })                          confirmedAt?: Date;
   @Field()                                            createdAt: Date;
 }
