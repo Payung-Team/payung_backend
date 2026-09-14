@@ -951,6 +951,9 @@ model booking_tasks {
 ///      `care_logs_photo_url_not_full_url_check`
 ///          photo_url IS NULL OR (NOT ILIKE 'http%' AND NOT LIKE '//%')
 ///          ด่านสุดท้ายกัน public URL หลุดลงคอลัมน์นี้
+///    นิยามอยู่ใน prisma/migrations/20260914000000_pyg466_care_log_images_bucket/migration.sql:
+///      `care_logs_photo_bucket_check`
+///          photo_bucket IS NULL OR photo_bucket IN ('job-evidence','care-log-images')
 ///
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model care_logs {
@@ -963,6 +966,8 @@ model care_logs {
   body         String
   /// storage path เท่านั้น ห้าม URL เต็ม — ดูหมายเหตุบน model
   photo_url    String?
+  /// bucket ของ photo_url: 'job-evidence' (แถวเก่า) | 'care-log-images' (PYG-466) — NULL อ่านเป็น 'job-evidence'
+  photo_bucket String?
   /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
   server_ts    DateTime  @default(now()) @db.Timestamptz(6)
   /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น

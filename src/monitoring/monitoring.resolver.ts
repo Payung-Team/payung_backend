@@ -77,6 +77,8 @@ export class MonitoringResolver {
   @Mutation(() => CareLog, {
     description:
       'PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.',
+    deprecationReason:
+      'PYG-466: ใช้ POST /api/v1/monitoring/bookings/:bookingId/care-logs (multipart) แทน — mutation นี้ไม่รับ photoUrl แล้ว',
   })
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles(ROLE_ID.CAREGIVER)

@@ -36,6 +36,8 @@ export class AddCareLogInput {
     nullable: true,
     description:
       "รูปประกอบ (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ",
+    deprecationReason:
+      'PYG-466: ส่งมาจะถูกปฏิเสธ (400) — แนบรูปผ่าน POST /api/v1/monitoring/bookings/:bookingId/care-logs',
   })
   @IsOptional()
   @IsString()

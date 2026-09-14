@@ -22,7 +22,7 @@ input AddCareLogInput {
   """
   รูปประกอบ (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
   """
-  photoUrl: String
+  photoUrl: String @deprecated(reason: "PYG-466: ส่งมาจะถูกปฏิเสธ (400) — แนบรูปผ่าน POST /api/v1/monitoring/bookings/:bookingId/care-logs")
 }
 
 input AddGroupCareRecipientInput {
@@ -1549,7 +1549,7 @@ type Mutation {
   """
   PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.
   """
-  addCareLog(input: AddCareLogInput!): CareLog!
+  addCareLog(input: AddCareLogInput!): CareLog! @deprecated(reason: "PYG-466: ใช้ POST /api/v1/monitoring/bookings/:bookingId/care-logs (multipart) แทน — mutation นี้ไม่รับ photoUrl แล้ว")
 
   """
   เพิ่มโปรไฟล์ผู้รับบริการเข้ากลุ่ม — ผู้เรียกกลายเป็นเจ้าของโปรไฟล์นั้น. NOT_A_MEMBER ถ้าไม่ใช่สมาชิก ACTIVE
