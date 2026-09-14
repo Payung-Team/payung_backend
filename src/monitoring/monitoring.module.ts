@@ -8,6 +8,7 @@ import { JobScanService } from './qr/job-scan.service';
 import { JobScanResolver } from './qr/job-scan.resolver';
 import { JobEvidenceService } from './job-evidence.service';
 import { CareLogService } from './care-log.service';
+import { CareLogController } from './care-log.controller';
 import { CommonModule } from '../common/common.module';
 import { NotificationModule } from '../notification/notification.module';
 
@@ -37,6 +38,8 @@ import { NotificationModule } from '../notification/notification.module';
  */
 @Module({
   imports: [CommonModule, NotificationModule],
+  // PYG-466: อัปโหลดรูป care log ผ่าน backend (multipart) — REST เพราะ GraphQL ไม่ได้เปิดรับไฟล์
+  controllers: [CareLogController],
   providers: [
     MonitoringResolver,
     MonitoringService,
