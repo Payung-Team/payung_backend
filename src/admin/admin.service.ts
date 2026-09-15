@@ -882,8 +882,9 @@ export class AdminService {
     const offset = (page - 1) * limit;
 
     // ─── 1. Build where clause ────────────────────────────────────────────
+    // ไม่แสดง user ที่ถูก soft-delete แล้ว (เช่น cron ลบหลังครบ grace period)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: any = {};
+    const where: any = { is_deleted: false };
 
     // Filter by role (ถ้าไม่ส่ง หรือส่ง "all" → ไม่กรอง)
     if (input.role && input.role !== 'all') {
@@ -1131,7 +1132,13 @@ export class AdminService {
       throw new NotFoundException(`User "${userId}" not found`);
     }
 
-    if (existing.isActive && !existing.is_deleted) {
+    // Soft-deleted users no longer have a Supabase Auth account — re-activating
+    // would bring back a row that can never log in.
+    if (existing.is_deleted) {
+      throw new ConflictException('User already deleted');
+    }
+
+    if (existing.isActive) {
       throw new ConflictException('User is already active');
     }
 
