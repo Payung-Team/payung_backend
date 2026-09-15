@@ -139,7 +139,7 @@ type BookingWithIncludes = {
 
 // เบอร์ผู้ดูแลเปิดให้ผู้จองเห็นหลังยืนยันการจองแล้วเท่านั้น
 const CAREGIVER_PHONE_VISIBLE_STATUSES = new Set([
-  'confirmed', 'in_progress', 'awaiting_release', 'needs_review', 'completed',
+  'confirmed', 'in_progress', 'completed',
 ]);
 
 /**

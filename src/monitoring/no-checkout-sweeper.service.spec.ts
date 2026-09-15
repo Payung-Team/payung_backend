@@ -2,7 +2,7 @@
  * PYG-359 — No-checkout sweeper tests.
  *
  * Proves the money-safety heart: a swept booking gets a SYSTEM check_out row + 'no_checkout'
- * flag + status needs_review, payment untouched, and BOTH independent layers block release on
+ * flag + status completed, payment untouched, and BOTH independent layers block release on
  * their own. Idempotent, tz-correct end_ts, notifies caregiver + admin. No money moved.
  */
 import { Prisma } from '@prisma/client';
@@ -49,7 +49,7 @@ const DUE_NOW = '2026-08-20T11:30:00.000Z'; // past cutoff → sweep
 const NOT_DUE_NOW = '2026-08-20T10:00:00.000Z'; // before cutoff → skip
 
 describe('PYG-359 no-checkout sweeper', () => {
-  it('due booking → SYSTEM check_out row (lat/lng/distance NULL, no duration), needs_review, payment untouched', async () => {
+  it('due booking → SYSTEM check_out row (lat/lng/distance NULL, no duration), completed, payment untouched', async () => {
     const { svc, prisma } = makeSweeper([candidate()], DUE_NOW);
     await svc.run();
 
@@ -64,7 +64,8 @@ describe('PYG-359 no-checkout sweeper', () => {
     expect(je.note).toBe('system: no checkout');
 
     const upd = prisma.booking.update.mock.calls[0][0].data;
-    expect(upd.status).toBe('needs_review'); // NOT awaiting_release
+    expect(upd.status).toBe('completed');
+    expect(upd.completedAt).toEqual(new Date(DUE_NOW));
     expect(upd.reviewReasons).toEqual({ set: ['no_checkout'] }); // Layer 2
 
     // sweeper never touches payment — no payment model call exists on the mock at all
@@ -123,6 +124,7 @@ describe('PYG-359 no-checkout sweeper', () => {
 describe('PYG-359 — two independent safety layers (money cannot escape)', () => {
   const verdictSvc = () =>
     new MonitoringService(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

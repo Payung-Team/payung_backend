@@ -37,6 +37,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
     PaymentService,
     RefundService,
     PayoutAccountService,
+    CompleteBookingService,
   ],
 })
 export class PaymentModule {}

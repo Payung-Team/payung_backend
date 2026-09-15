@@ -47,7 +47,7 @@ export class MonitoringResolver {
 
   @Mutation(() => JobEvent, {
     description:
-      'ผู้ดูแลเช็คเอาท์เพื่อ "ปิดงาน" (in_progress → awaiting_release ถ้าไม่มีธง, → needs_review ถ้ามี). ★ ผู้รับบริการไม่ต้องกดยืนยันอะไรอีก. แนบบันทึกและรูปได้ 1 รูป (ต้องเป็นไฟล์ใน bucket ของเราเท่านั้น). การ์ดนี้ไม่แตะเงิน — การ capture เป็นงานของ Epic 2.',
+      'ผู้ดูแลเช็คเอาท์เพื่อ "ปิดงาน" (in_progress → completed). ★ ผู้รับบริการไม่ต้องกดยืนยันอะไรอีก. ธงจากหลักฐานเก็บแยกใน reviewReasons และไม่เปลี่ยนสถานะ booking. แนบบันทึกและรูปได้ 1 รูป (ต้องเป็นไฟล์ใน bucket ของเราเท่านั้น).',
   })
   @UseGuards(SupabaseAuthGuard, RolesGuard)
   @Roles(ROLE_ID.CAREGIVER)
