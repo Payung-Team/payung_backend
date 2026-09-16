@@ -469,6 +469,8 @@ type CaregiverBookingSummary {
   notes: String
   patient: PatientBriefDto!
   patientProfile: PatientProfileType
+  payoutAmount: Float
+  payoutStatus: String
   rejectionReason: String
   serviceLocations: [String!]!
   serviceType: String!

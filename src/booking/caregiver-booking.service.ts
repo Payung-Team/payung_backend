@@ -49,6 +49,10 @@ type CaregiverBookingRow = {
   dayOfContactPhone: string | null;
   dayOfContactRelationship: string | null;
   estimatedCost: { toNumber(): number } | number | null;
+  payout: {
+    status: string;
+    amount: { toNumber(): number } | number;
+  } | null;
   acceptedAt: Date | null;
   confirmedAt: Date | null;
   rejectionReason: string | null;
@@ -68,6 +72,7 @@ type CaregiverBookingRow = {
 const BOOKING_INCLUDE = {
   patient: { select: { id: true, displayName: true, avatarUrl: true } },
   careRecipient: { select: { name: true } },
+  payout: { select: { status: true, amount: true } },
 } as const;
 
 @Injectable()
@@ -452,6 +457,8 @@ export class CaregiverBookingService {
       startTime: this.formatTimeHm(b.startTime),
       durationHours: this.toNumber(b.durationHours),
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
+      payoutStatus: b.payout?.status ?? undefined,
+      payoutAmount: b.payout != null ? this.toNumber(b.payout.amount) : undefined,
       locationAddress: b.locationAddress ?? undefined,
       // PYG-352: หน้าเช็คอินต้องใช้พิกัดคู่นี้วาดหมุดจุดงาน + วงรัศมี
       locationLat: b.locationLat != null ? this.toNumber(b.locationLat) : undefined,

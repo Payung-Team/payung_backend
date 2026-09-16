@@ -44,6 +44,11 @@ export class CaregiverBookingSummary {
 
   @Field(() => Float, { nullable: true }) estimatedCost?: number; // ราคาประมาณการ (฿)
 
+  // สถานะและยอดโอนให้ผู้ดูแล แยกจาก Booking.status โดยตั้งใจ
+  // (งานเสร็จแล้วไม่ได้แปลว่าเงินเข้าบัญชีแล้วเสมอไป)
+  @Field({ nullable: true }) payoutStatus?: string;
+  @Field(() => Float, { nullable: true }) payoutAmount?: number;
+
   @Field({ nullable: true }) locationAddress?: string;
 
   // PYG-352: พิกัดจุดงาน — หน้าเช็คอินของผู้ดูแลใช้ปักหมุด "จุดงาน"
