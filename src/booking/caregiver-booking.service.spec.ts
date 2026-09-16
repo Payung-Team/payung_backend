@@ -39,6 +39,7 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     createdAt: new Date('2026-06-01T08:00:00Z'),
     patient: { id: PATIENT_ID, displayName: 'สมศรี วงค์ดี', avatarUrl: null },
     careRecipient: null,
+    payout: null,
     // PYG-460: booking เก่าทุกใบเป็น null — เป็นค่า default ที่ถูกต้อง
     memberDetails: null,
     ...overrides,
@@ -390,6 +391,26 @@ describe('CaregiverBookingService', () => {
       expect(row.careRecipientName).toBeUndefined(); // careRecipient=null → "สำหรับตัวเอง"
       // PYG-460: booking ก่อนหน้านี้ไม่มี snapshot → หน้าจอต้องรับมือกับ undefined ได้
       expect(row.patientProfile).toBeUndefined();
+    });
+
+    it('exposes payout status and net amount to the assigned caregiver', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        fakeBooking({
+          status: 'completed',
+          payout: { status: 'paid', amount: { toNumber: () => 630 } },
+        }),
+      ]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const result = await service.caregiverBookings(USER_ID, {
+        status: BookingStatusEnum.COMPLETED,
+      });
+
+      expect(result.data[0]).toMatchObject({
+        status: 'completed',
+        payoutStatus: 'paid',
+        payoutAmount: 630,
+      });
     });
 
     // ── PYG-460 ────────────────────────────────────────────────────────────

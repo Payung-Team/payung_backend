@@ -1,21 +1,21 @@
-import { Field, ID, ObjectType } from '@nestjs/graphql';
+import { Field, Float, ID, Int, ObjectType } from '@nestjs/graphql';
 
-/**
- * GroupCareRecipient (PYG-424) — โปรไฟล์ผู้รับบริการ 1 คน ที่ถูกแชร์อยู่ในกลุ่มครอบครัว
- *
- * ★★ ทำไมมีแค่ 4 ฟิลด์ ทั้งที่ตาราง care_recipients มีเกือบ 20 คอลัมน์ ★★
- *
- *   คอลัมน์ที่เหลือคือข้อมูลสุขภาพ (โรคประจำตัว ยาที่ใช้อยู่ ประวัติแพ้ยา กรุ๊ปเลือด
- *   โรงพยาบาลประจำ ผู้ติดต่อฉุกเฉิน) ซึ่งเป็น "ข้อมูลอ่อนไหว" ตาม PDPA
- *   การเปิดให้สมาชิกทุกคนในกลุ่มอ่านได้ ต้องเป็นการตัดสินใจของดีไซน์ ไม่ใช่ผลพลอยได้
- *   จากการที่ backend เผลอ select * ออกมา
- *
- *   → เวอร์ชันนี้จึงคืนเฉพาะเท่าที่หน้าจอ "เลือกคนที่จะจองให้" ต้องใช้จริง
- *     ฟิลด์ไหนที่ PYG-426 สรุปว่าต้องโชว์ ค่อยเพิ่มเข้ามาทีละตัวอย่างตั้งใจ
- *
- * ★ การเพิ่มฟิลด์ใน GraphQL เป็น non-breaking change เสมอ — เริ่มน้อยไว้ก่อนปลอดภัยกว่า
- *   ส่วนการ "ถอด" ฟิลด์ออกทีหลังคือ breaking change ที่ต้องประสานกับ FE
- */
+@ObjectType()
+export class GroupCareRecipientDetails {
+  @Field(() => Int, { nullable: true }) age?: number;
+  @Field({ nullable: true }) gender?: string;
+  @Field(() => Float, { nullable: true }) weight?: number;
+  @Field(() => Float, { nullable: true }) height?: number;
+  @Field({ nullable: true }) supportLevel?: string;
+  @Field({ nullable: true }) bloodGroup?: string;
+  @Field(() => [String], { nullable: true }) conditions?: string[];
+  @Field({ nullable: true }) medicines?: string;
+  @Field({ nullable: true }) allergies?: string;
+  @Field({ nullable: true }) careInstructions?: string;
+  @Field({ nullable: true }) regularHospital?: string;
+}
+
+/** โปรไฟล์ผู้รับบริการของสมาชิกในกลุ่ม พร้อมข้อมูลที่ใช้กรอกฟอร์มจองแทน */
 @ObjectType()
 export class GroupCareRecipient {
   @Field(() => ID)
@@ -35,9 +35,12 @@ export class GroupCareRecipient {
 
   @Field({
     description:
-      'PYG-500: true = ข้อมูลจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก), false = คนอื่นในกลุ่มกรอกให้ — FE ใช้เลือกป้ายกำกับ',
+      'ระบุที่มาของข้อมูลเดิมเพื่อรองรับข้อมูลเก่า; ไม่มีผลต่อการแสดงผลหรือสิทธิ์อ่านในกลุ่ม',
   })
   selfReported: boolean;
+
+  @Field(() => GroupCareRecipientDetails, { nullable: true })
+  details?: GroupCareRecipientDetails;
 }
 
 /**

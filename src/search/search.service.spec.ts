@@ -9,7 +9,8 @@ import { SortByEnum } from './dto/search-caregiver.input';
 type RawRow = {
   id: string; full_name: string | null; avatar_url: string | null;
   hourly_rate: number | null; avg_rating: number | null; review_count: bigint;
-  skills: string[]; province: string | null; district: string | null; total_count: bigint;
+  skills: string[]; province: string | null; district: string | null;
+  gender: string | null; total_count: bigint;
 };
 
 function row(overrides: Partial<RawRow> = {}): RawRow {
@@ -17,7 +18,7 @@ function row(overrides: Partial<RawRow> = {}): RawRow {
     id: 'cg-1', full_name: 'สมชาย ใจดี', avatar_url: null,
     hourly_rate: 350, avg_rating: 4.5, review_count: BigInt(12),
     skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
-    total_count: BigInt(1),
+    gender: 'male', total_count: BigInt(1),
     ...overrides,
   };
 }
@@ -102,8 +103,17 @@ describe('SearchService', () => {
       id: 'cg-1', fullName: 'สมชาย ใจดี',
       hourlyRate: 350, avgRating: 4.5, reviewCount: 12,
       skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+      gender: 'male',
     });
     expect(result.pagination).toMatchObject({ page: 1, limit: 10, total: 1, totalPages: 1 });
+  });
+
+  it('maps gender to undefined when the caregiver never filled it in', async () => {
+    prisma.$queryRaw.mockResolvedValue([row({ gender: null })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].gender).toBeUndefined();
   });
 
   // ── Empty results ───────────────────────────────────────────────────────

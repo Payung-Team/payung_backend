@@ -87,9 +87,17 @@ export class JobEvidenceService {
   /**
    * สร้าง signed URL ให้ไฟล์ใน bucket job-evidence (bucket เป็น private)
    * ⚠ ห้ามเก็บ public URL ลงฐานข้อมูลเด็ดขาด — เก็บเป็น path เปล่า ๆ แล้วค่อย sign ตอนอ่านทุกครั้ง
+   *
+   * ★ ต้องใช้ getAdminClient() (service role) ไม่ใช่ getClient() (anon key) — bucket เป็น
+   *   private, role anon ไม่มี session/identity เลย (auth.uid() เป็น NULL) จึงไม่ผ่าน storage
+   *   policy ไหนทั้งสิ้น ผลคือ Supabase Storage ตอบ "Object not found" (ซ่อน permission denial
+   *   ไว้เป็น 404) แม้ไฟล์จะมีอยู่จริง — พิสูจน์แล้วด้วยการทดสอบจริง: sign ไฟล์เดียวกัน anon
+   *   client fail, admin client สำเร็จ. บั๊กนี้มีมาตั้งแต่เมธอดเดิม (MonitoringService.signEvidenceUrl
+   *   ของ PYG-358) แต่ไม่เคยมีใครเจอเพราะไม่เคยมี caller จริงมาก่อน — PYG-361 (care_logs) เป็น
+   *   จุดแรกที่เรียกใช้จริง
    */
   async sign(path: string): Promise<string | null> {
-    const supabase = this.supabaseService.getClient();
+    const supabase = this.supabaseService.getAdminClient();
     const { data, error } = await supabase.storage
       .from(JOB_EVIDENCE_BUCKET)
       .createSignedUrl(path, SIGNED_URL_TTL_SEC);

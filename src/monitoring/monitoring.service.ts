@@ -36,6 +36,7 @@ import {
   type Verdict,
 } from './monitoring.constants';
 import { PaymentStatus } from '../payment/entities/payment-status.enum';
+import { CompleteBookingService } from '../payment/complete-booking.service';
 
 /** booking ที่โหลด jobEvents มาครบแล้ว — อินพุตของ summarize() */
 type BookingWithProof = Prisma.BookingGetPayload<{
@@ -86,6 +87,7 @@ export class MonitoringService {
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
     private readonly jobEvidenceService: JobEvidenceService,
+    private readonly completeBookingService: CompleteBookingService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════════
@@ -276,9 +278,10 @@ export class MonitoringService {
    *
    * ★ จุดที่ต่างจากแผนเดิมมาก: การกดปุ่มนี้ "คือ" การปิดงาน
    *   ผู้รับบริการไม่ต้องมากดยืนยันอะไรอีก (ทีมตัดสินใจ 2026-07-27)
-   *   สถานะหลังจากนี้จึงเป็น awaiting_release ไม่ใช่ awaiting_confirmation
+   *   สถานะหลังจากนี้จึงเป็น completed ทันที
    *
-   * ⚠ การ์ดนี้ "ไม่" แตะเงินเลย การ capture เป็นงานของ Epic 2 ทั้งหมด
+   * หลังบันทึก check-out ระบบจะ capture เงินที่กันวงไว้ แล้วจึงประกาศ booking.completed
+   * เพื่อไม่ให้ payout เริ่มก่อนที่เงินจริงจะถูกตัดจากผู้รับบริการสำเร็จ
    */
   async checkOutBooking(
     userId: string,
@@ -291,6 +294,7 @@ export class MonitoringService {
       where: { id: input.bookingId },
       include: {
         jobEvents: true, // เอามาทั้งสองแถว (check_in + check_out ถ้ามี)
+        payment: { select: { paymentStatus: true } },
         // PYG-435: ดึงมาเพื่อตอบคำถามเดียว — "งานใบนี้มี QR ไหม"
         jobSession: { select: { id: true } },
       },
@@ -317,6 +321,18 @@ export class MonitoringService {
     // ปิดงานซ้ำ → คืนแถวเดิม ไม่ throw (เหมือนเช็คอิน)
     // เช็คก่อนด่านอื่น ด้วยเหตุผลเดียวกับ checkInBooking
     if (existingCheckOut) {
+      // ถ้า capture รอบแรกพัง QR session จะยังเป็น CHECKED_IN และ payment ยัง held
+      // การสแกนซ้ำจึงต้อง retry capture โดยไม่สร้าง job_event ซ้ำ
+      if (
+        booking.status !== BOOKING_STATUS.COMPLETED ||
+        booking.payment?.paymentStatus === PaymentStatus.held
+      ) {
+        await this.completeBookingService.finalizeCheckedOutBooking(
+          userId,
+          booking.id,
+          existingCheckOut.serverTs,
+        );
+      }
       this.logger.log({
         event: 'monitoring.check_out.duplicate',
         bookingId: booking.id,
@@ -381,11 +397,8 @@ export class MonitoringService {
       booking.disputeStatus,
     );
 
-    const nextStatus =
-      verdict === VERDICT.VALID
-        ? BOOKING_STATUS.AWAITING_RELEASE
-        : BOOKING_STATUS.NEEDS_REVIEW;
-
+    // สถานะ booking สะท้อนวงจรชีวิตของงานเท่านั้น: เมื่อเช็กเอาต์ งานจบแล้วเสมอ
+    // ธงตรวจสอบยังเก็บใน reviewReasons/verdict เพื่อให้ payout gate ตัดสินแยกต่างหาก
     const [created] = await this.prisma.$transaction([
       this.prisma.jobEvent.create({
         data: {
@@ -406,11 +419,18 @@ export class MonitoringService {
       this.prisma.booking.update({
         where: { id: booking.id },
         data: {
-          status: nextStatus,
           reviewReasons: { set: mergedReasons },
         },
       }),
     ]);
+
+    // เช็กเอาต์สำเร็จ = ตัดเงินจริงทันทีสำหรับบัตรที่ held
+    // PromptPay/captured จะข้าม capture และไปขั้น emit completed ได้เลย
+    await this.completeBookingService.finalizeCheckedOutBooking(
+      userId,
+      booking.id,
+      now,
+    );
 
     this.logger.log({
       event: 'monitoring.check_out',
@@ -421,7 +441,7 @@ export class MonitoringService {
       distanceOutM,
       verdict,
       reviewReasons: mergedReasons,
-      nextStatus,
+      nextStatus: BOOKING_STATUS.COMPLETED,
     });
 
     // ── แจ้งผู้รับบริการว่างานปิดแล้ว + เหลือเวลากี่ชั่วโมงให้ทักท้วง ──

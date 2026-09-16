@@ -66,6 +66,10 @@ import {
   RemoveGroupCareRecipientInput,
 } from './dto/manage-care-recipient.input';
 import { RemoveGroupCareRecipientResult } from './entities/care-recipient.entity';
+import {
+  PATIENT_PROFILE_SELECT,
+  toPatientProfile,
+} from '../patient/patient-profile.mapper';
 
 /**
  * field set มาตรฐานของ "สมาชิก 1 คน" — ใช้ที่เดียวทุกที่ กันลืม join users
@@ -523,25 +527,29 @@ export class FamilyGroupService {
   }
 
   /**
-   * PYG-424 — โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้
-   *
-   * สิทธิ์ "เป็นสมาชิก ACTIVE" ถูกตรวจโดย FamilyGroupGuard มาแล้ว (@GroupRole('MEMBER'))
-   * ที่นี่จึงกรองด้วย familyGroupId อย่างเดียวพอ ไม่ต้องคิวรี่ตารางสมาชิกซ้ำ
-   * (ข้อกำหนด "avoids N+1" ของ PYG-412 — guard อ่านไปแล้วใน request เดียวกัน)
-   *
-   * ★ ต่างจาก care-recipients REST เดิม (patient/care-recipients.service.ts) ตรงเกณฑ์กรอง:
-   *     REST เดิม → where patientId = ฉัน        คือโปรไฟล์ที่ "ฉันเป็นคนเพิ่ม"
-   *     อันนี้    → where familyGroupId = กลุ่ม  คือโปรไฟล์ที่ "ถูกแชร์เข้ากลุ่ม" ไม่ว่าใครเพิ่ม
-   *   สองอันนี้ตอบคนละคำถาม จึงอยู่ร่วมกันได้ และของเดิมไม่ต้องแก้แม้แต่บรรทัดเดียว
+   * โปรไฟล์ที่สมาชิก ACTIVE ของกลุ่มเคยบันทึกไว้ทั้งหมด พร้อมรายละเอียดสำหรับจองแทน.
+   * คืนทั้งโปรไฟล์ส่วนตัวและโปรไฟล์ของกลุ่มปัจจุบัน แต่ไม่ดึงโปรไฟล์จากกลุ่มอื่น.
    */
   async groupCareRecipients(groupId: string): Promise<GroupCareRecipient[]> {
+    const members = await this.prisma.familyGroupMember.findMany({
+      where: { groupId, status: MEMBER_STATUS.ACTIVE },
+      select: { userId: true },
+    });
     const rows = await this.prisma.careRecipient.findMany({
-      where: { familyGroupId: groupId },
+      where: {
+        patientId: { in: members.map((member) => member.userId) },
+        is_deleted: false,
+        OR: [{ familyGroupId: null }, { familyGroupId: groupId }],
+      },
       orderBy: { name: 'asc' },
-      // เลือกเฉพาะคอลัมน์ที่ GroupCareRecipient ประกาศไว้เท่านั้น
-      // ★ ห้าม select ข้อมูลสุขภาพออกมา "เผื่อไว้" — การเผื่อไว้คือวิธีที่ข้อมูล
-      //   อ่อนไหวหลุดออก API โดยไม่มีใครตั้งใจ (เหตุผลเต็มอยู่ที่ care-recipient.entity.ts)
-      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
+      select: {
+        id: true,
+        name: true,
+        nickname: true,
+        patientId: true,
+        self_reported: true,
+        ...PATIENT_PROFILE_SELECT,
+      },
     });
 
     return rows.map((r) => ({
@@ -550,6 +558,7 @@ export class FamilyGroupService {
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
       selfReported: r.self_reported,
+      details: toPatientProfile(r),
     }));
   }
 

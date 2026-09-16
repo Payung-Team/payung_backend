@@ -87,13 +87,17 @@ export class OmiseController {
         );
         break;
 
-      case 'recipient.verified':
-      case 'recipient.failed': {
-        // PYG-266: Omise ยืนยัน/ปฏิเสธบัญชีรับเงินของ caregiver
+      case 'recipient.create':
+      case 'recipient.update':
+      case 'recipient.verify':
+      case 'recipient.activate':
+      case 'recipient.deactivate': {
+        // Recipient event means the remote object changed. Re-fetch it instead
+        // of inferring verified/active state from the event name.
         const recipientId = typeof data?.id === 'string' ? data.id : undefined;
         if (recipientId) {
           try {
-            await this.payoutAccountService.handleRecipientWebhook(recipientId, key);
+            await this.payoutAccountService.reconcileRecipient(recipientId, key);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             this.logger.error(

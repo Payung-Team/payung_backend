@@ -28,6 +28,10 @@ export class CaregiverSummary {
 
   @Field({ nullable: true, description: 'Service area district' })
   district?: string;
+
+  /** "male" | "female" | "other" — null ถ้า caregiver ยังไม่ได้กรอกตอน KYC */
+  @Field({ nullable: true, description: 'Caregiver gender: male | female | other' })
+  gender?: string;
 }
 
 @ObjectType()

@@ -15,6 +15,7 @@ type RawCaregiverRow = {
   skills: string[];
   province: string | null;
   district: string | null;
+  gender: string | null;
   total_count: bigint; // COUNT(*) OVER() ของ Postgres เป็น bigint เสมอ
 };
 
@@ -104,7 +105,8 @@ export class SearchService {
           c.review_count                            AS review_count,
           c.skills,
           c.service_area_province                   AS province,
-          c.service_area_district                   AS district
+          c.service_area_district                   AS district,
+          c.gender
         FROM caregivers c
         INNER JOIN users u ON u.id = c.user_id
         WHERE ${whereClause}
@@ -131,6 +133,7 @@ export class SearchService {
       skills:      row.skills      ?? [],
       province:    row.province    ?? undefined,
       district:    row.district    ?? undefined,
+      gender:      row.gender      ?? undefined,
     }));
 
     this.logger.log({
