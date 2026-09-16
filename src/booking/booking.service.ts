@@ -251,7 +251,26 @@ export class BookingService {
     let recipientId: string;
     let recipientName: string;
 
-    if (input.memberUserId) {
+    if (input.memberUserId && input.careRecipientId) {
+      const membership = await this.prisma.familyGroupMember.findFirst({
+        where: { groupId: input.groupId, userId: input.memberUserId, status: 'ACTIVE' },
+        select: { userId: true },
+      });
+      if (!membership) throw new MemberNotFoundError();
+
+      const recipient = await this.prisma.careRecipient.findFirst({
+        where: {
+          id: input.careRecipientId,
+          patientId: input.memberUserId,
+          is_deleted: false,
+          OR: [{ familyGroupId: null }, { familyGroupId: input.groupId }],
+        },
+        select: { id: true, name: true },
+      });
+      if (!recipient) throw new RecipientNotInGroupError();
+      recipientId = recipient.id;
+      recipientName = recipient.name;
+    } else if (input.memberUserId) {
       // PYG-500 — โมเดลใหม่: patient คือ "สมาชิกในกลุ่ม" ระบบหา/สร้างโปรไฟล์ให้อัตโนมัติ
       const resolved = await this.resolveGroupPatientProfile(
         input.groupId,
@@ -381,10 +400,7 @@ export class BookingService {
         familyGroupId:       groupId,
         self_reported:       false,
         name,
-        medical_conditions:  memberDetails?.conditions ?? [],
-        current_medications: memberDetails?.medicines ?? null,
-        allergies:           memberDetails?.allergies ?? null,
-        care_notes:          memberDetails?.careInstructions ?? null,
+        ...(memberDetails ? toCareRecipientColumns(memberDetails) : {}),
       },
       select: { id: true, name: true },
     });

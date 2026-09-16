@@ -670,9 +670,7 @@ input CreateBookingOnBehalfInput {
   """
   bookingDate: String!
 
-  """
-  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. (เส้นทางเดิม; แนะนำให้ส่ง memberUserId แทน)
-  """
+  """โปรไฟล์ผู้รับบริการที่สมาชิกเป้าหมายเคยบันทึก หรือโปรไฟล์ในกลุ่มนี้"""
   careRecipientId: ID
 
   """
@@ -1160,6 +1158,7 @@ type GroupBookingSummary {
 }
 
 type GroupCareRecipient {
+  details: GroupCareRecipientDetails
   id: ID!
 
   """ชื่อ-นามสกุลของผู้รับบริการ"""
@@ -1174,9 +1173,23 @@ type GroupCareRecipient {
   ownerUserId: ID!
 
   """
-  PYG-500: true = ข้อมูลจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก), false = คนอื่นในกลุ่มกรอกให้ — FE ใช้เลือกป้ายกำกับ
+  ระบุที่มาของข้อมูลเดิมเพื่อรองรับข้อมูลเก่า; ไม่มีผลต่อการแสดงผลหรือสิทธิ์อ่านในกลุ่ม
   """
   selfReported: Boolean!
+}
+
+type GroupCareRecipientDetails {
+  age: Int
+  allergies: String
+  bloodGroup: String
+  careInstructions: String
+  conditions: [String!]
+  gender: String
+  height: Float
+  medicines: String
+  regularHospital: String
+  supportLevel: String
+  weight: Float
 }
 
 type HealthStatus {
@@ -1534,17 +1547,25 @@ input LoginInput {
 }
 
 input MemberDetailsInput {
+  age: Int
+
   """ประวัติแพ้ยา/อาหาร"""
   allergies: String
+  bloodGroup: String
 
   """ข้อควรระวัง/วิธีดูแลเฉพาะของผู้รับบริการคนนี้"""
   careInstructions: String
 
   """อาการ/โรคประจำตัวที่ผู้ดูแลควรรู้ เช่น ["เบาหวาน", "ความดัน"]"""
   conditions: [String!]
+  gender: String
+  height: Float
 
   """ยาประจำที่ใช้อยู่"""
   medicines: String
+  regularHospital: String
+  supportLevel: String
+  weight: Float
 }
 
 type Mutation {
