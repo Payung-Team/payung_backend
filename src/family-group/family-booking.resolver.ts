@@ -79,6 +79,19 @@ export class FamilyBookingResolver {
     return this.bookingService.groupBookings(groupId, user.id);
   }
 
+  @Query(() => BookingSummary, {
+    description:
+      'รายละเอียดคำจองในกลุ่ม — สมาชิก ACTIVE ทุกคนอ่านได้ แต่ bookedByMe บอกว่าผู้เรียกมีสิทธิ์จัดการคำจองหรือไม่',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async groupBooking(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<BookingSummary> {
+    return this.bookingService.groupBookingById(bookingId, groupId, user.id);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  Mutations
   // ═══════════════════════════════════════════════════════════════════════

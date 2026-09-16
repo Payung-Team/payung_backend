@@ -40,6 +40,8 @@ export class CaregiverBriefDto {
 @ObjectType()
 export class BookingSummary {
   @Field(() => ID)                                    id: string;
+  @Field({ nullable: true, description: 'true เมื่อผู้เรียกเป็นผู้สร้างคำจองในนามกลุ่ม' })
+  bookedByMe?: boolean;
   @Field()                                            bookingDate: string;
   @Field()                                            status: string;
   @Field({ nullable: true })                          disputeStatus?: string;

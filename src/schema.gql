@@ -311,6 +311,8 @@ enum BookingStatus {
 }
 
 type BookingSummary {
+  """true เมื่อผู้เรียกเป็นผู้สร้างคำจองในนามกลุ่ม"""
+  bookedByMe: Boolean
   bookingDate: String!
 
   """
@@ -2176,6 +2178,11 @@ type Query {
   ประวัติกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าแบบ keyset (สมาชิก ACTIVE เท่านั้น). first = จำนวนที่ขอ (ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเป็น 50) · after = ค่า pageInfo.endCursor ที่ได้จากครั้งก่อน (ค่าทึบ ห้าม parse). กลุ่มที่ยังไม่มีกิจกรรม = nodes ว่าง ไม่ใช่ error · cursor ที่แกะไม่ออก → ACTIVITY_CURSOR_INVALID
   """
   familyGroupActivity(after: String, first: Int, groupId: ID!): FamilyGroupActivityConnection!
+
+  """
+  รายละเอียดคำจองในกลุ่ม — สมาชิก ACTIVE ทุกคนอ่านได้ แต่ bookedByMe บอกว่าผู้เรียกมีสิทธิ์จัดการคำจองหรือไม่
+  """
+  groupBooking(bookingId: ID!, groupId: ID!): BookingSummary!
 
   """
   PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง

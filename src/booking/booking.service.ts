@@ -100,6 +100,8 @@ const TASK_SUGGESTIONS: Record<string, string[]> = {
 type BookingWithIncludes = {
   id: string;
   patientId: string;
+  familyGroupId: string | null;
+  bookedBy: string | null;
   status: string;
   serviceType: string;
   timeSlot: string;
@@ -965,6 +967,39 @@ export class BookingService {
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
     const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    if (summary.caregiver && booking.caregiverId) {
+      summary.caregiver.completedJobs = await this.prisma.booking.count({
+        where: { caregiverId: booking.caregiverId, status: 'completed' },
+      });
+    }
+    return summary;
+  }
+
+  /**
+   * รายละเอียดคำจองในมุมมองกลุ่มครอบครัว.
+   * FamilyGroupGuard ตรวจสมาชิกภาพ ACTIVE ก่อนเข้ามาถึงเมธอดนี้ ส่วนเงื่อนไข
+   * familyGroupId ป้องกันการนำ booking id จากกลุ่มอื่นมาอ่านผ่าน groupId ที่ตนเป็นสมาชิก.
+   */
+  async groupBookingById(
+    bookingId: string,
+    groupId: string,
+    userId: string,
+  ): Promise<BookingSummary> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+      },
+    });
+
+    // คืน NotFound ทั้งกรณีไม่มี booking และ booking อยู่คนละกลุ่ม เพื่อไม่เปิดเผยข้อมูลข้ามกลุ่ม
+    if (!booking || booking.familyGroupId !== groupId) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    summary.bookedByMe = booking.bookedBy === userId || booking.patientId === userId;
     if (summary.caregiver && booking.caregiverId) {
       summary.caregiver.completedJobs = await this.prisma.booking.count({
         where: { caregiverId: booking.caregiverId, status: 'completed' },
