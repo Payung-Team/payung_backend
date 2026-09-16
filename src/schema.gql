@@ -576,6 +576,9 @@ type CaregiverSummary {
   """Full name"""
   fullName: String!
 
+  """Caregiver gender: male | female | other"""
+  gender: String
+
   """Hourly rate in THB"""
   hourlyRate: Float!
 
