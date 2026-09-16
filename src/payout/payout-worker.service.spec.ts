@@ -17,6 +17,7 @@ import { Prisma } from '@prisma/client';
 import { PayoutWorkerService } from './payout-worker.service';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
+import { PayoutAccountService } from '../payment/payout-account.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { PayoutStateMachine } from './payout-state-machine';
@@ -44,6 +45,7 @@ function makePayoutRow(overrides: Record<string, unknown> = {}) {
       payoutAccount: {
         omiseRecipientId: RECIPIENT_ID,
         recipientStatus: 'verified',
+        status: 'active',
       },
     },
     ...overrides,
@@ -57,6 +59,7 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
     $transaction: jest.Mock;
   };
   let omise: { createTransfer: jest.Mock };
+  let payoutAccounts: { reconcileRecipient: jest.Mock };
   let notifications: { create: jest.Mock };
   let stateMachine: { claim: jest.Mock; transition: jest.Mock };
   let retryPolicy: { decide: jest.Mock };
@@ -71,6 +74,12 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
       ),
     };
     omise = { createTransfer: jest.fn() };
+    payoutAccounts = {
+      reconcileRecipient: jest.fn().mockResolvedValue({
+        recipientStatus: 'pending',
+        status: 'pending',
+      }),
+    };
     notifications = { create: jest.fn().mockResolvedValue({}) };
     stateMachine = {
       claim: jest.fn(),
@@ -96,6 +105,7 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
         PayoutWorkerService,
         { provide: PrismaService, useValue: prisma },
         { provide: OmiseService, useValue: omise },
+        { provide: PayoutAccountService, useValue: payoutAccounts },
         { provide: NotificationService, useValue: notifications },
         { provide: PayoutStateMachine, useValue: stateMachine },
         { provide: PayoutRetryPolicy, useValue: retryPolicy },
@@ -274,6 +284,70 @@ describe('PayoutWorkerService (ก้อน B — state machine + backoff + kill
 
     await worker.processOne(PAYOUT_ID);
     expect(stateMachine.claim).not.toHaveBeenCalled();
+  });
+
+  it('stale pending recipient → reconcile แล้วโอนต่อเมื่อ Omise พร้อม', async () => {
+    prisma.payout.findUnique.mockResolvedValue(
+      makePayoutRow({
+        caregiver: {
+          userId: CAREGIVER_USER_ID,
+          payoutAccount: {
+            omiseRecipientId: RECIPIENT_ID,
+            recipientStatus: 'pending',
+            status: 'pending',
+          },
+        },
+      }),
+    );
+    payoutAccounts.reconcileRecipient.mockResolvedValueOnce({
+      recipientStatus: 'verified',
+      status: 'active',
+    });
+    stateMachine.claim.mockResolvedValue({
+      claimed: true,
+      payout: makePayoutRow({ status: PayoutStatus.processing }),
+    });
+    omise.createTransfer.mockResolvedValue({
+      id: 'trsf_recovered',
+      status: 'pending',
+      amount: 90000,
+      recipient: RECIPIENT_ID,
+      currency: 'THB',
+      sent: false,
+      paid: false,
+    });
+
+    await worker.processOne(PAYOUT_ID);
+
+    expect(payoutAccounts.reconcileRecipient).toHaveBeenCalledWith(
+      RECIPIENT_ID,
+      'payout_worker',
+    );
+    expect(omise.createTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  it('verified แต่ inactive → reconcile แล้วยังไม่ claim', async () => {
+    prisma.payout.findUnique.mockResolvedValue(
+      makePayoutRow({
+        caregiver: {
+          userId: CAREGIVER_USER_ID,
+          payoutAccount: {
+            omiseRecipientId: RECIPIENT_ID,
+            recipientStatus: 'verified',
+            status: 'pending',
+          },
+        },
+      }),
+    );
+    payoutAccounts.reconcileRecipient.mockResolvedValueOnce({
+      recipientStatus: 'verified',
+      status: 'pending',
+    });
+
+    await worker.processOne(PAYOUT_ID);
+
+    expect(stateMachine.claim).not.toHaveBeenCalled();
+    expect(omise.createTransfer).not.toHaveBeenCalled();
   });
 
   it('no payoutAccount → no claim', async () => {

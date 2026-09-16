@@ -26,6 +26,7 @@ import { Prisma } from '@prisma/client';
 import { PayoutWorkerService } from './payout-worker.service';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
+import { PayoutAccountService } from '../payment/payout-account.service';
 import { NotificationService } from '../notification/notification.service';
 import { PayoutStateMachine } from './payout-state-machine';
 import { PayoutStatus } from './entities/payout-status.enum';
@@ -72,6 +73,7 @@ describe('Payout → Omise transfer contract (ค่าต้องลงถู�
             payoutAccount: {
               omiseRecipientId: RECIPIENT_ID,
               recipientStatus: 'verified',
+              status: 'active',
             },
           },
         }),
@@ -92,6 +94,10 @@ describe('Payout → Omise transfer contract (ค่าต้องลงถู�
       providers: [
         PayoutWorkerService,
         OmiseService, // ★ ตัวจริง ไม่ใช่ mock — คือหัวใจของไฟล์นี้
+        {
+          provide: PayoutAccountService,
+          useValue: { reconcileRecipient: jest.fn() },
+        },
         { provide: ConfigService, useValue: config },
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationService, useValue: { create: jest.fn().mockResolvedValue({}) } },

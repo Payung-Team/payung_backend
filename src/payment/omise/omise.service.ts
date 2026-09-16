@@ -86,10 +86,12 @@ export type OmiseRefundResult = {
 export type OmiseRecipientResult = {
   /** recipient id ของ Omise (เก็บใน caregiver_payout_accounts.omise_recipient_id) */
   id: string;
-  /** Omise ยืนยันบัญชีนี้แล้วหรือยัง (recipient.verified webhook เปลี่ยนค่านี้) */
+  /** Omise ยืนยันบัญชีนี้แล้วหรือยัง (recipient.verify webhook เปลี่ยนค่านี้) */
   verified: boolean;
   /** recipient พร้อมรับโอนไหม (Omise-side active flag) */
   active: boolean;
+  /** เหตุผลที่ Omise ตรวจสอบ recipient ไม่ผ่าน (ถ้ามี) */
+  failureCode?: string | null;
   bankAccount: {
     brand: string;
     lastDigits: string;
@@ -1008,10 +1010,13 @@ export class OmiseService {
   /** แปลง raw Omise recipient response object → OmiseRecipientResult ที่ normalize แล้ว */
   private normalizeRecipient(body: Record<string, unknown>): OmiseRecipientResult {
     const bankAccount = (body.bank_account ?? {}) as Record<string, unknown>;
+    const failureCode =
+      typeof body.failure_code === 'string' ? body.failure_code : null;
     return {
       id: typeof body.id === 'string' ? body.id : '',
       verified: body.verified === true,
       active: body.active === true,
+      ...(failureCode ? { failureCode } : {}),
       bankAccount: {
         brand: typeof bankAccount.brand === 'string' ? bankAccount.brand : '',
         lastDigits: typeof bankAccount.last_digits === 'string' ? bankAccount.last_digits : '',
