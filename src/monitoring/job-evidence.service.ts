@@ -87,17 +87,41 @@ export class JobEvidenceService {
   /**
    * สร้าง signed URL ให้ไฟล์ใน bucket job-evidence (bucket เป็น private)
    * ⚠ ห้ามเก็บ public URL ลงฐานข้อมูลเด็ดขาด — เก็บเป็น path เปล่า ๆ แล้วค่อย sign ตอนอ่านทุกครั้ง
+   *
+   * PYG-470: ใช้ service-role (admin client) แบบเดียวกับ CareLogService.signPhoto
+   *   anon key อ่าน bucket นี้ไม่ได้เลย (policy job_evidence_select_participants เป็น TO authenticated)
+   *   → sign ล้มทุกครั้ง · service-role bypass RLS จึง **ผู้เรียกต้องตรวจสิทธิ์เองก่อนเรียกเสมอ**
+   *   วันนี้มีทางเข้าเดียวคือ MonitoringService.proofOfWork (ตรวจคู่กรณี/แอดมินแล้ว)
+   *
+   * ล้มเหลว → คืน null ไม่ throw: รูปหลักฐานใบเดียว sign ไม่ได้ต้องไม่ทำให้ทั้งหน้าพัง
    */
   async sign(path: string): Promise<string | null> {
-    const supabase = this.supabaseService.getClient();
-    const { data, error } = await supabase.storage
-      .from(JOB_EVIDENCE_BUCKET)
-      .createSignedUrl(path, SIGNED_URL_TTL_SEC);
+    try {
+      const { data, error } = await this.supabaseService
+        .getAdminClient()
+        .storage.from(JOB_EVIDENCE_BUCKET)
+        .createSignedUrl(path, SIGNED_URL_TTL_SEC);
 
-    if (error || !data?.signedUrl) {
-      this.logger.warn({ event: 'job_evidence.sign_url_failed', path });
+      if (error || !data?.signedUrl) {
+        this.logSignFailure(path, error?.message ?? 'no signedUrl returned');
+        return null;
+      }
+      return data.signedUrl;
+    } catch (err) {
+      this.logSignFailure(
+        path,
+        err instanceof Error ? err.message : String(err),
+      );
       return null;
     }
-    return data.signedUrl;
+  }
+
+  private logSignFailure(path: string, message: string): void {
+    this.logger.warn({
+      event: 'job_evidence.sign_url_failed',
+      bucket: JOB_EVIDENCE_BUCKET,
+      path,
+      error: message,
+    });
   }
 }
