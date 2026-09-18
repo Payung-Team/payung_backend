@@ -479,7 +479,21 @@ export class MonitoringService {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูข้อมูลงานนี้');
     }
 
-    return this.summarize(booking);
+    const summary = this.summarize(booking);
+
+    // PYG-470: sign รูปหลักฐานที่นี่ทางเดียว — ผ่านการตรวจสิทธิ์ข้างบนแล้ว
+    //   (sign ใช้ service-role ซึ่ง bypass RLS) · proofOfWorkForSystem ไม่ sign เพราะไม่มีคนดูรูป
+    //   checkOutBooking / QR ก็ไม่ sign — FE refetch ผ่าน query นี้เอา
+    await Promise.all(
+      [summary.checkIn, summary.checkOut].map(async (event) => {
+        if (event?.photoUrl) {
+          event.photoUrl =
+            (await this.jobEvidenceService.sign(event.photoUrl)) ?? undefined;
+        }
+      }),
+    );
+
+    return summary;
   }
 
   /**
@@ -853,15 +867,6 @@ export class MonitoringService {
       reviewReasons: evaluation?.reviewReasons ?? [],
       alreadyCheckedIn,
     };
-  }
-
-  /**
-   * สร้าง signed URL ให้รูปหลักฐาน (bucket เป็น private)
-   * ตรรกะย้ายไปอยู่ที่ JobEvidenceService แล้ว (ใช้ร่วมกับ CareLogService — PYG-361)
-   * เมธอดนี้เก็บไว้เป็น thin wrapper เพื่อไม่ให้กระทบ public API เดิมของ service นี้
-   */
-  async signEvidenceUrl(path: string): Promise<string | null> {
-    return this.jobEvidenceService.sign(path);
   }
 
   /** ค่าคงที่ที่ FE ต้องใช้วาดวงกลมสองวงบนแผนที่ (ดีไซน์วาดไว้ก่อนเช็คอินด้วยซ้ำ) */

@@ -446,7 +446,7 @@ export class CareLogService {
    * signed URL ของรูปประกอบ — bucket มาจาก photo_bucket (NULL = แถวเก่า → job-evidence)
    *
    * ใช้ admin client (service-role) ทั้งสอง bucket: care-log-images ไม่มี select policy ให้ใครเลย
-   * ⚠ ไม่เรียก JobEvidenceService.sign() — ตัวนั้นใช้ anon key (บั๊กแยกการ์ด อย่าแก้ที่นี่)
+   * ⚠ ไม่เรียก JobEvidenceService.sign() — ตัวนั้นล็อก bucket เป็น job-evidence แต่ care log มีสอง bucket
    */
   private async signPhoto(row: CareLogRow): Promise<string | undefined> {
     if (!row.photo_url) return undefined;
