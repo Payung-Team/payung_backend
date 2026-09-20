@@ -837,9 +837,17 @@ model KycDocument {
   mimeType     String     @map("mime_type")
   uploadedAt   DateTime   @default(now()) @map("uploaded_at")
   userId       String     @map("user_id")
-  caregiver    Caregiver? @relation(fields: [caregiverId], references: [id])
-  user         User       @relation(fields: [userId], references: [id])
+  /// PYG-506: สถานะรีวิว "รายเอกสาร" — ใช้กับ doc_type = 'profile_photo' (PYG-488)
+  /// NULL = เอกสารที่ไม่ได้รีวิวรายใบ (เอกสาร KYC เดิมรีวิวรวมทั้งก้อนผ่าน caregivers.kyc_status)
+  /// TEXT + CHECK ('pending'|'approved'|'rejected') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  reviewStatus String?     @map("review_status")
+  reviewedAt   DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  caregiver    Caregiver?  @relation(fields: [caregiverId], references: [id])
+  user         User        @relation(fields: [userId], references: [id])
+  reviews      KycReview[]
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([reviewStatus], map: "idx_kyc_documents_review_status")
   @@map("kyc_documents")
 }
 
@@ -850,9 +858,15 @@ model KycReview {
   action      String
   reason      String?
   reviewedAt  DateTime  @default(now()) @map("reviewed_at")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id])
-  reviewer    User      @relation(fields: [reviewerId], references: [id])
+  /// PYG-506: รีวิวใบนี้ตัดสิน "เอกสารใบไหน" — NULL = รีวิว KYC ทั้งก้อนแบบเดิม
+  /// มีคอลัมน์นี้เพื่อให้เหตุผลที่ปฏิเสธรูปโปรไฟล์ไม่ปนกับเหตุผลที่ปฏิเสธ KYC
+  documentId  String?      @map("document_id")
+  caregiver   Caregiver    @relation(fields: [caregiverId], references: [id])
+  reviewer    User         @relation(fields: [reviewerId], references: [id])
+  document    KycDocument? @relation(fields: [documentId], references: [id])
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE document_id IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([documentId], map: "idx_kyc_reviews_document")
   @@map("kyc_reviews")
 }
 
