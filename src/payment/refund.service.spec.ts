@@ -256,4 +256,52 @@ describe('RefundService', () => {
       tx,
     );
   });
+
+  // ── PYG-461/462: refund(params, outerTx?) ──────────────────────────────────
+  describe('PYG-461/462: optional outerTx', () => {
+    it('ไม่ส่ง outerTx (caller เดิม 3 จุด: refundPayment + dispute ×2) → เปิด $transaction เอง timeout 20s + emit หลัง commit เหมือนเดิม', async () => {
+      tx.payment.findUnique.mockResolvedValue(makePayment());
+
+      await service.refund({ paymentId: 'pay-1', reason: REASON, source: 'dispute' });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 20000 });
+      expect(events.emit).toHaveBeenCalledTimes(1);
+      expect(events.emit).toHaveBeenCalledWith(BOOKING_EVENTS.REFUND_ISSUED, expect.anything());
+    });
+
+    it('ส่ง outerTx → ทำงานบน tx นั้น ไม่เปิด tx ซ้อน + ไม่ emit (ยังไม่ commit — ผู้เรียก emit เอง)', async () => {
+      tx.payment.findUnique.mockResolvedValue(makePayment());
+
+      const updated = await service.refund(
+        { paymentId: 'pay-1', reason: REASON, source: 'patient_cancel' },
+        tx as never,
+      );
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(1); // ยังล็อก payment บน outer tx
+      expect(idempotency.runOnce).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'refund:pay-1:0' }),
+        tx,
+      );
+      expect(fsm.transition).toHaveBeenCalledWith(
+        'pay-1',
+        PaymentStatus.refunded,
+        expect.objectContaining({ metadata: expect.objectContaining({ source: 'patient_cancel' }) }),
+        tx,
+      );
+      expect(events.emit).not.toHaveBeenCalled();
+      expect(updated.refundedAmount).toBe(1000);
+    });
+
+    it('ส่ง outerTx แล้ว guard เดิมยังครบ: payout paid → Conflict ไม่เรียก Omise', async () => {
+      tx.payment.findUnique.mockResolvedValue(makePayment());
+      tx.payout.findUnique.mockResolvedValue({ status: 'paid' });
+
+      await expect(
+        service.refund({ paymentId: 'pay-1', reason: REASON, source: 'caregiver_no_show' }, tx as never),
+      ).rejects.toThrow(ConflictException);
+      expect(omise.createRefund).not.toHaveBeenCalled();
+    });
+  });
 });

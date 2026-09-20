@@ -205,6 +205,10 @@ export class CompleteBookingService {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
+          // PYG-461/462 ★ LOCK ORDER ทั้ง repo: bookings → payments (เหมือน BookingSettlementService)
+          // เดิมล็อก payment ก่อนแล้วค่อย UPDATE bookings ท้าย tx (= ได้ lock booking ทีหลัง)
+          // → ถ้า settle ถือ booking แล้วรอ payment อยู่พอดี จะ deadlock กัน
+          await tx.$queryRaw`SELECT 1 FROM "bookings" WHERE "id" = ${bookingId}::uuid FOR UPDATE`;
           // lock the payment row — serialize concurrent captures
           await tx.$queryRaw`SELECT 1 FROM "payments" WHERE "id" = ${payment.id}::uuid FOR UPDATE`;
           const locked = await tx.payment.findUnique({

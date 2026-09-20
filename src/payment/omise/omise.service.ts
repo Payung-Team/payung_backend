@@ -146,6 +146,14 @@ export class OmiseService {
   private readonly apiBase: string;
   /** secret key — undefined ได้ถ้ายังไม่ตั้งค่า (dev/test) → capture จะ throw อย่างชัดเจน */
   private readonly secretKey?: string;
+  /**
+   * PYG-461/462: HTTP timeout ของ call ที่ถูกเรียก "ขณะถือ row lock" (reverse/void, createRefund,
+   * retrieveCharge) — ต้องสั้นกว่า tx timeout ของผู้เรียก (RefundService/BookingSettlementService 20s)
+   * ไม่งั้น Omise ค้าง = FOR UPDATE ค้างจน Prisma ตัด tx เอง
+   * ตั้งใจไม่ใส่ให้ createCharge/createPromptPayCharge/captureCharge/createTransfer: timeout ฝั่ง client
+   * ขณะ Omise อาจทำสำเร็จไปแล้ว = สถานะกำกวม (เช่น hold ซ้อน) — ต้องมีการ์ดแยกพร้อม reconcile
+   */
+  private readonly lockedCallTimeoutMs: number;
 
   constructor(private readonly config: ConfigService) {
     this.apiBase = this.config.get<string>(
@@ -153,6 +161,8 @@ export class OmiseService {
       'https://api.omise.co',
     );
     this.secretKey = this.config.get<string>('OMISE_SECRET_KEY');
+    const t = Number(this.config.get<string>('OMISE_HTTP_TIMEOUT_MS', '10000'));
+    this.lockedCallTimeoutMs = Number.isFinite(t) && t > 0 ? t : 10000;
   }
 
   /**
@@ -543,10 +553,16 @@ export class OmiseService {
   /**
    * reverseCharge — ยกเลิกการกันวงเงิน (authorize) ที่เกินเวลาหรือไม่ได้ใช้งาน
    *
-   * @param omiseChargeId - charge id ของ Omise
+   * @param omiseChargeId  - charge id ของ Omise
+   * @param idempotencyKey - (PYG-461/462) ส่งเป็น Omise-Idempotency-Key — ชั้นเดียวที่กัน reverse ซ้ำ
+   *                         ได้เมื่อ tx ของผู้เรียก rollback หลัง Omise สำเร็จ (แถว idempotency_keys หายไปด้วย)
+   *                         ไม่ส่ง = พฤติกรรมเดิม (payment-cron handleExpiredHolds)
    * @returns ผลลัพธ์จากการ reverse
    */
-  async reverseCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
+  async reverseCharge(
+    omiseChargeId: string,
+    idempotencyKey?: string,
+  ): Promise<OmiseCaptureResult> {
     if (!this.secretKey) {
       throw new Error('ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
     }
@@ -554,12 +570,18 @@ export class OmiseService {
     const url = `${this.apiBase}/charges/${encodeURIComponent(omiseChargeId)}/reverse`;
     const authHeader =
       'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+    const headers: Record<string, string> = { Authorization: authHeader };
+    if (idempotencyKey) {
+      headers['Omise-Idempotency-Key'] = idempotencyKey;
+    }
 
     let res: Response;
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: authHeader },
+        headers,
+        // PYG-461/462: ถูกเรียกขณะถือ row lock (settle) → ต้องมี timeout สั้นกว่า tx timeout
+        signal: AbortSignal.timeout(this.lockedCallTimeoutMs),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -606,8 +628,11 @@ export class OmiseService {
    * Omise treats "void" (ยกเลิก authorize hold ก่อน capture) เป็นการ reverse charge อันเดียวกัน
    * เราแยกชื่อเพื่อให้ตอนอ่านโค้ดของ booking.cancelBooking ชัดว่าเป็นการคืน hold ไม่ใช่ expire
    */
-  async voidCharge(omiseChargeId: string): Promise<OmiseCaptureResult> {
-    return this.reverseCharge(omiseChargeId);
+  async voidCharge(
+    omiseChargeId: string,
+    idempotencyKey?: string, // PYG-461/462: ส่งต่อเป็น Omise-Idempotency-Key (ดู reverseCharge)
+  ): Promise<OmiseCaptureResult> {
+    return this.reverseCharge(omiseChargeId, idempotencyKey);
   }
 
   /**
@@ -665,6 +690,8 @@ export class OmiseService {
         method: 'POST',
         headers,
         body: formBody,
+        // PYG-461/462: เรียกขณะถือ FOR UPDATE (RefundService/settle) → ต้องมี timeout สั้นกว่า tx timeout
+        signal: AbortSignal.timeout(this.lockedCallTimeoutMs),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -833,6 +860,8 @@ export class OmiseService {
       res = await fetch(url, {
         method: 'GET',
         headers: { Authorization: authHeader },
+        // PYG-461/462: settle เรียกนอก tx ก็จริง แต่ webhook/reconcile บางทางเรียกใกล้ lock — ใส่ timeout ไว้เท่ากัน
+        signal: AbortSignal.timeout(this.lockedCallTimeoutMs),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   ForbiddenException,
   NotFoundException,
-  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -251,46 +250,31 @@ describe('BookingService', () => {
       };
     }
 
-    it('held payment + omiseChargeId → void + FSM voided + emit PAYMENT_VOIDED + CANCELLED', async () => {
-      prisma.booking.findUnique.mockResolvedValue(
-        fakeBookingWithPayment({
+    // PYG-461/462: เทสเดิมตัวนี้สร้าง booking 'accepted' + payment 'held' ซึ่ง flow จริงไม่มีทางเกิด
+    // (held เกิดใน tx เดียวกับ booking → 'confirmed' เท่านั้น — payment.service.ts createPayment)
+    // จึงเขียวมาตลอดทั้งที่ของจริง void ไม่เคยทำงาน เพราะ cancellableStatuses ไม่มี 'confirmed'
+    // → แก้ให้ตรง flow จริง: held คู่กับ confirmed เสมอ → cancelBooking ปฏิเสธ 422 ไม่แตะ Omise
+    //   การ void จริงทดสอบที่ booking-settlement.service.spec.ts (เฟส 2) — ต่อ flow ใน 3a
+    //   ไม่แก้ cancelBooking ในเฟสนี้ (ขอบเขต: ห้ามแตะ endpoint ยกเลิกของผู้ป่วย)
+    it('flow จริง: confirmed + held → 422 (void ของ PYG-286 เข้าไม่ถึง) ไม่เรียก Omise/FSM/event', async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        ...fakeBookingWithPayment({
           id: PAYMENT_ID_LOCAL,
           paymentStatus: 'held',
           omiseChargeId: CHARGE_ID,
           amount: 1200,
         }),
-      );
-      tx.booking.update.mockResolvedValue({
-        ...fakeBooking({ status: 'cancelled' }),
-        caregiver: {
-          id: CAREGIVER_ID,
-          userId: 'cg-user-1',
-          fullName: 'สมชาย ใจดี',
-          hourlyRate: 350,
-          user: { avatarUrl: null },
-        },
+        status: 'confirmed',
       });
-      omise.voidCharge.mockResolvedValue({ id: CHARGE_ID, status: 'reversed' });
-      fsm.transition.mockResolvedValue({});
 
-      await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-
-      // Omise void เรียกด้วย charge id ของ payment
-      expect(omise.voidCharge).toHaveBeenCalledWith(CHARGE_ID);
-
-      // FSM held → voided ใน tx เดียวกับ booking.update
-      expect(fsm.transition).toHaveBeenCalledWith(
-        PAYMENT_ID_LOCAL,
-        PaymentStatus.voided,
-        expect.objectContaining({ changedBy: PATIENT_ID }),
-        tx,
+      await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
       );
 
-      // emit 2 events: CANCELLED (→ caregiver) + PAYMENT_VOIDED (→ patient) — ไม่ซ้ำ
-      const events = emitter.emit.mock.calls.map((c) => c[0]);
-      expect(events).toContain(BOOKING_EVENTS.CANCELLED);
-      expect(events).toContain(BOOKING_EVENTS.PAYMENT_VOIDED);
-      expect(emitter.emit).toHaveBeenCalledTimes(2);
+      expect(omise.voidCharge).not.toHaveBeenCalled();
+      expect(fsm.transition).not.toHaveBeenCalled();
+      expect(tx.booking.update).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
     });
 
     it('ไม่มี payment → ไม่เรียก Omise / ไม่ FSM / emit แค่ CANCELLED', async () => {
@@ -314,7 +298,33 @@ describe('BookingService', () => {
       expect(emitter.emit.mock.calls[0][0]).toBe(BOOKING_EVENTS.CANCELLED);
     });
 
-    it('payment status != held → defensive skip void (เช่น captured)', async () => {
+    // PYG-461/462: เทสเดิม 'payment status != held → defensive skip void (เช่น captured)' assert ว่า
+    // booking 'accepted' + payment 'captured' ยกเลิกสำเร็จโดยไม่ void/ไม่คืนเงิน = ยืนยันพฤติกรรมที่
+    // ผู้ป่วยเสียเงินฟรี → ลบทิ้ง แล้วแทนด้วย 2 ตัวข้างล่าง:
+    //   (1) flow ปกติ: PromptPay captured → booking confirmed ใน tx เดียวกัน → cancelBooking ปฏิเสธ 422
+    //   (2) บั๊กจริงที่ยังเปิดอยู่ (ไม่แก้ในเฟสนี้ — endpoint ยกเลิกเป็นขอบเขต 3a): staging มี
+    //       booking 'accepted' + payment 'captured' จริง 4 แถว (dry-run 2026-09-11) → ยกเลิกได้โดยไม่คืนเงิน
+    //       it.failing = ต้อง "fail" ตราบที่บั๊กยังอยู่ พอ 3a แก้แล้ว jest จะแดง บอกให้เปลี่ยนเป็น it ปกติ
+    it('flow จริง: confirmed + captured (PromptPay) → 422 ยกเลิกไม่ได้ ไม่เปลี่ยนสถานะ', async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        ...fakeBookingWithPayment({
+          id: PAYMENT_ID_LOCAL,
+          paymentStatus: 'captured',
+          omiseChargeId: CHARGE_ID,
+          amount: 1200,
+        }),
+        status: 'confirmed',
+      });
+
+      await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+      expect(tx.booking.update).not.toHaveBeenCalled();
+      expect(omise.voidCharge).not.toHaveBeenCalled();
+      expect(fsm.transition).not.toHaveBeenCalled();
+    });
+
+    it.failing('บั๊กเปิดอยู่ (3a): accepted + captured → ต้องไม่ยกเลิกได้โดยไม่คืนเงิน', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         fakeBookingWithPayment({
           id: PAYMENT_ID_LOCAL,
@@ -334,31 +344,13 @@ describe('BookingService', () => {
         },
       });
 
-      await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-
-      expect(omise.voidCharge).not.toHaveBeenCalled();
-      expect(fsm.transition).not.toHaveBeenCalled();
-    });
-
-    it('Omise void fail → ServiceUnavailableException + ไม่เปลี่ยน status booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(
-        fakeBookingWithPayment({
-          id: PAYMENT_ID_LOCAL,
-          paymentStatus: 'held',
-          omiseChargeId: CHARGE_ID,
-          amount: 1200,
-        }),
-      );
-      omise.voidCharge.mockRejectedValue(new Error('Omise 503'));
-
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID)).rejects.toBeInstanceOf(
-        ServiceUnavailableException,
+        UnprocessableEntityException,
       );
-
-      // tx callback ต้องไม่ถูกเรียกถ้า Omise พัง
-      expect(tx.booking.update).not.toHaveBeenCalled();
-      expect(fsm.transition).not.toHaveBeenCalled();
-      expect(emitter.emit).not.toHaveBeenCalled();
     });
+
+    // PYG-461/462: ลบเทส 'Omise void fail → ServiceUnavailableException' — ใช้ state 'accepted' + 'held'
+    // ที่เกิดไม่ได้เหมือนกัน · พฤติกรรม "Omise fail → booking ไม่เปลี่ยน" ย้ายไปคุมที่
+    // booking-settlement.service.spec.ts (describe 'Omise fail → booking ต้องไม่เปลี่ยนสถานะ')
   });
 });
