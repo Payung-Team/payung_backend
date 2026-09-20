@@ -60,6 +60,8 @@ model User {
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
+  /// PYG-473: ประวัติการให้/ถอนความยินยอมตาม PDPA — append-only
+  consents                                                user_consents[]
   kycReviews                                              KycReview[]
   notifications                                           Notification[]
   paymentStatusChanges                                    PaymentStatusHistory[] @relation("PaymentStatusChanges")
@@ -1167,4 +1169,44 @@ enum time_slot {
   morning
   afternoon
   evening
+}
+
+/// PYG-473 — ประวัติความยินยอมตาม PDPA (append-only audit trail)
+///
+/// ทำไม append-only: ต้องตอบได้ย้อนหลังว่า "ผู้ใช้คนนี้ยินยอมนโยบายเวอร์ชันไหน เมื่อไหร่"
+/// ถ้า update แถวเดิมตอนผู้ใช้เปลี่ยนใจ หลักฐานของการยินยอมครั้งก่อนจะหายไป
+/// → ถอนความยินยอม = insert แถวใหม่ granted = false (มี trigger กัน UPDATE ไว้ในฐานด้วย)
+///
+/// ชื่อ model เป็น snake_case ล้วนตามกลุ่ม booking_tasks / care_logs / field_locks
+/// (schema นี้มี 2 convention ปนกันโดยตั้งใจ — ดูคอมเมนต์ของ care_logs)
+model user_consents {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  user_id String @map("user_id")
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  /// ชนิดความยินยอม — ค่าที่ใช้จริงคุมด้วยค่าคงที่ฝั่งโค้ด ไม่ใช่ CHECK
+  /// (ชุด consent ยังไม่นิ่ง: PYG-472 ข้อความ / PYG-503 ข้อมูลอ่อนไหว / PYG-505 การเปิดเผย)
+  consent_type String
+
+  /// เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด เช่น 'v1.0' — รูปแบบกำหนดใน PYG-472
+  policy_version String
+
+  /// true = ยินยอม, false = ไม่ยินยอม/ถอน (แถวใหม่เสมอ ไม่แก้ของเดิม)
+  granted Boolean
+
+  granted_at DateTime @default(now()) @db.Timestamptz(6)
+
+  /// 'web' | 'mobile' — ที่มาของการกด
+  source String?
+
+  /// หลักฐานประกอบคำขอ (PDPA) — เก็บเท่าที่จำเป็นต่อการพิสูจน์ ไม่เอาไปทำอย่างอื่น
+  ip_address String? @db.Inet
+  user_agent String?
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, consent_type], map: "idx_user_consents_user_type")
+  @@index([user_id, consent_type, granted_at(sort: Desc)], map: "idx_user_consents_latest")
+  @@map("user_consents")
 }
