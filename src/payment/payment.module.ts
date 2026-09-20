@@ -29,8 +29,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
     PaymentCronService,
     // PYG-266: Omise Recipient creation + webhook handling for payout accounts
     PayoutAccountService,
-    // PYG-461/462 เฟส 2: core ปิด booking + settle เงิน — ตั้งใจไม่ export (ยังไม่มี flow เรียก)
-    // เฟส 3a/3b จะ export + ต่อ flow ผู้ป่วยยกเลิก / cron no-show
+    // PYG-461/462 เฟส 2: core ปิด booking + settle เงิน
+    // เฟส 3a: export แล้ว — BookingService.cancelBooking เรียกใช้ (เฟส 3b จะเพิ่ม cron no-show)
     BookingSettlementService,
     SupabaseAuthGuard,
     RolesGuard,
@@ -41,6 +41,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
     PaymentService,
     RefundService,
     PayoutAccountService,
+    // PYG-461 เฟส 3a: BookingModule ใช้ใน cancelBooking (ทิศทางเดียว Booking → Payment)
+    BookingSettlementService,
   ],
 })
 export class PaymentModule {}
