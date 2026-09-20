@@ -8,8 +8,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
-import { OmiseService } from '../payment/omise/omise.service';
-import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
+import {
+  SettlementBlockedError,
+  SettlementReason,
+} from '../payment/settlement/booking-settlement.types';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
@@ -62,16 +65,19 @@ describe('BookingService — new REST methods', () => {
   let service: BookingService;
   let prisma: {
     booking: {
-      findUnique: jest.Mock;
-      create:     jest.Mock;
-      update:     jest.Mock;
-      findMany:   jest.Mock;
-      count:      jest.Mock;
+      findUnique:        jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      create:            jest.Mock;
+      update:            jest.Mock;
+      findMany:          jest.Mock;
+      count:             jest.Mock;
     };
     careRecipient: { findUnique: jest.Mock; create: jest.Mock };
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
+  // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
+  let settlement: { settle: jest.Mock };
 
   beforeEach(async () => {
     // PYG-286: cancelBooking ใช้ $transaction → ใส่ tx mock ที่ส่ง booking.update ของ prisma ให้ callback
@@ -93,15 +99,30 @@ describe('BookingService — new REST methods', () => {
     };
     prisma = {
       booking: {
-        findUnique: jest.fn(),
-        create:     jest.fn(),
-        update:     jest.fn(),
-        findMany:   jest.fn(),
-        count:      jest.fn(),
+        findUnique:        jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        create:            jest.fn(),
+        update:            jest.fn(),
+        findMany:          jest.fn(),
+        count:             jest.fn(),
       },
       careRecipient: { findUnique: jest.fn(), create: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    settlement = {
+      settle: jest.fn().mockResolvedValue({
+        bookingId: BOOKING_ID,
+        reason: SettlementReason.PATIENT_CANCEL,
+        alreadySettled: false,
+        bookingStatusBefore: 'accepted',
+        bookingStatusAfter: 'cancelled',
+        moneyAction: 'none',
+        paymentStatusBefore: null,
+        paymentStatusAfter: null,
+        refundAmount: null,
+        refundPercentage: null,
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -110,9 +131,8 @@ describe('BookingService — new REST methods', () => {
         { provide: PrismaService, useValue: prisma },
         // PYG-292: BookingService ยิง booking event — mock EventEmitter2
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
-        // PYG-286: cancelBooking auto-void deps (ไม่ถูกเรียกใน create/search tests แต่ต้อง inject ให้ DI ผ่าน)
-        { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
-        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        // PYG-461 เฟส 3a: cancelBooking เรียก settle() — แทน OmiseService + PaymentStateMachine ของ PYG-286
+        { provide: BookingSettlementService, useValue: settlement },
         // PYG-434: สร้างใบ QR พร้อม booking — mock ไว้ ตรรกะจริงเทสที่ job-qr.service.spec.ts
         { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
       ],
@@ -271,33 +291,33 @@ describe('BookingService — new REST methods', () => {
 
   // ── cancelBooking ──────────────────────────────────────────────────────────
 
+  /**
+   * PYG-461 เฟส 3a — สถานะไหนยกเลิกได้/ไม่ได้ ย้ายไปเป็นของ settle() แล้ว
+   * (SETTLEABLE_FROM[PATIENT_CANCEL] = unmatched/pending/accepted/confirmed)
+   * ที่นี่จึงเทสแค่ว่า endpoint ต่อสายถูกและส่ง error ของ settle กลับไปให้ผู้ใช้เห็น
+   */
   describe('cancelBooking', () => {
-    it('cancels an unmatched booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'unmatched' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-      expect(prisma.booking.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { status: 'cancelled' } }),
+    beforeEach(() => {
+      prisma.booking.findUniqueOrThrow.mockResolvedValue(
+        fakeBooking({ status: 'cancelled' }),
       );
     });
 
-    it('cancels a pending booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'pending' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
+    it.each(['unmatched', 'pending', 'accepted', 'confirmed'])(
+      'ยกเลิก booking สถานะ %s ได้ — ส่งต่อให้ settle ตัดสินเรื่องเงิน',
+      async (status) => {
+        prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status }));
 
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-    });
+        const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
 
-    it('cancels an accepted booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'accepted' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-    });
+        expect(result.status).toBe('cancelled');
+        expect(settlement.settle).toHaveBeenCalledWith(
+          BOOKING_ID,
+          SettlementReason.PATIENT_CANCEL,
+          { id: PATIENT_ID, role: 'patient' },
+        );
+      },
+    );
 
     it('throws NotFoundException when booking not found', async () => {
       prisma.booking.findUnique.mockResolvedValue(null);
@@ -311,22 +331,56 @@ describe('BookingService — new REST methods', () => {
       );
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(ForbiddenException);
+      expect(settlement.settle).not.toHaveBeenCalled();
     });
 
-    it('throws UnprocessableEntityException for completed bookings', async () => {
+    it('booking ที่จบงานแล้ว → settle ตอบ 422 แล้ว endpoint ส่งต่อให้ผู้ใช้', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'completed' }));
+      settlement.settle.mockRejectedValue(
+        new SettlementBlockedError(
+          'booking_not_settleable',
+          'งานนี้จบแล้ว ยกเลิกไม่ได้',
+        ),
+      );
+
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(UnprocessableEntityException);
     });
 
-    it('throws UnprocessableEntityException for already cancelled bookings', async () => {
+    /**
+     * ★ พฤติกรรมเปลี่ยนโดยตั้งใจ: เดิมยกเลิกใบที่ 'cancelled' อยู่แล้ว = 422
+     *   ตอนนี้ settle คืน alreadySettled แล้ว endpoint ตอบสำเร็จ (idempotent)
+     *   เพราะเคสจริงคือผู้ใช้กดซ้ำ/เน็ตหลุดแล้วกดใหม่ — ตอบ error ทั้งที่ใบถูกยกเลิกไปแล้ว
+     *   ทำให้ FE ต้องเดาว่าตกลงยกเลิกสำเร็จหรือไม่ ส่วนการไม่แจ้งเตือนซ้ำคุมไว้ที่ booking.service.spec
+     */
+    it('ยกเลิกใบที่ยกเลิกไปแล้ว → สำเร็จแบบ idempotent ไม่ใช่ 422', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-      await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
-        .rejects.toThrow(UnprocessableEntityException);
+      settlement.settle.mockResolvedValue({
+        bookingId: BOOKING_ID,
+        reason: SettlementReason.PATIENT_CANCEL,
+        alreadySettled: true,
+        bookingStatusBefore: 'cancelled',
+        bookingStatusAfter: 'cancelled',
+        moneyAction: 'none',
+        paymentStatusBefore: null,
+        paymentStatusAfter: null,
+        refundAmount: null,
+        refundPercentage: null,
+      });
+
+      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
+      expect(result.status).toBe('cancelled');
     });
 
-    it('throws UnprocessableEntityException for rejected bookings', async () => {
+    it('booking ที่ผู้ดูแลปฏิเสธไปแล้ว → settle ตอบ 422', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'rejected' }));
+      settlement.settle.mockRejectedValue(
+        new SettlementBlockedError(
+          'booking_not_settleable',
+          'การจองนี้ถูกปฏิเสธไปแล้ว',
+        ),
+      );
+
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(UnprocessableEntityException);
     });
