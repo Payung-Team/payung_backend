@@ -1,4 +1,4 @@
-import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { FamilyGroupService } from './family-group.service';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
@@ -15,9 +15,14 @@ import {
   FamilyGroupJoinLink,
   JoinLinkPreview,
 } from './entities/family-group-join-link.entity';
+import { FamilyGroupActivityConnection } from './entities/family-group-activity.entity';
 import { GroupRole } from './decorators/group-role.decorator';
 import { FamilyGroupGuard } from './guards/family-group.guard';
-import { GROUP_ROLE } from './family-group.constants';
+import {
+  ACTIVITY_PAGE_SIZE_DEFAULT,
+  ACTIVITY_PAGE_SIZE_MAX,
+  GROUP_ROLE,
+} from './family-group.constants';
 import {
   AuthUser,
   CurrentUser,
@@ -231,5 +236,27 @@ export class FamilyGroupResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<boolean> {
     return this.familyGroupService.revokeJoinLink(user.id, groupId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-421 · FG-3 — ฟีดกิจกรรมของกลุ่ม
+  // ═══════════════════════════════════════════════════════════════════════
+
+  @Query(() => FamilyGroupActivityConnection, {
+    description:
+      'ประวัติกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าแบบ keyset (สมาชิก ACTIVE เท่านั้น). ' +
+      `first = จำนวนที่ขอ (ไม่ส่ง = ${ACTIVITY_PAGE_SIZE_DEFAULT}, เกิน ${ACTIVITY_PAGE_SIZE_MAX} ถูกหั่นลงเป็น ${ACTIVITY_PAGE_SIZE_MAX}) · ` +
+      'after = ค่า pageInfo.endCursor ที่ได้จากครั้งก่อน (ค่าทึบ ห้าม parse). ' +
+      'กลุ่มที่ยังไม่มีกิจกรรม = nodes ว่าง ไม่ใช่ error · cursor ที่แกะไม่ออก → ACTIVITY_CURSOR_INVALID',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async familyGroupActivity(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @Args('first', { type: () => Int, nullable: true }) first?: number,
+    @Args('after', { type: () => String, nullable: true }) after?: string,
+  ): Promise<FamilyGroupActivityConnection> {
+    // ไม่ส่ง user.id เข้า service เพราะฟีดไม่มีฟิลด์ไหนที่ขึ้นกับ "ผู้อ่านเป็นใคร"
+    // (ต่างจาก familyGroup ที่ต้องคำนวณ myRole/isMe) — สมาชิกทุกคนเห็นฟีดชุดเดียวกัน
+    return this.familyGroupService.familyGroupActivity(groupId, first, after);
   }
 }

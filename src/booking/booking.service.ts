@@ -20,6 +20,7 @@ import {
   CaregiverBriefDto,
 } from './dto/booking-summary.types';
 import { BookingHistoryInput } from './dto/booking-history.input';
+import { PatientProfileType } from './dto/patient-profile.type';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 import {
@@ -36,7 +37,11 @@ import {
   ACTIVITY_ACTION,
   ACTIVITY_TARGET,
 } from '../family-group/family-group.constants';
-import { RecipientNotInGroupError } from '../family-group/family-group.errors';
+import {
+  RecipientNotInGroupError,
+  MemberNotFoundError,
+  PatientNameRequiredError,
+} from '../family-group/family-group.errors';
 import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-behalf.input';
 import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
 // PYG-460: แปลงข้อความไทยจากฟอร์ม → คอลัมน์/enum ของ care_recipients (ตาราง mapping ที่เดียว)
@@ -113,15 +118,29 @@ type BookingWithIncludes = {
   disputeStatus: string | null;
   disputeReason: string | null;
   createdAt: Date;
+  patientName: string | null;
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
+  memberDetails: unknown;
   // caregiver is nullable when booking is unmatched
   caregiver: {
     id: string;
     fullName: string | null;
     hourlyRate: number | null;
+    averageRating: number | null;
+    reviewCount: number | null;
+    experienceYears: number | null;
+    phone: string | null;
     user: { avatarUrl: string | null };
   } | null;
   careRecipient: { name: string } | null;
 };
+
+// เบอร์ผู้ดูแลเปิดให้ผู้จองเห็นหลังยืนยันการจองแล้วเท่านั้น
+const CAREGIVER_PHONE_VISIBLE_STATUSES = new Set([
+  'confirmed', 'in_progress', 'awaiting_release', 'needs_review', 'completed',
+]);
 
 /**
  * PYG-424 — บริบท "จองแทนในนามกลุ่มครอบครัว"
@@ -220,31 +239,163 @@ export class BookingService {
     bookerId: string,
     input: CreateBookingDto & {
       groupId: string;
-      careRecipientId: string;
+      // PYG-500: โมเดล "สมาชิก = patient" — ส่งอย่างใดอย่างหนึ่ง
+      memberUserId?: string;   // แนะนำ: เลือกสมาชิกในกลุ่มเป็นผู้รับบริการ
+      careRecipientId?: string; // เส้นทางเดิม: อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
+      patientName?: string;     // ใช้ตอนสมาชิกยังไม่มีข้อมูลแล้วคนจองกรอกให้
       memberDetails?: MemberDetailsInput;
     },
   ): Promise<BookingSummary> {
-    // สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
-    // ที่นี่จึงเหลือคำถามเดียวที่ guard ตอบให้ไม่ได้: โปรไฟล์คนไข้อยู่ในกลุ่มนี้จริงไหม
-    const recipient = await this.prisma.careRecipient.findUnique({
-      where: { id: input.careRecipientId },
-      select: { id: true, name: true, familyGroupId: true },
-    });
+    // สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
+    // ที่นี่เหลือการ resolve ว่า booking ใบนี้ผูกกับโปรไฟล์ผู้รับบริการใบไหน (careRecipientId)
+    let recipientId: string;
+    let recipientName: string;
 
-    // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
-    if (!recipient || recipient.familyGroupId !== input.groupId) {
+    if (input.memberUserId) {
+      // PYG-500 — โมเดลใหม่: patient คือ "สมาชิกในกลุ่ม" ระบบหา/สร้างโปรไฟล์ให้อัตโนมัติ
+      const resolved = await this.resolveGroupPatientProfile(
+        input.groupId,
+        input.memberUserId,
+        input.patientName,
+        input.memberDetails,
+      );
+      recipientId = resolved.id;
+      recipientName = resolved.name;
+    } else if (input.careRecipientId) {
+      // เส้นทางเดิม (PYG-424): อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
+      // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
+      const recipient = await this.prisma.careRecipient.findUnique({
+        where: { id: input.careRecipientId },
+        select: { id: true, name: true, familyGroupId: true },
+      });
+      if (!recipient || recipient.familyGroupId !== input.groupId) {
+        throw new RecipientNotInGroupError();
+      }
+      recipientId = recipient.id;
+      recipientName = recipient.name;
+    } else {
+      // ไม่ได้ส่งทั้งคู่ — ต้องระบุว่าจองแทน "ใคร"
       throw new RecipientNotInGroupError();
     }
 
-    const booking = await this.createBookingRecord(bookerId, input, {
-      familyGroupId: input.groupId,
-      bookedBy: bookerId,
-      recipientName: recipient.name,
-      // PYG-385: undefined เมื่อไม่ได้กรอก — createBookingRecord จะไม่แตะคอลัมน์ให้ (คง NULL)
-      memberDetails: input.memberDetails,
-    });
+    const booking = await this.createBookingRecord(
+      bookerId,
+      { ...input, careRecipientId: recipientId },
+      {
+        familyGroupId: input.groupId,
+        bookedBy: bookerId,
+        recipientName,
+        // PYG-385: undefined เมื่อไม่ได้กรอก — createBookingRecord จะไม่แตะคอลัมน์ให้ (คง NULL)
+        memberDetails: input.memberDetails,
+      },
+    );
 
     return this.toSummary(booking);
+  }
+
+  /**
+   * PYG-500 — หา/สร้าง "โปรไฟล์ผู้รับบริการในกลุ่ม" ของสมาชิกที่ถูกจองแทน (โมเดลสมาชิก = patient)
+   *
+   * ลำดับความสำคัญ (ตามที่เจ้าของสรุปไว้):
+   *   ① มีโปรไฟล์ในกลุ่มของสมาชิกคนนี้อยู่แล้ว → ใช้ใบนั้น (ไม่แตะ self_reported เดิม)
+   *   ② ยังไม่มี แต่สมาชิกมี "โปรไฟล์ส่วนตัว" อยู่ → คัดลอกข้อมูลนั้นเข้ากลุ่ม, self_reported = true
+   *      (= ข้อมูลจากเจ้าตัว) เก็บเป็น snapshot ไม่ผูกกับโปรไฟล์ส่วนตัวเดิม เพื่อไม่ให้แก้ทีหลังย้อนกระทบ
+   *   ③ ไม่มีข้อมูลเลย → คนจองกรอกให้ (ต้องมีชื่อ), self_reported = false (= คนอื่นกรอกให้)
+   *
+   * patientId ของโปรไฟล์ที่สร้าง = memberUserId (subject) เสมอ — เพื่อให้ลิสต์/ฟีดของกลุ่ม
+   * อ้างกลับได้ว่า "โปรไฟล์นี้คือของสมาชิกคนไหน" (FE ก็ key ด้วย patientId อยู่แล้ว)
+   *
+   * ★ อยู่นอก transaction ของ booking โดยตั้งใจ: โปรไฟล์กลุ่มที่ค้างโดยไม่มี booking
+   *   ไม่เป็นอันตราย (แค่ทำให้สมาชิกคนนั้น "จองแทนได้" ซึ่งเป็นผลที่ต้องการอยู่แล้ว)
+   */
+  private async resolveGroupPatientProfile(
+    groupId: string,
+    memberUserId: string,
+    patientName?: string,
+    memberDetails?: MemberDetailsInput,
+  ): Promise<{ id: string; name: string }> {
+    // subject ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้ (guard ตรวจแค่ "ผู้เรียก" ไม่ได้ตรวจ "คนที่ถูกจองให้")
+    const membership = await this.prisma.familyGroupMember.findFirst({
+      where: { groupId, userId: memberUserId, status: 'ACTIVE' },
+      select: { userId: true },
+    });
+    if (!membership) throw new MemberNotFoundError();
+
+    // ① โปรไฟล์ในกลุ่มที่มีอยู่แล้ว
+    const existing = await this.prisma.careRecipient.findFirst({
+      where: { patientId: memberUserId, familyGroupId: groupId, is_deleted: false },
+      select: { id: true, name: true },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (existing) return existing;
+
+    // ② คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก (familyGroupId = null) — เอาใบที่เป็น is_self ก่อน แล้วใบล่าสุด
+    const personal = await this.prisma.careRecipient.findFirst({
+      where: { patientId: memberUserId, familyGroupId: null, is_deleted: false },
+      orderBy: [{ is_self: 'desc' }, { updated_at: 'desc' }],
+    });
+    if (personal) {
+      const copy = await this.prisma.careRecipient.create({
+        data: {
+          patientId:               memberUserId,
+          familyGroupId:           groupId,
+          self_reported:           true,
+          name:                    personal.name,
+          nickname:                personal.nickname,
+          date_of_birth:           personal.date_of_birth,
+          gender:                  personal.gender,
+          weight_kg:               personal.weight_kg,
+          height_cm:               personal.height_cm,
+          mobility_level:          personal.mobility_level,
+          medical_conditions:      personal.medical_conditions,
+          current_medications:     personal.current_medications,
+          allergies:               personal.allergies,
+          blood_type:              personal.blood_type,
+          address_line:            personal.address_line,
+          province:                personal.province,
+          district:                personal.district,
+          emergency_contact_name:  personal.emergency_contact_name,
+          emergency_contact_phone: personal.emergency_contact_phone,
+          emergency_contact_rel:   personal.emergency_contact_rel,
+          preferred_hospital:      personal.preferred_hospital,
+          care_notes:              personal.care_notes,
+        },
+        select: { id: true, name: true },
+      });
+      this.logger.log({
+        event: 'group_care_recipient.provisioned',
+        groupId,
+        memberUserId,
+        careRecipientId: copy.id,
+        source: 'personal_profile',
+      });
+      return copy;
+    }
+
+    // ③ สมาชิกยังไม่มีข้อมูลเลย → คนจองกรอกให้ (self_reported = false)
+    const name = patientName?.trim();
+    if (!name) throw new PatientNameRequiredError();
+    const created = await this.prisma.careRecipient.create({
+      data: {
+        patientId:           memberUserId,
+        familyGroupId:       groupId,
+        self_reported:       false,
+        name,
+        medical_conditions:  memberDetails?.conditions ?? [],
+        current_medications: memberDetails?.medicines ?? null,
+        allergies:           memberDetails?.allergies ?? null,
+        care_notes:          memberDetails?.careInstructions ?? null,
+      },
+      select: { id: true, name: true },
+    });
+    this.logger.log({
+      event: 'group_care_recipient.provisioned',
+      groupId,
+      memberUserId,
+      careRecipientId: created.id,
+      source: 'booker_filled',
+    });
+    return created;
   }
 
   /**
@@ -339,6 +490,13 @@ export class BookingService {
       }
     }
 
+    // PYG-361: booking_tasks เป็นแหล่งข้อมูลใหม่สำหรับ per-task completion state
+    // (bookings.tasks ด้านล่างยังเขียนไว้เหมือนเดิม ไม่ถูกลบ — legacy display field ที่ตอนนี้
+    // ไม่ใช่แหล่งเดียวอีกต่อไป) ต้องอยู่ใน transaction เดียวกับ booking.create: ถ้า insert แถว
+    // task ล้ม ต้อง rollback booking ด้วย ไม่งั้นจะได้ booking ที่มี tasks (TEXT[]) แต่
+    // booking_tasks ว่างเปล่า → หน้าติดตามงานของ PYG-361 จะโชว์ "0 จาก 0 รายการ" ทั้งที่จองมี task จริง
+    const suggestedForType = TASK_SUGGESTIONS[dto.serviceType] ?? [];
+
     const data: Prisma.BookingUncheckedCreateInput = {
       patientId,
       caregiverId:      resolvedCaregiverId,
@@ -394,11 +552,13 @@ export class BookingService {
      * ทุกอย่างที่ "ต้องเกิดพร้อม booking" อยู่ใน transaction เดียวกันหมด
      *
      * ① ตัว booking เอง
-     * ② PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
+     * ② PYG-361 — แถว booking_tasks ต่อ 1 task (per-task completion state; bookings.tasks
+     *    ด้านบนยังเขียนไว้เหมือนเดิม เป็น legacy display field ที่ไม่ใช่แหล่งเดียวอีกต่อไป)
+     * ③ PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
      *    กติกาข้อ 2 ของโมดูล family group (ดูหัวไฟล์ family-group.service.ts)
      *    ถ้าเขียนแยกกันแล้วอันใดอันหนึ่งพัง จะได้ฟีดที่โกหกว่ามีการจองที่ไม่เคยเกิดขึ้น
      *    หรือมีการจองที่ไม่โผล่ในฟีดเลย ซึ่งทั้งสองแบบตรวจสอบย้อนหลังไม่ได้
-     * ③ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
+     * ④ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
      *
      * ⚠ ก่อนหน้านี้ "จองปกติ" ใช้ create เดี่ยว ๆ เพื่อไม่จ่ายค่า transaction ฟรี ๆ
      *   PYG-434 เปลี่ยนให้ใช้ transaction ทุกเส้นทาง เพราะ AC เขียนว่า
@@ -439,7 +599,19 @@ export class BookingService {
 
       const created = await tx.booking.create({ data, include });
 
-      // ② จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
+      // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
+      // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
+      await tx.booking_tasks.createMany({
+        data: dto.tasks.map((description, index) => ({
+          booking_id:   created.id,
+          description,
+          is_suggested: suggestedForType.includes(description),
+          is_custom:    !suggestedForType.includes(description),
+          sort_order:   index,
+        })),
+      });
+
+      // ③ จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
       if (onBehalf) {
         await tx.familyGroupActivity.create({
           data: {
@@ -459,7 +631,7 @@ export class BookingService {
         });
       }
 
-      // ③ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
+      // ④ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
       //    ส่ง tx เข้าไปเพื่อให้อยู่ใน transaction เดียวกัน (service บังคับรับ tx)
       await this.jobQrService.createForBooking(tx, created);
 
@@ -776,7 +948,13 @@ export class BookingService {
     });
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
-    return this.toSummary(booking as unknown as BookingWithIncludes);
+    const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    if (summary.caregiver && booking.caregiverId) {
+      summary.caregiver.completedJobs = await this.prisma.booking.count({
+        where: { caregiverId: booking.caregiverId, status: 'completed' },
+      });
+    }
+    return summary;
   }
 
   async myPendingConfirmations(
@@ -955,6 +1133,12 @@ export class BookingService {
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
           hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          averageRating:   booking.caregiver.averageRating   ?? undefined,
+          reviewCount:     booking.caregiver.reviewCount     ?? undefined,
+          experienceYears: booking.caregiver.experienceYears ?? undefined,
+          phone: CAREGIVER_PHONE_VISIBLE_STATUSES.has(booking.status)
+            ? booking.caregiver.phone ?? undefined
+            : undefined,
         }
       : undefined;
 
@@ -979,6 +1163,12 @@ export class BookingService {
                           : undefined,
       caregiver,
       careRecipientName: booking.careRecipient?.name ?? undefined,
+      patientName:              booking.patientName              ?? undefined,
+      dayOfContactName:         booking.dayOfContactName         ?? undefined,
+      dayOfContactPhone:        booking.dayOfContactPhone        ?? undefined,
+      dayOfContactRelationship: booking.dayOfContactRelationship ?? undefined,
+      // JSONB → ส่งต่อตามรูปทรงที่เก็บไว้ (เหมือน CaregiverBookingService.toSummary)
+      patientProfile: (booking.memberDetails as PatientProfileType | null) ?? undefined,
       confirmedAt:      booking.confirmedAt   ?? undefined,
       disputeStatus:    booking.disputeStatus ?? 'none',
       disputeReason:    booking.disputeReason ?? undefined,

@@ -8,7 +8,10 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
+// PYG-461/462: deadline รับงาน — สูตรเดียวกับ createPayment และ cron หมดอายุ
+import { acceptDeadlineOf, toBangkokText } from './booking-deadline.config';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -74,6 +77,8 @@ export class CaregiverBookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    // PYG-461/462: guard เวลาใน acceptBooking — ห้าม new Date() ตรง ๆ (เทสคุมเวลาไม่ได้)
+    private readonly clock: ClockService,
   ) {}
 
   /** ยิง booking event แบบ fire-and-forget (PYG-292) — ดู BookingService.emit */
@@ -161,7 +166,9 @@ export class CaregiverBookingService {
     const caregiverId = await this.resolveCaregiverId(userId);
     const { page, limit, offset } = this.normalizePaging(input.page, input.limit);
 
-    const TERMINAL_STATUSES = ['completed', 'cancelled', 'rejected'];
+    // PYG-461/462: 'expired' = ระบบปิดให้เพราะเลยเวลา — ต้องโผล่ในประวัติงานของผู้ดูแลด้วย
+    // ไม่งั้นงานที่หมดอายุจะหายไปจากทุกแท็บ (ไม่อยู่ใน pending/accepted/confirmed แล้ว)
+    const TERMINAL_STATUSES = ['completed', 'cancelled', 'rejected', 'expired'];
     const where: Record<string, unknown> = { caregiverId };
     if (input.status) {
       where.status = input.status;
@@ -223,6 +230,18 @@ export class CaregiverBookingService {
     });
 
     if (bookingDetail) {
+      // PYG-461/462 เฟส 1: เลยเวลาเริ่มงาน (+ ACCEPT_GRACE_MINUTES) แล้ว → รับงานไม่ได้
+      // เดิมเช็คแค่ status ผู้ดูแลเลยกดรับงานที่ผ่านเวลาเริ่มไปแล้วได้
+      const acceptDeadline = acceptDeadlineOf(
+        bookingDetail.bookingDate,
+        bookingDetail.startTime,
+      );
+      if (this.clock.now().getTime() > acceptDeadline.getTime()) {
+        throw new UnprocessableEntityException(
+          `เลยเวลารับงานแล้ว (ต้องรับภายใน ${toBangkokText(acceptDeadline)}) — ไม่สามารถรับงานนี้ได้`,
+        );
+      }
+
       const newStart = this.timeToMinutes(bookingDetail.startTime);
       const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
 
@@ -247,12 +266,24 @@ export class CaregiverBookingService {
       }
     }
 
-    const now = new Date();
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
+    // PYG-461/462: conditional update — cron หมดอายุ (booking-expiry.service.ts) อาจเปลี่ยน
+    // pending → expired ในจังหวะเดียวกัน · WHERE status='pending' ทั้งสองฝั่ง → Postgres re-check
+    // หลังรอ row lock มีผู้ชนะฝั่งเดียว (เดิม update({ where: { id } }) เขียนทับ expired ได้)
+    const now = this.clock.now();
+    const { count } = await this.prisma.booking.updateMany({
+      where: { id: bookingId, status: 'pending' },
       data: { status: 'accepted', acceptedAt: now },
+    });
+    if (count === 0) {
+      throw new ConflictException(
+        'สถานะงานเปลี่ยนไปแล้ว (อาจหมดอายุหรือถูกยกเลิก) — กรุณารีเฟรชแล้วลองใหม่',
+      );
+    }
+    const updated = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
       include: BOOKING_INCLUDE,
     });
+    if (!updated) throw new NotFoundException('Booking not found');
 
     this.logger.log({ event: 'booking.accepted', bookingId, userId });
 

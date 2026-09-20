@@ -122,7 +122,14 @@ describe('PYG-359 no-checkout sweeper', () => {
 
 describe('PYG-359 — two independent safety layers (money cannot escape)', () => {
   const verdictSvc = () =>
-    new MonitoringService({} as never, {} as never, {} as never, {} as never, {} as never);
+    new MonitoringService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
 
   it('Layer 1 alone: source=system blocks release EVEN with no_checkout removed', () => {
     // reviewReasons empty (Layer 2 disabled) but source=system → still needs_review

@@ -81,6 +81,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
     tx = {
       booking: { create: jest.fn().mockResolvedValue(fakeCreatedBooking()) },
+      // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
+      booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
       familyGroupActivity: { create: jest.fn().mockResolvedValue({}) },
     };
 

@@ -241,8 +241,78 @@ export class AuthService {
   }
 
   /**
+   * confirmOAuthRole — แก้ไข role ให้ตรงกับที่ผู้ใช้เลือกไว้ก่อนกด "สมัครด้วย Google"
+   *
+   * ทำไมต้องมี mutation นี้?
+   *   register() (ด้านบน) รับ input.role มาจาก client โดยตรง แต่ signInWithOAuth()
+   *   (Register.tsx) ไม่มีช่องทางส่ง role ไปกับ Supabase OAuth redirect เลย —
+   *   บัญชีที่ auth.users trigger สร้างให้จึงตกไปใช้ role default = 1 (patient) เสมอ
+   *   ไม่ว่าผู้ใช้จะเลือก "ผู้ดูแล" ไว้ก่อนกด Google ก็ตาม
+   *
+   *   Frontend เก็บ role ที่เลือกไว้ใน localStorage ก่อน redirect แล้วเรียก mutation
+   *   นี้ทันทีที่กลับมาที่ /auth/callback เพื่อ "แก้" ให้ตรงกับที่เลือกไว้
+   *
+   * Guard rails (กันไม่ให้กลายเป็นช่องทาง escalate role ของบัญชีเก่า):
+   *   - รับได้แค่ role 1 (patient) หรือ 2 (caregiver) เท่านั้น ห้ามตั้งเป็น admin
+   *   - ใช้ได้เฉพาะบัญชีที่เพิ่งสร้างใหม่ (อายุ < 15 นาที) และยัง role default (1)
+   *     และยังไม่มี caregiver row — เงื่อนไขอื่นนอกเหนือจากนี้ถือเป็น no-op
+   *     (คืนค่า user ปัจจุบันเฉยๆ ไม่ throw เพราะกรณีปกติคือ role ตรงอยู่แล้ว)
+   */
+  async confirmOAuthRole(userId: string, role: number): Promise<AuthPayload['user']> {
+    if (role !== 1 && role !== 2) {
+      throw new BadRequestException('Invalid role');
+    }
+
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      include: { caregiver: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User account not found');
+    }
+
+    const ACCOUNT_AGE_LIMIT_MS = 15 * 60 * 1000;
+    const isEligibleForCaregiverFix =
+      role === 2 &&
+      user.role === 1 &&
+      !user.caregiver &&
+      Date.now() - user.createdAt.getTime() < ACCOUNT_AGE_LIMIT_MS;
+
+    let finalUser = user;
+    if (isEligibleForCaregiverFix) {
+      const caregiverNumber = await this.caregiverService.generateCaregiverNumber();
+      finalUser = await this.prismaService.user.update({
+        where: { id: user.id },
+        data: {
+          role: 2,
+          caregiver: { create: { caregiverNumber, kycStatus: 'none' } },
+        },
+        include: { caregiver: true },
+      });
+    }
+
+    return {
+      id: finalUser.id,
+      email: finalUser.email,
+      displayName: finalUser.displayName ?? undefined,
+      avatarUrl: finalUser.avatarUrl ?? undefined,
+      phone: finalUser.phone ?? undefined,
+      address: finalUser.address ?? undefined,
+      bio: finalUser.bio ?? undefined,
+      role: finalUser.role,
+      isActive: finalUser.isActive,
+      isSuspended: !finalUser.isActive || finalUser.is_deleted,
+      mustChangePassword: finalUser.must_change_password,
+      emailPreferences: finalUser.emailPreferences,
+      createdAt: finalUser.createdAt,
+      updatedAt: finalUser.updatedAt,
+    };
+  }
+
+  /**
    * Logout session
-   * 
+   *
    * กระบวนการ:
    * 1. สร้าง temp client ชั่วคราวที่มี Auth Header เป็น token ปัจจุบัน
    * 2. เรียก signOut() เพื่อทำลาย session ของ token นั้นๆ บน Supabase

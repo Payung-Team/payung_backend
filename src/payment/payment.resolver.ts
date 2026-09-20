@@ -58,27 +58,20 @@ export class PaymentResolver {
     return this.paymentService.paymentByBooking(bookingId, user);
   }
 
-  // ── PYG-282: admin-only ───────────────────────────────────────────────────
+  // ── PYG-266: admin-only — real Omise Transfer (replaces PYG-282 manual mark) ────
 
   @Mutation(() => Payment, {
     description:
-      'Admin only: Mark a captured payment as transferred to the caregiver. ' +
-      'Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.',
+      'Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, ' +
+      'minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.',
   })
   @UseGuards(RolesGuard)
   @Roles(ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN)
-  async markPaymentTransferred(
-    @Args('paymentId', { type: () => ID }) paymentId: string,
-    @Args('transferRef') transferRef: string,
-    @Args('notes', { nullable: true }) notes?: string,
-    @CurrentUser() admin?: AuthUser,
+  async transferPaymentToCaregiver(
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() admin: AuthUser,
   ): Promise<Payment> {
-    return this.paymentService.markPaymentTransferred(
-      paymentId,
-      transferRef,
-      notes,
-      admin!.id,
-    );
+    return this.paymentService.transferPaymentToCaregiver(bookingId, admin);
   }
 
   @Query(() => PaymentConnection, {

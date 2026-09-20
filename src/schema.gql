@@ -2,6 +2,29 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+input AddCareLogInput {
+  """เนื้อหาบันทึก ไม่เกิน 500 ตัวอักษร"""
+  body: String!
+
+  """
+  booking ที่จะบันทึก — ต้องเป็นงานของผู้ดูแลคนนี้และอยู่ระหว่างเช็คอิน (in_progress)
+  """
+  bookingId: ID!
+
+  """หมวดหมู่: 'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """
+  เวลาที่เครื่อง client อ้าง (ISO 8601) — เก็บเป็น metadata เท่านั้น เวลาจริงใช้ของเซิร์ฟเวอร์เสมอ
+  """
+  deviceTs: String
+
+  """
+  รูปประกอบ (ไม่บังคับ) — ต้องเป็นไฟล์ใน bucket 'job-evidence' ใต้โฟลเดอร์ของ booking นี้เท่านั้น URL จากที่อื่นจะถูกปฏิเสธ
+  """
+  photoUrl: String @deprecated(reason: "PYG-466: ส่งมาจะถูกปฏิเสธ (400) — แนบรูปผ่าน POST /api/v1/monitoring/bookings/:bookingId/care-logs")
+}
+
 input AddGroupCareRecipientInput {
   """กลุ่มที่จะเพิ่มโปรไฟล์เข้าไป — ผู้เรียกต้องเป็นสมาชิก ACTIVE"""
   groupId: ID!
@@ -281,6 +304,7 @@ enum BookingStatus {
   CANCELLED
   COMPLETED
   CONFIRMED
+  EXPIRED
   IN_PROGRESS
   NEEDS_REVIEW
   PENDING
@@ -290,10 +314,18 @@ enum BookingStatus {
 
 type BookingSummary {
   bookingDate: String!
+
+  """
+  PYG-361: รายการงานย่อยของ booking นี้ พร้อมสถานะทำแล้ว/ยัง เรียงตาม sortOrder
+  """
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   caregiver: CaregiverBriefDto
   confirmedAt: DateTime
   createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
   disputeReason: String
   disputeStatus: String
   durationHours: Float
@@ -303,6 +335,8 @@ type BookingSummary {
   locationLat: Float
   locationLng: Float
   notes: String
+  patientName: String
+  patientProfile: PatientProfileType
 
   """
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
@@ -314,6 +348,15 @@ type BookingSummary {
   status: String!
   tasks: [String!]!
   timeSlot: String!
+}
+
+type BookingTask {
+  description: String!
+  doneAt: DateTime
+  doneBy: ID
+  id: ID!
+  sortOrder: Int!
+  timeNote: String
 }
 
 input CancelAcceptanceInput {
@@ -330,6 +373,24 @@ type CancelScheduledDeletePayload {
   """Whether the account was reactivated as part of the cancellation"""
   reactivated: Boolean!
   user: User!
+}
+
+type CareLog {
+  body: String!
+  bookingId: ID!
+
+  """'vitals' | 'food' | 'medication' | 'activity' | 'other'"""
+  category: String!
+
+  """เวลาที่เครื่อง client อ้าง — metadata เท่านั้น"""
+  deviceTs: DateTime
+  id: ID!
+
+  """signed URL ของรูปประกอบ — หมดอายุใน 1 ชม."""
+  photoUrl: String
+
+  """เวลาของเซิร์ฟเวอร์ — เวลาที่ถือเป็นทางการ"""
+  serverTs: DateTime!
 }
 
 type Caregiver {
@@ -392,6 +453,9 @@ type CaregiverBookingListResponse {
 type CaregiverBookingSummary {
   acceptedAt: DateTime
   bookingDate: String!
+
+  """PYG-361: เหมือนกับฝั่ง patient แต่มุมมอง caregiver"""
+  bookingTasks: [BookingTask!]!
   careRecipientName: String
   confirmedAt: DateTime
   createdAt: DateTime!
@@ -425,9 +489,14 @@ input CaregiverBookingsInput {
 
 type CaregiverBriefDto {
   avatarUrl: String
+  averageRating: Float
+  completedJobs: Int
+  experienceYears: Int
   fullName: String
   hourlyRate: Float
   id: ID!
+  phone: String
+  reviewCount: Int
 }
 
 """Log entry for caregiver profile/document edits"""
@@ -599,9 +668,9 @@ input CreateBookingOnBehalfInput {
   bookingDate: String!
 
   """
-  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ
+  โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. (เส้นทางเดิม; แนะนำให้ส่ง memberUserId แทน)
   """
-  careRecipientId: ID!
+  careRecipientId: ID
 
   """
   ผู้ดูแลที่เลือกไว้ — ส่งมา = booking เป็น pending ทันที, ไม่ส่ง = unmatched รอ matching
@@ -637,8 +706,16 @@ input CreateBookingOnBehalfInput {
   """
   memberDetails: MemberDetailsInput
 
+  """
+  สมาชิกในกลุ่มที่เป็นผู้รับบริการ (patient) — ระบบจะหา/สร้างโปรไฟล์ในกลุ่มให้อัตโนมัติ
+  """
+  memberUserId: ID
+
   """บันทึกเพิ่มเติมถึงผู้ดูแล"""
   notes: String
+
+  """ชื่อผู้รับบริการ — ใช้ตอนคนจองกรอกข้อมูลให้สมาชิกที่ยังไม่มีข้อมูล"""
+  patientName: String
 
   """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
   serviceLocations: [String!]!
@@ -689,6 +766,11 @@ input CreatePaymentInput {
 
   """วิธีการชำระเงิน: credit_card | promptpay"""
   paymentMethod: String! = "credit_card"
+
+  """
+  เก็บบัตรใบนี้ไว้ที่ Omise เพื่อต่ออายุวงเงินอัตโนมัติหรือไม่ — ต้องให้ผู้ใช้เลือกเอง ไม่ส่ง = ไม่เก็บ
+  """
+  saveCard: Boolean! = false
 }
 
 input CreateReviewInput {
@@ -796,6 +878,7 @@ enum DisputeStatus {
   flagged
   none
   resolved
+  under_review
 }
 
 type DisputeSummary {
@@ -869,6 +952,71 @@ type FamilyGroup {
   """ชื่อกลุ่ม (1–80 ตัวอักษรหลังตัดช่องว่างหัวท้าย)"""
   name: String!
   updatedAt: DateTime!
+}
+
+type FamilyGroupActivityActor {
+  """รูปโปรไฟล์"""
+  avatarUrl: String
+
+  """ชื่อที่แสดง — null ถ้าผู้ใช้ยังไม่ได้ตั้งชื่อ"""
+  displayName: String
+
+  """users.id ของคนที่ทำ"""
+  userId: ID!
+}
+
+type FamilyGroupActivityConnection {
+  """กิจกรรมเรียงใหม่สุดก่อน (created_at DESC, id DESC)"""
+  nodes: [FamilyGroupActivityItem!]!
+  pageInfo: FamilyGroupActivityPageInfo!
+}
+
+type FamilyGroupActivityItem {
+  """
+  ชนิดเหตุการณ์ เช่น 'GROUP_CREATED' | 'MEMBER_JOINED' | 'JOIN_LINK_ROTATED' — ค่าเต็มดูที่ ACTIVITY_ACTION ใน family-group.constants.ts · FE เป็นคนแปลเป็นข้อความ TH/EN (PYG-422)
+  """
+  action: String!
+
+  """
+  ผู้ลงมือ — null เมื่อบัญชีถูกลบไปแล้ว (FE ต้องแสดงเป็น "ผู้ใช้ที่ถูกลบ" ไม่ใช่ซ่อนแถวทิ้ง)
+  """
+  actor: FamilyGroupActivityActor
+
+  """เกิดเมื่อไหร่"""
+  createdAt: DateTime!
+
+  """
+  cursor ของแถวนี้ — ส่งกลับมาเป็น after เพื่อขอหน้าถัดไปจากจุดนี้ (ค่าทึบ ห้าม parse ฝั่ง client)
+  """
+  cursor: String!
+
+  """family_group_activity.id"""
+  id: ID!
+
+  """
+  รายละเอียดเพิ่มเติมในรูป JSON string เช่น '{"oldName":"บ้านยาย","newName":"บ้านย่า"}' — client ใช้ JSON.parse() (ไม่มีข้อมูลเลย = "{}")
+  """
+  metadata: String!
+
+  """
+  id ของสิ่งที่เหตุการณ์ชี้ไป — polymorphic ตาม targetType (ไม่มี FK ในดีบี)
+  """
+  targetId: ID
+
+  """'GROUP' | 'MEMBER' | 'JOIN_LINK' | 'RECIPIENT' | 'BOOKING'"""
+  targetType: String
+}
+
+type FamilyGroupActivityPageInfo {
+  """
+  cursor ของแถวสุดท้ายในหน้านี้ — null เมื่อหน้านี้ว่าง · ส่งค่านี้เป็น after ของครั้งถัดไป
+  """
+  endCursor: String
+
+  """
+  ยังมีของเก่ากว่านี้ให้โหลดอีกไหม — FE ใช้ตัดสินว่าจะยิงคำขอหน้าถัดไปหรือหยุด
+  """
+  hasNextPage: Boolean!
 }
 
 type FamilyGroupJoinLink {
@@ -1021,6 +1169,11 @@ type GroupCareRecipient {
   users.id ของสมาชิกที่เป็นเจ้าของโปรไฟล์นี้ — FE ใช้โชว์ว่า "โปรไฟล์ที่คุณเพิ่ม" หรือ "สมาชิกคนอื่นเพิ่ม"
   """
   ownerUserId: ID!
+
+  """
+  PYG-500: true = ข้อมูลจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก), false = คนอื่นในกลุ่มกรอกให้ — FE ใช้เลือกป้ายกำกับ
+  """
+  selfReported: Boolean!
 }
 
 type HealthStatus {
@@ -1404,6 +1557,11 @@ type Mutation {
   ): User!
 
   """
+  PYG-361: ผู้ดูแลบันทึก "อัปเดตจากผู้ดูแล" 1 รายการระหว่างงาน (เฉพาะตอน in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict.
+  """
+  addCareLog(input: AddCareLogInput!): CareLog! @deprecated(reason: "PYG-466: ใช้ POST /api/v1/monitoring/bookings/:bookingId/care-logs (multipart) แทน — mutation นี้ไม่รับ photoUrl แล้ว")
+
+  """
   เพิ่มโปรไฟล์ผู้รับบริการเข้ากลุ่ม — ผู้เรียกกลายเป็นเจ้าของโปรไฟล์นั้น. NOT_A_MEMBER ถ้าไม่ใช่สมาชิก ACTIVE
   """
   addGroupCareRecipient(input: AddGroupCareRecipientInput!): GroupCareRecipient!
@@ -1463,6 +1621,14 @@ type Mutation {
 
   """Patient confirms a booking that has been accepted by the caregiver."""
   confirmBooking(bookingId: ID!): BookingSummary!
+
+  """
+  Fix a fresh Google OAuth signup account's role to match what the user picked before being redirected to Google. Safe no-op for existing accounts or already-correct roles.
+  """
+  confirmOAuthRole(
+    """1 = patient, 2 = caregiver"""
+    role: Int!
+  ): User!
 
   """
   จองผู้ดูแลแทนผู้รับบริการที่ถูกแชร์ไว้ในกลุ่มครอบครัว. ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่ม (ไม่งั้น NOT_A_MEMBER) และโปรไฟล์ต้องอยู่ในกลุ่มเดียวกัน (ไม่งั้น RECIPIENT_NOT_IN_GROUP). ★ ยังไม่รวมขั้นตอนจ่ายเงิน — จ่ายเป็น step แยกเหมือนการจองปกติทุกประการ.
@@ -1537,11 +1703,6 @@ type Mutation {
   markAsRead(id: String!): Notification!
 
   """
-  Admin only: Mark a captured payment as transferred to the caregiver. Requires paymentStatus = "captured". Uses FSM for atomic status update + audit history.
-  """
-  markPaymentTransferred(notes: String, paymentId: ID!, transferRef: String!): Payment!
-
-  """
   Admin only: Refund a captured payment (full or partial). amount omitted = full refund. amount specified must be in (0, payment.amount]. Uses Omise-Idempotency-Key to prevent double-refund races.
   """
   refundPayment(input: RefundPaymentInput!): Payment!
@@ -1610,6 +1771,11 @@ type Mutation {
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
 
+  """
+  PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.
+  """
+  setTaskDone(input: SetTaskDoneInput!): BookingTask!
+
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
 
@@ -1635,6 +1801,11 @@ type Mutation {
   โอนสิทธิ์เจ้าของให้สมาชิกคนอื่นในกลุ่ม (เจ้าของเท่านั้น) — ผู้เรียกจะกลายเป็นสมาชิกธรรมดาทันที. เป้าหมายต้องเป็นสมาชิก ACTIVE อยู่แล้ว มิฉะนั้น MEMBER_NOT_FOUND.
   """
   transferOwnership(input: TransferOwnershipInput!): FamilyGroup!
+
+  """
+  Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.
+  """
+  transferPaymentToCaregiver(bookingId: ID!): Payment!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -1704,6 +1875,7 @@ enum NotificationType {
   booking_new
   dispute_created
   dispute_resolved
+  job_care_log_added
   kyc_rejected
   kyc_resubmitted
   kyc_submitted
@@ -1947,6 +2119,11 @@ type Query {
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
 
   """
+  PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
+  """
+  careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
+
+  """
   A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
   """
   caregiverBooking(id: ID!): CaregiverBookingSummary
@@ -1970,6 +2147,11 @@ type Query {
   รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
   """
   familyGroup(groupId: ID!): FamilyGroup!
+
+  """
+  ประวัติกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าแบบ keyset (สมาชิก ACTIVE เท่านั้น). first = จำนวนที่ขอ (ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเป็น 50) · after = ค่า pageInfo.endCursor ที่ได้จากครั้งก่อน (ค่าทึบ ห้าม parse). กลุ่มที่ยังไม่มีกิจกรรม = nodes ว่าง ไม่ใช่ error · cursor ที่แกะไม่ออก → ACTIVITY_CURSOR_INVALID
+  """
+  familyGroupActivity(after: String, first: Int, groupId: ID!): FamilyGroupActivityConnection!
 
   """
   PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง
@@ -2408,6 +2590,11 @@ input ServiceAreaInput {
 
   """Service area province (จังหวัด)"""
   province: String
+}
+
+input SetTaskDoneInput {
+  done: Boolean!
+  taskId: ID!
 }
 
 """Caregiver search sort order"""

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
+  ConflictException,
   ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
@@ -7,6 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CaregiverBookingService } from './caregiver-booking.service';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { BookingStatusEnum } from './dto/booking-summary.types';
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -60,14 +62,20 @@ describe('CaregiverBookingService', () => {
       findMany: jest.Mock;
       count: jest.Mock;
       groupBy: jest.Mock;
+      updateMany: jest.Mock;
     };
     user: { findMany: jest.Mock };
   };
+  // PYG-461/462: acceptBooking มี guard เวลา — ตรึงนาฬิกา (เปลี่ยนได้รายเทส)
+  // booking ใน fixture = 2026-07-01 09:00 เวลาไทย = 2026-07-01T02:00:00Z
+  let nowValue: Date;
 
   beforeEach(async () => {
+    nowValue = new Date('2026-06-30T00:00:00.000Z'); // ก่อนเวลาเริ่มงาน
     prisma = {
       caregiver: { findUnique: jest.fn() },
       booking: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn(),
         update: jest.fn(),
         findMany: jest.fn(),
@@ -86,6 +94,7 @@ describe('CaregiverBookingService', () => {
         { provide: PrismaService, useValue: prisma },
         // PYG-292: service ยิง booking event — mock EventEmitter2
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ClockService, useValue: { now: () => nowValue } }, // PYG-461/462
       ],
     }).compile();
 
@@ -105,33 +114,94 @@ describe('CaregiverBookingService', () => {
   // ── acceptBooking (#3) ──────────────────────────────────────────────────
 
   describe('acceptBooking', () => {
+    /** แถวที่ findUnique ครั้งที่ 2 (ตรวจเวลา/ตารางชน) คืน — 2026-07-01 09:00 เวลาไทย = 02:00Z */
+    const scheduleRow = () => ({
+      bookingDate: new Date('2026-07-01'),
+      startTime: new Date('1970-01-01T09:00:00.000Z'),
+      durationHours: { toNumber: () => 3 },
+    });
+
     it('moves pending → accepted and stamps acceptedAt', async () => {
       // First findUnique: loadOwnedBooking guard check
-      prisma.booking.findUnique.mockResolvedValueOnce(guardRow({ status: 'pending' }));
+      prisma.booking.findUnique.mockResolvedValueOnce(
+        guardRow({ status: 'pending' }),
+      );
       // Second findUnique: time-conflict detail check
-      prisma.booking.findUnique.mockResolvedValueOnce({
-        bookingDate: new Date('2026-07-01'),
-        startTime: new Date('1970-01-01T09:00:00.000Z'),
-        durationHours: { toNumber: () => 3 },
-      });
+      prisma.booking.findUnique.mockResolvedValueOnce(scheduleRow());
       // findMany for conflict check: no conflicts
       prisma.booking.findMany.mockResolvedValueOnce([]);
-      prisma.booking.update.mockResolvedValue(
+      // Third findUnique: reload with include หลัง conditional update (PYG-461/462)
+      prisma.booking.findUnique.mockResolvedValueOnce(
         fakeBooking({ status: 'accepted', acceptedAt: new Date() }),
       );
 
       const result = await service.acceptBooking(USER_ID, BOOKING_ID);
 
-      expect(prisma.booking.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: BOOKING_ID },
-          data: expect.objectContaining({ status: 'accepted' }),
-        }),
-      );
-      // ตรวจว่ามีการ set acceptedAt เป็น Date
-      expect(prisma.booking.update.mock.calls[0][0].data.acceptedAt).toBeInstanceOf(Date);
+      // PYG-461/462: เดิม update({ where: { id } }) แบบไม่มีเงื่อนไข → เปลี่ยนเป็น updateMany
+      // WHERE status='pending' กันเขียนทับ 'expired' ที่ cron เพิ่งเปลี่ยน (ดู booking-expiry.service.spec)
+      expect(prisma.booking.updateMany).toHaveBeenCalledWith({
+        where: { id: BOOKING_ID, status: 'pending' },
+        data: expect.objectContaining({ status: 'accepted' }),
+      });
+      // ตรวจว่ามีการ set acceptedAt เป็นเวลาจาก ClockService
+      expect(
+        prisma.booking.updateMany.mock.calls[0][0].data.acceptedAt,
+      ).toEqual(nowValue);
+      expect(prisma.booking.update).not.toHaveBeenCalled();
       expect(result.status).toBe('accepted'); // mock returns fakeBooking with status='accepted'
       expect(result.acceptedAt).toBeDefined();
+    });
+
+    // ── PYG-461/462 เฟส 1: guard เวลา + conditional update ──────────────────
+
+    it('PYG-461: เลยเวลาเริ่มงานแล้ว → 422 บอกเวลาไทย + ไม่เขียน DB', async () => {
+      nowValue = new Date('2026-07-01T02:00:00.001Z'); // 09:00:00.001 เวลาไทย
+      prisma.booking.findUnique.mockResolvedValueOnce(
+        guardRow({ status: 'pending' }),
+      );
+      prisma.booking.findUnique.mockResolvedValueOnce(scheduleRow());
+
+      const err = await service
+        .acceptBooking(USER_ID, BOOKING_ID)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect((err as Error).message).toContain('2026-07-01 09:00 (เวลาไทย)');
+      expect(prisma.booking.findMany).not.toHaveBeenCalled(); // ตัดก่อนเช็คตารางชน
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.booking.update).not.toHaveBeenCalled();
+    });
+
+    it('PYG-461: ตรงเวลาเริ่มงานพอดี (ACCEPT_GRACE_MINUTES default 0) → ยังรับได้', async () => {
+      nowValue = new Date('2026-07-01T02:00:00.000Z');
+      prisma.booking.findUnique.mockResolvedValueOnce(
+        guardRow({ status: 'pending' }),
+      );
+      prisma.booking.findUnique.mockResolvedValueOnce(scheduleRow());
+      prisma.booking.findMany.mockResolvedValueOnce([]);
+      prisma.booking.findUnique.mockResolvedValueOnce(
+        fakeBooking({ status: 'accepted' }),
+      );
+
+      await expect(
+        service.acceptBooking(USER_ID, BOOKING_ID),
+      ).resolves.toBeDefined();
+      expect(prisma.booking.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('PYG-461: สถานะเปลี่ยนระหว่างทาง (เช่น cron ปิดเป็น expired) → updateMany 0 แถว → ConflictException', async () => {
+      prisma.booking.findUnique.mockResolvedValueOnce(
+        guardRow({ status: 'pending' }),
+      );
+      prisma.booking.findUnique.mockResolvedValueOnce(scheduleRow());
+      prisma.booking.findMany.mockResolvedValueOnce([]);
+      prisma.booking.updateMany.mockResolvedValueOnce({ count: 0 });
+
+      await expect(
+        service.acceptBooking(USER_ID, BOOKING_ID),
+      ).rejects.toBeInstanceOf(ConflictException);
+      // ไม่ reload / ไม่คืนข้อมูลที่ดูเหมือนรับงานสำเร็จ
+      expect(prisma.booking.findUnique).toHaveBeenCalledTimes(2);
     });
 
     it('throws NotFoundException when booking does not exist', async () => {
@@ -361,7 +431,8 @@ describe('CaregiverBookingService', () => {
       const call = prisma.booking.findMany.mock.calls[0][0];
       expect(call.where).toEqual({
         caregiverId: CAREGIVER_ID,
-        status: { in: ['completed', 'cancelled', 'rejected'] },
+        // PYG-461/462: 'expired' ต้องอยู่ในประวัติงานของผู้ดูแลด้วย
+        status: { in: ['completed', 'cancelled', 'rejected', 'expired'] },
       });
       expect(call.orderBy).toEqual({ createdAt: 'desc' });
     });

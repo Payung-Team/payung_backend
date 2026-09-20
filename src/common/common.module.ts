@@ -17,9 +17,8 @@ import { PayoutEncryptionService } from './crypto/payout-encryption.service';
 
 @Global()
 @Module({
-  // ClockService (PYG-369): ตัวจ่ายเวลาที่ inject ได้ — ทำให้ test คุมเวลาได้
   // PayoutEncryptionService (PYG-307): AES-GCM ของเลขบัญชีรับเงิน
-  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
-  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService],
+  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService],
+  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService],
 })
 export class CommonModule {}

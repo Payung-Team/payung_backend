@@ -1,8 +1,10 @@
 import { Args, ID, Mutation, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
 import { UseGuards } from '@nestjs/common';
 import { BookingService } from './booking.service';
+import { BookingTaskService } from './booking-task.service';
 import { BookingHistoryInput } from './dto/booking-history.input';
 import { BookingListResponse, BookingSummary } from './dto/booking-summary.types';
+import { BookingTask } from './dto/booking-task.types';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -18,6 +20,7 @@ export class BookingResolver {
   constructor(
     private readonly bookingService: BookingService,
     private readonly paymentService: PaymentService,
+    private readonly bookingTaskService: BookingTaskService,
   ) {}
 
   @Mutation(() => BookingSummary, {
@@ -58,5 +61,14 @@ export class BookingResolver {
   })
   async payment(@Parent() booking: BookingSummary): Promise<Payment | null> {
     return this.paymentService.findByBookingId(booking.id);
+  }
+
+  // ── PYG-361: bookingTasks field บน BookingSummary — display-only, ไม่แตะ proofOfWork ──────────
+
+  @ResolveField(() => [BookingTask], {
+    description: 'PYG-361: รายการงานย่อยของ booking นี้ พร้อมสถานะทำแล้ว/ยัง เรียงตาม sortOrder',
+  })
+  async bookingTasks(@Parent() booking: BookingSummary): Promise<BookingTask[]> {
+    return this.bookingTaskService.listForBooking(booking.id);
   }
 }

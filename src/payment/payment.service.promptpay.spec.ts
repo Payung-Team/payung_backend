@@ -13,9 +13,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, UnprocessableEntityException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
 import { PaymentStatus } from './entities/payment-status.enum';
@@ -45,6 +47,9 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
       hourlyRate: 300,
     },
     durationHours: { toNumber: () => 4 },
+    // PYG-461/462: guard เวลาใน createPayment — 2026-07-01 09:00 เวลาไทย (ก่อน fixedClock ของไฟล์นี้เสมอ)
+    bookingDate: new Date('2026-07-01'),
+    startTime: new Date('1970-01-01T09:00:00.000Z'),
     ...overrides,
   };
 }
@@ -127,6 +132,12 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: emitter },
+        // PYG-461/462: createPayment มี guard เวลา — ตรึงนาฬิกาไว้ก่อนวันงานของ fakeBooking
+        {
+          provide: ClockService,
+          useValue: { now: () => new Date('2026-06-30T00:00:00.000Z') },
+        },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();

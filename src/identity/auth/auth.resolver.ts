@@ -10,7 +10,7 @@
  * Resolver ไม่ควรมี business logic ซับซ้อน — มันแค่รับ request แล้วส่งต่อให้ Service ทำงาน
  */
 import { UseGuards } from '@nestjs/common';
-import { Resolver, Mutation, Query, Args, Context } from '@nestjs/graphql';
+import { Resolver, Mutation, Query, Args, Context, Int } from '@nestjs/graphql';
 import { AuthPayload } from '../models/auth-payload.model';
 import { LoginInput } from './dto/login.input';
 import { RegisterInput } from './dto/register.input';
@@ -53,6 +53,26 @@ export class AuthResolver {
   async logout(@Context() ctx: GqlContext): Promise<boolean> {
     const token = ctx.req.headers.authorization!.split(' ')[1];
     return this.authService.logout(token);
+  }
+
+  /**
+   * confirmOAuthRole (PYG bug fix) — เรียกจาก AuthCallback ทันทีหลังกลับจาก Google OAuth
+   * เพื่อแก้ role ให้ตรงกับที่ผู้ใช้เลือกไว้ก่อนกด "สมัครด้วย Google" บนหน้า Register
+   * (Supabase OAuth ไม่มีช่องส่ง role ผ่าน redirect ไป Google แล้วกลับมาได้เอง)
+   *
+   * No-op ปลอดภัยสำหรับ login ปกติ/บัญชีเก่า — ดู guard rails ใน AuthService.confirmOAuthRole
+   */
+  @Mutation(() => User, {
+    description:
+      'Fix a fresh Google OAuth signup account\'s role to match what the user picked before ' +
+      'being redirected to Google. Safe no-op for existing accounts or already-correct roles.',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async confirmOAuthRole(
+    @CurrentUser() user: AuthUser,
+    @Args('role', { type: () => Int, description: '1 = patient, 2 = caregiver' }) role: number,
+  ): Promise<User> {
+    return this.authService.confirmOAuthRole(user.id, role);
   }
 
   // ─── Profile endpoints (ต้อง login ก่อน) ──────────────────────────────

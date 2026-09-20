@@ -80,6 +80,23 @@ export const JOB_EVIDENCE_BUCKET = 'job-evidence';
 export const SIGNED_URL_TTL_SEC = 3600;
 
 /**
+ * bucket รูปประกอบ "บันทึกจากผู้ดูแล" (private, PYG-466) — path: {bookingId}/care-log-{uuid}.jpg
+ * backend อัปโหลดด้วย service-role เท่านั้น ห้ามเขียนรูป care log ใหม่ลง JOB_EVIDENCE_BUCKET
+ * ★ ต้องตรงกับ migration 20260914000000_pyg466_care_log_images_bucket และ care_logs_photo_bucket_check
+ */
+export const CARE_LOG_IMAGES_BUCKET = 'care-log-images';
+
+/** ขนาดไฟล์สูงสุด — ต้องตรงกับ file_size_limit ของ bucket (5 MB) */
+export const CARE_LOG_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+/** MIME ที่รับ — ต้องตรงกับ allowed_mime_types ของ bucket */
+export const CARE_LOG_PHOTO_MIME = 'image/jpeg';
+
+/** ความยาวข้อความ (นับ code point หลัง trim) — max ต้องตรงกับ care_logs_body_length_check */
+export const CARE_LOG_BODY_MIN_CHARS = 1;
+export const CARE_LOG_BODY_MAX_CHARS = 500;
+
+/**
  * เหตุผลทั้งหมดที่ทำให้งานต้องถูกรีวิว
  * ค่าพวกนี้ถูกเขียนลง bookings.review_reasons และ FE เอาไปแปลงเป็น chip ภาษาไทย
  */
@@ -145,3 +162,21 @@ export const JOB_EVENT_SOURCE = {
 
 /** timezone ที่ใช้ตัดสินว่า "วันนี้" คือวันไหน */
 export const BUSINESS_TIMEZONE = 'Asia/Bangkok';
+
+/**
+ * หมวดหมู่ของ "บันทึกจากผู้ดูแล" (PYG-361)
+ * TEXT + allowlist ในโค้ด ไม่ใช่ DB enum — เหตุผลเดียวกับ bookings.status:
+ * เพิ่มค่าใหม่ได้โดยไม่ต้อง ALTER TYPE
+ */
+export const CARE_LOG_CATEGORY = {
+  VITALS: 'vitals',
+  FOOD: 'food',
+  MEDICATION: 'medication',
+  ACTIVITY: 'activity',
+  OTHER: 'other',
+} as const;
+
+export type CareLogCategory =
+  (typeof CARE_LOG_CATEGORY)[keyof typeof CARE_LOG_CATEGORY];
+
+export const CARE_LOG_CATEGORY_VALUES: string[] = Object.values(CARE_LOG_CATEGORY);

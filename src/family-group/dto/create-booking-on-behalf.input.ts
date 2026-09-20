@@ -78,12 +78,40 @@ export class CreateBookingOnBehalfInput {
   @IsUUID()
   groupId: string;
 
+  /**
+   * PYG-500 — โมเดลใหม่ "สมาชิก = patient": ส่ง memberUserId (สมาชิกในกลุ่มที่เป็นผู้รับบริการ)
+   * แล้วระบบจะหา/สร้างโปรไฟล์ของสมาชิกคนนั้นในกลุ่มให้เอง (ดู createBookingOnBehalf)
+   *
+   * เส้นทางเดิม (ส่ง careRecipientId ตรง ๆ) ยังใช้ได้เพื่อ backward-compat แต่ต้องส่งมา
+   * "อย่างใดอย่างหนึ่ง" ระหว่าง memberUserId กับ careRecipientId (service เป็นคนตรวจ เพราะ
+   * class-validator ไม่มี rule "exactly one of" ในตัว)
+   */
   @Field(() => ID, {
-    description:
-      'โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ',
+    nullable: true,
+    description: 'สมาชิกในกลุ่มที่เป็นผู้รับบริการ (patient) — ระบบจะหา/สร้างโปรไฟล์ในกลุ่มให้อัตโนมัติ',
   })
+  @IsOptional()
   @IsUUID()
-  careRecipientId: string;
+  memberUserId?: string;
+
+  @Field(() => ID, {
+    nullable: true,
+    description:
+      'โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. (เส้นทางเดิม; แนะนำให้ส่ง memberUserId แทน)',
+  })
+  @IsOptional()
+  @IsUUID()
+  careRecipientId?: string;
+
+  /**
+   * PYG-500 — ชื่อผู้รับบริการ ใช้เฉพาะกรณีสมาชิกยังไม่เคยมีข้อมูลเลย แล้วคนจองกรอกให้
+   * (rule 3: self_reported = false) ถ้าสมาชิกมีโปรไฟล์อยู่แล้วจะใช้ชื่อจากโปรไฟล์นั้น ค่านี้ถูกข้าม
+   */
+  @Field({ nullable: true, description: 'ชื่อผู้รับบริการ — ใช้ตอนคนจองกรอกข้อมูลให้สมาชิกที่ยังไม่มีข้อมูล' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  patientName?: string;
 
   @Field(() => ID, {
     nullable: true,
