@@ -182,6 +182,15 @@ export class UserService {
       postalCode?: string;
     },
   ): Promise<User> {
+    // PYG-507: เลิกรับ avatarUrl ทางนี้ — เดิมรับ URL อะไรก็ได้ที่ผ่าน @IsUrl แล้วแสดงทันที
+    //   ผู้ดูแลจึงตั้งรูปเองได้โดยไม่ผ่านแอดมิน (ขัดกับ PYG-488)
+    //   ตอบ 400 แทนการเงียบ ๆ ไม่เขียน เพื่อให้ FE รุ่นเก่ารู้ว่าต้องย้ายไป endpoint อัปโหลด
+    if (updates.avatarUrl !== undefined) {
+      throw new BadRequestException(
+        'เปลี่ยนรูปโปรไฟล์ผ่าน updateProfile ไม่ได้แล้ว — อัปโหลดที่ POST /api/v1/profile/photo',
+      );
+    }
+
     // ตรวจสอบว่า user มีอยู่จริงก่อน
     await this.findById(id);
 
@@ -213,9 +222,8 @@ export class UserService {
         ...(updates.bio !== undefined && {
           bio: updates.bio,
         }),
-        ...(updates.avatarUrl !== undefined && {
-          avatarUrl: updates.avatarUrl,
-        }),
+        // PYG-507: ไม่มีการเขียน avatarUrl ที่นี่แล้ว — ตอบ 400 ไปตั้งแต่ต้นเมธอด
+        //   รูปโปรไฟล์เปลี่ยนผ่าน POST /api/v1/profile/photo ทางเดียว
         // updatedAt อัปเดตอัตโนมัติ เพราะ @updatedAt ใน Prisma schema
       },
     });
