@@ -1197,7 +1197,10 @@ model user_consents {
 
   granted_at DateTime @default(now()) @db.Timestamptz(6)
 
-  /// 'web' | 'mobile' — ที่มาของการกด
+  /// จุดในแอปที่ขอความยินยอม — 'register' | 'onboarding' | 'booking' | 'family_group' |
+  /// 'settings' | 're_consent' (CONSENT_SOURCE ใน src/consent/consent.constants.ts)
+  /// PYG-538: แก้จากเดิมที่เขียนว่า 'web' | 'mobile' — แพลตฟอร์มดูจาก user_agent ได้อยู่แล้ว
+  /// แต่ "ขอตรงไหน" ดูจากที่อื่นไม่ได้ และเป็นสิ่งที่ต้องพิสูจน์ได้ตาม PDPA
   source String?
 
   /// หลักฐานประกอบคำขอ (PDPA) — เก็บเท่าที่จำเป็นต่อการพิสูจน์ ไม่เอาไปทำอย่างอื่น

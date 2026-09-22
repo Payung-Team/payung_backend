@@ -21,9 +21,12 @@ import { UserService } from './user.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { KycModule } from '../kyc/kyc.module';
+import { ConsentModule } from '../../consent/consent.module';
 
 @Module({
-  imports: [KycModule],  // PYG-90: ดึง CaregiverService มาใช้ใน UserResolver
+  // PYG-90: KycModule ให้ CaregiverService กับ UserResolver
+  // PYG-538: ConsentModule ให้ ConsentService — completeOnboarding ต้องตรวจและบันทึกความยินยอม
+  imports: [KycModule, ConsentModule],
   providers: [
     AuthResolver,
     UserResolver,        // PYG-90: field resolver สำหรับ User.caregiver

@@ -113,8 +113,15 @@ export class AuthResolver {
   async completeOnboarding(
     @CurrentUser() user: AuthUser,
     @Args('input') input: CompleteOnboardingInput,
+    @Context() ctx: GqlContext,
   ): Promise<User> {
-    return this.userService.completeOnboarding(user.id, input);
+    // PYG-538: เก็บ IP + user agent เป็นหลักฐานประกอบความยินยอม (PDPA)
+    //   เอามาจาก request ที่นี่ ไม่ใช่ให้ FE ส่งมา — ค่าที่ client ส่งเองปลอมได้
+    //   จึงใช้เป็นหลักฐานไม่ได้ · ใช้เฉพาะเพื่อการพิสูจน์ ไม่เอาไปทำอย่างอื่น
+    return this.userService.completeOnboarding(user.id, input, {
+      ipAddress: clientIpOf(ctx.req),
+      userAgent: ctx.req.headers['user-agent'] ?? null,
+    });
   }
 
   /**
@@ -196,4 +203,18 @@ export class AuthResolver {
   ): Promise<User> {
     return this.userService.updateEmailPreference(user.id, enabled);
   }
+}
+
+/**
+ * IP ของ client — PYG-538
+ *
+ * ★ อ่าน x-forwarded-for ก่อนเพราะแอปอยู่หลัง proxy (req.ip จะเป็น IP ของ proxy)
+ *   เอาค่าแรกในลิสต์ = client จริง ค่าถัดไปคือ proxy ที่ไล่ต่อกันมา
+ *   ถ้าอ่านไม่ได้คืน null — บันทึกความยินยอมที่ไม่มี IP ยังใช้ได้ ดีกว่าบันทึกค่าที่ผิด
+ */
+function clientIpOf(req: GqlContext['req']): string | null {
+  const forwarded = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const first = raw?.split(',')[0]?.trim();
+  return first || req.ip || null;
 }

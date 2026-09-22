@@ -32,6 +32,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { ConsentAnswerInput } from '../../../consent/dto/consent-answer.input';
 import {
   GENDER_LABELS,
   type GenderLabel,
@@ -140,4 +141,20 @@ export class CompleteOnboardingInput {
   @ValidateNested()
   @Type(() => PatientProfileInput)
   details!: PatientProfileInput;
+
+  /**
+   * PYG-538 — ความยินยอมที่ผู้ใช้กดบนหน้า Onboarding
+   *
+   * ★ ต้องมี `sensitive_health_data` ที่ granted = true ไม่งั้นปฏิเสธทั้งคำขอ
+   *   ข้อมูลใน `details` เป็นข้อมูลอ่อนไหวตาม ม.26 — เก็บโดยไม่มีความยินยอมโดยชัดแจ้งไม่ได้
+   *   และ "เก็บไปก่อนแล้วค่อยขอ" ก็ไม่ได้ เพราะความยินยอมต้องมาก่อนการเก็บเสมอ
+   */
+  @Field(() => [ConsentAnswerInput], {
+    description: 'ความยินยอมจากหน้า Onboarding — ต้องมี sensitive_health_data ที่ granted = true',
+  })
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ConsentAnswerInput)
+  consents!: ConsentAnswerInput[];
 }
