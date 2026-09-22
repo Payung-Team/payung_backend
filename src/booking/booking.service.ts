@@ -38,7 +38,8 @@ import {
 import {
   RecipientNotInGroupError,
   MemberNotFoundError,
-  PatientNameRequiredError,
+  MemberNameMissingError,
+  PatientNameNotAllowedError,
 } from '../family-group/family-group.errors';
 import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-behalf.input';
 import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
@@ -242,10 +243,18 @@ export class BookingService {
       // PYG-500: โมเดล "สมาชิก = patient" — ส่งอย่างใดอย่างหนึ่ง
       memberUserId?: string;   // แนะนำ: เลือกสมาชิกในกลุ่มเป็นผู้รับบริการ
       careRecipientId?: string; // เส้นทางเดิม: อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
-      patientName?: string;     // ใช้ตอนสมาชิกยังไม่มีข้อมูลแล้วคนจองกรอกให้
+      patientName?: string;     // PYG-516: ส่งมา = 400 — ชื่อมาจากบัญชีสมาชิกเท่านั้น
       memberDetails?: MemberDetailsInput;
     },
   ): Promise<BookingSummary> {
+    // PYG-516 (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 / PYG-495)
+    //   ชื่อ-นามสกุลของผู้รับบริการเป็น "ตัวตน" ของเจ้าของบัญชี คนจองแทนพิมพ์ทับไม่ได้
+    //   ★ ด่านอยู่ก่อนทุกเส้นทาง เพราะช่องโหว่เกิดได้ทั้งตอนสร้างโปรไฟล์ใหม่ (สาขา ③)
+    //     และตอนเขียน bookings.patient_name (createBookingRecord) — กันที่เดียวจบ
+    if (input.patientName !== undefined) {
+      throw new PatientNameNotAllowedError();
+    }
+
     // สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
     // ที่นี่เหลือการ resolve ว่า booking ใบนี้ผูกกับโปรไฟล์ผู้รับบริการใบไหน (careRecipientId)
     let recipientId: string;
@@ -275,7 +284,6 @@ export class BookingService {
       const resolved = await this.resolveGroupPatientProfile(
         input.groupId,
         input.memberUserId,
-        input.patientName,
         input.memberDetails,
       );
       recipientId = resolved.id;
@@ -285,11 +293,36 @@ export class BookingService {
       // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
       const recipient = await this.prisma.careRecipient.findUnique({
         where: { id: input.careRecipientId },
-        select: { id: true, name: true, familyGroupId: true },
+        select: {
+          id: true,
+          name: true,
+          familyGroupId: true,
+          patientId: true,
+          is_deleted: true,
+        },
       });
-      if (!recipient || recipient.familyGroupId !== input.groupId) {
+      if (
+        !recipient ||
+        recipient.familyGroupId !== input.groupId ||
+        recipient.is_deleted
+      ) {
         throw new RecipientNotInGroupError();
       }
+
+      // PYG-516 — เดิมตรวจแค่ "โปรไฟล์อยู่ในกลุ่มนี้" คนที่ออกจากกลุ่ม/ถูกเตะไปแล้ว
+      //   จึงยังถูกจองแทนได้ตลอดกาล เพราะโปรไฟล์ยังค้างอยู่ในกลุ่ม
+      //   ★ ตอบ RecipientNotInGroupError ตัวเดิม ไม่ใช่ error ใหม่ — ไม่งั้นคนยิง id มั่ว ๆ
+      //     จะไล่ดูได้ว่าใบไหน "มีอยู่แต่เจ้าของออกจากกลุ่มแล้ว" ซึ่งไม่ควรรั่ว
+      const ownerActive = await this.prisma.familyGroupMember.findFirst({
+        where: {
+          groupId: input.groupId,
+          userId: recipient.patientId,
+          status: 'ACTIVE',
+        },
+        select: { userId: true },
+      });
+      if (!ownerActive) throw new RecipientNotInGroupError();
+
       recipientId = recipient.id;
       recipientName = recipient.name;
     } else {
@@ -299,7 +332,9 @@ export class BookingService {
 
     const booking = await this.createBookingRecord(
       bookerId,
-      { ...input, careRecipientId: recipientId },
+      // PYG-516: bookings.patient_name คือชื่อที่ผู้ดูแลเห็นบนใบงาน — ต้องเป็นชื่อจากโปรไฟล์
+      // ที่ resolve มาแล้ว ไม่ใช่ค่าที่คนจองพิมพ์ (ซึ่งตอนนี้ส่งมาไม่ได้อยู่แล้ว)
+      { ...input, careRecipientId: recipientId, patientName: recipientName },
       {
         familyGroupId: input.groupId,
         bookedBy: bookerId,
@@ -319,7 +354,14 @@ export class BookingService {
    *   ① มีโปรไฟล์ในกลุ่มของสมาชิกคนนี้อยู่แล้ว → ใช้ใบนั้น (ไม่แตะ self_reported เดิม)
    *   ② ยังไม่มี แต่สมาชิกมี "โปรไฟล์ส่วนตัว" อยู่ → คัดลอกข้อมูลนั้นเข้ากลุ่ม, self_reported = true
    *      (= ข้อมูลจากเจ้าตัว) เก็บเป็น snapshot ไม่ผูกกับโปรไฟล์ส่วนตัวเดิม เพื่อไม่ให้แก้ทีหลังย้อนกระทบ
-   *   ③ ไม่มีข้อมูลเลย → คนจองกรอกให้ (ต้องมีชื่อ), self_reported = false (= คนอื่นกรอกให้)
+   *   ③ ไม่มีข้อมูลเลย → สร้างใบใหม่ด้วย **ชื่อจากบัญชีของสมาชิก** (PYG-516)
+   *      ข้อมูลสุขภาพยังให้คนจองกรอกได้, self_reported = false (= คนอื่นกรอกให้)
+   *
+   * PYG-516 — ทำไมไม่ rename ใบเดิมในสาขา ① ให้ตรงกับบัญชี:
+   *   `care_recipients.patient_id` มีความหมายปนกันสองแบบในข้อมูลจริง — เส้นทางใหม่เก็บ
+   *   "ตัวผู้รับบริการ" แต่แถวเก่าจาก addGroupCareRecipient เก็บ "คนที่สร้างใบ"
+   *   rename ตามบัญชีของ patient_id จะทำให้ใบ "คุณยาย" ที่ลูกสร้างไว้กลายเป็นชื่อลูกทันที
+   *   → การ์ดนี้ล็อกแค่ "ชื่อที่ไหลเข้า booking" การแยกความหมายของคอลัมน์เป็นอีกตั๋ว
    *
    * patientId ของโปรไฟล์ที่สร้าง = memberUserId (subject) เสมอ — เพื่อให้ลิสต์/ฟีดของกลุ่ม
    * อ้างกลับได้ว่า "โปรไฟล์นี้คือของสมาชิกคนไหน" (FE ก็ key ด้วย patientId อยู่แล้ว)
@@ -330,7 +372,6 @@ export class BookingService {
   private async resolveGroupPatientProfile(
     groupId: string,
     memberUserId: string,
-    patientName?: string,
     memberDetails?: MemberDetailsInput,
   ): Promise<{ id: string; name: string }> {
     // subject ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้ (guard ตรวจแค่ "ผู้เรียก" ไม่ได้ตรวจ "คนที่ถูกจองให้")
@@ -391,9 +432,9 @@ export class BookingService {
       return copy;
     }
 
-    // ③ สมาชิกยังไม่มีข้อมูลเลย → คนจองกรอกให้ (self_reported = false)
-    const name = patientName?.trim();
-    if (!name) throw new PatientNameRequiredError();
+    // ③ สมาชิกยังไม่มีข้อมูลเลย → คนจองกรอก "ข้อมูลสุขภาพ" ให้ได้
+    //    แต่ชื่อมาจากบัญชีของสมาชิกเสมอ (PYG-516)
+    const name = await this.resolveMemberAccountName(memberUserId);
     const created = await this.prisma.careRecipient.create({
       data: {
         patientId:           memberUserId,
@@ -412,6 +453,32 @@ export class BookingService {
       source: 'booker_filled',
     });
     return created;
+  }
+
+
+  /**
+   * PYG-516 — ชื่อผู้รับบริการ "ตามบัญชี" ของสมาชิกที่ถูกจองแทน
+   *
+   * ลำดับ: `first_name last_name` (จาก Onboarding PYG-496/497) → ไม่มีก็ `display_name`
+   *   บัญชีเก่าที่สมัครก่อน Onboarding มีแต่ display_name จาก provider — ยังจองแทนได้
+   *
+   * ★ ไม่มีทั้งคู่ → MemberNameMissingError ไม่ใช่ fallback เป็น "ผู้ใช้ #xxxx"
+   *   ใบงานที่ผู้ดูแลถือไปต้องระบุตัวคนที่จะไปดูแลได้จริง ชื่อหลอกอันตรายกว่าการจองไม่ผ่าน
+   */
+  private async resolveMemberAccountName(memberUserId: string): Promise<string> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: memberUserId },
+      select: { firstName: true, lastName: true, displayName: true },
+    });
+
+    const full = [account?.firstName, account?.lastName]
+      .map((part) => part?.trim())
+      .filter((part): part is string => !!part)
+      .join(' ');
+
+    const name = full || account?.displayName?.trim();
+    if (!name) throw new MemberNameMissingError();
+    return name;
   }
 
   /**

@@ -75,6 +75,18 @@ export const FG_ERROR = {
    * (โมเดลสมาชิก=patient: ถ้าสมาชิกมีโปรไฟล์/ข้อมูลเดิมอยู่แล้วจะไม่เจอ error นี้เลย)
    */
   PATIENT_NAME_REQUIRED: 'PATIENT_NAME_REQUIRED',
+  /**
+   * PYG-516 — คนจองส่งชื่อผู้รับบริการมาเอง ทั้งที่จองแทนสมาชิกในกลุ่ม
+   *
+   * ชื่อ-นามสกุลเป็น "ตัวตน" ของเจ้าของบัญชี คนอื่นตั้งชื่อแทนไม่ได้
+   * (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 → PYG-495)
+   */
+  PATIENT_NAME_NOT_ALLOWED: 'PATIENT_NAME_NOT_ALLOWED',
+  /**
+   * PYG-516 — สมาชิกที่ถูกจองแทนยังไม่มีชื่อในบัญชีเลย (ทั้ง first/last name และ display name ว่าง)
+   * คนจองกรอกชื่อแทนไม่ได้แล้ว → เจ้าตัวต้องผ่าน Onboarding ก่อน (PYG-496)
+   */
+  MEMBER_NAME_MISSING: 'MEMBER_NAME_MISSING',
   /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
   JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
 
@@ -180,7 +192,37 @@ export class RecipientNotInGroupError extends FamilyGroupError {
 }
 
 /**
+ * PYG-516 — ส่ง patientName มาตอนจองแทนสมาชิกในกลุ่ม
+ *
+ * ★ ตอบ error ไม่ใช่ "รับแล้วเงียบ ๆ ไม่ใช้": ถ้าเงียบ FE จะคิดว่าชื่อที่พิมพ์ถูกบันทึกแล้ว
+ *   แต่ผู้ดูแลเห็นอีกชื่อหนึ่ง — สับสนกว่าการบอกตรง ๆ ว่าส่งมาไม่ได้
+ *   (ทีมเลือกทางนี้ตามข้อเสนอในการ์ด PYG-516)
+ */
+export class PatientNameNotAllowedError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ชื่อ-นามสกุลผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น แก้ไขจากหน้าจองไม่ได้',
+      FG_ERROR.PATIENT_NAME_NOT_ALLOWED,
+    );
+  }
+}
+
+/** PYG-516 — สมาชิกที่ถูกจองแทนยังไม่มีชื่อในบัญชี (เจ้าตัวต้องผ่าน Onboarding ก่อน) */
+export class MemberNameMissingError extends FamilyGroupError {
+  constructor() {
+    super(
+      'สมาชิกคนนี้ยังไม่ได้กรอกชื่อในบัญชี — ขอให้เจ้าตัวกรอกข้อมูลก่อนจึงจะจองแทนได้',
+      FG_ERROR.MEMBER_NAME_MISSING,
+    );
+  }
+}
+
+/**
  * PYG-500 — จองแทนสมาชิกที่ยังไม่เคยมีข้อมูล แต่ไม่ได้ส่งชื่อผู้รับบริการมา
+ *
+ * @deprecated PYG-516 — ไม่มีโค้ดโยนแล้ว: คนจองส่งชื่อไม่ได้อีก ชื่อมาจากบัญชีเสมอ
+ *   กรณีที่เคยตกมาที่นี่ตอนนี้ได้ MemberNameMissingError แทน
+ *   คงคลาสกับ code ไว้ให้ FE รุ่นเก่าที่ยัง map code นี้อยู่ไม่พัง
  * (ปกติ FE จะบังคับกรอกชื่อในฟอร์ม "กรอกข้อมูลให้สมาชิก" อยู่แล้ว — เป็นด่านกันพลาดฝั่ง BE)
  */
 export class PatientNameRequiredError extends FamilyGroupError {
