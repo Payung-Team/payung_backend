@@ -93,6 +93,11 @@ export class JobEvidenceService {
    *   → sign ล้มทุกครั้ง · service-role bypass RLS จึง **ผู้เรียกต้องตรวจสิทธิ์เองก่อนเรียกเสมอ**
    *   วันนี้มีทางเข้าเดียวคือ MonitoringService.proofOfWork (ตรวจคู่กรณี/แอดมินแล้ว)
    *
+   *   อาการที่ทำให้หายาก: Supabase Storage ซ่อน permission denial ไว้เป็น 404
+   *   ตอบ "Object not found" แม้ไฟล์จะมีอยู่จริง — พิสูจน์ด้วยการ sign ไฟล์เดียวกัน
+   *   anon client fail / admin client สำเร็จ · บั๊กนี้มีมาตั้งแต่ MonitoringService.signEvidenceUrl
+   *   ของ PYG-358 แต่ไม่มีใครเจอเพราะไม่เคยมี caller จริงจนถึง PYG-361 (care_logs)
+   *
    * ล้มเหลว → คืน null ไม่ throw: รูปหลักฐานใบเดียว sign ไม่ได้ต้องไม่ทำให้ทั้งหน้าพัง
    */
   async sign(path: string): Promise<string | null> {

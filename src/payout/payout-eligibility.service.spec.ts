@@ -57,7 +57,10 @@ describe('PayoutEligibilityService', () => {
     service = mod.get(PayoutEligibilityService);
   });
 
-  const noRefund = { refundedAmount: new Prisma.Decimal('0') };
+  const noRefund = {
+    paymentStatus: 'captured',
+    refundedAmount: new Prisma.Decimal('0'),
+  };
 
   describe('evaluate — ตารางกฎ', () => {
     it("verdict='valid' + ไม่มี refund → eligible", () => {
@@ -112,6 +115,7 @@ describe('PayoutEligibilityService', () => {
     // ── refund ต้องมาก่อน verdict ─────────────────────────────────────────
     it('คืนเงินลูกค้าไปแล้ว → deny ถึงแม้ verdict จะ valid', () => {
       const v = service.evaluate(makeProof({ verdict: 'valid' }), {
+        paymentStatus: 'captured',
         refundedAmount: new Prisma.Decimal('1000.00'),
       });
       expect(v.kind).toBe('deny');
@@ -120,21 +124,33 @@ describe('PayoutEligibilityService', () => {
 
     it('คืนเงินบางส่วน → deny เช่นกัน', () => {
       const v = service.evaluate(makeProof(), {
+        paymentStatus: 'captured',
         refundedAmount: new Prisma.Decimal('0.01'),
       });
       expect(v.kind).toBe('deny');
     });
 
-    it('ไม่มี payment row → ถือว่าไม่มี refund', () => {
-      expect(service.evaluate(makeProof(), null).kind).toBe('eligible');
+    it('ไม่มี payment row → hold และห้าม payout', () => {
+      const v = service.evaluate(makeProof(), null);
+      expect(v.kind).toBe('hold');
+      expect(v.reason).toBe('payment_not_captured');
+    });
+
+    it('payment ยัง held → hold และห้าม payout', () => {
+      const v = service.evaluate(makeProof(), {
+        paymentStatus: 'held',
+        refundedAmount: 0,
+      });
+      expect(v.kind).toBe('hold');
+      expect(v.reason).toBe('payment_not_captured');
     });
 
     it('รับ refundedAmount เป็น number/string ได้', () => {
-      expect(service.evaluate(makeProof(), { refundedAmount: 5 }).kind).toBe(
+      expect(service.evaluate(makeProof(), { paymentStatus: 'captured', refundedAmount: 5 }).kind).toBe(
         'deny',
       );
       expect(
-        service.evaluate(makeProof(), { refundedAmount: '5.00' }).kind,
+        service.evaluate(makeProof(), { paymentStatus: 'captured', refundedAmount: '5.00' }).kind,
       ).toBe('deny');
     });
 

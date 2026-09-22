@@ -21,12 +21,15 @@ import { BookingStatusEnum } from './dto/booking-summary.types';
 const PATIENT_ID   = 'user-111';
 const BOOKING_ID   = 'booking-aaa';
 const CAREGIVER_ID = 'cg-222';
+const GROUP_ID     = 'group-333';
 
 function fakeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id:              BOOKING_ID,
     patientId:       PATIENT_ID,
     caregiverId:     CAREGIVER_ID,
+    familyGroupId:   null,
+    bookedBy:        null,
     status:          'accepted',
     serviceType:     'general_care',
     timeSlot:        'morning',
@@ -242,6 +245,41 @@ describe('BookingService', () => {
       expect(prisma.booking.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ skip: 3, take: 3 }),
       );
+    });
+  });
+
+  describe('groupBookingById', () => {
+    it('returns the same booking detail to another member as read-only', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking({
+        familyGroupId: GROUP_ID,
+        bookedBy: PATIENT_ID,
+      }));
+
+      const result = await service.groupBookingById(BOOKING_ID, GROUP_ID, 'family-member');
+
+      expect(result.id).toBe(BOOKING_ID);
+      expect(result.bookedByMe).toBe(false);
+    });
+
+    it('marks the member who created the booking as able to manage it', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking({
+        familyGroupId: GROUP_ID,
+        bookedBy: PATIENT_ID,
+      }));
+
+      const result = await service.groupBookingById(BOOKING_ID, GROUP_ID, PATIENT_ID);
+
+      expect(result.bookedByMe).toBe(true);
+    });
+
+    it('does not expose a booking through a different family group', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking({
+        familyGroupId: 'another-group',
+        bookedBy: PATIENT_ID,
+      }));
+
+      await expect(service.groupBookingById(BOOKING_ID, GROUP_ID, PATIENT_ID))
+        .rejects.toThrow(NotFoundException);
     });
   });
 

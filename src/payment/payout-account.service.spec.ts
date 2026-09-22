@@ -4,8 +4,8 @@
  * ครอบคลุม:
  *  - createRecipientForCaregiver: ไม่มีบัญชี → no-op, มี omiseRecipientId แล้ว → skip,
  *    happy path → สร้าง recipient + update DB, Omise fail → caught ไม่ throw ออกไป
- *  - handleRecipientWebhook: ไม่พบ recipientId → skip, idempotent (สถานะตรงอยู่แล้ว) → skip,
- *    verified/failed transitions, re-fetch fail → fallback ไปเชื่อ eventKey
+ *  - reconcileRecipient: ไม่พบ recipientId → skip, idempotent เมื่อสถานะตรง,
+ *    verified/active/pending/failed transitions และไม่เดาสถานะเมื่อ re-fetch ล้มเหลว
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { PayoutAccountService } from './payout-account.service';
@@ -164,36 +164,73 @@ describe('PayoutAccountService (PYG-266)', () => {
     });
   });
 
-  describe('handleRecipientWebhook', () => {
-    it('ไม่พบ payout account จาก recipientId → log + return', async () => {
+  describe('reconcileRecipient', () => {
+    const bankAccount = { brand: 'kbank', lastDigits: '6789', name: 'x' };
+
+    it('ไม่พบ payout account จาก recipientId → return null', async () => {
       prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce(null);
 
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
+      await expect(
+        service.reconcileRecipient(RECIPIENT_ID, 'recipient.verify'),
+      ).resolves.toBeNull();
 
       expect(omise.retrieveRecipient).not.toHaveBeenCalled();
       expect(prisma.caregiverPayoutAccount.update).not.toHaveBeenCalled();
     });
 
-    it('สถานะตรงกับ eventKey อยู่แล้ว (idempotent) → skip ไม่ re-fetch', async () => {
+    it('verified และ active แล้ว → skip DB update แบบ idempotent', async () => {
       prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
         id: 'payout-1',
         recipientStatus: 'verified',
         status: 'active',
         verifiedAt: new Date(),
       });
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID,
+        verified: true,
+        active: true,
+        failureCode: null,
+        bankAccount,
+      });
 
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
+      await expect(
+        service.reconcileRecipient(RECIPIENT_ID, 'recipient.activate'),
+      ).resolves.toEqual({ recipientStatus: 'verified', status: 'active' });
 
-      expect(omise.retrieveRecipient).not.toHaveBeenCalled();
       expect(prisma.caregiverPayoutAccount.update).not.toHaveBeenCalled();
     });
 
-    it('recipientStatus=verified แล้วแต่ status ยังค้าง pending → ไม่ skip ต้องซ่อมให้ active', async () => {
-      // เคสรอบก่อนเขียน recipientStatus สำเร็จแต่ล้มก่อนตั้ง status —
-      // ถ้า idempotency เช็คแค่ recipientStatus แถวนี้จะค้างไม่สอดคล้องถาวร
+    it('verified แต่ยังไม่ active → verified/pending และยังไม่พร้อมโอน', async () => {
       prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
         id: 'payout-1',
-        recipientStatus: 'verified',
+        recipientStatus: 'pending',
+        status: 'pending',
+        verifiedAt: null,
+      });
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID,
+        verified: true,
+        active: false,
+        failureCode: null,
+        bankAccount,
+      });
+
+      await service.reconcileRecipient(RECIPIENT_ID, 'recipient.verify');
+
+      expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
+        where: { id: 'payout-1' },
+        data: {
+          recipientStatus: 'verified',
+          status: 'pending',
+          verifiedAt: expect.any(Date),
+        },
+      });
+    });
+
+    it('verified และ active → verified/active', async () => {
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
+        id: 'payout-1',
+        recipientStatus: 'pending',
         status: 'pending',
         verifiedAt: null,
       });
@@ -201,10 +238,11 @@ describe('PayoutAccountService (PYG-266)', () => {
         id: RECIPIENT_ID,
         verified: true,
         active: true,
-        bankAccount: { brand: 'kbank', lastDigits: '6789', name: 'x' },
+        failureCode: null,
+        bankAccount,
       });
 
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
+      await service.reconcileRecipient(RECIPIENT_ID, 'recipient.activate');
 
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { id: 'payout-1' },
@@ -216,70 +254,73 @@ describe('PayoutAccountService (PYG-266)', () => {
       });
     });
 
-    it('recipient.verified + re-fetch ยืนยัน verified=true → recipientStatus=verified + verifiedAt set', async () => {
+    it('ยังตรวจไม่เสร็จและไม่มี failure code → pending/pending', async () => {
       prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
         id: 'payout-1',
         recipientStatus: 'unverified',
-        verifiedAt: null,
-      });
-      omise.retrieveRecipient.mockResolvedValueOnce({
-        id: RECIPIENT_ID,
-        verified: true,
-        active: true,
-        bankAccount: { brand: 'kbank', lastDigits: '6789', name: 'x' },
-      });
-
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
-
-      expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
-        where: { id: 'payout-1' },
-        data: {
-          recipientStatus: 'verified',
-          status: 'active',
-          verifiedAt: expect.any(Date),
-        },
-      });
-    });
-
-    it('recipient.failed → recipientStatus=failed, verifiedAt ไม่เปลี่ยน', async () => {
-      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
-        id: 'payout-1',
-        recipientStatus: 'unverified',
+        status: 'pending',
         verifiedAt: null,
       });
       omise.retrieveRecipient.mockResolvedValueOnce({
         id: RECIPIENT_ID,
         verified: false,
         active: false,
-        bankAccount: { brand: 'kbank', lastDigits: '6789', name: 'x' },
+        failureCode: null,
+        bankAccount,
       });
 
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.failed');
-
-      expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
-        where: { id: 'payout-1' },
-        data: { recipientStatus: 'failed', status: 'pending', verifiedAt: null },
-      });
-    });
-
-    it('re-fetch จาก Omise ล้มเหลว → fallback ไปเชื่อ eventKey แทน', async () => {
-      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
-        id: 'payout-1',
-        recipientStatus: 'unverified',
-        verifiedAt: null,
-      });
-      omise.retrieveRecipient.mockRejectedValueOnce(new Error('network error'));
-
-      await service.handleRecipientWebhook(RECIPIENT_ID, 'recipient.verified');
+      await service.reconcileRecipient(RECIPIENT_ID, 'recipient.update');
 
       expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
         where: { id: 'payout-1' },
         data: {
-          recipientStatus: 'verified',
-          status: 'active',
-          verifiedAt: expect.any(Date),
+          recipientStatus: 'pending',
+          status: 'pending',
+          verifiedAt: null,
         },
       });
+    });
+
+    it('มี failure code → failed/pending', async () => {
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
+        id: 'payout-1',
+        recipientStatus: 'pending',
+        status: 'pending',
+        verifiedAt: null,
+      });
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID,
+        verified: false,
+        active: false,
+        failureCode: 'account_not_found',
+        bankAccount,
+      });
+
+      await service.reconcileRecipient(RECIPIENT_ID, 'recipient.update');
+
+      expect(prisma.caregiverPayoutAccount.update).toHaveBeenCalledWith({
+        where: { id: 'payout-1' },
+        data: {
+          recipientStatus: 'failed',
+          status: 'pending',
+          verifiedAt: null,
+        },
+      });
+    });
+
+    it('retrieve จาก Omise ล้มเหลว → ไม่เดาสถานะจาก event', async () => {
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce({
+        id: 'payout-1',
+        recipientStatus: 'pending',
+        status: 'pending',
+        verifiedAt: null,
+      });
+      omise.retrieveRecipient.mockRejectedValueOnce(new Error('network error'));
+
+      await expect(
+        service.reconcileRecipient(RECIPIENT_ID, 'recipient.verify'),
+      ).rejects.toThrow('network error');
+      expect(prisma.caregiverPayoutAccount.update).not.toHaveBeenCalled();
     });
   });
 });

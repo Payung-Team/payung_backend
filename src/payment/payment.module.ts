@@ -41,6 +41,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
     PaymentService,
     RefundService,
     PayoutAccountService,
+    // ต่างคนต่างเพิ่ม export คนละตัว — ต้องมีทั้งคู่
+    CompleteBookingService,
     // PYG-461 เฟส 3a: BookingModule ใช้ใน cancelBooking (ทิศทางเดียว Booking → Payment)
     BookingSettlementService,
   ],

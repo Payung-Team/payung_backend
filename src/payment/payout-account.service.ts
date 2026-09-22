@@ -6,7 +6,7 @@
  *
  * - createRecipientForCaregiver — เรียก fire-and-forget จาก AdminService.approveKyc
  *   และจาก KycService.updatePayoutAccount หลัง upsert สำเร็จ
- * - handleRecipientWebhook — เรียกจาก OmiseController ตอนรับ recipient.verified/failed
+ * - reconcileRecipient — sync สถานะล่าสุดจาก Omise เมื่อมี webhook หรือ worker พบข้อมูลค้าง
  *
  * ── state machine ของบัญชีรับเงิน (ห้ามให้ resolver ตั้ง status ตรง ๆ) ───────────
  *
@@ -15,13 +15,14 @@
  *        ├─ createRecipient สำเร็จ ──→ status='pending'  recipient_status='pending'
  *        │                             (ส่งให้ Omise ตรวจแล้ว ยังไม่ใช่ตรวจผ่าน)
  *        │
- *        ├─ webhook verified ────────→ status='active'   recipient_status='verified'
- *        │                             + verified_at
+ *        ├─ Omise verified ──────────→ status='pending'  recipient_status='verified'
+ *        │                             + verified_at (ยังไม่โอนจนกว่าจะ active)
  *        │
- *        └─ webhook failed ──────────→ status='pending'  recipient_status='failed'
- *                                      (คง pending ไว้ให้แก้บัญชีใหม่ได้)
+ *        ├─ Omise active ────────────→ status='active'   recipient_status='verified'
+ *        │
+ *        └─ มี failure_code ─────────→ status='pending'  recipient_status='failed'
  *
- * ⚠️ status='active' มีประตูเดียวคือ handleRecipientWebhook เท่านั้น
+ * ⚠️ status='active' มีประตูเดียวคือ reconcileRecipient เท่านั้น
  *    เดิม createRecipientForCaregiver ตั้ง status='active' ทันทีที่สร้าง recipient สำเร็จ
  *    ทำให้เกิดแถวที่ active แต่ recipient ยังไม่ผ่านการตรวจ — ซึ่งแปลว่าเงินออกไปหา
  *    บัญชีที่ธนาคารยังไม่ยืนยันได้ (แถว scb/6789 ใน DB คือของจริงที่ค้างอยู่แบบนั้น)
@@ -140,16 +141,11 @@ export class PayoutAccountService {
     }
   }
 
-  /**
-   * handleRecipientWebhook — อัปเดต recipientStatus จาก Omise webhook
-   *
-   * @param recipientId - Omise recipient id (จาก webhook body.data.id)
-   * @param eventKey     - 'recipient.verified' | 'recipient.failed'
-   */
-  async handleRecipientWebhook(
+  /** Sync local payout-account state from the current Omise recipient object. */
+  async reconcileRecipient(
     recipientId: string,
-    eventKey: 'recipient.verified' | 'recipient.failed',
-  ): Promise<void> {
+    source: string,
+  ): Promise<{ recipientStatus: string; status: string } | null> {
     // omiseRecipientId ไม่ใช่ unique column (มีแค่ caregiverId ที่ unique) → ใช้ findFirst
     const account = await this.prisma.caregiverPayoutAccount.findFirst({
       where: { omiseRecipientId: recipientId },
@@ -157,53 +153,49 @@ export class PayoutAccountService {
 
     if (!account) {
       this.logger.warn(
-        `[PayoutAccount] webhook ${eventKey} for unknown recipientId=${recipientId} — skipping`,
+        `[PayoutAccount] reconcile source=${source} for unknown recipientId=${recipientId} — skipping`,
       );
-      return;
+      return null;
     }
 
-    const targetFromEvent = eventKey === 'recipient.verified' ? 'verified' : 'failed';
+    // Never trust the webhook name as the final state. Verify and activate can
+    // arrive separately or out of order; the retrieved object is authoritative.
+    const fresh = await this.omiseService.retrieveRecipient(recipientId);
+    const recipientStatus = fresh.verified
+      ? 'verified'
+      : fresh.failureCode
+        ? 'failed'
+        : 'pending';
+    const status = fresh.verified && fresh.active ? 'active' : 'pending';
 
-    // Idempotency — เช็คทั้ง recipientStatus และ status ที่ต้องมาคู่กัน
-    // ไม่เช็คแค่ recipientStatus อย่างเดียว เพราะถ้ารอบก่อนเขียน recipientStatus สำเร็จ
-    // แต่ล้มก่อนตั้ง status แถวนั้นจะค้างไม่สอดคล้องถาวร (webhook ซ้ำจะ return ทิ้ง)
-    const settledStatus = targetFromEvent === 'verified' ? 'active' : 'pending';
-    if (account.recipientStatus === targetFromEvent && account.status === settledStatus) {
+    if (
+      account.recipientStatus === recipientStatus &&
+      account.status === status &&
+      (!fresh.verified || account.verifiedAt)
+    ) {
       this.logger.log(
-        `[PayoutAccount] recipientId=${recipientId} already '${account.recipientStatus}'/` +
-          `'${account.status}' — skipping`,
+        `[PayoutAccount] recipientId=${recipientId} already '${recipientStatus}'/` +
+          `'${status}' (source=${source}) — skipping`,
       );
-      return;
+      return { recipientStatus, status };
     }
 
-    // Defense in depth: re-fetch จาก Omise ก่อนเชื่อ webhook body ตรง ๆ
-    // ถ้า re-fetch fail (network ฯลฯ) → fallback ไปเชื่อ eventKey แทนที่จะค้าง unverified ตลอดไป
-    let target: 'verified' | 'failed' = targetFromEvent;
-    try {
-      const fresh = await this.omiseService.retrieveRecipient(recipientId);
-      target = fresh.verified ? 'verified' : 'failed';
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `[PayoutAccount] retrieveRecipient failed recipientId=${recipientId}, falling back to eventKey: ${msg}`,
-      );
-    }
-
-    // ★ ประตูเดียวที่ตั้ง status='active' ได้ — และตั้งได้ก็ต่อเมื่อ recipient verified แล้ว
-    //   verified → active + verified_at ; failed → คง pending ไว้ให้ caregiver แก้บัญชีใหม่ได้
-    //   เขียนสามช่องพร้อมกันใน update เดียว ไม่มีจังหวะที่แถวไม่สอดคล้อง
     await this.prisma.caregiverPayoutAccount.update({
       where: { id: account.id },
       data: {
-        recipientStatus: target,
-        status: target === 'verified' ? 'active' : 'pending',
-        verifiedAt: target === 'verified' ? new Date() : account.verifiedAt,
+        recipientStatus,
+        status,
+        verifiedAt: fresh.verified
+          ? (account.verifiedAt ?? new Date())
+          : account.verifiedAt,
       },
     });
 
     this.logger.log(
-      `[PayoutAccount] recipientId=${recipientId} → recipientStatus='${target}' ` +
-        `status='${target === 'verified' ? 'active' : 'pending'}'`,
+      `[PayoutAccount] recipientId=${recipientId} → recipientStatus='${recipientStatus}' ` +
+        `status='${status}' (source=${source})`,
     );
+
+    return { recipientStatus, status };
   }
 }

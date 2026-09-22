@@ -86,7 +86,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     };
 
     prisma = {
-      careRecipient: { findUnique: jest.fn() },
+      careRecipient: { findUnique: jest.fn(), findFirst: jest.fn() },
+      familyGroupMember: { findFirst: jest.fn() },
       caregiver: { findUnique: jest.fn() },
       booking: {
         // ไม่มีนัดหมายชนกัน เว้นแต่เทสนั้นจะ override เอง
@@ -227,6 +228,30 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(result.status).toBe('unmatched');
       expect(result.bookingDate).toBe('2026-09-15');
       expect(result.careRecipientName).toBe('คุณยายสมศรี');
+    });
+
+    it('เลือกโปรไฟล์ส่วนตัวที่สมาชิกเป้าหมายเคยบันทึกไว้ได้', async () => {
+      prisma.familyGroupMember.findFirst.mockResolvedValue({ userId: OWNER_ID });
+      prisma.careRecipient.findFirst.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+      });
+
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
+        makeInput({ memberUserId: OWNER_ID }),
+      );
+
+      expect(prisma.careRecipient.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: RECIPIENT_ID,
+          patientId: OWNER_ID,
+          is_deleted: false,
+          OR: [{ familyGroupId: null }, { familyGroupId: GROUP_ID }],
+        },
+        select: { id: true, name: true },
+      });
+      expect(tx.booking.create.mock.calls[0][0].data.careRecipientId).toBe(RECIPIENT_ID);
     });
 
     // ── PYG-385 (D2): memberDetails ลง bookings.member_details (JSONB) ────────

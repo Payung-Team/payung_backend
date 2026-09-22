@@ -1,9 +1,10 @@
-import { Field, Float, ID, InputType } from '@nestjs/graphql';
+import { Field, Float, ID, InputType, Int } from '@nestjs/graphql';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
@@ -15,6 +16,14 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import {
+  GENDER_LABELS,
+  SUPPORT_LEVEL_LABELS,
+} from '../../patient/dto/patient-profile.dto';
+import type {
+  GenderLabel,
+  SupportLevelLabel,
+} from '../../patient/dto/patient-profile.dto';
 
 /**
  * PYG-385 — อาการ/รายละเอียดที่สมาชิกกรอกตอน "จองแทน" (memberDetails)
@@ -27,6 +36,39 @@ import {
  */
 @InputType()
 export class MemberDetailsInput {
+  @Field(() => Int, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  age?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsIn(GENDER_LABELS as unknown as string[])
+  gender?: GenderLabel;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  weight?: number;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  height?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsIn(SUPPORT_LEVEL_LABELS as unknown as string[])
+  supportLevel?: SupportLevelLabel;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsString()
+  bloodGroup?: string;
+
   @Field(() => [String], {
     nullable: true,
     description: 'อาการ/โรคประจำตัวที่ผู้ดูแลควรรู้ เช่น ["เบาหวาน", "ความดัน"]',
@@ -53,6 +95,12 @@ export class MemberDetailsInput {
   @IsString()
   @MaxLength(2000)
   careInstructions?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  regularHospital?: string;
 }
 
 /**
@@ -97,7 +145,7 @@ export class CreateBookingOnBehalfInput {
   @Field(() => ID, {
     nullable: true,
     description:
-      'โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. (เส้นทางเดิม; แนะนำให้ส่ง memberUserId แทน)',
+      'โปรไฟล์ผู้รับบริการที่สมาชิกเป้าหมายเคยบันทึก หรือโปรไฟล์ในกลุ่มนี้',
   })
   @IsOptional()
   @IsUUID()

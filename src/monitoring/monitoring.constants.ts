@@ -146,10 +146,8 @@ export const BOOKING_STATUS = {
   CONFIRMED: 'confirmed',
   /** กำลังปฏิบัติงาน — ตั้งตอนเช็คอิน */
   IN_PROGRESS: 'in_progress',
-  /** ปิดงานแล้ว รอระบบโอนเงิน — ตั้งตอนเช็คเอาท์เมื่อ verdict = valid */
-  AWAITING_RELEASE: 'awaiting_release',
-  /** ปิดงานแล้วแต่ติดธง — เข้าคิวแอดมิน ห้ามปล่อยเงินอัตโนมัติ */
-  NEEDS_REVIEW: 'needs_review',
+  /** งานสิ้นสุดแล้ว — ผลตรวจหลักฐานแยกเก็บใน reviewReasons/verdict ไม่ใช้ booking.status */
+  COMPLETED: 'completed',
 } as const;
 
 /** ที่มาของ job event */

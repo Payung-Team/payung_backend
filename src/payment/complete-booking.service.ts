@@ -139,9 +139,9 @@ export class CompleteBookingService {
       const captured = await this.captureCardPayment(
         bookingId,
         payment,
-        user,
+        user.id,
         completedAt,
-        isPatient,
+        isPatient ? 'patient' : 'caregiver',
       );
       omiseChargeIdForResponse = captured.chargeId;
       updatedBooking = captured.updatedBooking;
@@ -181,6 +181,91 @@ export class CompleteBookingService {
     };
   }
 
+  /**
+   * ปิดงานจาก QR checkout: job_event ถูกบันทึกแล้ว แต่ booking จะยัง in_progress
+   * จนกว่า capture สำเร็จ จึงเปลี่ยนเป็น completed และยิง event เพื่อเริ่ม payout
+   */
+  async finalizeCheckedOutBooking(
+    caregiverUserId: string,
+    bookingId: string,
+    completedAt: Date,
+  ): Promise<void> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        id: true,
+        patientId: true,
+        status: true,
+        caregiver: { select: { userId: true } },
+        payment: {
+          select: {
+            id: true,
+            paymentStatus: true,
+            paymentMethod: true,
+            omiseChargeId: true,
+            amount: true,
+          },
+        },
+      },
+    });
+
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.caregiver?.userId !== caregiverUserId) {
+      throw new ForbiddenException('Access denied');
+    }
+    if (booking.status !== 'in_progress' && booking.status !== 'completed') {
+      throw new UnprocessableEntityException(
+        'Only in-progress or completed bookings can be finalized after checkout',
+      );
+    }
+
+    const payment = booking.payment;
+    if (!payment) {
+      throw new UnprocessableEntityException(
+        'ไม่พบรายการชำระเงินสำหรับ booking นี้',
+      );
+    }
+
+    const status = payment.paymentStatus as PaymentStatus;
+    if (booking.status === 'completed' && status === PaymentStatus.captured) {
+      return;
+    }
+
+    if (status === PaymentStatus.held) {
+      await this.captureCardPayment(
+        bookingId,
+        payment,
+        caregiverUserId,
+        completedAt,
+        'caregiver',
+      );
+      this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_CAPTURED, {
+        bookingId,
+        eventType: BOOKING_EVENTS.PAYMENT_CAPTURED,
+        patientId: booking.patientId,
+        caregiverId: caregiverUserId,
+        metadata: { amount: this.toNumber(payment.amount) },
+      });
+    } else if (status === PaymentStatus.captured) {
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: { status: 'completed', completedAt },
+      });
+    } else {
+      throw new UnprocessableEntityException(
+        `Payment must be held or captured before checkout (current: "${payment.paymentStatus}")`,
+      );
+    }
+
+    this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, {
+      bookingId,
+      eventType: BOOKING_EVENTS.COMPLETED,
+      patientId: booking.patientId,
+      caregiverId: caregiverUserId,
+    });
+    this.scheduleReviewPrompt(bookingId);
+  }
+
   // ── private helpers ─────────────────────────────────────────────────────
 
   /**
@@ -195,9 +280,9 @@ export class CompleteBookingService {
   private async captureCardPayment(
     bookingId: string,
     payment: { id: string; omiseChargeId: string | null; amount: DecimalLike },
-    user: AuthUser,
+    actorId: string,
     completedAt: Date,
-    isPatient: boolean,
+    completedBy: 'patient' | 'caregiver',
   ): Promise<{
     chargeId: string;
     updatedBooking: { id: string; status: string; completedAt: Date | null };
@@ -237,12 +322,12 @@ export class CompleteBookingService {
               payment.id,
               PaymentStatus.captured,
               {
-                changedBy: user.id,
+                changedBy: actorId,
                 reason: 'งานเสร็จสมบูรณ์ — capture เงินจากวงเงินที่กันไว้',
                 metadata: {
                   omiseChargeId: chargeId,
                   capturedAt: completedAt.toISOString(),
-                  completedBy: isPatient ? 'patient' : 'caregiver',
+                  completedBy,
                 },
               },
               tx,
@@ -267,7 +352,7 @@ export class CompleteBookingService {
     } catch (err) {
       // เฉพาะ Omise capture ที่พังจริง → บันทึก audit (lock ถูกปลดจาก rollback แล้ว)
       if (err instanceof CaptureFailedError) {
-        await this.handleCaptureFailure(payment.id, user, err);
+        await this.handleCaptureFailure(payment.id, actorId, err);
       }
       throw err;
     }
@@ -281,7 +366,7 @@ export class CompleteBookingService {
    */
   private async handleCaptureFailure(
     paymentId: string,
-    user: AuthUser,
+    actorId: string,
     err: unknown,
   ): Promise<void> {
     const details = err instanceof CaptureFailedError ? err.details : {};
@@ -297,7 +382,7 @@ export class CompleteBookingService {
         },
       });
       await this.fsm.recordCaptureFailure(paymentId, PaymentStatus.held, {
-        changedBy: user.id,
+        changedBy: actorId,
         reason: 'Omise capture failed',
         metadata: { ...details, error: message },
       });
@@ -313,7 +398,7 @@ export class CompleteBookingService {
       JSON.stringify({
         alert: 'payment.capture_failed',
         paymentId,
-        triggeredBy: user.id,
+        triggeredBy: actorId,
         ...details,
         message,
       }),

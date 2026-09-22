@@ -80,12 +80,18 @@ describe('FamilyGroupService', () => {
       updateMany: jest.Mock;
       findFirst: jest.Mock;
       findUnique: jest.Mock;
+      findMany: jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
   };
   let prisma: typeof tx & {
     $transaction: jest.Mock;
-    careRecipient: { create: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+    careRecipient: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
   };
 
   beforeEach(async () => {
@@ -102,6 +108,7 @@ describe('FamilyGroupService', () => {
         updateMany: jest.fn(),
         findFirst: jest.fn(),
         findUnique: jest.fn(),
+        findMany: jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
     };
@@ -110,6 +117,7 @@ describe('FamilyGroupService', () => {
       careRecipient: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        findMany: jest.fn(),
         update: jest.fn(),
       },
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
@@ -596,6 +604,57 @@ describe('FamilyGroupService', () => {
   });
 
   // ═══ PYG-385 · จัดการโปรไฟล์ผู้รับบริการในกลุ่ม ═════════════════════════
+  describe('groupCareRecipients', () => {
+    it('คืนโปรไฟล์ส่วนตัวพร้อมรายละเอียดของสมาชิก ACTIVE ในกลุ่ม', async () => {
+      tx.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER_ID },
+        { userId: MEMBER_ID },
+      ]);
+      prisma.careRecipient.findMany.mockResolvedValue([
+        {
+          id: 'r-personal',
+          name: 'คุณยายสมศรี',
+          nickname: 'ยายศรี',
+          patientId: MEMBER_ID,
+          self_reported: true,
+          date_of_birth: new Date(Date.UTC(new Date().getUTCFullYear() - 72, 0, 1)),
+          gender: 'female',
+          weight_kg: 55,
+          height_cm: 155,
+          mobility_level: 'assisted',
+          medical_conditions: ['เบาหวาน'],
+          current_medications: 'ยาลดน้ำตาล',
+          allergies: null,
+          blood_type: 'O',
+          care_notes: 'ช่วยพยุงเดิน',
+          preferred_hospital: 'ศิริราช',
+        },
+      ]);
+
+      const result = await service.groupCareRecipients(GROUP_ID);
+
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            patientId: { in: [OWNER_ID, MEMBER_ID] },
+            is_deleted: false,
+            OR: [{ familyGroupId: null }, { familyGroupId: GROUP_ID }],
+          },
+        }),
+      );
+      expect(result[0]).toMatchObject({
+        id: 'r-personal',
+        ownerUserId: MEMBER_ID,
+        details: {
+          age: 72,
+          gender: 'หญิง',
+          conditions: ['เบาหวาน'],
+          careInstructions: 'ช่วยพยุงเดิน',
+        },
+      });
+    });
+  });
+
   describe('addGroupCareRecipient', () => {
     it('สร้างโปรไฟล์ patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ และ trim ชื่อ', async () => {
       prisma.careRecipient.create.mockResolvedValue({

@@ -25,6 +25,7 @@ import { SupabaseService } from '../common/supabase.service';
 import { ClockService } from '../common/clock.service';
 import { BOOKING_STATUS, REVIEW_REASON, VERDICT } from './monitoring.constants';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
+import { CompleteBookingService } from '../payment/complete-booking.service';
 
 const USER_ID = 'user-cg-0001';
 const PATIENT_ID = 'user-pt-0001';
@@ -119,6 +120,7 @@ describe('MonitoringService', () => {
     $transaction: jest.Mock;
   };
   let eventEmitter: { emit: jest.Mock };
+  let completeBookingService: { finalizeCheckedOutBooking: jest.Mock };
   /** PYG-470: storage ของ admin client — sign รูปหลักฐานใน proofOfWork */
   let createSignedUrl: jest.Mock;
   let storageFrom: jest.Mock;
@@ -143,6 +145,9 @@ describe('MonitoringService', () => {
       $transaction: jest.fn().mockResolvedValue([fakeEventRow(), {}]),
     };
     eventEmitter = { emit: jest.fn() };
+    completeBookingService = {
+      finalizeCheckedOutBooking: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -166,6 +171,7 @@ describe('MonitoringService', () => {
           useValue: { get: () => SUPABASE_URL },
         },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: CompleteBookingService, useValue: completeBookingService },
         {
           provide: ClockService,
           useValue: { now: () => NOW, nowMs: () => NOW.getTime() },
@@ -627,7 +633,7 @@ describe('MonitoringService', () => {
       ).rejects.toThrow(new ForbiddenException('งานนี้ไม่ใช่ของคุณ'));
     });
 
-    it('ทำงานครบเวลา (170 จาก 180 นาที) → ไม่มีธง + awaiting_release', async () => {
+    it('ทำงานครบเวลา (170 จาก 180 นาที) → ไม่มีธง + completed', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         fakeBooking({ status: 'in_progress', jobEvents: [checkInRow(170)] }),
       );
@@ -639,12 +645,16 @@ describe('MonitoringService', () => {
       });
 
       expect(createArgData(prisma.booking.update)).toMatchObject({
-        status: BOOKING_STATUS.AWAITING_RELEASE,
         reviewReasons: { set: [] },
       });
+      expect(completeBookingService.finalizeCheckedOutBooking).toHaveBeenCalledWith(
+        USER_ID,
+        BOOKING_ID,
+        NOW,
+      );
     });
 
-    it('ทำงาน 70% ของเวลาที่จอง → short_duration + needs_review', async () => {
+    it('ทำงาน 70% ของเวลาที่จอง → completed พร้อมธง short_duration', async () => {
       // จอง 180 นาที ทำจริง 126 นาที = 70% ซึ่งต่ำกว่าเกณฑ์ 80%
       prisma.booking.findUnique.mockResolvedValue(
         fakeBooking({ status: 'in_progress', jobEvents: [checkInRow(126)] }),
@@ -657,9 +667,13 @@ describe('MonitoringService', () => {
       });
 
       expect(createArgData(prisma.booking.update)).toMatchObject({
-        status: BOOKING_STATUS.NEEDS_REVIEW,
         reviewReasons: { set: [REVIEW_REASON.SHORT_DURATION] },
       });
+      expect(completeBookingService.finalizeCheckedOutBooking).toHaveBeenCalledWith(
+        USER_ID,
+        BOOKING_ID,
+        NOW,
+      );
     });
 
     it('★ ระยะเวลาคำนวณจาก server_ts เท่านั้น — device_ts ที่โกหกไม่มีผล', async () => {
@@ -699,13 +713,17 @@ describe('MonitoringService', () => {
       expect(data.reviewReasons).toEqual({
         set: [REVIEW_REASON.OUT_OF_WINDOW],
       });
-      expect(data.status).toBe(BOOKING_STATUS.NEEDS_REVIEW);
+      expect(completeBookingService.finalizeCheckedOutBooking).toHaveBeenCalledWith(
+        USER_ID,
+        BOOKING_ID,
+        NOW,
+      );
     });
 
     it('ปิดงานซ้ำ → คืนแถวเดิม ไม่เขียนอะไรเพิ่ม', async () => {
       prisma.booking.findUnique.mockResolvedValue(
         fakeBooking({
-          status: 'awaiting_release',
+          status: 'completed',
           jobEvents: [
             checkInRow(170),
             fakeEventRow({ id: 'evt-out', eventType: 'check_out' }),
