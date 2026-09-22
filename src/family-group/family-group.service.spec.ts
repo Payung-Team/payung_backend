@@ -15,6 +15,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
+import { ConsentService } from '../consent/consent.service';
 import {
   ACTIVITY_ACTION,
   GROUP_ROLE,
@@ -127,6 +128,11 @@ describe('FamilyGroupService', () => {
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: { withdrawnUserIds: jest.fn().mockResolvedValue(new Set()) },
+        },
       ],
     }).compile();
 
@@ -820,14 +826,14 @@ describe('FamilyGroupService', () => {
     });
 
     it('คืนสมาชิก ACTIVE ครบทุกคนรวมเจ้าของ', async () => {
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
 
       expect(result).toHaveLength(2);
       expect(result.map((r) => r.memberUserId)).toEqual([OWNER, MEMBER]);
     });
 
     it('ดึงเฉพาะสมาชิกสถานะ ACTIVE — คนที่ออกจากกลุ่มไม่โผล่', async () => {
-      await service.groupBookingRecipients(GROUP);
+      await service.groupBookingRecipients(GROUP, OWNER);
 
       const query = prisma.familyGroupMember.findMany.mock.calls[0][0] as {
         where: Record<string, unknown>;
@@ -836,7 +842,7 @@ describe('FamilyGroupService', () => {
     });
 
     it('ชื่อมาจากบัญชี และล็อกเสมอ', async () => {
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
 
       expect(result[0].name).toBe('สมชาย ใจดี');
       // ★ FE อ่านค่านี้แล้วตั้งช่องเป็น read-only โดยไม่ต้อง hardcode กติกาฝั่งตัวเอง
@@ -848,7 +854,7 @@ describe('FamilyGroupService', () => {
         { userId: OWNER, user: { firstName: null, lastName: null, displayName: 'somchai' } },
       ]);
 
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
       expect(result[0].name).toBe('somchai');
     });
 
@@ -858,7 +864,7 @@ describe('FamilyGroupService', () => {
         { userId: MEMBER, user: { firstName: 'สมศรี', lastName: 'ใจงาม', displayName: null } },
       ]);
 
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
 
       // ★ ปฏิเสธตอน "กดจองจริง" (MEMBER_NAME_MISSING ของ PYG-516) ไม่ใช่ตอนโหลดลิสต์
       expect(result).toHaveLength(2);
@@ -870,7 +876,7 @@ describe('FamilyGroupService', () => {
     it('มีโปรไฟล์ในกลุ่ม → hasProfile = true และ details ตรงกับโปรไฟล์', async () => {
       prisma.careRecipient.findMany.mockResolvedValue([profileRow()]);
 
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
       const member = result.find((r) => r.memberUserId === MEMBER)!;
 
       expect(member.hasProfile).toBe(true);
@@ -887,7 +893,7 @@ describe('FamilyGroupService', () => {
     });
 
     it('ยังไม่มีโปรไฟล์ในกลุ่ม → hasProfile = false, details = undefined', async () => {
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
 
       // ★ ยังต้องอยู่ในลิสต์ FE จะได้มีปุ่มให้กด ไม่ใช่หายไปเงียบ ๆ
       expect(result[0].hasProfile).toBe(false);
@@ -900,13 +906,13 @@ describe('FamilyGroupService', () => {
         profileRow({ nickname: 'เก่า', updated_at: new Date('2026-01-01') }),
       ]);
 
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
       expect(result.find((r) => r.memberUserId === MEMBER)!.nickname).toBe('ใหม่');
     });
 
     // ── ★ หัวใจของการ์ด: ข้อมูลส่วนตัวห้ามหลุด ─────────────────────────────
     it('★ ไม่ดึงโปรไฟล์ส่วนตัวของสมาชิก — query ต้องผูกกับ familyGroupId ของกลุ่มนี้', async () => {
-      await service.groupBookingRecipients(GROUP);
+      await service.groupBookingRecipients(GROUP, OWNER);
 
       const query = prisma.careRecipient.findMany.mock.calls[0][0] as {
         where: Record<string, unknown>;
@@ -926,7 +932,7 @@ describe('FamilyGroupService', () => {
     it('กลุ่มที่ไม่มีสมาชิก ACTIVE → array ว่าง ไม่ query โปรไฟล์ต่อ', async () => {
       prisma.familyGroupMember.findMany.mockResolvedValue([]);
 
-      const result = await service.groupBookingRecipients(GROUP);
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
 
       expect(result).toEqual([]);
       expect(prisma.careRecipient.findMany).not.toHaveBeenCalled();

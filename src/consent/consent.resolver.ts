@@ -5,30 +5,24 @@
  *   ถ้าบังคับ login ผู้ใช้จะต้องสร้างบัญชีก่อนถึงจะได้อ่านว่าเรากำลังจะเก็บอะไรของเขา
  *   ซึ่งกลับหัวกลับหางกับหลักการของ PDPA — และเนื้อหาไม่ใช่ความลับอยู่แล้ว
  *
- * ★ `myConsents` ต้อง login — เป็นข้อมูลส่วนตัวของผู้ใช้แต่ละคน
- *   และอ่านได้เฉพาะของตัวเองเท่านั้น (ใช้ id จาก token ไม่รับ userId จาก client)
+ * ★ `myConsents` / `withdrawConsent` / `grantConsent` ต้อง login — เป็นข้อมูลส่วนตัวของแต่ละคน
+ *   และทำได้เฉพาะของตัวเองเท่านั้น (ใช้ id + role จาก token ไม่รับ userId จาก client)
+ *   ★ ไม่มีทางให้ใคร "ถอนแทน" คนอื่นได้ — ความยินยอมเป็นของเจ้าของข้อมูลเท่านั้น
  */
 import { UseGuards } from '@nestjs/common';
 import { Args, Context, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { ConsentPolicyService } from './consent-policy.service';
-import {
-  type LatestConsentRecord,
-  ConsentService,
-} from './consent.service';
+import { ConsentService, type MyConsentStatus } from './consent.service';
 import { ConsentPolicy } from './entities/consent-policy.entity';
 import { ConsentStatus } from './entities/consent-status.entity';
-import {
-  CONSENT_SOURCE,
-  type ConsentSource,
-  POLICY_VERSION,
-} from './consent.constants';
+import { CONSENT_SOURCE, type ConsentSource } from './consent.constants';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
-import { requestEvidenceOf } from '../common/utils/request-evidence';
-import type { GqlContext } from '../common/types/gql-context.type';
 import {
   AuthUser,
   CurrentUser,
 } from '../common/decorators/current-user.decorator';
+import type { GqlContext } from '../common/types/gql-context.type';
+import { requestEvidenceOf } from '../common/utils/request-evidence';
 
 const SOURCES = Object.values(CONSENT_SOURCE);
 
@@ -48,7 +42,10 @@ export class ConsentResolver {
       'family_group / settings) · ไม่ส่ง = ได้ทุกข้อ',
   })
   consentPolicy(
-    @Args('source', { nullable: true, description: 'จุดในแอปที่กำลังขอความยินยอม' })
+    @Args('source', {
+      nullable: true,
+      description: 'จุดในแอปที่กำลังขอความยินยอม',
+    })
     source?: string,
   ): ConsentPolicy {
     // ค่าที่ไม่รู้จัก → ถือว่าไม่ได้ระบุ แล้วคืนทุกข้อ
@@ -61,86 +58,105 @@ export class ConsentResolver {
   }
 
   /**
-   * myConsents — ความยินยอมล่าสุดของผู้ใช้ที่ login อยู่ ข้อละหนึ่งรายการ (PYG-474)
+   * myConsents — สถานะความยินยอมของผู้ใช้ที่ login อยู่ (PYG-474 · PYG-540)
    *
    * ```graphql
-   * query { myConsents { type granted policyVersion answeredAt source isCurrentVersion } }
+   * query { myConsents { type granted answered policyVersion answeredAt source
+   *                      isCurrentVersion required withdrawable } }
    * ```
-   * คืนเฉพาะข้อที่เคยตอบ · ข้อความของแต่ละข้อให้จับคู่กับ `consentPolicy.items[].type`
+   * PYG-540: คืน "ทุกข้อที่เกี่ยวกับ role" รวมข้อที่ยังไม่เคยตอบ (answered = false)
+   * ข้อความของแต่ละข้อให้จับคู่กับ `consentPolicy.items[].type`
    */
   @Query(() => [ConsentStatus], {
     name: 'myConsents',
     description:
-      'ความยินยอมล่าสุดของผู้ใช้ที่ login อยู่ ข้อละหนึ่งรายการ (เฉพาะข้อที่เคยตอบ) · ' +
+      'สถานะความยินยอมของผู้ใช้ที่ login อยู่ ทุกข้อที่เกี่ยวกับ role (รวมข้อที่ยังไม่เคยตอบ) · ' +
       'จับคู่ข้อความกับ consentPolicy.items[].type',
   })
   @UseGuards(SupabaseAuthGuard)
   async myConsents(@CurrentUser() user: AuthUser): Promise<ConsentStatus[]> {
-    const latest = await this.consentService.findLatestByUser(user.id);
-    return latest.map(toStatus);
+    const statuses = await this.consentService.getMyConsents(
+      user.id,
+      user.role,
+    );
+    return statuses.map(toGraphql);
   }
 
   /**
-   * grantConsent / withdrawConsent — จัดการความยินยอมทีละข้อจากหน้าตั้งค่า (PYG-540)
+   * withdrawConsent — ถอนความยินยอม (PYG-540)
    *
-   * ★ ประกาศความเป็นส่วนตัวของเราบอกผู้ใช้ว่า "ถอนความยินยอมได้ทุกเมื่อ" (PYG-472)
-   *   สองเมธอดนี้คือทางที่ทำให้คำสัญญานั้นเป็นจริง ไม่ใช่แค่ข้อความในเอกสาร
-   *
-   * ★ การถอน **มีผลไปข้างหน้า** ไม่ลบข้อมูลที่เก็บไปแล้ว และไม่กระทบงานที่รับไปแล้ว
-   *   (ตรงกับที่เขียนไว้ในประกาศ) · การขอ "ลบ" ข้อมูลเป็นสิทธิ์คนละข้อ ยังไม่มีในระบบ
+   * เขียนแถวใหม่ granted = false · source = 'settings' · IP + user agent จาก request
+   * ถอนข้อที่ไม่เคยให้ = ผ่าน (idempotent) · ถอนข้อกำหนด/ประกาศความเป็นส่วนตัว = CONSENT_NOT_WITHDRAWABLE
+   * มีผลไปข้างหน้าเท่านั้น ไม่ลบข้อมูลย้อนหลัง
    */
   @Mutation(() => ConsentStatus, {
+    name: 'withdrawConsent',
     description:
-      'ให้ความยินยอมข้อหนึ่ง — policyVersion ต้องเป็นค่าจาก consentPolicy.version ' +
-      'ไม่งั้นได้ CONSENT_POLICY_VERSION_MISMATCH',
-  })
-  @UseGuards(SupabaseAuthGuard)
-  async grantConsent(
-    @CurrentUser() user: AuthUser,
-    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' }) type: string,
-    @Args('policyVersion', { description: 'ค่าจาก consentPolicy.version' })
-    policyVersion: string,
-    @Context() ctx: GqlContext,
-  ): Promise<ConsentStatus> {
-    const record = await this.consentService.setConsent(
-      user.id,
-      type,
-      true,
-      { source: CONSENT_SOURCE.SETTINGS, ...requestEvidenceOf(ctx.req) },
-      policyVersion,
-    );
-    return toStatus(record);
-  }
-
-  @Mutation(() => ConsentStatus, {
-    description:
-      'ถอนความยินยอมข้อหนึ่ง · ถอนข้อที่ไม่เคยให้ความยินยอมก็ทำได้ (idempotent) · ' +
-      'มีผลไปข้างหน้า ไม่ลบข้อมูลที่เก็บไปแล้ว',
+      'ถอนความยินยอมหนึ่งข้อ — มีผลทันที (จองใหม่ไม่ได้ / กลุ่มไม่เห็นข้อมูล / หยุดอีเมลข่าวสาร ' +
+      'ตามข้อที่ถอน) · ไม่ลบข้อมูลย้อนหลัง',
   })
   @UseGuards(SupabaseAuthGuard)
   async withdrawConsent(
     @CurrentUser() user: AuthUser,
-    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' }) type: string,
+    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' })
+    type: string,
     @Context() ctx: GqlContext,
   ): Promise<ConsentStatus> {
-    // ★ ไม่ต้องส่ง policyVersion — การถอนไม่ได้ขึ้นกับว่าอ่านฉบับไหนมา
-    //   ถ้าบังคับส่ง ผู้ใช้ที่ยินยอมไว้กับฉบับเก่าจะถอนไม่ได้ ซึ่งกลับหัวกลับหาง
-    const record = await this.consentService.setConsent(user.id, type, false, {
-      source: CONSENT_SOURCE.SETTINGS,
-      ...requestEvidenceOf(ctx.req),
-    });
-    return toStatus(record);
+    const status = await this.consentService.withdraw(
+      user.id,
+      user.role,
+      type,
+      requestEvidenceOf(ctx.req),
+    );
+    return toGraphql(status);
+  }
+
+  /**
+   * grantConsent — ให้ความยินยอม (กลับ) หนึ่งข้อ (PYG-540)
+   *
+   * ใช้กับข้อที่เคยปฏิเสธ/ถอน (เช่น marketing) และ re-consent เมื่อนโยบายขึ้นเวอร์ชัน
+   * policyVersion ต้องมาจาก consentPolicy.version — ไม่ตรง = CONSENT_POLICY_VERSION_MISMATCH
+   */
+  @Mutation(() => ConsentStatus, {
+    name: 'grantConsent',
+    description:
+      'ให้ความยินยอมหนึ่งข้อ (รวมถึงให้กลับหลังถอน / re-consent) · ' +
+      'policyVersion ต้องมาจาก consentPolicy.version',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async grantConsent(
+    @CurrentUser() user: AuthUser,
+    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' })
+    type: string,
+    @Args('policyVersion', {
+      description:
+        'เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด (จาก consentPolicy.version)',
+    })
+    policyVersion: string,
+    @Context() ctx: GqlContext,
+  ): Promise<ConsentStatus> {
+    const status = await this.consentService.grant(
+      user.id,
+      user.role,
+      type,
+      policyVersion,
+      requestEvidenceOf(ctx.req),
+    );
+    return toGraphql(status);
   }
 }
 
-/** LatestConsentRecord → ConsentStatus ของ GraphQL */
-function toStatus(record: LatestConsentRecord): ConsentStatus {
+/** null → undefined ให้ตรงกับ field แบบ nullable ของ code-first */
+function toGraphql(status: MyConsentStatus): ConsentStatus {
   return {
-    type: record.type,
-    granted: record.granted,
-    policyVersion: record.policyVersion,
-    answeredAt: record.answeredAt,
-    source: record.source ?? undefined,
-    isCurrentVersion: record.policyVersion === POLICY_VERSION,
+    type: status.type,
+    granted: status.granted,
+    answered: status.answered,
+    policyVersion: status.policyVersion ?? undefined,
+    answeredAt: status.answeredAt ?? undefined,
+    source: status.source ?? undefined,
+    isCurrentVersion: status.isCurrentVersion,
+    required: status.required,
+    withdrawable: status.withdrawable,
   };
 }

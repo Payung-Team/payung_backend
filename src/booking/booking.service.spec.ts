@@ -8,6 +8,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+import { ConsentService } from '../consent/consent.service';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import {
   SettlementBlockedError,
@@ -109,6 +110,14 @@ describe('BookingService', () => {
         // PYG-434: createBooking สร้างใบ QR ด้วย — ไฟล์นี้ไม่ได้เทส createBooking
         // แต่ต้อง provide ให้ DI ผ่าน (มีเทสของตัวเองที่ job-qr.service.spec.ts)
         { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
+        // PYG-540: ด่านความยินยอมก่อนจอง — ค่าเริ่มต้น = ไม่มีใครถอน (เทสด่านอยู่ที่ booking-consent-gate.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: {
+            findWithdrawnType: jest.fn().mockResolvedValue(null),
+            withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+          },
+        },
       ],
     }).compile();
 

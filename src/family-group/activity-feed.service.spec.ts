@@ -16,6 +16,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
+import { ConsentService } from '../consent/consent.service';
 import {
   ACTIVITY_ACTION,
   ACTIVITY_PAGE_SIZE_DEFAULT,
@@ -25,6 +26,7 @@ import {
 import { FG_ERROR } from './family-group.errors';
 
 const GROUP_ID = '11111111-1111-1111-1111-111111111111';
+const VIEWER_ID = 'user-viewer-1'; // PYG-540: ผู้อ่านฟีด
 const ACTOR_ID = 'u-owner';
 
 /** เวลาเดียวกันเป๊ะสองแถว = กิจกรรมที่เกิดใน transaction เดียวกัน (เคสที่ id ต้องมาตัดสิน) */
@@ -71,6 +73,11 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: { withdrawnUserIds: jest.fn().mockResolvedValue(new Set()) },
+        },
       ],
     }).compile();
 
@@ -82,7 +89,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
     it('คืน actor / action / targetType / metadata / เวลา ครบตามที่ FE ต้องใช้', async () => {
       prisma.familyGroupActivity.findMany.mockResolvedValue([activityRow()]);
 
-      const result = await service.familyGroupActivity(GROUP_ID);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
 
       expect(result.nodes).toHaveLength(1);
       expect(result.nodes[0]).toMatchObject({
@@ -109,7 +116,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
         activityRow({ actorId: null, actor: null }),
       ]);
 
-      const result = await service.familyGroupActivity(GROUP_ID);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
 
       expect(result.nodes).toHaveLength(1);
       expect(result.nodes[0].actor).toBeUndefined();
@@ -118,7 +125,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
     it('กลุ่มที่ยังไม่มีกิจกรรม → nodes ว่าง + endCursor undefined ไม่ใช่ error', async () => {
       prisma.familyGroupActivity.findMany.mockResolvedValue([]);
 
-      const result = await service.familyGroupActivity(GROUP_ID);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
 
       expect(result.nodes).toEqual([]);
       expect(result.pageInfo.endCursor).toBeUndefined();
@@ -129,7 +136,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
   // ═══ 2. การเรียงลำดับและ take ═══════════════════════════════════════
   describe('คิวรี่ที่ส่งให้ดีบี', () => {
     it('เรียง created_at DESC แล้วต่อด้วย id DESC (ตรงกับ index)', async () => {
-      await service.familyGroupActivity(GROUP_ID);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
 
       expect(findManyArgs(prisma.familyGroupActivity.findMany).orderBy).toEqual(
         [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -137,13 +144,13 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
     });
 
     it('ขอเกินมา 1 แถวเสมอ เพื่อรู้ว่ายังมีหน้าถัดไปไหมโดยไม่ต้อง COUNT(*)', async () => {
-      await service.familyGroupActivity(GROUP_ID, 5);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 5);
 
       expect(findManyArgs(prisma.familyGroupActivity.findMany).take).toBe(6);
     });
 
     it('กรองเฉพาะกลุ่มที่ขอ และไม่มีเงื่อนไข keyset เมื่อไม่ได้ส่ง after', async () => {
-      await service.familyGroupActivity(GROUP_ID);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
 
       const { where } = findManyArgs(prisma.familyGroupActivity.findMany);
       expect(where).toEqual({ groupId: GROUP_ID });
@@ -159,7 +166,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
       ['ส่งค่าติดลบ', -5],
       ['ส่งทศนิยม', 2.5],
     ])('%s → ใช้ค่าเริ่มต้น %i', async (_label, first) => {
-      await service.familyGroupActivity(GROUP_ID, first as number | null);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID, first as number | null);
 
       expect(findManyArgs(prisma.familyGroupActivity.findMany).take).toBe(
         ACTIVITY_PAGE_SIZE_DEFAULT + 1,
@@ -167,7 +174,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
     });
 
     it('ขอเกินเพดาน → ถูกหั่นลงเหลือเพดาน ไม่ใช่ error', async () => {
-      await service.familyGroupActivity(GROUP_ID, 500);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 500);
 
       expect(findManyArgs(prisma.familyGroupActivity.findMany).take).toBe(
         ACTIVITY_PAGE_SIZE_MAX + 1,
@@ -185,7 +192,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
         activityRow({ id: 'a-0001' }),
       ]);
 
-      const result = await service.familyGroupActivity(GROUP_ID, 2);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 2);
 
       expect(result.nodes.map((n) => n.id)).toEqual(['a-0003', 'a-0002']);
       expect(result.pageInfo.hasNextPage).toBe(true);
@@ -197,7 +204,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
         activityRow({ id: 'a-0002' }),
       ]);
 
-      const result = await service.familyGroupActivity(GROUP_ID, 2);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 2);
 
       expect(result.nodes).toHaveLength(2);
       expect(result.pageInfo.hasNextPage).toBe(false);
@@ -209,7 +216,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
         activityRow({ id: 'a-0002' }),
       ]);
 
-      const result = await service.familyGroupActivity(GROUP_ID, 2);
+      const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 2);
 
       expect(result.pageInfo.endCursor).toBe(result.nodes[1].cursor);
       expect(decodeCursor(result.pageInfo.endCursor as string)).toBe(
@@ -230,9 +237,9 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
         activityRow({ id: 'a-0002' }),
         activityRow({ id: 'a-0001' }),
       ]);
-      const page1 = await service.familyGroupActivity(GROUP_ID, 2);
+      const page1 = await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 2);
 
-      await service.familyGroupActivity(GROUP_ID, 2, page1.pageInfo.endCursor);
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 2, page1.pageInfo.endCursor);
 
       const { where } = findManyArgs(prisma.familyGroupActivity.findMany, 1);
       expect(where).toEqual({
@@ -265,7 +272,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
       ],
     ])('%s → ACTIVITY_CURSOR_INVALID', async (_label, cursor) => {
       await expect(
-        service.familyGroupActivity(GROUP_ID, 10, cursor),
+        service.familyGroupActivity(GROUP_ID, VIEWER_ID, 10, cursor),
       ).rejects.toMatchObject({
         extensions: { code: FG_ERROR.ACTIVITY_CURSOR_INVALID },
       });
@@ -275,7 +282,7 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
     });
 
     it('after เป็นค่าว่าง = "ไม่ได้ส่งมา" ไม่ใช่ cursor พัง', async () => {
-      await service.familyGroupActivity(GROUP_ID, 10, '');
+      await service.familyGroupActivity(GROUP_ID, VIEWER_ID, 10, '');
 
       expect(findManyArgs(prisma.familyGroupActivity.findMany).where).toEqual({
         groupId: GROUP_ID,

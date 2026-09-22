@@ -252,11 +252,18 @@ export class FamilyGroupResolver {
   @GroupRole(GROUP_ROLE.MEMBER)
   async familyGroupActivity(
     @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
     @Args('first', { type: () => Int, nullable: true }) first?: number,
     @Args('after', { type: () => String, nullable: true }) after?: string,
   ): Promise<FamilyGroupActivityConnection> {
-    // ไม่ส่ง user.id เข้า service เพราะฟีดไม่มีฟิลด์ไหนที่ขึ้นกับ "ผู้อ่านเป็นใคร"
-    // (ต่างจาก familyGroup ที่ต้องคำนวณ myRole/isMe) — สมาชิกทุกคนเห็นฟีดชุดเดียวกัน
-    return this.familyGroupService.familyGroupActivity(groupId, first, after);
+    // PYG-540: ส่ง user.id เข้า service แล้ว — ฟีดเคยเหมือนกันทุกคน แต่ตอนนี้แถว "จองแทน"
+    // ของเจ้าของข้อมูลที่ถอนความยินยอมเปิดเผยให้กลุ่ม จะถูกปิดรายละเอียด
+    // ยกเว้นเจ้าของเองกับคนกดจอง → ผลลัพธ์จึงขึ้นกับว่า "ใครเป็นคนอ่าน"
+    return this.familyGroupService.familyGroupActivity(
+      groupId,
+      user.id,
+      first,
+      after,
+    );
   }
 }

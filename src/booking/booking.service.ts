@@ -52,6 +52,17 @@ import {
 } from '../common/utils/account-name';
 // PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+// PYG-540: ถอนความยินยอมแล้วต้องจองใหม่ไม่ได้ / กลุ่มไม่เห็นนัดหมายของคนที่ถอน
+import { ConsentService } from '../consent/consent.service';
+import {
+  BOOKING_BLOCKING_CONSENTS,
+  CONSENT_TYPE,
+  ON_BEHALF_BLOCKING_CONSENTS,
+} from '../consent/consent.constants';
+import {
+  consentWithdrawnError,
+  consentWithdrawnHttpError,
+} from '../consent/consent.errors';
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -180,6 +191,8 @@ export class BookingService {
     private readonly settlementService: BookingSettlementService,
     // PYG-434: สร้างใบ QR เช็คอิน/เช็คเอาท์ พร้อมกับ booking ใน transaction เดียวกัน
     private readonly jobQrService: JobQrService,
+    // PYG-540: ด่านความยินยอมก่อนจอง + กรองนัดหมายของกลุ่ม
+    private readonly consentService: ConsentService,
   ) {}
 
   /**
@@ -199,6 +212,22 @@ export class BookingService {
    * caregiverId = null จนกว่า Phase 3 matching engine จะ assign
    */
   async createBooking(patientId: string, dto: CreateBookingDto): Promise<BookingRest> {
+    // PYG-540: จองให้ตัวเอง/คนในความดูแล = เจ้าของข้อมูลคือ patient คนนี้เอง
+    // ★ ตรวจก่อนทุกอย่าง — ถอนไว้แล้วต้องไม่มีอะไรถูกเขียนลง DB เลย
+    // ★ REST ต้องโยน HttpException (มี statusCode) ไม่ใช่ ConsentError — ดู consent.errors.ts
+    const withdrawn = await this.consentService.findWithdrawnType(
+      patientId,
+      BOOKING_BLOCKING_CONSENTS,
+    );
+    if (withdrawn) {
+      this.logger.log({
+        event: 'booking.blocked_consent_withdrawn',
+        patientId,
+        consentType: withdrawn,
+      });
+      throw consentWithdrawnHttpError(withdrawn, true);
+    }
+
     const booking = await this.createBookingRecord(patientId, dto);
     return this.toRestSummary(booking);
   }
@@ -272,6 +301,10 @@ export class BookingService {
       });
       if (!membership) throw new MemberNotFoundError();
 
+      // PYG-540: เจ้าของข้อมูล = สมาชิกคนนี้ · ตรวจหลังยืนยันสมาชิก และก่อนอ่านโปรไฟล์สุขภาพ
+      // (เส้นทางนี้ใช้ได้กับโปรไฟล์ส่วนตัวด้วย — ถอนข้อ family group แล้วต้องไม่ถูกดึงเข้ากลุ่ม)
+      await this.assertOnBehalfConsents(input.memberUserId, bookerId, input.groupId);
+
       const recipient = await this.prisma.careRecipient.findFirst({
         where: {
           id: input.careRecipientId,
@@ -289,6 +322,7 @@ export class BookingService {
       const resolved = await this.resolveGroupPatientProfile(
         input.groupId,
         input.memberUserId,
+        bookerId,
         input.memberDetails,
       );
       recipientId = resolved.id;
@@ -298,6 +332,7 @@ export class BookingService {
       // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
       const recipient = await this.prisma.careRecipient.findUnique({
         where: { id: input.careRecipientId },
+        // PYG-540: patientId = เจ้าของข้อมูล — ใช้ทั้งเช็คสมาชิก ACTIVE (PYG-516) และตรวจความยินยอม
         select: {
           id: true,
           name: true,
@@ -328,6 +363,9 @@ export class BookingService {
       });
       if (!ownerActive) throw new RecipientNotInGroupError();
 
+      // PYG-540: ตรวจ "หลัง" ยืนยันว่าโปรไฟล์อยู่ในกลุ่มและเจ้าของยังเป็นสมาชิกแล้วเท่านั้น
+      // ไม่งั้นคนนอกกลุ่มส่ง id มั่ว ๆ เพื่อแอบดูว่าใครถอนความยินยอมได้
+      await this.assertOnBehalfConsents(recipient.patientId, bookerId, input.groupId);
       recipientId = recipient.id;
       recipientName = recipient.name;
     } else {
@@ -377,6 +415,7 @@ export class BookingService {
   private async resolveGroupPatientProfile(
     groupId: string,
     memberUserId: string,
+    bookerId: string,
     memberDetails?: MemberDetailsInput,
   ): Promise<{ id: string; name: string }> {
     // subject ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้ (guard ตรวจแค่ "ผู้เรียก" ไม่ได้ตรวจ "คนที่ถูกจองให้")
@@ -385,6 +424,11 @@ export class BookingService {
       select: { userId: true },
     });
     if (!membership) throw new MemberNotFoundError();
+
+    // PYG-540: เจ้าของข้อมูลถอนความยินยอมไว้ → หยุดก่อนแตะ care_recipients ทุกอย่าง
+    // (ขั้น ②/③ ข้างล่าง "สร้าง/คัดลอก" ข้อมูลสุขภาพเข้ากลุ่ม ซึ่งคือสิ่งที่เขาถอนไปแล้ว)
+    // ★ อยู่หลังเช็คสมาชิก — คนนอกกลุ่มจะใช้ error นี้แอบดูความยินยอมของใครไม่ได้
+    await this.assertOnBehalfConsents(memberUserId, bookerId, groupId);
 
     // ① โปรไฟล์ในกลุ่มที่มีอยู่แล้ว
     const existing = await this.prisma.careRecipient.findFirst({
@@ -481,6 +525,35 @@ export class BookingService {
     const name = accountDisplayName(account);
     if (!name) throw new MemberNameMissingError();
     return name;
+  }
+
+  /**
+   * PYG-540 — ด่านความยินยอมของ "เจ้าของข้อมูล" ก่อนจองแทนในกลุ่มครอบครัว
+   *
+   * ★ ตรวจเจ้าของข้อมูล (subject) ไม่ใช่คนกดจอง — ความยินยอมเป็นของคนที่ข้อมูลสุขภาพจะถูกใช้
+   *   คนกดจองถอนของตัวเองไว้ก็ไม่เกี่ยวกับการจองให้คนอื่น
+   * ★ ถอนข้อใดข้อหนึ่งใน ON_BEHALF_BLOCKING_CONSENTS → โยน CONSENT_WITHDRAWN
+   *   ยังไม่เคยตอบ = ผ่าน (ดูเหตุผลที่ findWithdrawnType)
+   */
+  private async assertOnBehalfConsents(
+    subjectId: string,
+    bookerId: string,
+    groupId: string,
+  ): Promise<void> {
+    const withdrawn = await this.consentService.findWithdrawnType(
+      subjectId,
+      ON_BEHALF_BLOCKING_CONSENTS,
+    );
+    if (!withdrawn) return;
+
+    this.logger.log({
+      event: 'booking.on_behalf_blocked_consent_withdrawn',
+      groupId,
+      bookerId,
+      subjectId,
+      consentType: withdrawn,
+    });
+    throw consentWithdrawnError(withdrawn, subjectId === bookerId);
   }
 
   /**
@@ -1113,16 +1186,24 @@ export class BookingService {
    * ทำ pagination ให้ FE ในเวอร์ชันนี้.
    *
    * สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่ม" ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว.
+   *
+   * PYG-540: ซ่อนนัดหมายของผู้รับบริการที่ "ถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว"
+   *   ยกเว้นคนที่เกี่ยวข้องโดยตรงยังเห็นเหมือนเดิม:
+   *   - เจ้าของข้อมูลเอง (ข้อมูลของเขา)
+   *   - คนกดจอง (เป็นคู่สัญญา/คนจ่ายเงิน — เห็นใบนี้ในประวัติการจองของตัวเองอยู่แล้ว
+   *     ซ่อนจากหน้ากลุ่มไปก็ไม่ได้ปกป้องอะไรเพิ่ม มีแต่ทำให้งงว่านัดหายไปไหน)
+   *   ไม่ลบนัดหมาย — แค่ไม่แสดงให้สมาชิกคนอื่น ถ้าให้ความยินยอมกลับ นัดก็กลับมาแสดง
    */
   async groupBookings(
     groupId: string,
     viewerUserId: string,
   ): Promise<GroupBookingSummary[]> {
-    const items = await this.prisma.booking.findMany({
+    const rows = await this.prisma.booking.findMany({
       where: { familyGroupId: groupId },
       include: {
         caregiver: { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
+        // PYG-540: patientId ของโปรไฟล์ = เจ้าของข้อมูล ใช้ตรวจความยินยอม
+        careRecipient: { select: { name: true, patientId: true } },
         bookedByUser: { select: { displayName: true } },
         payment: { select: { paymentStatus: true } },
         // เวลาเช็คอินจริงสำหรับการ์ด "กำลังบริการ" — JOB_EVENT_TYPE.CHECK_IN ('check_in')
@@ -1142,6 +1223,22 @@ export class BookingService {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
+    });
+
+    // PYG-540: เจ้าของข้อมูลของแต่ละใบ — ไม่มีโปรไฟล์ (ไม่ควรเกิดกับการจองแทน) ถือว่าคนจองเป็นเจ้าของ
+    const subjectOf = (b: (typeof rows)[number]) => b.careRecipient?.patientId ?? b.patientId;
+    // query เดียวต่อหน้า ไม่ใช่ใบละ query
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      rows.map(subjectOf),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const items = rows.filter((b) => {
+      const subject = subjectOf(b);
+      return (
+        !withdrawn.has(subject) ||
+        subject === viewerUserId ||
+        b.bookedBy === viewerUserId
+      );
     });
 
     return items.map((b) => ({
