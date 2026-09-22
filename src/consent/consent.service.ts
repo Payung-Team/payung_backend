@@ -46,6 +46,9 @@ export interface ConsentEvidence {
 /** client ที่ใช้เขียนได้ทั้ง prisma ปกติและ tx ของผู้เรียก */
 type PrismaWriter = Pick<PrismaService, 'user_consents'> | Prisma.TransactionClient;
 
+/** ชนิดความยินยอมที่ระบบรู้จัก — กันไม่ให้เขียนค่ามั่วลงตารางที่แก้ย้อนหลังไม่ได้ */
+const KNOWN_CONSENT_TYPES: ReadonlySet<string> = new Set(Object.values(CONSENT_TYPE));
+
 @Injectable()
 export class ConsentService {
   private readonly logger = new Logger(ConsentService.name);
@@ -238,5 +241,80 @@ export class ConsentService {
       });
     }
     return [...latestByType.values()];
+  }
+
+  /**
+   * ให้ / ถอนความยินยอมทีละข้อจากหน้าตั้งค่า (PYG-540)
+   *
+   * ★ เขียนแถวใหม่เสมอ ไม่แก้ของเดิม — ตารางเป็นประวัติแบบ append-only (PYG-473)
+   *   "ถอน" ในระบบนี้ = แถวใหม่ที่ granted = false ไม่ใช่การลบหรือแก้แถวเก่า
+   *   ประวัติต้องพิสูจน์ได้ว่าเคยยินยอมจริงและถอนเมื่อไหร่
+   *
+   * ★ ถอนข้อที่ไม่เคยให้ความยินยอม → ผ่านแบบ idempotent ไม่ต้อง error
+   *   ผลลัพธ์ที่ผู้ใช้ต้องการคือ "ไม่ยินยอม" ซึ่งเป็นจริงอยู่แล้ว
+   *   การตอบ error จะทำให้ปุ่มบนหน้าตั้งค่าพังโดยไม่มีเหตุผลที่ผู้ใช้เข้าใจได้
+   *
+   * ★ ตอนให้ความยินยอม (granted = true) ต้องผูกกับเวอร์ชันที่ผู้ใช้เพิ่งอ่าน
+   *   จึงบังคับให้ส่ง policyVersion มาและตรวจว่าตรงกับที่บังคับใช้อยู่
+   *   ส่วนตอนถอนไม่ต้องอ่านอะไรก่อน — บันทึกเป็นเวอร์ชันปัจจุบันเพื่อให้รู้ว่า
+   *   ถอนตอนนโยบายฉบับไหนบังคับใช้อยู่
+   */
+  async setConsent(
+    userId: string,
+    type: string,
+    granted: boolean,
+    evidence: ConsentEvidence,
+    policyVersion?: string,
+  ): Promise<LatestConsentRecord> {
+    if (!KNOWN_CONSENT_TYPES.has(type)) {
+      throw new ConsentError(
+        'ไม่รู้จักความยินยอมประเภทนี้',
+        CONSENT_ERROR.TYPE_INVALID,
+        { consentType: type },
+      );
+    }
+
+    if (granted && policyVersion !== POLICY_VERSION) {
+      throw new ConsentError(
+        'นโยบายความเป็นส่วนตัวมีฉบับใหม่แล้ว กรุณารีเฟรชหน้าเว็บแล้วอ่านอีกครั้ง',
+        CONSENT_ERROR.POLICY_VERSION_MISMATCH,
+        { currentVersion: POLICY_VERSION },
+      );
+    }
+
+    const row = await this.prisma.user_consents.create({
+      data: {
+        user_id: userId,
+        consent_type: type,
+        policy_version: POLICY_VERSION,
+        granted,
+        source: evidence.source,
+        ip_address: evidence.ipAddress ?? null,
+        user_agent: evidence.userAgent ?? null,
+      },
+      select: {
+        consent_type: true,
+        granted: true,
+        policy_version: true,
+        granted_at: true,
+        source: true,
+      },
+    });
+
+    this.logger.log({
+      event: granted ? 'consent.granted' : 'consent.withdrawn',
+      userId,
+      consentType: type,
+      source: evidence.source,
+      policyVersion: POLICY_VERSION,
+    });
+
+    return {
+      type: row.consent_type,
+      granted: row.granted,
+      policyVersion: row.policy_version,
+      answeredAt: row.granted_at,
+      source: row.source,
+    };
   }
 }
