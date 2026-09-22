@@ -14,11 +14,13 @@ import { SupabaseService } from './supabase.service';
 import { PrismaService } from './prisma.service';
 import { ClockService } from './clock.service';
 import { PayoutEncryptionService } from './crypto/payout-encryption.service';
+import { AvatarUrlService } from './avatar-url.service';
 
 @Global()
 @Module({
   // PayoutEncryptionService (PYG-307): AES-GCM ของเลขบัญชีรับเงิน
-  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService],
-  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService],
+  // AvatarUrlService: sign storage path ของรูปโปรไฟล์ (bucket private) ให้ <img> โหลดได้
+  providers: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService, AvatarUrlService],
+  exports: [SupabaseService, PrismaService, ClockService, PayoutEncryptionService, PayoutEncryptionService, AvatarUrlService],
 })
 export class CommonModule {}
