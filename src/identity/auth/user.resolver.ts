@@ -27,13 +27,17 @@ import { NotFoundException } from '@nestjs/common';
 import { User } from './entities/user.entity';
 import { Caregiver } from '../kyc/entities/caregiver.entity';
 import { CaregiverService } from '../kyc/caregiver.service';
+import { UserService } from './user.service';
 
 // role IDs (ตรงกับ users.role: 1=patient, 2=caregiver, 3=admin)
 const ROLE_CAREGIVER = 2;
 
 @Resolver(() => User)
 export class UserResolver {
-  constructor(private readonly caregiverService: CaregiverService) {}
+  constructor(
+    private readonly caregiverService: CaregiverService,
+    private readonly userService: UserService,
+  ) {}
 
   /**
    * Field resolver สำหรับ User.caregiver
@@ -65,5 +69,21 @@ export class UserResolver {
       }
       throw err; // error อื่นๆ ปล่อยขึ้นไป
     }
+  }
+
+  /**
+   * Field resolver สำหรับ User.onboardingCompleted (PYG-498)
+   *
+   * เหตุผลเดียวกับ caregiver ข้างบน — ต้องยิง query ตาราง care_recipients เพิ่ม
+   * ถ้าใส่ใน findById จะมี query พ่วงทุกครั้งที่ระบบอ่าน user ทั้งที่มีแค่หน้า Onboarding
+   * กับตัว redirect หลัง login (PYG-501) ที่ต้องใช้
+   */
+  @ResolveField(() => Boolean, {
+    description:
+      'ผ่านหน้า Onboarding แล้วหรือยัง — role 1 ต้องมีโปรไฟล์ของตัวเองที่กรอกอายุ เพศ ' +
+      'และระดับการช่วยเหลือครบ · role อื่นคืน true เสมอ',
+  })
+  async onboardingCompleted(@Parent() user: User): Promise<boolean> {
+    return this.userService.isOnboardingCompleted(user.id, user.role);
   }
 }

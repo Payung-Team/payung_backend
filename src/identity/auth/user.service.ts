@@ -12,12 +12,17 @@
  */
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { ROLE_ID } from '../../common/constants/roles.constant';
+import { toCareRecipientColumns } from '../../patient/patient-profile.mapper';
 import { User } from './entities/user.entity';
+import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
 
 /** Shape ของ user ที่ Prisma คืนมา → map เป็น GraphQL User entity */
 type PrismaUser = {
@@ -40,10 +45,15 @@ type PrismaUser = {
   emailPreferences: boolean;
   createdAt: Date;
   updatedAt: Date;
+  /** PYG-497 — เก็บตอน Onboarding (บัญชีเก่าที่สมัครก่อนหน้านั้นยังเป็น null) */
+  firstName: string | null;
+  lastName: string | null;
 };
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(private prismaService: PrismaService) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -56,6 +66,9 @@ export class UserService {
       id: user.id,
       email: user.email,
       displayName: user.displayName ?? undefined,
+      // PYG-497/498: ชื่อจริงจาก Onboarding — แยกจาก displayName ที่เป็นแค่ชื่อแสดง
+      firstName: user.firstName ?? undefined,
+      lastName: user.lastName ?? undefined,
       avatarUrl: user.avatarUrl ?? undefined,
       phone: user.phone ?? undefined,
       address: user.address ?? undefined,
@@ -290,5 +303,135 @@ export class UserService {
       where: { id: userId },
       data: { last_login_at: new Date() },
     });
+  }
+
+  // ─── Onboarding ผู้สูงอายุ (PYG-498) ──────────────────────────────────────
+
+  /**
+   * ผู้ใช้คนนี้ผ่าน Onboarding แล้วหรือยัง
+   *
+   * ★ คำนวณจากข้อมูลจริงทุกครั้ง ไม่เก็บเป็น flag แยก
+   *   ถ้าเป็น flag แล้ววันหนึ่งโปรไฟล์ถูกลบหรือถูกแก้จนข้อมูลไม่ครบ flag จะยังเป็น true
+   *   ผู้ใช้จะเข้าหน้าจองแล้วเจอฟอร์มที่เติมข้อมูลไม่ครบโดยไม่มีอะไรบอกว่าเกิดอะไรขึ้น
+   *
+   * ครบ = มีโปรไฟล์ is_self ที่ยังไม่ถูกลบ และมี date_of_birth + gender + mobility_level
+   *   สามช่องนี้คือช่องบังคับของฟอร์ม Onboarding (อายุ / เพศ / ระดับการช่วยเหลือ)
+   *   ส่วนชื่อ-นามสกุลไม่ต้องเช็คซ้ำ เพราะสร้างโปรไฟล์ไม่ได้เลยถ้าไม่มีชื่อ
+   *
+   * role อื่นคืน true เสมอ — ผู้ดูแล/แอดมินไม่ได้เป็นผู้รับบริการ ไม่มีหน้า Onboarding นี้
+   * ถ้าคืน false จะทำให้ FE เด้งผู้ดูแลเข้าหน้าที่เขากรอกไม่ได้แล้ววนไม่จบ
+   */
+  async isOnboardingCompleted(userId: string, role: number): Promise<boolean> {
+    if (role !== ROLE_ID.PATIENT) return true;
+
+    const profile = await this.prismaService.careRecipient.findFirst({
+      where: {
+        patientId: userId,
+        is_self: true,
+        is_deleted: false,
+        date_of_birth: { not: null },
+        gender: { not: null },
+        mobility_level: { not: null },
+      },
+      select: { id: true },
+    });
+
+    return profile !== null;
+  }
+
+  /**
+   * บันทึกข้อมูลที่ผู้สูงอายุกรอกตอน Onboarding (PYG-498)
+   *
+   * ทำสองอย่างใน transaction เดียว — ถ้าครึ่งหลังล้มแล้วครึ่งแรกติด จะได้ users ที่มีชื่อ
+   * แต่ไม่มีโปรไฟล์ ซึ่ง onboardingCompleted ยังเป็น false → ผู้ใช้โดนเด้งกลับมากรอกใหม่
+   * ทั้งที่ชื่อถูกบันทึกไปแล้ว
+   *   ① users.first_name / last_name (+ display_name ถ้ายังเป็นค่าเริ่มต้นจากอีเมล)
+   *   ② care_recipients ใบ is_self — มีอยู่แล้วก็อัปเดต ยังไม่มีก็สร้าง
+   *
+   * เรียกซ้ำได้ (ผู้ใช้กลับมาแก้ข้อมูล) — ไม่สร้างใบ is_self ซ้ำ
+   */
+  async completeOnboarding(
+    userId: string,
+    input: CompleteOnboardingInput,
+  ): Promise<User> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true, displayName: true },
+    });
+    if (!user) throw new NotFoundException(`User with ID "${userId}" not found`);
+
+    // ★ เฉพาะผู้สูงอายุ — role อื่นไม่มีโปรไฟล์ผู้รับบริการของตัวเอง ถ้าปล่อยผ่านจะได้
+    //   ใบ is_self ของผู้ดูแลค้างใน DB ซึ่งไม่มีหน้าจอไหนแสดงและไม่มีใครลบ
+    if (user.role !== ROLE_ID.PATIENT) {
+      throw new ForbiddenException('หน้านี้สำหรับผู้รับบริการเท่านั้น');
+    }
+
+    const firstName = input.firstName.trim();
+    const lastName = input.lastName.trim();
+    // @IsNotEmpty ปล่อยสตริงที่มีแต่ช่องว่างผ่าน (' ' ไม่ empty) → ตรวจหลัง trim อีกชั้น
+    if (!firstName || !lastName) {
+      throw new BadRequestException('กรุณากรอกชื่อและนามสกุล');
+    }
+
+    const nickname = input.nickname?.trim() || null;
+    const fullName = `${firstName} ${lastName}`;
+    const columns = toCareRecipientColumns(input.details);
+
+    await this.prismaService.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          firstName,
+          lastName,
+          // display_name ที่ระบบตั้งให้ตอนสมัคร = prefix ของอีเมล (createUser)
+          // ทับได้เพราะผู้ใช้ไม่เคยตั้งเอง — แต่ถ้าเขาเปลี่ยนเองแล้วต้องเคารพของเขา
+          ...(user.displayName === user.email.split('@')[0]
+            ? { displayName: fullName }
+            : {}),
+        },
+      });
+
+      // ใบ is_self ของตัวเองเสมอเป็นโปรไฟล์ส่วนตัว (familyGroupId = null)
+      // ไม่ใช่โปรไฟล์ในกลุ่ม — โปรไฟล์กลุ่มถูกสร้างตอนจองแทน (PYG-500 ฝั่ง booking)
+      const existing = await tx.careRecipient.findFirst({
+        where: {
+          patientId: userId,
+          is_self: true,
+          familyGroupId: null,
+          is_deleted: false,
+        },
+        select: { id: true },
+        orderBy: { updated_at: 'desc' },
+      });
+
+      if (existing) {
+        await tx.careRecipient.update({
+          where: { id: existing.id },
+          data: { name: fullName, nickname, ...columns },
+        });
+        return;
+      }
+
+      await tx.careRecipient.create({
+        data: {
+          patientId: userId,
+          familyGroupId: null,
+          is_self: true,
+          // ข้อมูลมาจากเจ้าตัวโดยตรง ไม่ใช่คนอื่นกรอกให้
+          self_reported: true,
+          name: fullName,
+          nickname,
+          ...columns,
+        },
+      });
+    });
+
+    this.logger.log({
+      event: 'onboarding.completed',
+      userId,
+      createdProfile: true,
+    });
+
+    return this.findById(userId);
   }
 }
