@@ -774,4 +774,163 @@ describe('FamilyGroupService', () => {
       expect(res).toEqual({ recipientId: 'r1', removed: true });
     });
   });
+
+  // ── PYG-517: shortcut + autofill ตอนจองแทน ──────────────────────────────
+  describe('groupBookingRecipients', () => {
+    const GROUP = 'group-1';
+    const OWNER = 'user-owner';
+    const MEMBER = 'user-member';
+
+    /** แถวโปรไฟล์ที่ select ของเมธอดนี้คืนกลับ */
+    function profileRow(overrides: Record<string, unknown> = {}) {
+      return {
+        patientId: MEMBER,
+        nickname: 'ย่า',
+        address_line: '123 ถนนสุขุมวิท',
+        province: 'เชียงใหม่',
+        district: 'เมืองเชียงใหม่',
+        date_of_birth: new Date('1954-01-01'),
+        gender: 'female',
+        weight_kg: null,
+        height_cm: null,
+        mobility_level: 'assisted',
+        medical_conditions: ['เบาหวาน'],
+        current_medications: 'ยาลดความดัน',
+        allergies: null,
+        blood_type: null,
+        care_notes: null,
+        preferred_hospital: null,
+        updated_at: new Date('2026-09-20'),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        {
+          userId: OWNER,
+          user: { firstName: 'สมชาย', lastName: 'ใจดี', displayName: 'somchai' },
+        },
+        {
+          userId: MEMBER,
+          user: { firstName: 'สมศรี', lastName: 'ใจงาม', displayName: 'somsri' },
+        },
+      ]);
+      prisma.careRecipient.findMany.mockResolvedValue([]);
+    });
+
+    it('คืนสมาชิก ACTIVE ครบทุกคนรวมเจ้าของ', async () => {
+      const result = await service.groupBookingRecipients(GROUP);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.memberUserId)).toEqual([OWNER, MEMBER]);
+    });
+
+    it('ดึงเฉพาะสมาชิกสถานะ ACTIVE — คนที่ออกจากกลุ่มไม่โผล่', async () => {
+      await service.groupBookingRecipients(GROUP);
+
+      const query = prisma.familyGroupMember.findMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(query.where).toMatchObject({ groupId: GROUP, status: 'ACTIVE' });
+    });
+
+    it('ชื่อมาจากบัญชี และล็อกเสมอ', async () => {
+      const result = await service.groupBookingRecipients(GROUP);
+
+      expect(result[0].name).toBe('สมชาย ใจดี');
+      // ★ FE อ่านค่านี้แล้วตั้งช่องเป็น read-only โดยไม่ต้อง hardcode กติกาฝั่งตัวเอง
+      expect(result.every((r) => r.nameLocked)).toBe(true);
+    });
+
+    it('บัญชีมีแต่ display_name → ใช้ display_name', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER, user: { firstName: null, lastName: null, displayName: 'somchai' } },
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP);
+      expect(result[0].name).toBe('somchai');
+    });
+
+    it('★ สมาชิกที่ยังไม่มีชื่อในบัญชี → ชื่อว่าง แต่ลิสต์ทั้งกลุ่มไม่พัง', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER, user: { firstName: null, lastName: null, displayName: null } },
+        { userId: MEMBER, user: { firstName: 'สมศรี', lastName: 'ใจงาม', displayName: null } },
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP);
+
+      // ★ ปฏิเสธตอน "กดจองจริง" (MEMBER_NAME_MISSING ของ PYG-516) ไม่ใช่ตอนโหลดลิสต์
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('');
+      expect(result[1].name).toBe('สมศรี ใจงาม');
+    });
+
+    // ── ข้อมูล autofill ────────────────────────────────────────────────────
+    it('มีโปรไฟล์ในกลุ่ม → hasProfile = true และ details ตรงกับโปรไฟล์', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([profileRow()]);
+
+      const result = await service.groupBookingRecipients(GROUP);
+      const member = result.find((r) => r.memberUserId === MEMBER)!;
+
+      expect(member.hasProfile).toBe(true);
+      expect(member.nickname).toBe('ย่า');
+      expect(member.details).toMatchObject({
+        gender: 'หญิง',
+        supportLevel: 'ช่วยเหลือตัวเองได้เล็กน้อย / ต้องการการช่วยพยุงเดิน',
+        conditions: ['เบาหวาน'],
+        medicines: 'ยาลดความดัน',
+        addressLine: '123 ถนนสุขุมวิท',
+        province: 'เชียงใหม่',
+        district: 'เมืองเชียงใหม่',
+      });
+    });
+
+    it('ยังไม่มีโปรไฟล์ในกลุ่ม → hasProfile = false, details = undefined', async () => {
+      const result = await service.groupBookingRecipients(GROUP);
+
+      // ★ ยังต้องอยู่ในลิสต์ FE จะได้มีปุ่มให้กด ไม่ใช่หายไปเงียบ ๆ
+      expect(result[0].hasProfile).toBe(false);
+      expect(result[0].details).toBeUndefined();
+    });
+
+    it('สมาชิกมีหลายใบในกลุ่ม (ข้อมูลเก่า) → ใช้ใบที่อัปเดตล่าสุด', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        profileRow({ nickname: 'ใหม่', updated_at: new Date('2026-09-21') }),
+        profileRow({ nickname: 'เก่า', updated_at: new Date('2026-01-01') }),
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP);
+      expect(result.find((r) => r.memberUserId === MEMBER)!.nickname).toBe('ใหม่');
+    });
+
+    // ── ★ หัวใจของการ์ด: ข้อมูลส่วนตัวห้ามหลุด ─────────────────────────────
+    it('★ ไม่ดึงโปรไฟล์ส่วนตัวของสมาชิก — query ต้องผูกกับ familyGroupId ของกลุ่มนี้', async () => {
+      await service.groupBookingRecipients(GROUP);
+
+      const query = prisma.careRecipient.findMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+
+      // ★ ถ้าเผลอเป็น OR: [{ familyGroupId: null }, ...] ใบ is_self จาก Onboarding
+      //   จะหลุดให้สมาชิกคนอื่นเห็นทั้งโรคประจำตัว ยา และประวัติแพ้
+      //   = เปิดเผยข้อมูลอ่อนไหวโดยไม่มีความยินยอม (PDPA ม.26)
+      expect(query.where).toMatchObject({
+        familyGroupId: GROUP,
+        is_deleted: false,
+      });
+      expect(JSON.stringify(query.where)).not.toContain('null');
+      expect(query.where).not.toHaveProperty('OR');
+    });
+
+    it('กลุ่มที่ไม่มีสมาชิก ACTIVE → array ว่าง ไม่ query โปรไฟล์ต่อ', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([]);
+
+      const result = await service.groupBookingRecipients(GROUP);
+
+      expect(result).toEqual([]);
+      expect(prisma.careRecipient.findMany).not.toHaveBeenCalled();
+    });
+  });
+
 });

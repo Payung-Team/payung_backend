@@ -70,6 +70,12 @@ import {
   PATIENT_PROFILE_SELECT,
   toPatientProfile,
 } from '../patient/patient-profile.mapper';
+// PYG-517: ชื่อตามบัญชี — ฟังก์ชันเดียวกับที่ PYG-516 ใช้เขียนลงใบจอง
+import {
+  ACCOUNT_NAME_SELECT,
+  accountDisplayName,
+} from '../common/utils/account-name';
+import { GroupBookingRecipient } from './entities/group-booking-recipient.entity';
 
 /**
  * field set มาตรฐานของ "สมาชิก 1 คน" — ใช้ที่เดียวทุกที่ กันลืม join users
@@ -560,6 +566,92 @@ export class FamilyGroupService {
       selfReported: r.self_reported,
       details: toPatientProfile(r),
     }));
+  }
+
+
+  /**
+   * PYG-517 — รายชื่อสมาชิก ACTIVE ทุกคน (รวมเจ้าของกลุ่ม) พร้อมข้อมูลสำหรับ autofill
+   *
+   * ใช้เป็น shortcut ในขั้น "กรอกข้อมูลผู้เข้ารับบริการ" ตอนจองแทน — กดชื่อสมาชิกแล้ว
+   * ฟอร์มเติมให้อัตโนมัติ ส่วนชื่อ-นามสกุลล็อก (PYG-516 ปฏิเสธ patientName ที่ส่งมา)
+   *
+   * ★ มองเป็น "รายชื่อคน" ไม่ใช่ "รายชื่อโปรไฟล์" — สมาชิกทุกคนได้หนึ่งรายการเสมอ
+   *   แม้ยังไม่มีโปรไฟล์ในกลุ่ม (hasProfile = false, details = null) เพื่อให้ FE
+   *   มีปุ่มให้กดครบทุกคน ไม่ใช่หายไปเงียบ ๆ เพราะยังไม่เคยถูกจองให้
+   *
+   * ★★ ไม่ดึงโปรไฟล์ส่วนตัว (family_group_id = NULL รวมใบ is_self จาก Onboarding)
+   *    ข้อมูลสุขภาพส่วนตัวยังไม่ได้แชร์เข้ากลุ่ม — เอามาโชว์ให้สมาชิกคนอื่นคือการเปิดเผย
+   *    ข้อมูลอ่อนไหวโดยไม่มีความยินยอม (PDPA ม.26 · consent disclose_to_family_group)
+   *    โปรไฟล์ส่วนตัวถูกคัดลอกเข้ากลุ่มตอน "จองจริง" ตามกลไกเดิม (PYG-500 สาขา ②)
+   *
+   * ชื่อมาจากบัญชีด้วย accountDisplayName ตัวเดียวกับที่ PYG-516 ใช้เขียนลง
+   * care_recipients.name / bookings.patient_name — ถ้าคำนวณคนละแบบ ผู้ใช้จะกดชื่อหนึ่ง
+   * แล้วใบจองขึ้นอีกชื่อหนึ่งโดยไม่มี error ให้เห็น
+   *
+   * สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE" ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
+   */
+  async groupBookingRecipients(
+    groupId: string,
+  ): Promise<GroupBookingRecipient[]> {
+    const members = await this.prisma.familyGroupMember.findMany({
+      where: { groupId, status: MEMBER_STATUS.ACTIVE },
+      orderBy: { joinedAt: 'asc' },
+      select: {
+        userId: true,
+        user: { select: ACCOUNT_NAME_SELECT },
+      },
+    });
+    if (members.length === 0) return [];
+
+    // โปรไฟล์ "ในกลุ่มนี้" เท่านั้น — familyGroupId ต้องเท่ากับ groupId ตรง ๆ
+    const profiles = await this.prisma.careRecipient.findMany({
+      where: {
+        patientId: { in: members.map((m) => m.userId) },
+        familyGroupId: groupId,
+        is_deleted: false,
+      },
+      // สมาชิกหนึ่งคนอาจมีหลายใบในกลุ่ม (ข้อมูลเก่า) — เอาใบที่อัปเดตล่าสุด
+      orderBy: { updated_at: 'desc' },
+      select: {
+        patientId: true,
+        nickname: true,
+        address_line: true,
+        province: true,
+        district: true,
+        ...PATIENT_PROFILE_SELECT,
+      },
+    });
+
+    const profileByMember = new Map<string, (typeof profiles)[number]>();
+    for (const profile of profiles) {
+      if (!profileByMember.has(profile.patientId)) {
+        profileByMember.set(profile.patientId, profile);
+      }
+    }
+
+    return members.map((member) => {
+      const profile = profileByMember.get(member.userId);
+      const health = profile ? toPatientProfile(profile) : undefined;
+
+      return {
+        memberUserId: member.userId,
+        // ★ ไม่มีชื่อในบัญชี → สตริงว่าง ไม่ใช่ error
+        //   ลิสต์ทั้งกลุ่มต้องไม่พังเพราะสมาชิกคนเดียวยังไม่ได้กรอกชื่อ
+        //   ตอนกดจองจริงถึงจะโดนปฏิเสธด้วย MEMBER_NAME_MISSING (PYG-516)
+        name: accountDisplayName(member.user) ?? '',
+        nameLocked: true,
+        nickname: profile?.nickname ?? undefined,
+        hasProfile: profile !== undefined,
+        details: profile
+          ? {
+              ...health,
+              addressLine: profile.address_line ?? undefined,
+              province: profile.province ?? undefined,
+              district: profile.district ?? undefined,
+            }
+          : undefined,
+      };
+    });
   }
 
   // ── PYG-385: เพิ่ม/แก้ไข/นำออกโปรไฟล์ผู้รับบริการในกลุ่ม ────────────────────

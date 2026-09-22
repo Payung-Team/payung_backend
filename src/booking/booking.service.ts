@@ -45,6 +45,11 @@ import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-b
 import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
 // PYG-460: แปลงข้อความไทยจากฟอร์ม → คอลัมน์/enum ของ care_recipients (ตาราง mapping ที่เดียว)
 import { toCareRecipientColumns } from '../patient/patient-profile.mapper';
+// PYG-516/517: ชื่อตามบัญชี — ฟังก์ชันเดียวที่ทั้งระบบใช้
+import {
+  ACCOUNT_NAME_SELECT,
+  accountDisplayName,
+} from '../common/utils/account-name';
 // PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 
@@ -468,15 +473,12 @@ export class BookingService {
   private async resolveMemberAccountName(memberUserId: string): Promise<string> {
     const account = await this.prisma.user.findUnique({
       where: { id: memberUserId },
-      select: { firstName: true, lastName: true, displayName: true },
+      select: ACCOUNT_NAME_SELECT,
     });
 
-    const full = [account?.firstName, account?.lastName]
-      .map((part) => part?.trim())
-      .filter((part): part is string => !!part)
-      .join(' ');
-
-    const name = full || account?.displayName?.trim();
+    // PYG-517 ใช้ฟังก์ชันเดียวกันนี้โชว์บนปุ่ม shortcut — ถ้าคำนวณคนละแบบ
+    // ผู้ใช้จะกดชื่อหนึ่งแล้วใบจองขึ้นอีกชื่อหนึ่ง
+    const name = accountDisplayName(account);
     if (!name) throw new MemberNameMissingError();
     return name;
   }

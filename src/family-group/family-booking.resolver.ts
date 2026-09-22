@@ -9,6 +9,8 @@ import {
   RemoveGroupCareRecipientResult,
 } from './entities/care-recipient.entity';
 import { GroupBookingSummary } from './entities/group-booking.entity';
+// PYG-517: รายชื่อสมาชิกสำหรับ shortcut + autofill ตอนจองแทน
+import { GroupBookingRecipient } from './entities/group-booking-recipient.entity';
 import {
   AddGroupCareRecipientInput,
   UpdateGroupCareRecipientInput,
@@ -65,6 +67,28 @@ export class FamilyBookingResolver {
     @Args('groupId', { type: () => ID }) groupId: string,
   ): Promise<GroupCareRecipient[]> {
     return this.familyGroupService.groupCareRecipients(groupId);
+  }
+
+
+  /**
+   * PYG-517 — รายชื่อสมาชิกสำหรับ shortcut + autofill ตอนจองแทน
+   *
+   * ต่างจาก `groupCareRecipients` ตรงที่นี่คืน "คน" ไม่ใช่ "โปรไฟล์" — สมาชิก ACTIVE
+   * ทุกคนได้หนึ่งรายการเสมอ แม้ยังไม่มีโปรไฟล์ในกลุ่ม (FE จะได้มีปุ่มให้กดครบทุกคน)
+   *
+   * ★ ไม่คืนข้อมูลจากโปรไฟล์ส่วนตัวของสมาชิก — ดูเหตุผลเต็มใน service
+   */
+  @Query(() => [GroupBookingRecipient], {
+    description:
+      'PYG-517: สมาชิก ACTIVE ทุกคนในกลุ่ม (รวมเจ้าของ) พร้อมข้อมูลผู้รับบริการในกลุ่ม ' +
+      'สำหรับ shortcut + autofill ตอนจองแทน · ชื่อ-นามสกุลล็อก (nameLocked = true) · ' +
+      'ยังไม่มีโปรไฟล์ในกลุ่ม = hasProfile false, details null (FE ปล่อยช่องว่างให้กรอก)',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
+  async groupBookingRecipients(
+    @Args('groupId', { type: () => ID }) groupId: string,
+  ): Promise<GroupBookingRecipient[]> {
+    return this.familyGroupService.groupBookingRecipients(groupId);
   }
 
   @Query(() => [GroupBookingSummary], {
