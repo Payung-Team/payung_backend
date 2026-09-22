@@ -86,8 +86,19 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     };
 
     prisma = {
-      careRecipient: { findUnique: jest.fn(), findFirst: jest.fn() },
-      familyGroupMember: { findFirst: jest.fn() },
+      careRecipient: { findUnique: jest.fn(), findFirst: jest.fn(), create: jest.fn() },
+      // PYG-516: เจ้าของโปรไฟล์ต้องยัง ACTIVE — เทสที่สนใจเคสตรงข้ามจะ override เอง
+      familyGroupMember: {
+        findFirst: jest.fn().mockResolvedValue({ userId: OWNER_ID }),
+      },
+      // PYG-516: ชื่อผู้รับบริการมาจากบัญชีของสมาชิก ไม่ใช่ค่าที่คนจองพิมพ์
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          firstName: 'สมศรี',
+          lastName: 'ใจดี',
+          displayName: 'ยายศรี',
+        }),
+      },
       caregiver: { findUnique: jest.fn() },
       booking: {
         // ไม่มีนัดหมายชนกัน เว้นแต่เทสนั้นจะ override เอง
@@ -184,6 +195,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         id: RECIPIENT_ID,
         name: 'คุณยายสมศรี',
         familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
       });
     });
 
@@ -277,6 +290,202 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     });
   });
 
+
+  // ── PYG-516: ล็อกชื่อ-นามสกุล + ตรวจสมาชิก ACTIVE ─────────────────────────
+  //
+  // ที่มา: ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 (= PYG-495) — คนจองพิมพ์ชื่อใครก็ได้ลงใบจอง
+  describe('ล็อกชื่อผู้รับบริการ (PYG-516)', () => {
+    beforeEach(() => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+        familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
+      });
+      tx.booking.create.mockResolvedValue(fakeCreatedBooking());
+    });
+
+    it('★ ส่ง patientName มา → ปฏิเสธ และไม่สร้างอะไรเลย', async () => {
+      await expect(
+        service.createBookingOnBehalf(
+          BOOKER_ID,
+          makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined, patientName: 'ชื่อปลอม' }),
+        ),
+      ).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.PATIENT_NAME_NOT_ALLOWED },
+      });
+
+      // ★ ด่านต้องอยู่ก่อนทุกเส้นทาง — ไม่ใช่ "รับแล้วเงียบ ๆ ไม่ใช้"
+      //   ถ้าเงียบ FE จะคิดว่าชื่อที่พิมพ์ถูกบันทึก แต่ผู้ดูแลเห็นอีกชื่อหนึ่ง
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+    });
+
+    it('★ สมาชิกยังไม่มีโปรไฟล์ → สร้างใบใหม่ด้วยชื่อจากบัญชี ไม่ใช่ชื่อที่พิมพ์', async () => {
+      prisma.careRecipient.findFirst.mockResolvedValue(null);
+      prisma.careRecipient.create.mockResolvedValue({ id: 'cr-new', name: 'สมศรี ใจดี' });
+
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
+        makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
+      );
+
+      const created = prisma.careRecipient.create.mock.calls[0][0] as {
+        data: { name: string; patientId: string };
+      };
+      expect(created.data.name).toBe('สมศรี ใจดี');
+      expect(created.data.patientId).toBe(OWNER_ID);
+    });
+
+    it('บัญชีมีแต่ display_name (สมัครก่อน Onboarding) → ใช้ display_name', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        firstName: null,
+        lastName: null,
+        displayName: 'ยายศรี',
+      });
+      prisma.careRecipient.findFirst.mockResolvedValue(null);
+      prisma.careRecipient.create.mockResolvedValue({ id: 'cr-new', name: 'ยายศรี' });
+
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
+        makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
+      );
+
+      const created = prisma.careRecipient.create.mock.calls[0][0] as {
+        data: { name: string };
+      };
+      expect(created.data.name).toBe('ยายศรี');
+    });
+
+    it('★ บัญชีไม่มีชื่อเลย → ปฏิเสธ ไม่เดาชื่อให้', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        firstName: null,
+        lastName: null,
+        displayName: null,
+      });
+      prisma.careRecipient.findFirst.mockResolvedValue(null);
+
+      // ★ ใบงานที่ผู้ดูแลถือไปต้องระบุตัวคนที่จะไปดูแลได้จริง
+      //   ชื่อหลอกแบบ "ผู้ใช้ #xxxx" อันตรายกว่าการจองไม่ผ่าน
+      await expect(
+        service.createBookingOnBehalf(
+          BOOKER_ID,
+          makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
+        ),
+      ).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.MEMBER_NAME_MISSING },
+      });
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+    });
+
+    it('★ bookings.patient_name = ชื่อจากโปรไฟล์ ไม่ใช่ค่าที่คนจองส่งมา', async () => {
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput());
+
+      const data = tx.booking.create.mock.calls[0][0].data as { patientName: string };
+      // ★ ชื่อนี้คือสิ่งที่ผู้ดูแลเห็นบนใบงาน (booking.service.ts:1189 คืนออกไป)
+      expect(data.patientName).toBe('คุณยายสมศรี');
+    });
+  });
+
+  describe('ตรวจสมาชิก ACTIVE (PYG-516)', () => {
+    beforeEach(() => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+        familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
+      });
+      tx.booking.create.mockResolvedValue(fakeCreatedBooking());
+    });
+
+    it('★ เส้นทาง careRecipientId: เจ้าของออกจากกลุ่มแล้ว → จองไม่ได้', async () => {
+      prisma.familyGroupMember.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.createBookingOnBehalf(BOOKER_ID, makeInput()),
+      ).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('ตรวจ ACTIVE ด้วย "เจ้าของโปรไฟล์" ไม่ใช่คนกดจอง', async () => {
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput());
+
+      const query = prisma.familyGroupMember.findFirst.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(query.where).toMatchObject({
+        groupId: GROUP_ID,
+        userId: OWNER_ID,
+        status: 'ACTIVE',
+      });
+    });
+
+    it('โปรไฟล์ที่ถูกลบไปแล้ว → จองไม่ได้', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+        familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: true,
+      });
+
+      await expect(
+        service.createBookingOnBehalf(BOOKER_ID, makeInput()),
+      ).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+    });
+
+    it('★ เจ้าของออกจากกลุ่ม กับ โปรไฟล์ไม่มีจริง → code เดียวกัน (กันไล่เดา id)', async () => {
+      prisma.familyGroupMember.findFirst.mockResolvedValueOnce(null);
+      const leftGroup = await service
+        .createBookingOnBehalf(BOOKER_ID, makeInput())
+        .catch((e) => e);
+
+      prisma.careRecipient.findUnique.mockResolvedValueOnce(null);
+      const notFound = await service
+        .createBookingOnBehalf(BOOKER_ID, makeInput())
+        .catch((e) => e);
+
+      expect(leftGroup.extensions.code).toBe(notFound.extensions.code);
+      expect(leftGroup.message).toBe(notFound.message);
+    });
+  });
+
+  // ── ช่องที่ยัง "แก้ได้" ตอนจองแทน ────────────────────────────────────────
+  describe('ช่องที่ยังแก้ได้ (PYG-516)', () => {
+    beforeEach(() => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        name: 'คุณยายสมศรี',
+        familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
+      });
+      tx.booking.create.mockResolvedValue(fakeCreatedBooking());
+    });
+
+  it('★ ที่อยู่/ข้อมูลสุขภาพยังแก้ได้ตอนจอง (ล็อกแค่ชื่อ)', async () => {
+    const memberDetails = {
+      conditions: ['เบาหวาน'],
+      medicines: 'ยาลดความดัน',
+      allergies: 'แพ้เพนิซิลลิน',
+      careInstructions: 'ต้องพยุงเดิน',
+    };
+
+    await service.createBookingOnBehalf(BOOKER_ID, makeInput({ memberDetails }));
+
+    const data = tx.booking.create.mock.calls[0][0].data as {
+      memberDetails: typeof memberDetails;
+    };
+    expect(data.memberDetails).toEqual(memberDetails);
+  });
+  });
+
   // ── บั๊กที่แก้ไปพร้อมกัน: เช็คเวลาชนต่อ "ผู้รับบริการ" ───────────────────
 
   describe('time conflict — ผูกกับผู้รับบริการ ไม่ใช่คนจอง', () => {
@@ -285,6 +494,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         id: RECIPIENT_ID,
         name: 'คุณยายสมศรี',
         familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
       });
     });
 
@@ -380,6 +591,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         id: RECIPIENT_ID,
         name: 'คุณยายสมศรี',
         familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        is_deleted: false,
       });
 
       await service.createBookingOnBehalf(BOOKER_ID, makeInput());
