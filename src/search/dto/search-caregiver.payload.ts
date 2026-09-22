@@ -28,6 +28,18 @@ export class CaregiverSummary {
 
   @Field({ nullable: true, description: 'Service area district' })
   district?: string;
+
+  /**
+   * เพศของผู้ดูแล — FE โชว์เป็นไอคอนบนการ์ดผลค้นหา (SearchPage)
+   *
+   * ★ FE ขอฟิลด์นี้มาตั้งแต่ก่อนแล้วแต่ BE ไม่เคยมี → GraphQL ปฏิเสธคำขอทั้งก้อน
+   *   ที่ขั้น validation (400) ทำให้ "หน้าค้นหาไม่ขึ้นผลเลย" ไม่ใช่แค่ไอคอนหาย
+   *
+   * nullable เพราะ caregivers.gender เป็น optional — ผู้ดูแลที่ยังไม่กรอกจะไม่มีไอคอน
+   * ซึ่งเป็นพฤติกรรมที่ FE รองรับอยู่แล้ว (GENDER_DISPLAY[cg.gender ?? ''] ?? null)
+   */
+  @Field({ nullable: true, description: 'Caregiver gender (null if not provided)' })
+  gender?: string;
 }
 
 @ObjectType()

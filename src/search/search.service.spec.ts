@@ -9,7 +9,8 @@ import { SortByEnum } from './dto/search-caregiver.input';
 type RawRow = {
   id: string; full_name: string | null; avatar_url: string | null;
   hourly_rate: number | null; avg_rating: number | null; review_count: bigint;
-  skills: string[]; province: string | null; district: string | null; total_count: bigint;
+  skills: string[]; province: string | null; district: string | null;
+  gender: string | null; total_count: bigint;
 };
 
 function row(overrides: Partial<RawRow> = {}): RawRow {
@@ -17,6 +18,7 @@ function row(overrides: Partial<RawRow> = {}): RawRow {
     id: 'cg-1', full_name: 'สมชาย ใจดี', avatar_url: null,
     hourly_rate: 350, avg_rating: 4.5, review_count: BigInt(12),
     skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+    gender: 'female',
     total_count: BigInt(1),
     ...overrides,
   };
@@ -104,6 +106,28 @@ describe('SearchService', () => {
       skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
     });
     expect(result.pagination).toMatchObject({ page: 1, limit: 10, total: 1, totalPages: 1 });
+  });
+
+  // ── gender (FE โชว์เป็นไอคอนบนการ์ดผลค้นหา) ─────────────────────────────
+
+  it('★ คืน gender ออกมาด้วย และ SQL ดึงคอลัมน์นี้จริง', async () => {
+    prisma.$queryRaw.mockResolvedValue([row({ gender: 'male' })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].gender).toBe('male');
+    // ★ FE ขอฟิลด์นี้อยู่แล้ว ถ้าหายไป GraphQL ปฏิเสธคำขอทั้งก้อนที่ขั้น validation (400)
+    //   → หน้าค้นหาไม่ขึ้นผลเลย ไม่ใช่แค่ไอคอนหาย
+    const sql = flattenSql(prisma.$queryRaw.mock.calls[0][0]);
+    expect(sql).toContain('c.gender');
+  });
+
+  it('ผู้ดูแลที่ยังไม่กรอกเพศ → undefined (FE ไม่โชว์ไอคอน)', async () => {
+    prisma.$queryRaw.mockResolvedValue([row({ gender: null })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].gender).toBeUndefined();
   });
 
   // ── Empty results ───────────────────────────────────────────────────────
