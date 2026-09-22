@@ -19,6 +19,8 @@ function fakeRecipient(overrides: Record<string, unknown> = {}) {
     name:      'คุณย่า',
     nickname:  'ย่า',
     patientId: PATIENT_ID,
+    // PYG-502: ใบทั่วไปไม่ใช่ของตัวเอง — เทสที่สนใจเคสตรงข้ามจะ override เอง
+    is_self:   false,
     date_of_birth:       null,
     gender:              null,
     weight_kg:           null,
@@ -83,6 +85,31 @@ describe('CareRecipientsService', () => {
       );
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('คุณย่า');
+    });
+
+    // ── PYG-502: FE ต้องแยกใบ "ของตัวเอง" ออกจากคนอื่นที่เคยบันทึกไว้ ──────
+    it('★ คืน isSelf ออกมาด้วย — FE เดาจากชื่อไม่ได้', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        fakeRecipient({ id: 'cr-self', name: 'สมศรี ใจดี', is_self: true }),
+        fakeRecipient({ id: 'cr-other', name: 'คุณย่า', is_self: false }),
+      ]);
+
+      const result = await service.list(PATIENT_ID);
+
+      // ★ ชื่อซ้ำกับใครก็ได้ และผู้ใช้เปลี่ยนชื่อโปรไฟล์อื่นให้ตรงกับตัวเองได้
+      //   ถ้าไม่มีค่านี้ FE จะติดป้าย "ตัวเอง" ผิดใบโดยไม่มี error ให้เห็น
+      expect(result.find((r) => r.id === 'cr-self')?.isSelf).toBe(true);
+      expect(result.find((r) => r.id === 'cr-other')?.isSelf).toBe(false);
+    });
+
+    it('ดึง is_self มาจาก DB ด้วย (ไม่งั้น isSelf จะเป็น undefined เงียบ ๆ)', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([fakeRecipient()]);
+      await service.list(PATIENT_ID);
+
+      const call = prisma.careRecipient.findMany.mock.calls[0][0] as {
+        select: Record<string, boolean>;
+      };
+      expect(call.select.is_self).toBe(true);
     });
 
     it('returns empty array when no recipients', async () => {

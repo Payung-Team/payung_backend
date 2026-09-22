@@ -19,6 +19,16 @@ export interface CareRecipientResponse {
   name: string;
   nickname?: string;
   patientId: string;
+  /**
+   * PYG-502 — โปรไฟล์ "ของตัวเอง" ที่สร้างตอน Onboarding (completeOnboarding, PYG-498)
+   *
+   * ★ FE ต้องใช้ค่านี้แยกใบของตัวเองออกจากคนอื่นที่เคยบันทึกไว้ (คุณยาย เพื่อนบ้าน ฯลฯ)
+   *   เดาจากชื่อไม่ได้ — ชื่อซ้ำกับใครก็ได้ และผู้ใช้เปลี่ยนชื่อโปรไฟล์อื่นให้ตรงกับตัวเองได้
+   *
+   * ★ ผู้ใช้หนึ่งคนมีใบ is_self ได้ใบเดียว (completeOnboarding อัปเดตใบเดิมไม่สร้างซ้ำ)
+   *   แต่ FE ไม่ควร assume — บัญชีเก่าก่อน PYG-498 ยังไม่มีสักใบ
+   */
+  isSelf: boolean;
   /** PYG-460: ข้อมูลสุขภาพ — undefined เมื่อโปรไฟล์ยังไม่เคยกรอกช่องไหนเลย */
   details?: PatientProfileDto;
 }
@@ -29,6 +39,7 @@ const RECIPIENT_SELECT = {
   name:      true,
   nickname:  true,
   patientId: true,
+  is_self:   true,
   ...PATIENT_PROFILE_SELECT,
 } as const;
 
@@ -37,6 +48,7 @@ type RecipientRow = {
   name: string;
   nickname: string | null;
   patientId: string;
+  is_self: boolean;
 } & PatientProfileRow;
 
 @Injectable()
@@ -51,6 +63,7 @@ export class CareRecipientsService {
       name:      row.name,
       nickname:  row.nickname ?? undefined,
       patientId: row.patientId,
+      isSelf:    row.is_self,
       details:   toPatientProfile(row),
     };
   }
