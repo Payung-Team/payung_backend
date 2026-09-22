@@ -23,10 +23,7 @@ import { ROLE_ID } from '../../common/constants/roles.constant';
 import { toCareRecipientColumns } from '../../patient/patient-profile.mapper';
 import { User } from './entities/user.entity';
 import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
-import {
-  CONSENT_SOURCE,
-  CONSENT_TYPE,
-} from '../../consent/consent.constants';
+import { CONSENT_SOURCE } from '../../consent/consent.constants';
 import {
   type ConsentEvidence,
   ConsentService,
@@ -394,10 +391,17 @@ export class UserService {
     // PYG-538 — ★ ด่านความยินยอมต้องอยู่ "ก่อน" เปิด transaction
     //   ข้อมูลใน details เป็นข้อมูลอ่อนไหวตาม ม.26 ถ้าไม่มีความยินยอมโดยชัดแจ้ง
     //   ต้องไม่เขียนอะไรเลยแม้แต่ชื่อ-นามสกุล (มติ 2026-09-22: ปฏิเสธทั้งคำขอ)
-    //   โยน ForbiddenException / BadRequestException พร้อม code ให้ FE แยกออก
-    this.consentService.assertAnswers(input.consents, [
-      CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
-    ]);
+    //   โยน ConsentError พร้อม extensions.code ให้ FE แยกออก (PYG-474)
+    // PYG-474 — ใช้ตัวตรวจแบบเข้มของ "หน้าจอ onboarding" แทน assertAnswers เปล่า ๆ
+    //   ข้อบังคับเท่าเดิม (sensitive_health_data) แต่ปฏิเสธเพิ่มอีก 2 กรณี:
+    //   - ชนิดที่หน้า Onboarding ไม่ได้ขอ (เช่น marketing / terms_of_service)
+    //     ไม่งั้นจะบันทึกความยินยอมที่ผู้ใช้ไม่เคยเห็นบนหน้านี้ โดย source = 'onboarding'
+    //   - ข้อเดียวกันซ้ำ (true + false) → สองแถวได้ granted_at เท่ากัน
+    //     แล้ว "แถวล่าสุด" จะขึ้นกับลำดับที่ DB คืนมา = onboardingCompleted สุ่มถูกสุ่มผิด
+    this.consentService.assertAnswersForSource(
+      input.consents,
+      CONSENT_SOURCE.ONBOARDING,
+    );
 
     const nickname = input.nickname?.trim() || null;
     const fullName = `${firstName} ${lastName}`;

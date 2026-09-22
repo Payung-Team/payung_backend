@@ -32,6 +32,9 @@ import { RegisterInput } from './dto/register.input';
 import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
 import { UpdatePasswordResponse } from './dto/update-password.response';
 import { CaregiverService } from '../kyc/caregiver.service';
+import { ConsentService } from '../../consent/consent.service';
+import { CONSENT_SOURCE } from '../../consent/consent.constants';
+import type { RequestEvidence } from '../../common/utils/request-evidence';
 
 @Injectable()
 export class AuthService {
@@ -42,6 +45,8 @@ export class AuthService {
     private readonly prismaService: PrismaService,
     private readonly configService: ConfigService,
     private readonly caregiverService: CaregiverService,
+    // PYG-474: ตรวจและบันทึกความยินยอม PDPA ตอนสมัคร
+    private readonly consentService: ConsentService,
   ) {}
 
   /**
@@ -114,19 +119,35 @@ export class AuthService {
   }
 
   /**
-   * Register ด้วย email + password + role
+   * Register ด้วย email + password + role + ความยินยอม PDPA
    *
    * Flow:
+   *   0. (PYG-474) ตรวจความยินยอม — ขาดข้อบังคับ/เวอร์ชันไม่ตรง → ปฏิเสธทันที
    *   1. สร้าง user ใน Supabase Auth (จัดการ password ให้)
-   *   2. INSERT row ลง users table ของเรา (เก็บ role, displayName ฯลฯ)
+   *   2. INSERT row ลง users table ของเรา + บันทึกความยินยอมลง user_consents
+   *      ในทรานแซคชันเดียวกัน (PYG-474)
    *   3. คืน { accessToken, refreshToken, user } เหมือน login
    *
    * ทำไมต้อง 2 ขั้น?
    *   Supabase Auth รู้แค่ email+password
    *   users table ของเราเก็บข้อมูล business เช่น role, displayName
    *   ต้องสร้างทั้งสองพร้อมกันเสมอ ถ้าขาดอันใดอันหนึ่ง → ระบบพัง
+   *
+   * @param evidence IP + user agent ที่ resolver ดึงจาก request — หลักฐานประกอบความยินยอม
    */
-  async register(input: RegisterInput): Promise<AuthPayload> {
+  async register(
+    input: RegisterInput,
+    evidence: RequestEvidence,
+  ): Promise<AuthPayload> {
+    // ── ขั้นตอนที่ 0 (PYG-474): ตรวจความยินยอม "ก่อน" สร้างอะไรทั้งนั้น ──────
+    // ★ ต้องอยู่ก่อน supabase.auth.signUp — ถ้าไปตรวจทีหลัง คำขอที่ไม่ยินยอมจะได้บัญชี
+    //   Supabase Auth ค้างไว้ (ที่อยู่นอกทรานแซคชันของเรา) แล้วต้องไล่ลบทีหลัง
+    //   ตรงกับเงื่อนไขของการ์ด: "ไม่มี required consent ครบ → ปฏิเสธ และไม่สร้าง user"
+    // ★ อยู่นอก try/catch ด้านล่างโดยตั้งใจ — catch นั้นแปลงทุก error เป็น 500
+    //   ถ้า ConsentError ไปอยู่ในนั้น FE จะไม่ได้ code CONSENT_REQUIRED
+    const consents = input.consents ?? [];
+    this.consentService.assertAnswersForSource(consents, CONSENT_SOURCE.REGISTER);
+
     const supabase = this.supabaseService.getClient();
 
     // ── ขั้นตอนที่ 1: สร้าง user ใน Supabase Auth ──────────────────────
@@ -160,7 +181,7 @@ export class AuthService {
       );
     }
 
-    // ── ขั้นตอนที่ 3: สร้าง row ใน users table ของเรา ─────────────────
+    // ── ขั้นตอนที่ 3: สร้าง row ใน users table ของเรา + บันทึกความยินยอม ──
     // ทำหลังจาก Supabase สำเร็จเท่านั้น
     // supabase_uid คือ bridge ที่เชื่อม Supabase Auth ↔ users table เรา
     let user;
@@ -169,7 +190,6 @@ export class AuthService {
       let caregiverNumber: string | undefined;
       if (input.role === 2) {
         caregiverNumber = await this.caregiverService.generateCaregiverNumber();
-        console.log('[AuthService.register] Generated caregiverNumber:', caregiverNumber);
       }
 
       const createData = {
@@ -189,28 +209,59 @@ export class AuthService {
         } : {})
       };
 
-      console.log('[AuthService.register] Creating user with data:', JSON.stringify(createData, null, 2));
-
-      user = await this.prismaService.user.create({
-        data: createData,
+      // PYG-474 — ★ users + user_consents ต้องอยู่ในทรานแซคชันเดียวกัน
+      //   ถ้าแยกกันแล้วฝั่ง consent ล้ม จะได้ user ที่ไม่มีหลักฐานความยินยอมค้างใน DB
+      //   (ตรงข้ามกับเงื่อนไขของการ์ด) และแก้ย้อนหลังไม่ได้เพราะ user_consents เป็น append-only
+      //   ล้มตรงไหนก็ตาม → DB ย้อนกลับทั้งคู่ แล้ว catch ด้านล่างลบบัญชี Supabase ตามไปด้วย
+      user = await this.prismaService.$transaction(async (tx) => {
+        const created = await tx.user.create({ data: createData });
+        // ★ บันทึกทุกข้อที่ส่งมา รวมข้อที่ไม่ยินยอม (เช่น marketing = false)
+        //   การปฏิเสธก็เป็นข้อเท็จจริงที่ต้องพิสูจน์ได้ว่า "เราถามแล้ว และเขาตอบว่าไม่"
+        await this.consentService.recordMany(tx, created.id, consents, {
+          ...evidence,
+          source: CONSENT_SOURCE.REGISTER,
+        });
+        return created;
       });
 
-      console.log('[AuthService.register] User created successfully:', user.id);
+      // ★ ไม่ log อีเมล/ข้อมูลที่สมัคร (โค้ดเดิม console.log ทั้งก้อน) — เป็นข้อมูลส่วนบุคคล
+      //   ที่ไม่จำเป็นต้องอยู่ใน log ตาม PDPA · id + role พอสำหรับไล่ปัญหา
+      this.logger.log({
+        event: 'auth.register.user_created',
+        userId: user.id,
+        role: user.role,
+        consentCount: consents.length,
+      });
     } catch (err: any) {
       // ถ้า user สร้างล้มเหลว ให้ลบ user จาก Supabase ด้วย
-      console.error('[AuthService.register] Failed to create user in database:', err);
-      
-      // ลองลบ Supabase user
+      this.logger.error({
+        event: 'auth.register.db_failed',
+        supabaseUid: data.user.id,
+        reason: err?.message,
+      });
+
+      // ลองลบ Supabase user — ใช้ admin client (service role) ตัวกลางของ SupabaseService
+      // แทนการสร้าง client ใหม่ทุกครั้ง (PYG-474: ให้เทส mock ได้ และไม่สร้าง client ซ้ำซ้อน)
       try {
-        const adminAuthClient = createClient(
-          this.configService.getOrThrow<string>('SUPABASE_URL'),
-          this.configService.getOrThrow<string>('SUPABASE_SERVICE_ROLE_KEY'),
-        );
-        await adminAuthClient.auth.admin.deleteUser(data.user.id);
+        const { error: deleteError } = await this.supabaseService
+          .getAdminClient()
+          .auth.admin.deleteUser(data.user.id);
+        // deleteUser ไม่ throw — คืน error กลับมาแทน ต้องเช็คเอง ไม่งั้นลบไม่สำเร็จแล้วไม่มีใครรู้
+        if (deleteError) {
+          this.logger.error({
+            event: 'auth.register.rollback_failed',
+            supabaseUid: data.user.id,
+            reason: deleteError.message,
+          });
+        }
       } catch (deleteErr) {
-        console.error('[AuthService.register] Failed to rollback Supabase user:', deleteErr);
+        this.logger.error({
+          event: 'auth.register.rollback_failed',
+          supabaseUid: data.user.id,
+          reason: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+        });
       }
-      
+
       if (err.code === 'P2002') {
         throw new ConflictException('Email is already in use');
       }

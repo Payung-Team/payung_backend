@@ -30,6 +30,7 @@ import {
   POLICY_VERSION,
 } from '../../consent/consent.constants';
 import { ConsentService } from '../../consent/consent.service';
+import { CONSENT_ERROR } from '../../consent/consent.errors';
 import {
   toPatientProfile,
   type PatientProfileRow,
@@ -37,6 +38,23 @@ import {
 
 const USER_ID = 'user-onboard-1';
 const EMAIL = 'somsri@example.com';
+
+/**
+ * PYG-474: error เรื่อง consent เปลี่ยนจาก Forbidden/BadRequestException เป็น ConsentError
+ * (GraphQLError) — เพราะแบบเดิม code หายก่อนถึง FE · ตรวจที่ extensions.code แทนชนิด class
+ */
+const CONSENT_REQUIRED_ERROR = {
+  extensions: {
+    code: CONSENT_ERROR.REQUIRED,
+    consentType: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+  },
+};
+const VERSION_MISMATCH_ERROR = {
+  extensions: {
+    code: CONSENT_ERROR.POLICY_VERSION_MISMATCH,
+    currentVersion: POLICY_VERSION,
+  },
+};
 
 /** หลักฐานประกอบความยินยอมที่ resolver ดึงจาก request แล้วส่งต่อมา (PYG-538) */
 const EVIDENCE = { ipAddress: '203.0.113.9', userAgent: 'jest/1.0' };
@@ -287,7 +305,7 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
     it('★ ไม่ส่ง consent มาเลย → ปฏิเสธ และไม่เขียนอะไรลง DB แม้แต่ชื่อ', async () => {
       await expect(
         service.completeOnboarding(USER_ID, makeInput({ consents: [] }), EVIDENCE),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toMatchObject(CONSENT_REQUIRED_ERROR);
 
       // ★ หัวใจของการ์ด: ข้อมูลอ่อนไหวตาม ม.26 ห้ามถูกเก็บก่อนได้รับความยินยอม
       //   และมติคือปฏิเสธทั้งคำขอ ไม่ใช่เก็บบางส่วน
@@ -310,11 +328,14 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
 
       await expect(
         service.completeOnboarding(USER_ID, input, EVIDENCE),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toMatchObject(CONSENT_REQUIRED_ERROR);
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('ยินยอมข้ออื่นแต่ไม่ยินยอมข้อสุขภาพ → ปฏิเสธ', async () => {
+    it('ส่งข้ออื่นที่หน้า Onboarding ไม่ได้ขอ (marketing) → ปฏิเสธ CONSENT_TYPE_INVALID (PYG-474)', async () => {
+      // PYG-474: เดิมผ่านด่านชนิดไปได้แล้วไปติด CONSENT_REQUIRED — ตอนนี้ตีกลับตั้งแต่ชนิดผิด
+      //   เพราะถ้ามาคู่กับ sensitive_health_data จะถูกบันทึกเป็นความยินยอม marketing
+      //   ที่ผู้ใช้ไม่เคยเห็นบนหน้านี้ (source = 'onboarding')
       const input = makeInput({
         consents: [
           {
@@ -327,7 +348,42 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
 
       await expect(
         service.completeOnboarding(USER_ID, input, EVIDENCE),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toMatchObject({
+        extensions: {
+          code: CONSENT_ERROR.TYPE_INVALID,
+          consentType: CONSENT_TYPE.MARKETING,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('★ ส่งข้อสุขภาพซ้ำ (true + false) → ปฏิเสธ CONSENT_DUPLICATE_ANSWER (PYG-474)', async () => {
+      // ถ้าบันทึกทั้งคู่ สองแถวได้ granted_at เท่ากัน (now() ของทรานแซคชันเดียวกัน)
+      //   → "แถวล่าสุด" ขึ้นกับลำดับที่ DB คืนมา = onboardingCompleted สุ่มถูกสุ่มผิด
+      const input = makeInput({
+        consents: [
+          {
+            type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+            granted: true,
+            policyVersion: POLICY_VERSION,
+          },
+          {
+            type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+            granted: false,
+            policyVersion: POLICY_VERSION,
+          },
+        ],
+      });
+
+      await expect(
+        service.completeOnboarding(USER_ID, input, EVIDENCE),
+      ).rejects.toMatchObject({
+        extensions: {
+          code: CONSENT_ERROR.DUPLICATE_ANSWER,
+          consentType: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     it('★ policyVersion ไม่ตรงกับเวอร์ชันปัจจุบัน → ปฏิเสธ (ผู้ใช้อ่านคนละฉบับ)', async () => {
@@ -345,7 +401,7 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
       //   ข้อความที่เขาไม่เคยเห็น
       await expect(
         service.completeOnboarding(USER_ID, input, EVIDENCE),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toMatchObject(VERSION_MISMATCH_ERROR);
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
@@ -378,7 +434,12 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
       });
     });
 
-    it('ข้อที่ปฏิเสธก็ถูกบันทึกด้วย — การปฏิเสธเป็นข้อเท็จจริงที่ต้องพิสูจน์ได้', async () => {
+    // PYG-474 — เคสนี้เดิมคือ "ข้อที่ปฏิเสธก็ถูกบันทึกด้วย" โดยแนบ marketing = false มากับหน้า Onboarding
+    //   หลักการ "การปฏิเสธก็ต้องบันทึก" ยังอยู่ครบ แต่ย้ายไปเทสที่หน้าสมัคร (ที่ marketing ถูกถามจริง)
+    //   → register.service.spec.ts "marketing ปฏิเสธ → บันทึกเป็น granted = false"
+    //   หน้า Onboarding ถามแค่ sensitive_health_data (CONSENTS_BY_SOURCE / PYG-539) การแนบข้ออื่นมา
+    //   จะกลายเป็นหลักฐานของคำถามที่ผู้ใช้ไม่เคยเห็นบนหน้านี้ จึงต้องถูกปฏิเสธทั้งคำขอ
+    it('★ ยินยอมข้อสุขภาพ แต่แนบข้อที่หน้านี้ไม่ได้ถาม (marketing = false) → ปฏิเสธทั้งคำขอ (PYG-474)', async () => {
       const input = makeInput({
         consents: [
           {
@@ -394,16 +455,17 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
         ],
       });
 
-      await service.completeOnboarding(USER_ID, input, EVIDENCE);
-
-      const written = callArg<{ data: Record<string, unknown>[] }>(
-        prisma.user_consents.createMany,
-      );
-      expect(written.data).toHaveLength(2);
-      expect(written.data[1]).toMatchObject({
-        consent_type: CONSENT_TYPE.MARKETING,
-        granted: false,
+      await expect(
+        service.completeOnboarding(USER_ID, input, EVIDENCE),
+      ).rejects.toMatchObject({
+        extensions: {
+          code: CONSENT_ERROR.TYPE_INVALID,
+          consentType: CONSENT_TYPE.MARKETING,
+        },
       });
+      // ★ ไม่มีแถวไหนถูกเขียน — ทั้งข้อมูลสุขภาพและความยินยอม
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.user_consents.createMany).not.toHaveBeenCalled();
     });
 
     it('เรียกซ้ำ → เขียนแถว consent ใหม่ทุกครั้ง (ตารางเป็นประวัติ append-only)', async () => {
