@@ -23,6 +23,14 @@ import { ROLE_ID } from '../../common/constants/roles.constant';
 import { toCareRecipientColumns } from '../../patient/patient-profile.mapper';
 import { User } from './entities/user.entity';
 import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
+import {
+  CONSENT_SOURCE,
+  CONSENT_TYPE,
+} from '../../consent/consent.constants';
+import {
+  type ConsentEvidence,
+  ConsentService,
+} from '../../consent/consent.service';
 
 /** Shape ของ user ที่ Prisma คืนมา → map เป็น GraphQL User entity */
 type PrismaUser = {
@@ -54,7 +62,11 @@ type PrismaUser = {
 export class UserService {
   private readonly logger = new Logger(UserService.name);
 
-  constructor(private prismaService: PrismaService) {}
+  constructor(
+    private prismaService: PrismaService,
+    // PYG-538: ตรวจและบันทึกความยินยอมตอน Onboarding
+    private readonly consentService: ConsentService,
+  ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
   /**
@@ -324,6 +336,11 @@ export class UserService {
   async isOnboardingCompleted(userId: string, role: number): Promise<boolean> {
     if (role !== ROLE_ID.PATIENT) return true;
 
+    // PYG-538 — ★ ถอนความยินยอมแล้ว = ยังไม่ผ่าน Onboarding แม้ข้อมูลเดิมจะยังอยู่
+    //   ตรงกับข้อความใน consent ที่บอกว่า "ถอนแล้วจะจองต่อไม่ได้" (มติ 2026-09-22)
+    //   ตรวจก่อนอ่านโปรไฟล์เพราะถ้าไม่ยินยอมก็ไม่ต้องไปดูข้อมูลสุขภาพเลย
+    if (!(await this.consentService.hasHealthDataConsent(userId))) return false;
+
     const profile = await this.prismaService.careRecipient.findFirst({
       where: {
         patientId: userId,
@@ -353,6 +370,7 @@ export class UserService {
   async completeOnboarding(
     userId: string,
     input: CompleteOnboardingInput,
+    evidence: Omit<ConsentEvidence, 'source'>,
   ): Promise<User> {
     const user = await this.prismaService.user.findUnique({
       where: { id: userId },
@@ -373,11 +391,27 @@ export class UserService {
       throw new BadRequestException('กรุณากรอกชื่อและนามสกุล');
     }
 
+    // PYG-538 — ★ ด่านความยินยอมต้องอยู่ "ก่อน" เปิด transaction
+    //   ข้อมูลใน details เป็นข้อมูลอ่อนไหวตาม ม.26 ถ้าไม่มีความยินยอมโดยชัดแจ้ง
+    //   ต้องไม่เขียนอะไรเลยแม้แต่ชื่อ-นามสกุล (มติ 2026-09-22: ปฏิเสธทั้งคำขอ)
+    //   โยน ForbiddenException / BadRequestException พร้อม code ให้ FE แยกออก
+    this.consentService.assertAnswers(input.consents, [
+      CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+    ]);
+
     const nickname = input.nickname?.trim() || null;
     const fullName = `${firstName} ${lastName}`;
     const columns = toCareRecipientColumns(input.details);
 
     await this.prismaService.$transaction(async (tx) => {
+      // ★ บันทึกความยินยอมในทรานแซคชันเดียวกับข้อมูลที่มันอนุญาต
+      //   ถ้าแยกกันแล้วฝั่งใดฝั่งหนึ่งล้ม จะได้ข้อมูลสุขภาพที่ไม่มีหลักฐานความยินยอม
+      //   (หรือหลักฐานที่ไม่มีข้อมูล) ซึ่งแก้ย้อนหลังไม่ได้เพราะตาราง append-only
+      await this.consentService.recordMany(tx, userId, input.consents, {
+        ...evidence,
+        source: CONSENT_SOURCE.ONBOARDING,
+      });
+
       await tx.user.update({
         where: { id: userId },
         data: {

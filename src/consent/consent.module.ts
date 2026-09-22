@@ -1,17 +1,20 @@
 /**
- * ConsentModule — PDPA consent (PYG-472)
+ * ConsentModule — PDPA consent
  *
- * รอบนี้มีแต่ "ขาอ่าน" (ข้อความ + เวอร์ชัน) · ขาเขียนลง user_consents เป็นของ PYG-474
- * ซึ่งจะเพิ่ม service ในโมดูลนี้ แล้ว import ConsentPolicyService ไปตรวจเวอร์ชัน
+ * ConsentPolicyService (PYG-472) = ขาอ่าน — ข้อความและเวอร์ชันที่บังคับใช้อยู่
+ * ConsentService (PYG-538)       = ขาตรวจและเขียนลง user_consents
  */
 import { Module } from '@nestjs/common';
+import { CommonModule } from '../common/common.module';
 import { ConsentPolicyService } from './consent-policy.service';
+import { ConsentService } from './consent.service';
 import { ConsentResolver } from './consent.resolver';
 
 @Module({
-  providers: [ConsentPolicyService, ConsentResolver],
-  // export ไว้ให้ PYG-474 (บันทึก consent ตอน register) และ PYG-498/507
-  // เอาไปตรวจว่า "ยินยอมข้อมูลสุขภาพ/ชีวภาพแล้วหรือยัง" ก่อนรับข้อมูล
-  exports: [ConsentPolicyService],
+  imports: [CommonModule],
+  providers: [ConsentPolicyService, ConsentService, ConsentResolver],
+  // export ไว้ให้ AuthModule (PYG-538 — consent ตอน Onboarding), PYG-474 (ตอน register)
+  // และ PYG-507 เอาไปตรวจว่า "ยินยอมข้อมูลชีวภาพแล้วหรือยัง" ก่อนรับรูปใบหน้า
+  exports: [ConsentPolicyService, ConsentService],
 })
 export class ConsentModule {}
