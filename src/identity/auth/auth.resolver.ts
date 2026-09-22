@@ -15,6 +15,7 @@ import { AuthPayload } from '../models/auth-payload.model';
 import { LoginInput } from './dto/login.input';
 import { RegisterInput } from './dto/register.input';
 import { UpdateProfileInput } from './dto/update-profile.input';
+import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
 import { RequestPasswordResetInput } from './dto/request-password-reset.input';
 import { RequestPasswordResetResponse } from './dto/request-password-reset.response';
 import { UpdatePasswordInput } from './dto/update-password.input';
@@ -94,6 +95,26 @@ export class AuthResolver {
     @Args('input') input: UpdateProfileInput,
   ): Promise<User> {
     return this.userService.updateProfile(user.id, input);
+  }
+
+  /**
+   * completeOnboarding — ผู้สูงอายุกรอกข้อมูลผู้รับบริการของตัวเองครั้งแรก (PYG-498)
+   *
+   * เก็บชื่อ-นามสกุลลง users และสร้าง/อัปเดตโปรไฟล์ `is_self` ในทรานแซคชันเดียว
+   * เรียกซ้ำได้ — ผู้ใช้กลับมาแก้ข้อมูลไม่ทำให้เกิดใบ is_self ซ้ำ
+   *
+   * เฉพาะ role 1 · role อื่นได้ Forbidden (ไม่ได้เป็นผู้รับบริการ)
+   */
+  @Mutation(() => User, {
+    description:
+      'บันทึกข้อมูลผู้รับบริการของตัวเองตอน Onboarding (เฉพาะผู้สูงอายุ) — เรียกซ้ำเพื่อแก้ข้อมูลได้',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async completeOnboarding(
+    @CurrentUser() user: AuthUser,
+    @Args('input') input: CompleteOnboardingInput,
+  ): Promise<User> {
+    return this.userService.completeOnboarding(user.id, input);
   }
 
   /**
