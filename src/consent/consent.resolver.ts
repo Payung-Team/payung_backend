@@ -9,9 +9,12 @@
  *   และอ่านได้เฉพาะของตัวเองเท่านั้น (ใช้ id จาก token ไม่รับ userId จาก client)
  */
 import { UseGuards } from '@nestjs/common';
-import { Args, Query, Resolver } from '@nestjs/graphql';
+import { Args, Context, Mutation, Query, Resolver } from '@nestjs/graphql';
 import { ConsentPolicyService } from './consent-policy.service';
-import { ConsentService } from './consent.service';
+import {
+  type LatestConsentRecord,
+  ConsentService,
+} from './consent.service';
 import { ConsentPolicy } from './entities/consent-policy.entity';
 import { ConsentStatus } from './entities/consent-status.entity';
 import {
@@ -20,6 +23,8 @@ import {
   POLICY_VERSION,
 } from './consent.constants';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+import { requestEvidenceOf } from '../common/utils/request-evidence';
+import type { GqlContext } from '../common/types/gql-context.type';
 import {
   AuthUser,
   CurrentUser,
@@ -72,13 +77,70 @@ export class ConsentResolver {
   @UseGuards(SupabaseAuthGuard)
   async myConsents(@CurrentUser() user: AuthUser): Promise<ConsentStatus[]> {
     const latest = await this.consentService.findLatestByUser(user.id);
-    return latest.map((record) => ({
-      type: record.type,
-      granted: record.granted,
-      policyVersion: record.policyVersion,
-      answeredAt: record.answeredAt,
-      source: record.source ?? undefined,
-      isCurrentVersion: record.policyVersion === POLICY_VERSION,
-    }));
+    return latest.map(toStatus);
   }
+
+  /**
+   * grantConsent / withdrawConsent — จัดการความยินยอมทีละข้อจากหน้าตั้งค่า (PYG-540)
+   *
+   * ★ ประกาศความเป็นส่วนตัวของเราบอกผู้ใช้ว่า "ถอนความยินยอมได้ทุกเมื่อ" (PYG-472)
+   *   สองเมธอดนี้คือทางที่ทำให้คำสัญญานั้นเป็นจริง ไม่ใช่แค่ข้อความในเอกสาร
+   *
+   * ★ การถอน **มีผลไปข้างหน้า** ไม่ลบข้อมูลที่เก็บไปแล้ว และไม่กระทบงานที่รับไปแล้ว
+   *   (ตรงกับที่เขียนไว้ในประกาศ) · การขอ "ลบ" ข้อมูลเป็นสิทธิ์คนละข้อ ยังไม่มีในระบบ
+   */
+  @Mutation(() => ConsentStatus, {
+    description:
+      'ให้ความยินยอมข้อหนึ่ง — policyVersion ต้องเป็นค่าจาก consentPolicy.version ' +
+      'ไม่งั้นได้ CONSENT_POLICY_VERSION_MISMATCH',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async grantConsent(
+    @CurrentUser() user: AuthUser,
+    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' }) type: string,
+    @Args('policyVersion', { description: 'ค่าจาก consentPolicy.version' })
+    policyVersion: string,
+    @Context() ctx: GqlContext,
+  ): Promise<ConsentStatus> {
+    const record = await this.consentService.setConsent(
+      user.id,
+      type,
+      true,
+      { source: CONSENT_SOURCE.SETTINGS, ...requestEvidenceOf(ctx.req) },
+      policyVersion,
+    );
+    return toStatus(record);
+  }
+
+  @Mutation(() => ConsentStatus, {
+    description:
+      'ถอนความยินยอมข้อหนึ่ง · ถอนข้อที่ไม่เคยให้ความยินยอมก็ทำได้ (idempotent) · ' +
+      'มีผลไปข้างหน้า ไม่ลบข้อมูลที่เก็บไปแล้ว',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async withdrawConsent(
+    @CurrentUser() user: AuthUser,
+    @Args('type', { description: 'ค่าจาก consentPolicy.items[].type' }) type: string,
+    @Context() ctx: GqlContext,
+  ): Promise<ConsentStatus> {
+    // ★ ไม่ต้องส่ง policyVersion — การถอนไม่ได้ขึ้นกับว่าอ่านฉบับไหนมา
+    //   ถ้าบังคับส่ง ผู้ใช้ที่ยินยอมไว้กับฉบับเก่าจะถอนไม่ได้ ซึ่งกลับหัวกลับหาง
+    const record = await this.consentService.setConsent(user.id, type, false, {
+      source: CONSENT_SOURCE.SETTINGS,
+      ...requestEvidenceOf(ctx.req),
+    });
+    return toStatus(record);
+  }
+}
+
+/** LatestConsentRecord → ConsentStatus ของ GraphQL */
+function toStatus(record: LatestConsentRecord): ConsentStatus {
+  return {
+    type: record.type,
+    granted: record.granted,
+    policyVersion: record.policyVersion,
+    answeredAt: record.answeredAt,
+    source: record.source ?? undefined,
+    isCurrentVersion: record.policyVersion === POLICY_VERSION,
+  };
 }
