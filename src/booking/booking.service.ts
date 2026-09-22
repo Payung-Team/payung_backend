@@ -4,15 +4,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
-import { OmiseService } from '../payment/omise/omise.service';
-import { PaymentStateMachine } from '../payment/payment-state-machine';
-import { PaymentStatus } from '../payment/entities/payment-status.enum';
+import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
+import { SettlementReason } from '../payment/settlement/booking-settlement.types';
 import {
   BookingListResponse,
   BookingPagination,
@@ -171,9 +169,9 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
-    // PYG-286: ใช้ใน cancelBooking auto-void เท่านั้น (held payment → reverse charge + FSM)
-    private readonly omiseService: OmiseService,
-    private readonly fsm: PaymentStateMachine,
+    // PYG-461 เฟส 3a: เงินตอนยกเลิกทั้งหมดอยู่ที่นี่ (แทน OmiseService + PaymentStateMachine
+    // ที่ PYG-286 เคย inject ไว้ให้ cancelBooking void hold เอง — ดูตารางย้ายการ์ดที่ cancelBooking)
+    private readonly settlementService: BookingSettlementService,
     // PYG-434: สร้างใบ QR เช็คอิน/เช็คเอาท์ พร้อมกับ booking ใน transaction เดียวกัน
     private readonly jobQrService: JobQrService,
   ) {}
@@ -680,112 +678,86 @@ export class BookingService {
   // ── ② PATCH /api/v1/bookings/:id/cancel ────────────────────────────────────
 
   /**
-   * Patient ยกเลิก booking ของตัวเอง
-   * อนุญาตเฉพาะ status: unmatched | pending | accepted
-   * (ไม่อนุญาต: completed | cancelled | rejected)
+   * Patient ยกเลิก booking ของตัวเอง — PYG-461 เฟส 3a
    *
-   * PYG-286: ถ้า booking มี payment 'held' (กันวงเงินไว้) → void hold ที่ Omise + FSM voided
-   *   - Omise call นอก tx (HTTP, อย่าถือ tx ค้าง)
-   *   - booking.update + FSM.transition(voided) ใน tx เดียว (atomic)
-   *   - ยิง BOOKING_EVENTS.PAYMENT_VOIDED แยกจาก CANCELLED → patient รู้ว่า hold ถูกปล่อยแล้ว
+   * เมธอดนี้เหลือหน้าที่ "สิทธิ์ + แจ้งเตือนระดับ booking" เท่านั้น
+   * เรื่องเงินทั้งหมดย้ายไป `BookingSettlementService.settle()` (เฟส 2)
+   *
+   * ★ การ์ดเงินที่ถูกลบจากตรงนี้ ย้ายไปอยู่ที่ไหน (ไม่มีตัวไหนหายไปเฉย ๆ):
+   *
+   *   `cancellableStatuses = [unmatched, pending, accepted]`
+   *     → `SETTLEABLE_FROM[PATIENT_CANCEL]` ซึ่ง **เพิ่ม 'confirmed'** เข้าไป — คือตัวบั๊กของ PYG-461
+   *       (payment เป็น held/captured ได้เฉพาะตอน booking = confirmed → ด่านเดิมบล็อกไว้หมด
+   *        โค้ด void ของ PYG-286 จึงไม่เคยทำงานจริงเลย) · นอกรายการ → 422 booking_not_settleable
+   *
+   *   `shouldVoid` (held + มี omiseChargeId) → `omiseService.voidCharge` นอก tx
+   *     → matrix ของ settle: held → void ที่ Omise **ใต้ row lock ใน tx เดียวกัน**
+   *       พร้อม Omise-Idempotency-Key (กัน void ซ้ำเมื่อ tx rollback หลัง Omise สำเร็จ)
+   *
+   *   `catch → ServiceUnavailableException` (Omise พัง = ไม่ยกเลิก booking)
+   *     → settle: Omise fail = rollback ทั้งก้อน booking ไม่เปลี่ยนสถานะ + 422 omise_unreachable
+   *       ที่ retryable = true · การรับประกัน "ไม่มีทาง cancelled ทั้งที่เงินยังไม่คืน" แข็งขึ้น
+   *       เพราะเดิม void สำเร็จแล้ว tx ล้ม = วงเงินถูกปล่อยแต่ booking ยังค้าง
+   *
+   *   `fsm.transition(payment → voided)` ใน tx
+   *     → settle ทำใน tx เดียวกับ booking.update + เขียน booking_status_history ด้วย
+   *
+   *   `eventEmitter.emit(PAYMENT_VOIDED)`
+   *     → settle ยิงเองหลัง commit (พร้อม REFUND_ISSUED ที่เดิมไม่มี)
+   *
+   *   ที่เดิม **ไม่มี** และเพิ่มเข้ามาจาก settle:
+   *     captured (PromptPay จ่ายจริงแล้ว) → RefundService.refund() ตาม CANCELLATION_POLICY
+   *       — เดิมยกเลิกผ่านโดยไม่คืนเงิน คือข้อที่การ์ดเรียกว่า "ผู้ป่วยเสียเงินฟรี"
+   *     pending (PromptPay ยังไม่สแกน) → ถาม Omise ก่อน แล้วปิด charge ให้ webhook ตามมาทีหลังไม่ได้
+   *     refunded / partially_refunded / transferred และ payout ที่จ่ายแล้ว → 422 ไม่ปล่อยผ่าน
+   *
+   * ★ สิ่งที่ settle **ไม่** ทำ และต้องอยู่ที่นี่ต่อ: ตรวจว่าเป็น booking ของผู้เรียกจริง
+   *   settle ไม่รู้จักเจ้าของ (cron ก็เรียกได้) → ถ้าย้ายออกไปด้วยจะกลายเป็นใครก็ยกเลิกของใครก็ได้
    */
   async cancelBooking(bookingId: string, patientId: string): Promise<BookingRest> {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      include: {
-        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-        payment:       true,
-      },
+      select: { id: true, patientId: true },
     });
 
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== patientId)
       throw new ForbiddenException('Access denied');
 
-    const cancellableStatuses = ['unmatched', 'pending', 'accepted'];
-    if (!cancellableStatuses.includes(booking.status)) {
-      throw new UnprocessableEntityException(
-        `Cannot cancel a booking with status "${booking.status}". ` +
-          `Only ${cancellableStatuses.join(', ')} bookings can be cancelled.`,
-      );
-    }
+    // เงิน + สถานะ booking + audit ทั้งหมดอยู่ใน settle() — โยน 422/404 ที่อ่านรู้เรื่องเองเมื่อยกเลิกไม่ได้
+    const settlement = await this.settlementService.settle(
+      bookingId,
+      SettlementReason.PATIENT_CANCEL,
+      { id: patientId, role: 'patient' },
+    );
 
-    // PYG-286: เช็คว่ามี held payment ต้อง void หรือไม่
-    // ใช้ != null เพื่อครอบทั้ง null และ undefined (test mocks อาจไม่ได้ใส่ field นี้)
-    const payment = booking.payment;
-    const shouldVoid =
-      payment != null &&
-      (payment.paymentStatus as PaymentStatus) === PaymentStatus.held &&
-      !!payment.omiseChargeId;
-
-    // void Omise นอก tx (ถ้ามี held payment) — fail → throw ServiceUnavailable, ไม่ cancel booking
-    if (shouldVoid) {
-      try {
-        await this.omiseService.voidCharge(payment!.omiseChargeId!);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.logger.error(
-          `[cancelBooking] Omise void failed for chargeId=${payment!.omiseChargeId}: ${msg}`,
-        );
-        throw new ServiceUnavailableException(
-          'ไม่สามารถยกเลิกการกันวงเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
-        );
-      }
-    }
-
-    // atomic: booking.cancelled + (ถ้า void แล้ว) FSM transition payment → voided
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.booking.update({
-        where: { id: bookingId },
-        data:  { status: 'cancelled' },
-        include: {
-          caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-          careRecipient: { select: { name: true } },
-        },
-      });
-
-      if (shouldVoid) {
-        // FSM ตรวจกฎ held → voided + เขียน history (atomic ใน tx เดียว)
-        await this.fsm.transition(
-          payment!.id,
-          PaymentStatus.voided,
-          {
-            changedBy: patientId,
-            reason: 'booking cancelled by patient',
-            metadata: {
-              omiseChargeId: payment!.omiseChargeId,
-              voidedAt: new Date().toISOString(),
-            },
-          },
-          tx,
-        );
-      }
-
-      return u;
+    // อ่านใหม่หลัง settle — แถวเพิ่งเปลี่ยนสถานะไป ถ้าใช้ของที่อ่านก่อนหน้าจะคืน status เก่าให้ FE
+    const updated = await this.prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+      include: {
+        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+      },
     });
 
-    this.logger.log({ event: 'booking.cancelled', bookingId, patientId, voided: shouldVoid });
+    this.logger.log({
+      event: 'booking.cancelled',
+      bookingId,
+      patientId,
+      moneyAction: settlement.moneyAction,
+      refundAmount: settlement.refundAmount,
+      alreadySettled: settlement.alreadySettled,
+    });
 
     // PYG-292: แจ้ง caregiver ว่าผู้ใช้บริการยกเลิกการจอง
-    this.emit({
-      bookingId,
-      eventType: BOOKING_EVENTS.CANCELLED,
-      patientId,
-      caregiverId: updated.caregiver?.userId ?? null,
-    });
-
-    // PYG-286: ถ้า void → แจ้ง patient ว่า hold ถูกปล่อย (ผู้รับ = patient เอง, in-app เป็น signal สำหรับ FE refresh wallet)
-    if (shouldVoid) {
-      this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_VOIDED, {
+    // ★ เรียกซ้ำ (alreadySettled) → ไม่ยิงซ้ำ ไม่งั้นผู้ดูแลได้แจ้งเตือน "ถูกยกเลิก" หลายรอบจากใบเดียว
+    //   PAYMENT_VOIDED / REFUND_ISSUED ไม่ต้องยิงที่นี่ — settle ยิงให้แล้วหลัง commit
+    if (!settlement.alreadySettled) {
+      this.emit({
         bookingId,
-        eventType: BOOKING_EVENTS.PAYMENT_VOIDED,
+        eventType: BOOKING_EVENTS.CANCELLED,
         patientId,
         caregiverId: updated.caregiver?.userId ?? null,
-        metadata: {
-          amount: payment!.amount,
-          omiseChargeId: payment!.omiseChargeId,
-        },
       });
     }
 

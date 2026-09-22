@@ -21,6 +21,8 @@ import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { KycStorageAuditCron } from './kyc-storage-audit.cron';
+import { ProfilePhotoController } from './profile-photo.controller';
+import { ProfilePhotoService } from './profile-photo.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
@@ -34,7 +36,10 @@ import { PaymentModule } from '../../payment/payment.module';
   // PYG-266: PaymentModule exports PayoutAccountService (สร้าง Omise recipient หลัง
   // updatePayoutAccount) — PaymentModule ไม่ import KycModule/AdminModule กลับ จึงไม่ circular
   imports: [NotificationModule, EmailModule, PaymentModule],
+  // PYG-507: REST endpoint รับไฟล์รูปโปรไฟล์ (GraphQL รับไฟล์ไม่ได้ — แพตเทิร์นเดียวกับ care log)
+  controllers: [ProfilePhotoController],
   providers: [
+    ProfilePhotoService, // PYG-507: อัปโหลดรูปโปรไฟล์ผ่าน backend + เข้าคิวรีวิวถ้าเป็นผู้ดูแล
     KycResolver,
     CaregiverResolver,
     WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition

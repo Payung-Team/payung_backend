@@ -12,12 +12,22 @@
  */
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { ROLE_ID } from '../../common/constants/roles.constant';
+import { toCareRecipientColumns } from '../../patient/patient-profile.mapper';
 import { User } from './entities/user.entity';
+import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
+import { CONSENT_SOURCE } from '../../consent/consent.constants';
+import {
+  type ConsentEvidence,
+  ConsentService,
+} from '../../consent/consent.service';
 
 /** Shape ของ user ที่ Prisma คืนมา → map เป็น GraphQL User entity */
 type PrismaUser = {
@@ -40,11 +50,20 @@ type PrismaUser = {
   emailPreferences: boolean;
   createdAt: Date;
   updatedAt: Date;
+  /** PYG-497 — เก็บตอน Onboarding (บัญชีเก่าที่สมัครก่อนหน้านั้นยังเป็น null) */
+  firstName: string | null;
+  lastName: string | null;
 };
 
 @Injectable()
 export class UserService {
-  constructor(private prismaService: PrismaService) {}
+  private readonly logger = new Logger(UserService.name);
+
+  constructor(
+    private prismaService: PrismaService,
+    // PYG-538: ตรวจและบันทึกความยินยอมตอน Onboarding
+    private readonly consentService: ConsentService,
+  ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
   /**
@@ -56,6 +75,9 @@ export class UserService {
       id: user.id,
       email: user.email,
       displayName: user.displayName ?? undefined,
+      // PYG-497/498: ชื่อจริงจาก Onboarding — แยกจาก displayName ที่เป็นแค่ชื่อแสดง
+      firstName: user.firstName ?? undefined,
+      lastName: user.lastName ?? undefined,
       avatarUrl: user.avatarUrl ?? undefined,
       phone: user.phone ?? undefined,
       address: user.address ?? undefined,
@@ -182,6 +204,15 @@ export class UserService {
       postalCode?: string;
     },
   ): Promise<User> {
+    // PYG-507: เลิกรับ avatarUrl ทางนี้ — เดิมรับ URL อะไรก็ได้ที่ผ่าน @IsUrl แล้วแสดงทันที
+    //   ผู้ดูแลจึงตั้งรูปเองได้โดยไม่ผ่านแอดมิน (ขัดกับ PYG-488)
+    //   ตอบ 400 แทนการเงียบ ๆ ไม่เขียน เพื่อให้ FE รุ่นเก่ารู้ว่าต้องย้ายไป endpoint อัปโหลด
+    if (updates.avatarUrl !== undefined) {
+      throw new BadRequestException(
+        'เปลี่ยนรูปโปรไฟล์ผ่าน updateProfile ไม่ได้แล้ว — อัปโหลดที่ POST /api/v1/profile/photo',
+      );
+    }
+
     // ตรวจสอบว่า user มีอยู่จริงก่อน
     await this.findById(id);
 
@@ -213,9 +244,8 @@ export class UserService {
         ...(updates.bio !== undefined && {
           bio: updates.bio,
         }),
-        ...(updates.avatarUrl !== undefined && {
-          avatarUrl: updates.avatarUrl,
-        }),
+        // PYG-507: ไม่มีการเขียน avatarUrl ที่นี่แล้ว — ตอบ 400 ไปตั้งแต่ต้นเมธอด
+        //   รูปโปรไฟล์เปลี่ยนผ่าน POST /api/v1/profile/photo ทางเดียว
         // updatedAt อัปเดตอัตโนมัติ เพราะ @updatedAt ใน Prisma schema
       },
     });
@@ -282,5 +312,164 @@ export class UserService {
       where: { id: userId },
       data: { last_login_at: new Date() },
     });
+  }
+
+  // ─── Onboarding ผู้สูงอายุ (PYG-498) ──────────────────────────────────────
+
+  /**
+   * ผู้ใช้คนนี้ผ่าน Onboarding แล้วหรือยัง
+   *
+   * ★ คำนวณจากข้อมูลจริงทุกครั้ง ไม่เก็บเป็น flag แยก
+   *   ถ้าเป็น flag แล้ววันหนึ่งโปรไฟล์ถูกลบหรือถูกแก้จนข้อมูลไม่ครบ flag จะยังเป็น true
+   *   ผู้ใช้จะเข้าหน้าจองแล้วเจอฟอร์มที่เติมข้อมูลไม่ครบโดยไม่มีอะไรบอกว่าเกิดอะไรขึ้น
+   *
+   * ครบ = มีโปรไฟล์ is_self ที่ยังไม่ถูกลบ และมี date_of_birth + gender + mobility_level
+   *   สามช่องนี้คือช่องบังคับของฟอร์ม Onboarding (อายุ / เพศ / ระดับการช่วยเหลือ)
+   *   ส่วนชื่อ-นามสกุลไม่ต้องเช็คซ้ำ เพราะสร้างโปรไฟล์ไม่ได้เลยถ้าไม่มีชื่อ
+   *
+   * role อื่นคืน true เสมอ — ผู้ดูแล/แอดมินไม่ได้เป็นผู้รับบริการ ไม่มีหน้า Onboarding นี้
+   * ถ้าคืน false จะทำให้ FE เด้งผู้ดูแลเข้าหน้าที่เขากรอกไม่ได้แล้ววนไม่จบ
+   */
+  async isOnboardingCompleted(userId: string, role: number): Promise<boolean> {
+    if (role !== ROLE_ID.PATIENT) return true;
+
+    // PYG-538 — ★ ถอนความยินยอมแล้ว = ยังไม่ผ่าน Onboarding แม้ข้อมูลเดิมจะยังอยู่
+    //   ตรงกับข้อความใน consent ที่บอกว่า "ถอนแล้วจะจองต่อไม่ได้" (มติ 2026-09-22)
+    //   ตรวจก่อนอ่านโปรไฟล์เพราะถ้าไม่ยินยอมก็ไม่ต้องไปดูข้อมูลสุขภาพเลย
+    if (!(await this.consentService.hasHealthDataConsent(userId))) return false;
+
+    const profile = await this.prismaService.careRecipient.findFirst({
+      where: {
+        patientId: userId,
+        is_self: true,
+        is_deleted: false,
+        date_of_birth: { not: null },
+        gender: { not: null },
+        mobility_level: { not: null },
+      },
+      select: { id: true },
+    });
+
+    return profile !== null;
+  }
+
+  /**
+   * บันทึกข้อมูลที่ผู้สูงอายุกรอกตอน Onboarding (PYG-498)
+   *
+   * ทำสองอย่างใน transaction เดียว — ถ้าครึ่งหลังล้มแล้วครึ่งแรกติด จะได้ users ที่มีชื่อ
+   * แต่ไม่มีโปรไฟล์ ซึ่ง onboardingCompleted ยังเป็น false → ผู้ใช้โดนเด้งกลับมากรอกใหม่
+   * ทั้งที่ชื่อถูกบันทึกไปแล้ว
+   *   ① users.first_name / last_name (+ display_name ถ้ายังเป็นค่าเริ่มต้นจากอีเมล)
+   *   ② care_recipients ใบ is_self — มีอยู่แล้วก็อัปเดต ยังไม่มีก็สร้าง
+   *
+   * เรียกซ้ำได้ (ผู้ใช้กลับมาแก้ข้อมูล) — ไม่สร้างใบ is_self ซ้ำ
+   */
+  async completeOnboarding(
+    userId: string,
+    input: CompleteOnboardingInput,
+    evidence: Omit<ConsentEvidence, 'source'>,
+  ): Promise<User> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true, displayName: true },
+    });
+    if (!user) throw new NotFoundException(`User with ID "${userId}" not found`);
+
+    // ★ เฉพาะผู้สูงอายุ — role อื่นไม่มีโปรไฟล์ผู้รับบริการของตัวเอง ถ้าปล่อยผ่านจะได้
+    //   ใบ is_self ของผู้ดูแลค้างใน DB ซึ่งไม่มีหน้าจอไหนแสดงและไม่มีใครลบ
+    if (user.role !== ROLE_ID.PATIENT) {
+      throw new ForbiddenException('หน้านี้สำหรับผู้รับบริการเท่านั้น');
+    }
+
+    const firstName = input.firstName.trim();
+    const lastName = input.lastName.trim();
+    // @IsNotEmpty ปล่อยสตริงที่มีแต่ช่องว่างผ่าน (' ' ไม่ empty) → ตรวจหลัง trim อีกชั้น
+    if (!firstName || !lastName) {
+      throw new BadRequestException('กรุณากรอกชื่อและนามสกุล');
+    }
+
+    // PYG-538 — ★ ด่านความยินยอมต้องอยู่ "ก่อน" เปิด transaction
+    //   ข้อมูลใน details เป็นข้อมูลอ่อนไหวตาม ม.26 ถ้าไม่มีความยินยอมโดยชัดแจ้ง
+    //   ต้องไม่เขียนอะไรเลยแม้แต่ชื่อ-นามสกุล (มติ 2026-09-22: ปฏิเสธทั้งคำขอ)
+    //   โยน ConsentError พร้อม extensions.code ให้ FE แยกออก (PYG-474)
+    // PYG-474 — ใช้ตัวตรวจแบบเข้มของ "หน้าจอ onboarding" แทน assertAnswers เปล่า ๆ
+    //   ข้อบังคับเท่าเดิม (sensitive_health_data) แต่ปฏิเสธเพิ่มอีก 2 กรณี:
+    //   - ชนิดที่หน้า Onboarding ไม่ได้ขอ (เช่น marketing / terms_of_service)
+    //     ไม่งั้นจะบันทึกความยินยอมที่ผู้ใช้ไม่เคยเห็นบนหน้านี้ โดย source = 'onboarding'
+    //   - ข้อเดียวกันซ้ำ (true + false) → สองแถวได้ granted_at เท่ากัน
+    //     แล้ว "แถวล่าสุด" จะขึ้นกับลำดับที่ DB คืนมา = onboardingCompleted สุ่มถูกสุ่มผิด
+    this.consentService.assertAnswersForSource(
+      input.consents,
+      CONSENT_SOURCE.ONBOARDING,
+    );
+
+    const nickname = input.nickname?.trim() || null;
+    const fullName = `${firstName} ${lastName}`;
+    const columns = toCareRecipientColumns(input.details);
+
+    await this.prismaService.$transaction(async (tx) => {
+      // ★ บันทึกความยินยอมในทรานแซคชันเดียวกับข้อมูลที่มันอนุญาต
+      //   ถ้าแยกกันแล้วฝั่งใดฝั่งหนึ่งล้ม จะได้ข้อมูลสุขภาพที่ไม่มีหลักฐานความยินยอม
+      //   (หรือหลักฐานที่ไม่มีข้อมูล) ซึ่งแก้ย้อนหลังไม่ได้เพราะตาราง append-only
+      await this.consentService.recordMany(tx, userId, input.consents, {
+        ...evidence,
+        source: CONSENT_SOURCE.ONBOARDING,
+      });
+
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          firstName,
+          lastName,
+          // display_name ที่ระบบตั้งให้ตอนสมัคร = prefix ของอีเมล (createUser)
+          // ทับได้เพราะผู้ใช้ไม่เคยตั้งเอง — แต่ถ้าเขาเปลี่ยนเองแล้วต้องเคารพของเขา
+          ...(user.displayName === user.email.split('@')[0]
+            ? { displayName: fullName }
+            : {}),
+        },
+      });
+
+      // ใบ is_self ของตัวเองเสมอเป็นโปรไฟล์ส่วนตัว (familyGroupId = null)
+      // ไม่ใช่โปรไฟล์ในกลุ่ม — โปรไฟล์กลุ่มถูกสร้างตอนจองแทน (PYG-500 ฝั่ง booking)
+      const existing = await tx.careRecipient.findFirst({
+        where: {
+          patientId: userId,
+          is_self: true,
+          familyGroupId: null,
+          is_deleted: false,
+        },
+        select: { id: true },
+        orderBy: { updated_at: 'desc' },
+      });
+
+      if (existing) {
+        await tx.careRecipient.update({
+          where: { id: existing.id },
+          data: { name: fullName, nickname, ...columns },
+        });
+        return;
+      }
+
+      await tx.careRecipient.create({
+        data: {
+          patientId: userId,
+          familyGroupId: null,
+          is_self: true,
+          // ข้อมูลมาจากเจ้าตัวโดยตรง ไม่ใช่คนอื่นกรอกให้
+          self_reported: true,
+          name: fullName,
+          nickname,
+          ...columns,
+        },
+      });
+    });
+
+    this.logger.log({
+      event: 'onboarding.completed',
+      userId,
+      createdProfile: true,
+    });
+
+    return this.findById(userId);
   }
 }

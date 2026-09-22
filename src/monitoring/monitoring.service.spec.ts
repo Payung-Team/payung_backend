@@ -13,6 +13,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
   ForbiddenException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -120,8 +121,20 @@ describe('MonitoringService', () => {
   };
   let eventEmitter: { emit: jest.Mock };
   let completeBookingService: { finalizeCheckedOutBooking: jest.Mock };
+  /** PYG-470: storage ของ admin client — sign รูปหลักฐานใน proofOfWork */
+  let createSignedUrl: jest.Mock;
+  let storageFrom: jest.Mock;
+  let getClient: jest.Mock;
 
   beforeEach(async () => {
+    createSignedUrl = jest.fn().mockImplementation((path: string) =>
+      Promise.resolve({
+        data: { signedUrl: `https://signed.example/${path}` },
+        error: null,
+      }),
+    );
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrl });
+    getClient = jest.fn();
     prisma = {
       caregiver: {
         findUnique: jest.fn().mockResolvedValue({ id: CAREGIVER_ID }),
@@ -143,7 +156,15 @@ describe('MonitoringService', () => {
         // เพราะมันฉีด ConfigService/SupabaseService ที่ mock ไว้ด้านล่างอยู่แล้วเหมือนเดิม
         JobEvidenceService,
         { provide: PrismaService, useValue: prisma },
-        { provide: SupabaseService, useValue: { getClient: jest.fn() } },
+        {
+          provide: SupabaseService,
+          useValue: {
+            getClient,
+            getAdminClient: jest
+              .fn()
+              .mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
         {
           // ใช้ตรวจ host ของไฟล์แนบ (PYG-358 STEP 2)
           provide: ConfigService,
@@ -954,6 +975,121 @@ describe('MonitoringService', () => {
       );
 
       expect(result.verdict).toBe(VERDICT.VALID);
+    });
+
+    // ── PYG-470: photoUrl ต้องเป็น signed URL ไม่ใช่ storage path ดิบ ──────────────
+    describe('PYG-470 — signed URL ของรูปหลักฐาน', () => {
+      const OUT_PATH = `${BOOKING_ID}/check-out-1.jpg`;
+
+      function bookingWithCheckoutPhoto() {
+        return bookingWithBothEvents({
+          jobEvents: [
+            fakeEventRow({
+              id: 'evt-in',
+              eventType: 'check_in',
+              serverTs: new Date(NOW.getTime() - 170 * 60000),
+            }),
+            fakeEventRow({
+              id: 'evt-out',
+              eventType: 'check_out',
+              serverTs: NOW,
+              photoUrl: OUT_PATH,
+            }),
+          ],
+        });
+      }
+
+      it.each([
+        ['ผู้ดูแลเจ้าของงาน', USER_ID, CAREGIVER_ROLE],
+        ['ผู้รับบริการเจ้าของงาน', PATIENT_ID, 1],
+        ['แอดมิน', 'user-admin', ADMIN_ROLE],
+      ])(
+        '%s ได้ signed URL (service-role, อายุ 1 ชม.)',
+        async (_who, userId, role) => {
+          prisma.booking.findUnique.mockResolvedValue(
+            bookingWithCheckoutPhoto(),
+          );
+
+          const result = await service.proofOfWork(userId, role, BOOKING_ID);
+
+          expect(result.checkOut?.photoUrl).toBe(
+            `https://signed.example/${OUT_PATH}`,
+          );
+          expect(storageFrom).toHaveBeenCalledWith('job-evidence');
+          expect(createSignedUrl).toHaveBeenCalledWith(OUT_PATH, 3600);
+          expect(getClient).not.toHaveBeenCalled(); // anon key อ่าน bucket นี้ไม่ได้
+          expect(result.checkIn?.photoUrl).toBeUndefined(); // ไม่มีรูป → ไม่ sign
+        },
+      );
+
+      it('คนนอก → Forbidden และไม่มีการ sign เลย', async () => {
+        prisma.booking.findUnique.mockResolvedValue(bookingWithCheckoutPhoto());
+
+        await expect(
+          service.proofOfWork('user-stranger', CAREGIVER_ROLE, BOOKING_ID),
+        ).rejects.toThrow(ForbiddenException);
+        expect(createSignedUrl).not.toHaveBeenCalled();
+      });
+
+      it('sign ได้ error → photoUrl ว่าง, ไม่ throw, log พร้อม error.message และ bucket', async () => {
+        prisma.booking.findUnique.mockResolvedValue(bookingWithCheckoutPhoto());
+        createSignedUrl.mockResolvedValue({
+          data: null,
+          error: { message: 'Object not found' },
+        });
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        const result = await service.proofOfWork(
+          USER_ID,
+          CAREGIVER_ROLE,
+          BOOKING_ID,
+        );
+
+        expect(result.checkOut?.photoUrl).toBeUndefined();
+        expect(result.verdict).toBe(VERDICT.VALID); // ส่วนอื่นของหน้ายังมาครบ
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'job_evidence.sign_url_failed',
+            bucket: 'job-evidence',
+            error: 'Object not found',
+          }),
+        );
+        warn.mockRestore();
+      });
+
+      it('storage client throw → photoUrl ว่าง และไม่ throw', async () => {
+        prisma.booking.findUnique.mockResolvedValue(bookingWithCheckoutPhoto());
+        createSignedUrl.mockRejectedValue(new Error('network down'));
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        const result = await service.proofOfWork(
+          USER_ID,
+          CAREGIVER_ROLE,
+          BOOKING_ID,
+        );
+
+        expect(result.checkOut?.photoUrl).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'job_evidence.sign_url_failed',
+            error: 'network down',
+          }),
+        );
+        warn.mockRestore();
+      });
+
+      it('proofOfWorkForSystem ไม่ sign (payout ไม่มีคนดูรูป)', async () => {
+        prisma.booking.findUnique.mockResolvedValue(bookingWithCheckoutPhoto());
+
+        const result = await service.proofOfWorkForSystem(BOOKING_ID);
+
+        expect(createSignedUrl).not.toHaveBeenCalled();
+        expect(result.checkOut?.photoUrl).toBe(OUT_PATH);
+      });
     });
   });
 });

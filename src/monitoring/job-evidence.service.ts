@@ -88,24 +88,45 @@ export class JobEvidenceService {
    * สร้าง signed URL ให้ไฟล์ใน bucket job-evidence (bucket เป็น private)
    * ⚠ ห้ามเก็บ public URL ลงฐานข้อมูลเด็ดขาด — เก็บเป็น path เปล่า ๆ แล้วค่อย sign ตอนอ่านทุกครั้ง
    *
-   * ★ ต้องใช้ getAdminClient() (service role) ไม่ใช่ getClient() (anon key) — bucket เป็น
-   *   private, role anon ไม่มี session/identity เลย (auth.uid() เป็น NULL) จึงไม่ผ่าน storage
-   *   policy ไหนทั้งสิ้น ผลคือ Supabase Storage ตอบ "Object not found" (ซ่อน permission denial
-   *   ไว้เป็น 404) แม้ไฟล์จะมีอยู่จริง — พิสูจน์แล้วด้วยการทดสอบจริง: sign ไฟล์เดียวกัน anon
-   *   client fail, admin client สำเร็จ. บั๊กนี้มีมาตั้งแต่เมธอดเดิม (MonitoringService.signEvidenceUrl
-   *   ของ PYG-358) แต่ไม่เคยมีใครเจอเพราะไม่เคยมี caller จริงมาก่อน — PYG-361 (care_logs) เป็น
-   *   จุดแรกที่เรียกใช้จริง
+   * PYG-470: ใช้ service-role (admin client) แบบเดียวกับ CareLogService.signPhoto
+   *   anon key อ่าน bucket นี้ไม่ได้เลย (policy job_evidence_select_participants เป็น TO authenticated)
+   *   → sign ล้มทุกครั้ง · service-role bypass RLS จึง **ผู้เรียกต้องตรวจสิทธิ์เองก่อนเรียกเสมอ**
+   *   วันนี้มีทางเข้าเดียวคือ MonitoringService.proofOfWork (ตรวจคู่กรณี/แอดมินแล้ว)
+   *
+   *   อาการที่ทำให้หายาก: Supabase Storage ซ่อน permission denial ไว้เป็น 404
+   *   ตอบ "Object not found" แม้ไฟล์จะมีอยู่จริง — พิสูจน์ด้วยการ sign ไฟล์เดียวกัน
+   *   anon client fail / admin client สำเร็จ · บั๊กนี้มีมาตั้งแต่ MonitoringService.signEvidenceUrl
+   *   ของ PYG-358 แต่ไม่มีใครเจอเพราะไม่เคยมี caller จริงจนถึง PYG-361 (care_logs)
+   *
+   * ล้มเหลว → คืน null ไม่ throw: รูปหลักฐานใบเดียว sign ไม่ได้ต้องไม่ทำให้ทั้งหน้าพัง
    */
   async sign(path: string): Promise<string | null> {
-    const supabase = this.supabaseService.getAdminClient();
-    const { data, error } = await supabase.storage
-      .from(JOB_EVIDENCE_BUCKET)
-      .createSignedUrl(path, SIGNED_URL_TTL_SEC);
+    try {
+      const { data, error } = await this.supabaseService
+        .getAdminClient()
+        .storage.from(JOB_EVIDENCE_BUCKET)
+        .createSignedUrl(path, SIGNED_URL_TTL_SEC);
 
-    if (error || !data?.signedUrl) {
-      this.logger.warn({ event: 'job_evidence.sign_url_failed', path });
+      if (error || !data?.signedUrl) {
+        this.logSignFailure(path, error?.message ?? 'no signedUrl returned');
+        return null;
+      }
+      return data.signedUrl;
+    } catch (err) {
+      this.logSignFailure(
+        path,
+        err instanceof Error ? err.message : String(err),
+      );
       return null;
     }
-    return data.signedUrl;
+  }
+
+  private logSignFailure(path: string, message: string): void {
+    this.logger.warn({
+      event: 'job_evidence.sign_url_failed',
+      bucket: JOB_EVIDENCE_BUCKET,
+      path,
+      error: message,
+    });
   }
 }

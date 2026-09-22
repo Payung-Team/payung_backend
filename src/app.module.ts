@@ -24,6 +24,7 @@ import { TransactionModule } from './transaction/transaction.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { FamilyGroupModule } from './family-group/family-group.module';
+import { ConsentModule } from './consent/consent.module';
 
 @Module({
   imports: [
@@ -78,6 +79,7 @@ import { FamilyGroupModule } from './family-group/family-group.module';
     MonitoringModule,    // PYG-352: proof-of-work — checkInBooking + job_events
     ReconciliationModule, // PYG-376: payments vs Omise vs payouts recon report + alert cron
     FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
+    ConsentModule,       // PYG-472: ข้อความ PDPA consent + เวอร์ชันนโยบาย (อ่านอย่างเดียว)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

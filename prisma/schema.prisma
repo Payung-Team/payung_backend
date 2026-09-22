@@ -17,7 +17,10 @@ model User {
   supabaseUid                                             String                 @unique @map("supabase_uid")
   email                                                   String                 @unique
   displayName                                             String?                @map("display_name")
-  avatarUrl                                               String?                @map("avatar_url")
+  /// PYG-497: ชื่อ-นามสกุลจริง กรอกตอน Onboarding (PYG-496) — NULL = ยังไม่ onboard / บัญชีเดิม
+  firstName                                               String?                @map("first_name") @db.VarChar(100)
+  lastName                                                String?                @map("last_name") @db.VarChar(100)
+  avatarUrl                                              String?                @map("avatar_url")
   isActive                                                Boolean                @default(true) @map("is_active")
   createdAt                                               DateTime               @default(now()) @map("created_at")
   updatedAt                                               DateTime               @updatedAt @map("updated_at")
@@ -57,6 +60,8 @@ model User {
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
+  /// PYG-473: ประวัติการให้/ถอนความยินยอมตาม PDPA — append-only
+  consents                                                user_consents[]
   kycReviews                                              KycReview[]
   notifications                                           Notification[]
   paymentStatusChanges                                    PaymentStatusHistory[] @relation("PaymentStatusChanges")
@@ -834,9 +839,17 @@ model KycDocument {
   mimeType     String     @map("mime_type")
   uploadedAt   DateTime   @default(now()) @map("uploaded_at")
   userId       String     @map("user_id")
-  caregiver    Caregiver? @relation(fields: [caregiverId], references: [id])
-  user         User       @relation(fields: [userId], references: [id])
+  /// PYG-506: สถานะรีวิว "รายเอกสาร" — ใช้กับ doc_type = 'profile_photo' (PYG-488)
+  /// NULL = เอกสารที่ไม่ได้รีวิวรายใบ (เอกสาร KYC เดิมรีวิวรวมทั้งก้อนผ่าน caregivers.kyc_status)
+  /// TEXT + CHECK ('pending'|'approved'|'rejected') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  reviewStatus String?     @map("review_status")
+  reviewedAt   DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  caregiver    Caregiver?  @relation(fields: [caregiverId], references: [id])
+  user         User        @relation(fields: [userId], references: [id])
+  reviews      KycReview[]
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([reviewStatus], map: "idx_kyc_documents_review_status")
   @@map("kyc_documents")
 }
 
@@ -847,9 +860,15 @@ model KycReview {
   action      String
   reason      String?
   reviewedAt  DateTime  @default(now()) @map("reviewed_at")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id])
-  reviewer    User      @relation(fields: [reviewerId], references: [id])
+  /// PYG-506: รีวิวใบนี้ตัดสิน "เอกสารใบไหน" — NULL = รีวิว KYC ทั้งก้อนแบบเดิม
+  /// มีคอลัมน์นี้เพื่อให้เหตุผลที่ปฏิเสธรูปโปรไฟล์ไม่ปนกับเหตุผลที่ปฏิเสธ KYC
+  documentId  String?      @map("document_id")
+  caregiver   Caregiver    @relation(fields: [caregiverId], references: [id])
+  reviewer    User         @relation(fields: [reviewerId], references: [id])
+  document    KycDocument? @relation(fields: [documentId], references: [id])
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE document_id IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([documentId], map: "idx_kyc_reviews_document")
   @@map("kyc_reviews")
 }
 
@@ -1150,4 +1169,47 @@ enum time_slot {
   morning
   afternoon
   evening
+}
+
+/// PYG-473 — ประวัติความยินยอมตาม PDPA (append-only audit trail)
+///
+/// ทำไม append-only: ต้องตอบได้ย้อนหลังว่า "ผู้ใช้คนนี้ยินยอมนโยบายเวอร์ชันไหน เมื่อไหร่"
+/// ถ้า update แถวเดิมตอนผู้ใช้เปลี่ยนใจ หลักฐานของการยินยอมครั้งก่อนจะหายไป
+/// → ถอนความยินยอม = insert แถวใหม่ granted = false (มี trigger กัน UPDATE ไว้ในฐานด้วย)
+///
+/// ชื่อ model เป็น snake_case ล้วนตามกลุ่ม booking_tasks / care_logs / field_locks
+/// (schema นี้มี 2 convention ปนกันโดยตั้งใจ — ดูคอมเมนต์ของ care_logs)
+model user_consents {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  user_id String @map("user_id")
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  /// ชนิดความยินยอม — ค่าที่ใช้จริงคุมด้วยค่าคงที่ฝั่งโค้ด ไม่ใช่ CHECK
+  /// (ชุด consent ยังไม่นิ่ง: PYG-472 ข้อความ / PYG-503 ข้อมูลอ่อนไหว / PYG-505 การเปิดเผย)
+  consent_type String
+
+  /// เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด เช่น 'v1.0' — รูปแบบกำหนดใน PYG-472
+  policy_version String
+
+  /// true = ยินยอม, false = ไม่ยินยอม/ถอน (แถวใหม่เสมอ ไม่แก้ของเดิม)
+  granted Boolean
+
+  granted_at DateTime @default(now()) @db.Timestamptz(6)
+
+  /// จุดในแอปที่ขอความยินยอม — 'register' | 'onboarding' | 'booking' | 'family_group' |
+  /// 'settings' | 're_consent' (CONSENT_SOURCE ใน src/consent/consent.constants.ts)
+  /// PYG-538: แก้จากเดิมที่เขียนว่า 'web' | 'mobile' — แพลตฟอร์มดูจาก user_agent ได้อยู่แล้ว
+  /// แต่ "ขอตรงไหน" ดูจากที่อื่นไม่ได้ และเป็นสิ่งที่ต้องพิสูจน์ได้ตาม PDPA
+  source String?
+
+  /// หลักฐานประกอบคำขอ (PDPA) — เก็บเท่าที่จำเป็นต่อการพิสูจน์ ไม่เอาไปทำอย่างอื่น
+  ip_address String? @db.Inet
+  user_agent String?
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, consent_type], map: "idx_user_consents_user_type")
+  @@index([user_id, consent_type, granted_at(sort: Desc)], map: "idx_user_consents_latest")
+  @@map("user_consents")
 }

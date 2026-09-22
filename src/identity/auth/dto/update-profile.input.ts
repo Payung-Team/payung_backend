@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-call */
 /**
  * UpdateProfileInput — DTO สำหรับ updateProfile mutation
  *
@@ -6,7 +5,13 @@
  * ทุก field เป็น optional — ส่งเฉพาะ field ที่ต้องการเปลี่ยน (partial update)
  */
 import { InputType, Field } from '@nestjs/graphql';
-import { IsOptional, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 @InputType()
 export class UpdateProfileInput {
@@ -67,8 +72,16 @@ export class UpdateProfileInput {
   @MaxLength(300, { message: 'Bio must be at most 300 characters' })
   bio?: string;
 
-  /** URL รูปโปรไฟล์ — ต้องเป็น URL ที่ถูกต้อง */
-  @Field({ nullable: true, description: 'Avatar image URL' })
+  /**
+   * @deprecated PYG-507 — ส่งค่ามา = 400 · อัปโหลดรูปที่ POST /api/v1/profile/photo แทน
+   * คง field ไว้ชั่วคราวเพื่อให้ FE รุ่นเก่าได้ error ที่อ่านรู้เรื่อง ไม่ใช่ "Unknown field"
+   */
+  @Field({
+    nullable: true,
+    deprecationReason:
+      'PYG-507: ใช้ POST /api/v1/profile/photo แทน — ส่งค่ามาจะได้ 400',
+    description: 'Avatar image URL (deprecated)',
+  })
   @IsOptional()
   @IsUrl({}, { message: 'Avatar URL must be a valid URL' })
   @MaxLength(500, { message: 'Avatar URL must be at most 500 characters' })

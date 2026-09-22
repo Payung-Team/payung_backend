@@ -4,8 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { GraphQLError } from 'graphql';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
-import { OmiseService } from '../payment/omise/omise.service';
-import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
@@ -105,8 +104,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         BookingService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: emitter },
-        { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
-        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        // PYG-461 เฟส 3a: dep ของ cancelBooking — ไฟล์นี้เทสการจองแทน ไม่ได้เทสการยกเลิก
+        { provide: BookingSettlementService, useValue: { settle: jest.fn() } },
         { provide: JobQrService, useValue: jobQr },
       ],
     }).compile();

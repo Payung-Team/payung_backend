@@ -23,17 +23,80 @@
  * - caregiver (role=2) → caregiver = { ... } (ดึงจาก caregivers table)
  */
 import { Resolver, ResolveField, Parent } from '@nestjs/graphql';
-import { NotFoundException } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import { User } from './entities/user.entity';
 import { Caregiver } from '../kyc/entities/caregiver.entity';
 import { CaregiverService } from '../kyc/caregiver.service';
+import { UserService } from './user.service';
+import { SupabaseService } from '../../common/supabase.service';
+import { PROFILE_PHOTOS_BUCKET } from '../kyc/profile-photo.constants';
 
 // role IDs (ตรงกับ users.role: 1=patient, 2=caregiver, 3=admin)
 const ROLE_CAREGIVER = 2;
 
+/** อายุ signed URL ของรูปโปรไฟล์ — เท่ากับฝั่งอัปโหลด (profile-photo.service) */
+const AVATAR_SIGNED_URL_TTL_SEC = 3600;
+
 @Resolver(() => User)
 export class UserResolver {
-  constructor(private readonly caregiverService: CaregiverService) {}
+  private readonly logger = new Logger(UserResolver.name);
+
+  constructor(
+    private readonly caregiverService: CaregiverService,
+    private readonly userService: UserService,
+    private readonly supabaseService: SupabaseService,
+  ) {}
+
+  /**
+   * Field resolver สำหรับ User.avatarUrl
+   *
+   * users.avatar_url เก็บได้ 2 แบบ:
+   * - URL เต็ม (Google OAuth, หรือ bucket public เดิม) → คืนตามนั้น
+   * - storage path ใน bucket profile-photos ซึ่งเป็น private (PYG-507)
+   *   → ต้อง sign ก่อน ไม่งั้น FE ได้ path ดิบแล้ว <img> โหลดไม่ขึ้น
+   *     (เป็นเหตุที่ header แสดงตัวอักษรย่อแทนรูป)
+   *
+   * sign ล้ม → คืน null ให้ FE ตก fallback เป็นตัวอักษรย่อ ไม่ throw ทิ้งทั้ง query
+   * เพราะรูปโปรไฟล์ไม่ควรทำให้ me ล้มทั้งก้อน
+   */
+  @ResolveField(() => String, {
+    nullable: true,
+    description:
+      'Avatar URL — signed URL when stored as a private storage path',
+  })
+  async avatarUrl(@Parent() user: User): Promise<string | null> {
+    const stored = user.avatarUrl;
+    if (!stored) {
+      return null;
+    }
+    if (stored.startsWith('http://') || stored.startsWith('https://')) {
+      return stored;
+    }
+
+    try {
+      const { data, error } = await this.supabaseService
+        .getAdminClient()
+        .storage.from(PROFILE_PHOTOS_BUCKET)
+        .createSignedUrl(stored, AVATAR_SIGNED_URL_TTL_SEC);
+
+      if (error || !data?.signedUrl) {
+        this.logger.warn({
+          event: 'avatar.sign_failed',
+          userId: user.id,
+          reason: error?.message ?? 'no signedUrl returned',
+        });
+        return null;
+      }
+      return data.signedUrl;
+    } catch (err) {
+      this.logger.warn({
+        event: 'avatar.sign_failed',
+        userId: user.id,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
 
   /**
    * Field resolver สำหรับ User.caregiver
@@ -65,5 +128,21 @@ export class UserResolver {
       }
       throw err; // error อื่นๆ ปล่อยขึ้นไป
     }
+  }
+
+  /**
+   * Field resolver สำหรับ User.onboardingCompleted (PYG-498)
+   *
+   * เหตุผลเดียวกับ caregiver ข้างบน — ต้องยิง query ตาราง care_recipients เพิ่ม
+   * ถ้าใส่ใน findById จะมี query พ่วงทุกครั้งที่ระบบอ่าน user ทั้งที่มีแค่หน้า Onboarding
+   * กับตัว redirect หลัง login (PYG-501) ที่ต้องใช้
+   */
+  @ResolveField(() => Boolean, {
+    description:
+      'ผ่านหน้า Onboarding แล้วหรือยัง — role 1 ต้องมีโปรไฟล์ของตัวเองที่กรอกอายุ เพศ ' +
+      'และระดับการช่วยเหลือครบ · role อื่นคืน true เสมอ',
+  })
+  async onboardingCompleted(@Parent() user: User): Promise<boolean> {
+    return this.userService.isOnboardingCompleted(user.id, user.role);
   }
 }
