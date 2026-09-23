@@ -164,8 +164,6 @@ type ActivityRow = Prisma.FamilyGroupActivityGetPayload<{
  *   สร้าง/หมุน/ยกเลิกลิงก์เข้าร่วม = PYG-416 · กดเข้าร่วมจริง (joinGroupByLink) = PYG-417
  *   ฟีดกิจกรรมแบบแบ่งหน้า = PYG-421 · จองแทน = PYG-424 (อยู่ที่ BookingService)
  *   ★ ช่องว่างที่ยังเหลือของฟีด (PYG-421 อ่านได้ครบทุก action แล้ว แต่ฝั่งเขียนยังขาด):
- *     - add/update/removeGroupCareRecipient ยังไม่เขียน RECIPIENT_ADDED/UPDATED/REMOVED
- *       และยังไม่อยู่ใน $transaction — ขัดกับกติกาข้อ 2 ด้านบน
  *     - คนที่เคยออกแล้วกลับเข้ามา ถูกบันทึกเป็น MEMBER_JOINED ไม่ใช่ MEMBER_REJOINED
  */
 @Injectable()
@@ -723,20 +721,42 @@ export class FamilyGroupService {
   //  สิทธิ์ระดับกลุ่ม (เป็นสมาชิก ACTIVE) ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
   //  ที่นี่เหลือแค่สิทธิ์ระดับโปรไฟล์: "เจ้าของเท่านั้นที่แก้/ลบได้"
   //  (เพิ่มได้ทุกสมาชิก — คนที่เพิ่มกลายเป็นเจ้าของโปรไฟล์นั้น)
+  //
+  //  ทั้งสามเขียน RECIPIENT_* ลงฟีดใน transaction เดียวกับโปรไฟล์ (กติกาข้อ 2)
+  //  ★ metadata ว่างโดยตั้งใจ — ไม่แช่ชื่อผู้รับบริการไว้ในฟีดเหมือน BOOKING_ON_BEHALF
+  //    เพราะ PYG-540 ปิดชื่อในฟีดให้เฉพาะแถว BOOKING_ON_BEHALF เท่านั้น ถ้าใส่ชื่อไว้ที่นี่
+  //    ชื่อจะยังโชว์ต่อหลังเจ้าของถอนความยินยอม · ร่องรอยตรวจสอบ = actor + targetId พอแล้ว
 
   /** เพิ่มโปรไฟล์ใหม่เข้ากลุ่ม — patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ */
   async addGroupCareRecipient(
     userId: string,
     input: AddGroupCareRecipientInput,
   ): Promise<GroupCareRecipient> {
-    const r = await this.prisma.careRecipient.create({
-      data: {
-        patientId: userId,
-        familyGroupId: input.groupId,
-        name: input.name.trim(),
-        nickname: input.nickname?.trim() || null,
-      },
-      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
+    const r = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.careRecipient.create({
+        data: {
+          patientId: userId,
+          familyGroupId: input.groupId,
+          name: input.name.trim(),
+          nickname: input.nickname?.trim() || null,
+        },
+        select: {
+          id: true,
+          name: true,
+          nickname: true,
+          patientId: true,
+          self_reported: true,
+        },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_ADDED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: created.id,
+        metadata: {},
+      });
+      return created;
     });
     this.logger.log({
       event: 'group_care_recipient.added',
@@ -758,23 +778,42 @@ export class FamilyGroupService {
     userId: string,
     input: UpdateGroupCareRecipientInput,
   ): Promise<GroupCareRecipient> {
-    const existing = await this.prisma.careRecipient.findUnique({
-      where: { id: input.recipientId },
-      select: { patientId: true, familyGroupId: true },
-    });
-    // ไม่มีจริง หรือไม่ได้อยู่ในกลุ่มนี้ → ตอบเหมือนกัน (กันเดา id ข้ามกลุ่ม, PDPA)
-    if (!existing || existing.familyGroupId !== input.groupId) {
-      throw new RecipientNotInGroupError();
-    }
-    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+    const r = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.careRecipient.findUnique({
+        where: { id: input.recipientId },
+        select: { patientId: true, familyGroupId: true },
+      });
+      // ไม่มีจริง หรือไม่ได้อยู่ในกลุ่มนี้ → ตอบเหมือนกัน (กันเดา id ข้ามกลุ่ม, PDPA)
+      if (!existing || existing.familyGroupId !== input.groupId) {
+        throw new RecipientNotInGroupError();
+      }
+      if (existing.patientId !== userId) throw new RecipientNotOwnerError();
 
-    const r = await this.prisma.careRecipient.update({
-      where: { id: input.recipientId },
-      data: {
-        ...(input.name !== undefined && { name: input.name.trim() }),
-        ...(input.nickname !== undefined && { nickname: input.nickname.trim() || null }),
-      },
-      select: { id: true, name: true, nickname: true, patientId: true, self_reported: true },
+      const updated = await tx.careRecipient.update({
+        where: { id: input.recipientId },
+        data: {
+          ...(input.name !== undefined && { name: input.name.trim() }),
+          ...(input.nickname !== undefined && {
+            nickname: input.nickname.trim() || null,
+          }),
+        },
+        select: {
+          id: true,
+          name: true,
+          nickname: true,
+          patientId: true,
+          self_reported: true,
+        },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_UPDATED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: input.recipientId,
+        metadata: {},
+      });
+      return updated;
     });
     this.logger.log({
       event: 'group_care_recipient.updated',
@@ -800,18 +839,28 @@ export class FamilyGroupService {
     userId: string,
     input: RemoveGroupCareRecipientInput,
   ): Promise<RemoveGroupCareRecipientResult> {
-    const existing = await this.prisma.careRecipient.findUnique({
-      where: { id: input.recipientId },
-      select: { patientId: true, familyGroupId: true },
-    });
-    if (!existing || existing.familyGroupId !== input.groupId) {
-      throw new RecipientNotInGroupError();
-    }
-    if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.careRecipient.findUnique({
+        where: { id: input.recipientId },
+        select: { patientId: true, familyGroupId: true },
+      });
+      if (!existing || existing.familyGroupId !== input.groupId) {
+        throw new RecipientNotInGroupError();
+      }
+      if (existing.patientId !== userId) throw new RecipientNotOwnerError();
 
-    await this.prisma.careRecipient.update({
-      where: { id: input.recipientId },
-      data: { familyGroupId: null },
+      await tx.careRecipient.update({
+        where: { id: input.recipientId },
+        data: { familyGroupId: null },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_REMOVED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: input.recipientId,
+        metadata: {},
+      });
     });
     this.logger.log({
       event: 'group_care_recipient.removed',
