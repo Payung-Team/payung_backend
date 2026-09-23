@@ -30,7 +30,7 @@ type PrismaMock = {
 
 describe('FamilyGroupService — กรองตามความยินยอม (PYG-540)', () => {
   let prisma: PrismaMock;
-  let consent: { withdrawnUserIds: jest.Mock };
+  let consent: { withdrawnUserIds: jest.Mock; grantedCurrentUserIds: jest.Mock };
   let service: FamilyGroupService;
 
   beforeEach(() => {
@@ -42,6 +42,7 @@ describe('FamilyGroupService — กรองตามความยินย�
     };
     consent = {
       withdrawnUserIds: jest.fn().mockResolvedValue(new Set([WITHDRAWN_OWNER])),
+      grantedCurrentUserIds: jest.fn().mockResolvedValue(new Set()),
     };
     service = new FamilyGroupService(
       prisma as unknown as PrismaService,
@@ -129,6 +130,11 @@ describe('FamilyGroupService — กรองตามความยินย�
         { where: { patientId: unknown } },
       ];
       expect(findArgs.where.patientId).toEqual({ in: [OTHER_OWNER] });
+      // ★ ใบ is_self ก็เช่นกัน — คนที่ถอนไม่ถูกส่งไปถามความยินยอมเพื่อเปิดเผยเพิ่มด้วยซ้ำ
+      expect(consent.grantedCurrentUserIds).toHaveBeenCalledWith(
+        [OTHER_OWNER],
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
     });
 
     it('คนที่ถอนยังเห็นชื่อตัวเองในรายการ', async () => {

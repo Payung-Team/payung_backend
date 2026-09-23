@@ -4,7 +4,9 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../common/prisma.service';
 // PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" ต้องไม่ถูกเห็นในกลุ่มอีก
 import { ConsentService } from '../consent/consent.service';
-import { CONSENT_TYPE } from '../consent/consent.constants';
+import { CONSENT_SOURCE, CONSENT_TYPE } from '../consent/consent.constants';
+import type { ConsentAnswerInput } from '../consent/dto/consent-answer.input';
+import type { RequestEvidence } from '../common/utils/request-evidence';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
@@ -166,6 +168,10 @@ type ActivityRow = Prisma.FamilyGroupActivityGetPayload<{
  *   ★ ช่องว่างที่ยังเหลือของฟีด (PYG-421 อ่านได้ครบทุก action แล้ว แต่ฝั่งเขียนยังขาด):
  *     - คนที่เคยออกแล้วกลับเข้ามา ถูกบันทึกเป็น MEMBER_JOINED ไม่ใช่ MEMBER_REJOINED
  */
+
+/** ผู้เรียกที่ไม่มี request (เทส / งานภายใน) — ไม่มีหลักฐาน IP/UA ให้บันทึก */
+const NO_EVIDENCE: RequestEvidence = { ipAddress: null, userAgent: null };
+
 @Injectable()
 export class FamilyGroupService {
   private readonly logger = new Logger(FamilyGroupService.name);
@@ -190,10 +196,14 @@ export class FamilyGroupService {
   async createFamilyGroup(
     userId: string,
     input: CreateFamilyGroupInput,
+    evidence: RequestEvidence = NO_EVIDENCE,
   ): Promise<FamilyGroup> {
     const name = this.assertValidName(input.name);
+    const consents = this.assertGroupConsents(input.consents);
 
     const group = await this.prisma.$transaction(async (tx) => {
+      await this.recordGroupConsents(tx, userId, consents, evidence);
+
       const created = await tx.familyGroup.create({
         data: {
           name,
@@ -627,10 +637,12 @@ export class FamilyGroupService {
    *   แม้ยังไม่มีโปรไฟล์ในกลุ่ม (hasProfile = false, details = null) เพื่อให้ FE
    *   มีปุ่มให้กดครบทุกคน ไม่ใช่หายไปเงียบ ๆ เพราะยังไม่เคยถูกจองให้
    *
-   * ★★ ไม่ดึงโปรไฟล์ส่วนตัว (family_group_id = NULL รวมใบ is_self จาก Onboarding)
-   *    ข้อมูลสุขภาพส่วนตัวยังไม่ได้แชร์เข้ากลุ่ม — เอามาโชว์ให้สมาชิกคนอื่นคือการเปิดเผย
-   *    ข้อมูลอ่อนไหวโดยไม่มีความยินยอม (PDPA ม.26 · consent disclose_to_family_group)
-   *    โปรไฟล์ส่วนตัวถูกคัดลอกเข้ากลุ่มตอน "จองจริง" ตามกลไกเดิม (PYG-500 สาขา ②)
+   * ★★ ลำดับแหล่งข้อมูล autofill:
+   *    ① โปรไฟล์ในกลุ่มนี้ (familyGroupId = groupId)
+   *    ② ใบ is_self จาก Onboarding — เฉพาะเจ้าของที่ "ยินยอม" disclose_to_family_group
+   *       ชัดแจ้งในเวอร์ชันปัจจุบัน (ยังไม่เคยตอบไม่นับ) เพราะเป็นข้อมูลอ่อนไหว PDPA ม.26
+   *       ที่ยังไม่เคยถูกแชร์เข้ากลุ่ม · โปรไฟล์ส่วนตัวใบอื่น (ไม่ใช่ is_self) ไม่ดึงเด็ดขาด
+   *    ③ ไม่มีทั้งคู่ → details = undefined ให้คนจองกรอก
    *
    * ชื่อมาจากบัญชีด้วย accountDisplayName ตัวเดียวกับที่ PYG-516 ใช้เขียนลง
    * care_recipients.name / bookings.patient_name — ถ้าคำนวณคนละแบบ ผู้ใช้จะกดชื่อหนึ่ง
@@ -688,6 +700,49 @@ export class FamilyGroupService {
     for (const profile of profiles) {
       if (!profileByMember.has(profile.patientId)) {
         profileByMember.set(profile.patientId, profile);
+      }
+    }
+
+    // ยังไม่มีโปรไฟล์ในกลุ่ม → ใช้ใบ is_self (กรอกตอน Onboarding) แทน
+    // เฉพาะคนที่ "ยินยอม" disclose_to_family_group ชัดแจ้งและเป็นเวอร์ชันปัจจุบัน
+    // (ยังไม่เคยตอบ ≠ ยินยอม) · ตัวเองดูของตัวเองได้เสมอ
+    // ★ ข้อมูลชุดเดียวกับที่ BookingService สาขา ② คัดลอกเข้ากลุ่มตอนจองจริงอยู่แล้ว
+    //   ฟอร์มจึงแสดงสิ่งที่จะถูกบันทึกจริง ไม่ใช่ปล่อยว่างแล้วไปโผล่ในใบจองทีหลัง
+    const withoutGroupProfile = members
+      .map((m) => m.userId)
+      .filter((id) => !profileByMember.has(id));
+    if (withoutGroupProfile.length > 0) {
+      const granted = await this.consentService.grantedCurrentUserIds(
+        withoutGroupProfile,
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+      const allowed = withoutGroupProfile.filter(
+        (id) => granted.has(id) || id === viewerId,
+      );
+      if (allowed.length > 0) {
+        const personal = await this.prisma.careRecipient.findMany({
+          where: {
+            patientId: { in: allowed },
+            familyGroupId: null,
+            // ★ ใบของ "ตัวเจ้าของบัญชี" เท่านั้น — โปรไฟล์ส่วนตัวอื่นอาจเป็นของคนอื่น (เช่น คุณยาย)
+            is_self: true,
+            is_deleted: false,
+          },
+          orderBy: { updated_at: 'desc' },
+          select: {
+            patientId: true,
+            nickname: true,
+            address_line: true,
+            province: true,
+            district: true,
+            ...PATIENT_PROFILE_SELECT,
+          },
+        });
+        for (const profile of personal) {
+          if (!profileByMember.has(profile.patientId)) {
+            profileByMember.set(profile.patientId, profile);
+          }
+        }
       }
     }
 
@@ -1116,7 +1171,14 @@ export class FamilyGroupService {
    * ★ used_count เพิ่มด้วย conditional UPDATE ใน SQL ไม่ใช่อ่านมาบวกแล้วเขียนกลับ
    *   สองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้าย จะมีคนเดียวที่ UPDATE ติด
    */
-  async joinGroupByLink(userId: string, token: string): Promise<FamilyGroup> {
+  async joinGroupByLink(
+    userId: string,
+    token: string,
+    rawConsents?: ConsentAnswerInput[],
+    evidence: RequestEvidence = NO_EVIDENCE,
+  ): Promise<FamilyGroup> {
+    // ตรวจก่อนแตะลิงก์ — คำตอบผิดรูปต้องไม่กินโควตา used_count
+    const consents = this.assertGroupConsents(rawConsents);
     const tokenHash = this.hashJoinToken(token);
 
     const link = await this.prisma.familyGroupJoinLink.findUnique({
@@ -1172,6 +1234,9 @@ export class FamilyGroupService {
         throw new JoinLinkInvalidError();
       }
 
+      // หลังยึดโควตาได้แล้วเท่านั้น — ลิงก์ใช้ไม่ได้ = ไม่มีหลักฐานความยินยอมของการเข้ากลุ่มที่ไม่เกิดขึ้น
+      await this.recordGroupConsents(tx, userId, consents, evidence);
+
       // upsert เพราะคนที่เคยออก/โดนเตะยังมีแถวเดิมค้างอยู่ (unique groupId+userId)
       // → กลับเข้ามาคือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง
       await tx.familyGroupMember.upsert({
@@ -1216,6 +1281,38 @@ export class FamilyGroupService {
    */
   hashJoinToken(token: string): string {
     return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  // ─── ความยินยอม disclose_to_family_group ตอนสร้าง/เข้ากลุ่ม ─────────────────
+  //
+  //  ★ ไม่บังคับ: ไม่ยินยอมก็สร้าง/เข้ากลุ่มได้ (ข้อความในกล่องสัญญาไว้แบบนั้น)
+  //    แต่คำตอบ "ไม่ยินยอม" ก็บันทึกด้วย — ผลคือถูกกรองออกจากรายการจองแทน (PYG-540)
+  //  ★ ตรวจ "ก่อน" เปิด transaction และบันทึก "ใน" transaction เดียวกับการสร้าง/เข้ากลุ่ม
+  //    แยกกันแล้วฝั่งหนึ่งล้ม จะได้หลักฐานความยินยอมของการเข้ากลุ่มที่ไม่เคยเกิด (append-only แก้ไม่ได้)
+
+  /** ไม่ส่งมา = ไม่มีอะไรต้องบันทึก · ส่งมา = ตรวจเข้มแบบหน้าจอ family_group */
+  private assertGroupConsents(
+    consents: ConsentAnswerInput[] | undefined,
+  ): ConsentAnswerInput[] {
+    if (!consents || consents.length === 0) return [];
+    this.consentService.assertAnswersForSource(
+      consents,
+      CONSENT_SOURCE.FAMILY_GROUP,
+    );
+    return consents;
+  }
+
+  private async recordGroupConsents(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    consents: ConsentAnswerInput[],
+    evidence: RequestEvidence,
+  ): Promise<void> {
+    if (consents.length === 0) return;
+    await this.consentService.recordMany(tx, userId, consents, {
+      ...evidence,
+      source: CONSENT_SOURCE.FAMILY_GROUP,
+    });
   }
 
   // ─── ตัวช่วยภายในของลิงก์เข้าร่วม ────────────────────────────────────────

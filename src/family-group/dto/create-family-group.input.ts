@@ -1,10 +1,18 @@
 import { Field, InputType } from '@nestjs/graphql';
-import { Transform } from 'class-transformer';
-import { IsString, Length } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsOptional,
+  IsString,
+  Length,
+  ValidateNested,
+} from 'class-validator';
 import {
   GROUP_NAME_MAX_LENGTH,
   GROUP_NAME_MIN_LENGTH,
 } from '../family-group.constants';
+import { ConsentAnswerInput } from '../../consent/dto/consent-answer.input';
 
 /**
  * ตัดช่องว่างหัวท้ายก่อน validate
@@ -27,4 +35,19 @@ export class CreateFamilyGroupInput {
     message: `ชื่อกลุ่มต้องไม่เว้นว่าง และยาวไม่เกิน ${GROUP_NAME_MAX_LENGTH} ตัวอักษร`,
   })
   name: string;
+
+  /**
+   * คำตอบความยินยอมจากกล่อง consent ของจุดนี้ (source = family_group)
+   * ไม่ส่ง = ไม่บันทึกอะไร (FE ไม่แสดงกล่องเมื่อยินยอมฉบับปัจจุบันไว้แล้ว)
+   */
+  @Field(() => [ConsentAnswerInput], {
+    nullable: true,
+    description: 'คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @ValidateNested({ each: true })
+  @Type(() => ConsentAnswerInput)
+  consents?: ConsentAnswerInput[];
 }

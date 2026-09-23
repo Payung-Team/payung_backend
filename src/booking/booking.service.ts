@@ -1202,7 +1202,12 @@ export class BookingService {
     const limit = Math.min(50, Math.max(1, input.limit ?? 10));
     const offset = (page - 1) * limit;
 
-    const where: Record<string, unknown> = { patientId: userId };
+    //   เฉพาะการจองส่วนตัว — ใบ "จองแทน" มี patientId = คนกดจองด้วย (เพื่อให้จ่ายเงินได้ ดู
+    //   createBookingOnBehalf) ถ้าไม่กรอง นัดของสมาชิกในครอบครัวจะปนมาใน "นัดหมายของฉัน"
+    //   ใบจองแทนดู/จ่ายเงิน/จัดการได้ที่หน้ากลุ่มครอบครัว (groupBookings + BookingDetail โหมดกลุ่ม)
+    //   ผลพลอยได้: ที่อยู่ล่าสุดที่เติมให้ตอนจองครั้งถัดไป (GET_LATEST_BOOKING_ADDRESS)
+    //   ไม่หยิบที่อยู่บ้านสมาชิกมาเป็นที่อยู่ของเราอีก
+    const where: Record<string, unknown> = { patientId: userId, familyGroupId: null };
     if (input.status) where.status = input.status;
 
     const [items, total] = await Promise.all([

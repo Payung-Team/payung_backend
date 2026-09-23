@@ -58,7 +58,15 @@ type CaregiverBookingRow = {
   rejectionReason: string | null;
   createdAt: Date;
   patient: { id: string; displayName: string | null; avatarUrl: string | null };
-  careRecipient: { name: string } | null;
+  // จองแทน: patientId ของ booking = คนกดจอง · bookedBy = คนกดจอง (null = จองให้ตัวเอง)
+  familyGroupId: string | null;
+  bookedBy: string | null;
+  careRecipient: {
+    name: string;
+    patientId: string;
+    is_self: boolean;
+    patient: { avatarUrl: string | null };
+  } | null;
   // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (JSONB) — null สำหรับ booking ก่อน PYG-460
   // มาพร้อม BOOKING_INCLUDE โดยอัตโนมัติเพราะ include คืน scalar ทุกคอลัมน์อยู่แล้ว
   memberDetails: unknown;
@@ -71,9 +79,38 @@ type CaregiverBookingRow = {
  */
 const BOOKING_INCLUDE = {
   patient: { select: { id: true, displayName: true, avatarUrl: true } },
-  careRecipient: { select: { name: true } },
+  // patientId/is_self/avatar ใช้ตัดสินว่ารูปของ "ผู้รับบริการ" คือรูปของใคร (recipientAvatarPath)
+  careRecipient: {
+    select: {
+      name: true,
+      patientId: true,
+      is_self: true,
+      patient: { select: { avatarUrl: true } },
+    },
+  },
   payout: { select: { status: true, amount: true } },
 } as const;
+
+/**
+ * รูปโปรไฟล์ของ "ผู้รับบริการ" (คนที่ผู้ดูแลไปดูแลจริง) — ไม่ใช่ของคนกดจองเสมอไป
+ *
+ * ★ แสดงรูปเฉพาะเมื่อมั่นใจว่าผู้รับบริการ = เจ้าของบัญชีที่มีรูปนั้น
+ *   เดาผิด = ผู้ดูแลเห็นหน้าคนอื่นบนการ์ด "ผู้รับบริการ" ซึ่งแย่กว่าไม่มีรูป (ตกเป็นตัวอักษรย่อ)
+ *   ① ไม่มี careRecipient      → จองให้ตัวเอง → รูปของผู้จอง
+ *   ② ใบ is_self               → โปรไฟล์ของเจ้าของบัญชีเอง → รูปเจ้าของใบ
+ *   ③ จองแทนในกลุ่ม และเจ้าของใบ ≠ คนกดจอง → โมเดล "สมาชิก = patient" (PYG-500) ใบเป็นของตัวสมาชิก
+ *   อื่น ๆ (เช่น โปรไฟล์ "คุณยาย" ที่ผู้จองสร้างเอง) → ไม่มีรูป
+ */
+function recipientAvatarPath(b: CaregiverBookingRow): string | undefined {
+  const cr = b.careRecipient;
+  if (!cr) return b.patient.avatarUrl ?? undefined;
+  if (cr.is_self) return cr.patient.avatarUrl ?? undefined;
+  const booker = b.bookedBy ?? b.patient.id;
+  if (b.familyGroupId && cr.patientId !== booker) {
+    return cr.patient.avatarUrl ?? undefined;
+  }
+  return undefined;
+}
 
 @Injectable()
 export class CaregiverBookingService {
@@ -470,6 +507,8 @@ export class CaregiverBookingService {
         avatarUrl: b.patient.avatarUrl ?? undefined,
       },
       careRecipientName: b.careRecipient?.name ?? undefined,
+      // ค่าดิบ (อาจเป็น storage path ของ bucket private) — resolver sign ตอน client ขอ recipientAvatarUrl
+      recipientAvatarPath: recipientAvatarPath(b),
       /**
        * PYG-460 — ข้อมูลสุขภาพที่ผู้ดูแลต้องเห็นก่อนเริ่มงาน
        *

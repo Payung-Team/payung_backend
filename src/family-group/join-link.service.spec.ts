@@ -86,10 +86,16 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
       findUnique: jest.Mock;
       updateMany: jest.Mock;
     };
-    familyGroupMember: { findFirst: jest.Mock; count: jest.Mock };
+    familyGroupMember: { findFirst: jest.Mock; count: jest.Mock; upsert: jest.Mock };
     familyGroupActivity: { create: jest.Mock };
+    $queryRaw: jest.Mock;
   };
   let prisma: typeof tx & { $transaction: jest.Mock };
+  let consent: {
+    withdrawnUserIds: jest.Mock;
+    assertAnswersForSource: jest.Mock;
+    recordMany: jest.Mock;
+  };
 
   beforeEach(async () => {
     process.env.APP_PUBLIC_BASE_URL = BASE_URL;
@@ -104,23 +110,28 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
       familyGroupMember: {
         findFirst: jest.fn(),
         count: jest.fn().mockResolvedValue(1),
+        upsert: jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
+      // conditional UPDATE ของ used_count — ค่าเริ่มต้น = ยึดโควตาได้
+      $queryRaw: jest.fn().mockResolvedValue([{ id: LINK_ID }]),
     };
     prisma = {
       ...tx,
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+    consent = {
+      withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+      assertAnswersForSource: jest.fn(),
+      recordMany: jest.fn(),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
-        // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
-        {
-          provide: ConsentService,
-          useValue: { withdrawnUserIds: jest.fn().mockResolvedValue(new Set()) },
-        },
+        { provide: ConsentService, useValue: consent },
       ],
     }).compile();
 
@@ -618,6 +629,71 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
         thrown = error;
       }
       expect(thrown).toMatchObject({ extensions: { code } });
+    });
+  });
+
+  // ═══ joinGroupByLink — ความยินยอม disclose_to_family_group ═════════════
+  describe('joinGroupByLink · ความยินยอม', () => {
+    const CONSENTS = [
+      { type: 'disclose_to_family_group', granted: true, policyVersion: '1.0' },
+    ];
+    const EVIDENCE = { ipAddress: '1.2.3.4', userAgent: 'jest' };
+
+    beforeEach(() => {
+      tx.familyGroupJoinLink.findUnique.mockResolvedValue({
+        ...linkRow(),
+        group: { members: [{ userId: OWNER_ID }] },
+      });
+      // หลังเข้ากลุ่มเสร็จ service อ่านกลุ่มคืน — เทสนี้ไม่สนรูปทรงของผลลัพธ์
+      jest
+        .spyOn(service, 'familyGroup')
+        .mockResolvedValue({ id: GROUP_ID } as Awaited<ReturnType<FamilyGroupService['familyGroup']>>);
+    });
+
+    it('ส่งความยินยอมมา → บันทึกใน transaction เดียวกับการเข้ากลุ่ม (source = family_group)', async () => {
+      await service.joinGroupByLink(OUTSIDER_ID, 'raw', CONSENTS, EVIDENCE);
+
+      expect(consent.assertAnswersForSource).toHaveBeenCalledWith(CONSENTS, 'family_group');
+      expect(consent.recordMany).toHaveBeenCalledWith(tx, OUTSIDER_ID, CONSENTS, {
+        ...EVIDENCE,
+        source: 'family_group',
+      });
+      expect(tx.familyGroupMember.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('คำตอบไม่ผ่าน → ไม่แตะลิงก์เลย (ไม่กินโควตา)', async () => {
+      consent.assertAnswersForSource.mockImplementation(() => {
+        throw new Error('CONSENT_TYPE_INVALID');
+      });
+
+      await expect(
+        service.joinGroupByLink(OUTSIDER_ID, 'raw', CONSENTS, EVIDENCE),
+      ).rejects.toThrow('CONSENT_TYPE_INVALID');
+      expect(tx.familyGroupJoinLink.findUnique).not.toHaveBeenCalled();
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('★ ยึดโควตาไม่ได้ (ลิงก์ตายระหว่างทาง) → ไม่บันทึกความยินยอมของการเข้ากลุ่มที่ไม่เกิดขึ้น', async () => {
+      tx.$queryRaw.mockResolvedValue([]);
+      tx.familyGroupJoinLink.findUnique
+        .mockResolvedValueOnce({ ...linkRow(), group: { members: [{ userId: OWNER_ID }] } })
+        .mockResolvedValueOnce(linkRow({ status: JOIN_LINK_STATUS.REVOKED }));
+
+      await expect(
+        service.joinGroupByLink(OUTSIDER_ID, 'raw', CONSENTS, EVIDENCE),
+      ).rejects.toMatchObject({ extensions: { code: FG_ERROR.JOIN_LINK_REVOKED } });
+      expect(consent.recordMany).not.toHaveBeenCalled();
+    });
+
+    it('เป็นสมาชิกอยู่แล้ว (no-op) → ไม่บันทึกความยินยอม', async () => {
+      tx.familyGroupJoinLink.findUnique.mockResolvedValue({
+        ...linkRow(),
+        group: { members: [{ userId: OUTSIDER_ID }] },
+      });
+
+      await service.joinGroupByLink(OUTSIDER_ID, 'raw', CONSENTS, EVIDENCE);
+
+      expect(consent.recordMany).not.toHaveBeenCalled();
     });
   });
 });

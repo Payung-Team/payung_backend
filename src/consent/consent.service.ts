@@ -482,6 +482,38 @@ export class ConsentService {
     );
   }
 
+  /**
+   * ในกลุ่มผู้ใช้ที่ให้มา ใครบ้างที่ "ยินยอม" ข้อนี้อยู่จริง — hasGrantedCurrent แบบหลายคน
+   *
+   * ★ เข้มกว่า withdrawnUserIds: ยังไม่เคยตอบ = ไม่นับ
+   *   ใช้ตอนจะ "เปิดเผยเพิ่ม" (เช่น โปรไฟล์ส่วนตัวให้สมาชิกกลุ่มเห็นตอนจองแทน)
+   *   ซึ่งต้องมีความยินยอมชัดแจ้ง ไม่ใช่แค่ "ยังไม่ได้ถอน"
+   * แถวล่าสุดต้อง granted = true และเป็นนโยบายเวอร์ชันปัจจุบัน — ยิง query เดียว
+   */
+  async grantedCurrentUserIds(
+    userIds: readonly string[],
+    type: ConsentType,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (ids.length === 0) return new Set();
+
+    const rows = await this.prisma.user_consents.findMany({
+      where: { user_id: { in: ids }, consent_type: type },
+      orderBy: { granted_at: 'desc' },
+      select: { user_id: true, granted: true, policy_version: true },
+    });
+
+    const latest = new Map<string, { granted: boolean; policy_version: string }>();
+    for (const row of rows) {
+      if (!latest.has(row.user_id)) latest.set(row.user_id, row);
+    }
+    return new Set(
+      [...latest.entries()]
+        .filter(([, r]) => r.granted && r.policy_version === POLICY_VERSION)
+        .map(([id]) => id),
+    );
+  }
+
   /** ชนิดต้องอยู่ในรายการของ role นี้ — กันถอน/ให้ข้อที่หน้าจอไม่ได้แสดง (หรือสะกดผิด) */
   private assertTypeForRole(type: string, role: number): ConsentType {
     const allowed = CONSENTS_BY_ROLE[role] ?? [];

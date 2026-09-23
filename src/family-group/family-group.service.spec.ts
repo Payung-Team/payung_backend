@@ -85,12 +85,21 @@ describe('FamilyGroupService', () => {
       findMany: jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
+    // careRecipient อยู่ใน tx (ตามฝั่ง dev) ไม่ใช่เฉพาะใน prisma —
+    // prisma เป็น `typeof tx & {...}` อยู่แล้ว วางไว้ที่นี่ที่เดียวจึงครอบทั้ง
+    // เทสที่เรียกผ่าน tx และเทสที่เรียกผ่าน prisma
     careRecipient: {
       create: jest.Mock;
       findUnique: jest.Mock;
       findMany: jest.Mock;
       update: jest.Mock;
     };
+  };
+  let consent: {
+    withdrawnUserIds: jest.Mock;
+    grantedCurrentUserIds: jest.Mock;
+    assertAnswersForSource: jest.Mock;
+    recordMany: jest.Mock;
   };
   let prisma: typeof tx & {
     $transaction: jest.Mock;
@@ -125,15 +134,20 @@ describe('FamilyGroupService', () => {
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
 
+    // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+    //   และไม่มีใครให้ความยินยอมชัดแจ้ง (= ไม่ดึงใบ is_self ของคนอื่น)
+    consent = {
+      withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+      grantedCurrentUserIds: jest.fn().mockResolvedValue(new Set()),
+      assertAnswersForSource: jest.fn(),
+      recordMany: jest.fn(),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
-        // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
-        {
-          provide: ConsentService,
-          useValue: { withdrawnUserIds: jest.fn().mockResolvedValue(new Set()) },
-        },
+        { provide: ConsentService, useValue: consent },
       ],
     }).compile();
 
@@ -218,6 +232,49 @@ describe('FamilyGroupService', () => {
       await expect(
         service.createFamilyGroup(OWNER_ID, { name: 'x'.repeat(80) }),
       ).resolves.toBeDefined();
+    });
+
+    // ── ความยินยอม disclose_to_family_group ───────────────────────────────
+    const CONSENTS = [
+      { type: 'disclose_to_family_group', granted: true, policyVersion: '1.0' },
+    ];
+    const EVIDENCE = { ipAddress: '1.2.3.4', userAgent: 'jest' };
+
+    it('ส่งความยินยอมมา → ตรวจแบบหน้าจอ family_group แล้วบันทึกใน transaction เดียวกับการสร้าง', async () => {
+      tx.familyGroup.create.mockResolvedValue(groupRow());
+
+      await service.createFamilyGroup(
+        OWNER_ID,
+        { name: 'บ้านยาย', consents: CONSENTS },
+        EVIDENCE,
+      );
+
+      expect(consent.assertAnswersForSource).toHaveBeenCalledWith(CONSENTS, 'family_group');
+      // ★ tx ตัวเดียวกับที่สร้างกลุ่ม — ล้มฝั่งไหนก็ย้อนทั้งคู่
+      expect(consent.recordMany).toHaveBeenCalledWith(tx, OWNER_ID, CONSENTS, {
+        ...EVIDENCE,
+        source: 'family_group',
+      });
+    });
+
+    it('ไม่ส่งความยินยอม → ไม่บันทึกอะไร (ผู้ที่ยินยอมไว้แล้วไม่ถูกถามซ้ำ)', async () => {
+      tx.familyGroup.create.mockResolvedValue(groupRow());
+
+      await service.createFamilyGroup(OWNER_ID, { name: 'บ้านยาย' });
+
+      expect(consent.assertAnswersForSource).not.toHaveBeenCalled();
+      expect(consent.recordMany).not.toHaveBeenCalled();
+    });
+
+    it('คำตอบความยินยอมไม่ผ่าน → ตกก่อนเปิด transaction ไม่มีกลุ่มถูกสร้าง', async () => {
+      consent.assertAnswersForSource.mockImplementation(() => {
+        throw new Error('CONSENT_TYPE_INVALID');
+      });
+
+      await expect(
+        service.createFamilyGroup(OWNER_ID, { name: 'บ้านยาย', consents: CONSENTS }),
+      ).rejects.toThrow('CONSENT_TYPE_INVALID');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
 
@@ -986,7 +1043,7 @@ describe('FamilyGroupService', () => {
     });
 
     // ── ★ หัวใจของการ์ด: ข้อมูลส่วนตัวห้ามหลุด ─────────────────────────────
-    it('★ ไม่ดึงโปรไฟล์ส่วนตัวของสมาชิก — query ต้องผูกกับ familyGroupId ของกลุ่มนี้', async () => {
+    it('★ query แรกอ่านแค่โปรไฟล์ของกลุ่มนี้ — ไม่ปนโปรไฟล์ส่วนตัว', async () => {
       await service.groupBookingRecipients(GROUP, OWNER);
 
       const query = prisma.careRecipient.findMany.mock.calls[0][0] as {
@@ -1002,6 +1059,72 @@ describe('FamilyGroupService', () => {
       });
       expect(JSON.stringify(query.where)).not.toContain('null');
       expect(query.where).not.toHaveProperty('OR');
+    });
+
+    // ── ใบ is_self จาก Onboarding (เฉพาะคนที่ยินยอม) ─────────────────────────
+    /** โปรไฟล์ในกลุ่มไม่มี → query ที่สอง (ใบ is_self) คืน rows ที่ให้ */
+    const givenNoGroupProfileButSelf = (rows: unknown[]) =>
+      prisma.careRecipient.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(rows);
+
+    it('ยินยอมชัดแจ้ง + ไม่มีโปรไฟล์ในกลุ่ม → เติมจากใบ is_self', async () => {
+      consent.grantedCurrentUserIds.mockResolvedValue(new Set([MEMBER]));
+      givenNoGroupProfileButSelf([profileRow({ nickname: 'ศรี' })]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+      const member = result.find((r) => r.memberUserId === MEMBER)!;
+
+      expect(member.hasProfile).toBe(true);
+      expect(member.nickname).toBe('ศรี');
+      expect(member.details).toMatchObject({ gender: 'หญิง', conditions: ['เบาหวาน'] });
+      // ชื่อยังมาจากบัญชีเสมอ ไม่ใช่จากโปรไฟล์
+      expect(member.name).toBe('สมศรี ใจงาม');
+    });
+
+    it('★ query ใบส่วนตัวต้องเป็น is_self + familyGroupId null เท่านั้น', async () => {
+      consent.grantedCurrentUserIds.mockResolvedValue(new Set([MEMBER]));
+      givenNoGroupProfileButSelf([]);
+
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      const query = prisma.careRecipient.findMany.mock.calls[1][0] as {
+        where: Record<string, unknown>;
+      };
+      // ★ โปรไฟล์ส่วนตัวใบอื่นอาจเป็นของคนอื่น (เช่น คุณยายที่สมาชิกสร้างไว้) — ห้ามเอามาเติม
+      expect(query.where).toMatchObject({
+        familyGroupId: null,
+        is_self: true,
+        is_deleted: false,
+      });
+    });
+
+    it('★ ยังไม่เคยตอบความยินยอม → ไม่อ่านใบ is_self ของคนนั้น', async () => {
+      // grantedCurrentUserIds คืน Set ว่าง (ค่าเริ่มต้น) = ไม่มีใครยินยอมชัดแจ้ง
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      expect(consent.grantedCurrentUserIds).toHaveBeenCalledWith(
+        [OWNER, MEMBER],
+        'disclose_to_family_group',
+      );
+      // ผู้เรียก (OWNER) ดูใบของตัวเองได้ แต่ MEMBER ต้องไม่อยู่ใน query
+      const query = prisma.careRecipient.findMany.mock.calls[1][0] as {
+        where: { patientId: { in: string[] } };
+      };
+      expect(query.where.patientId.in).toEqual([OWNER]);
+    });
+
+    it('มีโปรไฟล์ในกลุ่มแล้ว → ใช้ใบในกลุ่ม ไม่ถามความยินยอมของคนนั้น', async () => {
+      prisma.careRecipient.findMany.mockResolvedValueOnce([
+        profileRow(),
+        profileRow({ patientId: OWNER }),
+      ]);
+
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      // ทุกคนมีใบในกลุ่มแล้ว → ไม่ต้องไปอ่านความยินยอม/ใบส่วนตัวเพิ่ม
+      expect(consent.grantedCurrentUserIds).not.toHaveBeenCalled();
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledTimes(1);
     });
 
     it('กลุ่มที่ไม่มีสมาชิก ACTIVE → array ว่าง ไม่ query โปรไฟล์ต่อ', async () => {

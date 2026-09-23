@@ -4,7 +4,10 @@ import { BookingResolver } from './booking.resolver';
 import { BookingTaskService } from './booking-task.service';
 import { BookingController, BookingTaskSuggestionsController } from './booking.controller';
 import { CaregiverBookingService } from './caregiver-booking.service';
-import { CaregiverBookingResolver } from './caregiver-booking.resolver';
+import {
+  CaregiverBookingResolver,
+  PatientBriefAvatarResolver,
+} from './caregiver-booking.resolver';
 import { CommonModule } from '../common/common.module';
 import { PaymentModule } from '../payment/payment.module';
 import { MonitoringModule } from '../monitoring/monitoring.module';
@@ -30,6 +33,8 @@ import { ConsentModule } from '../consent/consent.module';
     // ฝั่ง caregiver (PYG-206): รับ/ปฏิเสธ + รายการงาน + ลูกค้าประจำ
     CaregiverBookingService,
     CaregiverBookingResolver,
+    // sign avatarUrl ของผู้จองบนการ์ดงานฝั่งผู้ดูแล (storage path ของ bucket private)
+    PatientBriefAvatarResolver,
     // PYG-461/462 เฟส 1: cron ปิด booking ที่เลยเวลาและไม่มีเงินค้าง (ปิดเป็น default)
     BookingExpiryService,
     // PYG-361: รายการงานย่อยต่อ booking (booking_tasks) — ใช้ร่วมกันทั้งฝั่ง patient/caregiver

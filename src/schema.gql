@@ -473,6 +473,11 @@ type CaregiverBookingSummary {
   patientProfile: PatientProfileType
   payoutAmount: Float
   payoutStatus: String
+
+  """
+  รูปโปรไฟล์ของผู้รับบริการ (signed URL) — null เมื่อไม่มีรูปหรือระบุตัวผู้รับบริการเป็นบัญชีไม่ได้ (FE ตกเป็นตัวอักษรย่อ)
+  """
+  recipientAvatarUrl: String
   rejectionReason: String
   serviceLocations: [String!]!
   serviceType: String!
@@ -867,6 +872,9 @@ input CreateBookingOnBehalfInput {
 }
 
 input CreateFamilyGroupInput {
+  """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
+  consents: [ConsentAnswerInput!]
+
   """ชื่อกลุ่ม 1–80 ตัวอักษร (ตัดช่องว่างหัวท้ายให้อัตโนมัติ)"""
   name: String!
 }
@@ -1241,10 +1249,12 @@ input FlagDisputeInput {
 สมาชิก ACTIVE หนึ่งคนในกลุ่ม พร้อมข้อมูลผู้รับบริการสำหรับ autofill ตอนจองแทน
 """
 type GroupBookingRecipient {
-  """null เมื่อยังไม่มีโปรไฟล์ในกลุ่ม — FE ปล่อยช่องว่างให้กรอก"""
+  """null เมื่อไม่มีข้อมูลให้เติม — FE ปล่อยช่องว่างให้กรอก"""
   details: GroupBookingRecipientDetails
 
-  """มีโปรไฟล์ผู้รับบริการในกลุ่มนี้แล้วหรือยัง"""
+  """
+  มีข้อมูลผู้รับบริการให้เติมหรือไม่ (โปรไฟล์ในกลุ่ม หรือใบ is_self ที่เจ้าของยินยอมให้กลุ่มเห็น)
+  """
   hasProfile: Boolean!
 
   """users.id ของสมาชิก — ส่งกลับเป็น memberUserId ตอนจอง"""
@@ -1258,7 +1268,7 @@ type GroupBookingRecipient {
   """ชื่อ-นามสกุลล็อกเสมอ — FE ต้องแสดงเป็น read-only"""
   nameLocked: Boolean!
 
-  """ชื่อเล่นจากโปรไฟล์ในกลุ่ม (ถ้ามี)"""
+  """ชื่อเล่นจากโปรไฟล์ที่ใช้เติม (ถ้ามี)"""
   nickname: String
 }
 
@@ -1895,7 +1905,11 @@ type Mutation {
   """
   เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์
   """
-  joinGroupByLink(token: String!): FamilyGroup!
+  joinGroupByLink(
+    """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
+    consents: [ConsentAnswerInput!]
+    token: String!
+  ): FamilyGroup!
 
   """
   ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.

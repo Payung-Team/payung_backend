@@ -5,7 +5,9 @@ import { BookingTaskService } from './booking-task.service';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
+  PatientBriefDto,
 } from './dto/caregiver-booking.types';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
 import { DeclineBookingInput } from './dto/decline-booking.input';
@@ -35,6 +37,7 @@ export class CaregiverBookingResolver {
   constructor(
     private readonly service: CaregiverBookingService,
     private readonly bookingTaskService: BookingTaskService,
+    private readonly avatarUrlService: AvatarUrlService,
   ) {}
 
   // ─── Queries ──────────────────────────────────────────────────────────────
@@ -128,5 +131,28 @@ export class CaregiverBookingResolver {
   })
   async bookingTasks(@Parent() booking: CaregiverBookingSummary): Promise<BookingTask[]> {
     return this.bookingTaskService.listForBooking(booking.id);
+  }
+
+  @ResolveField(() => String, {
+    nullable: true,
+    description:
+      'รูปโปรไฟล์ของผู้รับบริการ (signed URL) — null เมื่อไม่มีรูปหรือระบุตัวผู้รับบริการเป็นบัญชีไม่ได้ (FE ตกเป็นตัวอักษรย่อ)',
+  })
+  recipientAvatarUrl(@Parent() booking: CaregiverBookingSummary): Promise<string | null> {
+    return this.avatarUrlService.resolve(booking.recipientAvatarPath);
+  }
+}
+
+/**
+ * PatientBriefDto.avatarUrl — sign storage path ของ bucket private ก่อนส่งออก
+ * (เดิมส่งค่าดิบ รูปที่อัปโหลดผ่าน PYG-507 จึงโหลดไม่ขึ้น) · สิทธิ์ถูกตรวจที่ query แม่แล้ว
+ */
+@Resolver(() => PatientBriefDto)
+export class PatientBriefAvatarResolver {
+  constructor(private readonly avatarUrlService: AvatarUrlService) {}
+
+  @ResolveField(() => String, { nullable: true, description: 'รูปโปรไฟล์ (signed URL)' })
+  avatarUrl(@Parent() patient: PatientBriefDto): Promise<string | null> {
+    return this.avatarUrlService.resolve(patient.avatarUrl, patient.id);
   }
 }
