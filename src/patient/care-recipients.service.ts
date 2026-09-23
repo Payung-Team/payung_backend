@@ -4,7 +4,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+// import เฉพาะไฟล์ค่าคงที่ (plain object ไม่มี DI) → ไม่ผูก PatientModule กับ FamilyGroupModule
+import {
+  ACTIVITY_ACTION,
+  ACTIVITY_TARGET,
+  ActivityAction,
+} from '../family-group/family-group.constants';
 import { CreateCareRecipientDto, UpdateCareRecipientDto } from './dto/care-recipient.dto';
 import { PatientProfileDto } from './dto/patient-profile.dto';
 import {
@@ -74,15 +81,48 @@ export class CareRecipientsService {
    * "ไม่พบ" กับ "ไม่ใช่ของคุณ" ตอบคนละ exception โดยตั้งใจ — ตรงกับพฤติกรรมเดิม
    * ของ update() ก่อน PYG-460 และ endpoint ชุดนี้ต้อง login อยู่แล้ว จึงไม่ได้
    * เปิดช่องให้ไล่เดา id จากภายนอก
+   *
+   * @returns familyGroupId ของใบนั้น — null = โปรไฟล์ส่วนตัว (ดู writeGroupActivity)
    */
-  private async assertOwned(patientId: string, id: string): Promise<void> {
+  private async assertOwned(
+    patientId: string,
+    id: string,
+  ): Promise<{ familyGroupId: string | null }> {
     const existing = await this.prisma.careRecipient.findUnique({
       where:  { id },
-      select: { patientId: true, is_deleted: true },
+      select: { patientId: true, is_deleted: true, familyGroupId: true },
     });
 
     if (!existing || existing.is_deleted) throw new NotFoundException('Care recipient not found');
     if (existing.patientId !== patientId) throw new ForbiddenException('Access denied');
+    return { familyGroupId: existing.familyGroupId };
+  }
+
+  /**
+   * PYG-484 — แก้/ลบโปรไฟล์ที่อยู่ในกลุ่มผ่าน endpoint ชุดนี้ ต้องลงฟีดของกลุ่มด้วย
+   *
+   * ★ ทำไมไม่ปิด endpoint นี้สำหรับใบในกลุ่มไปเลย (ให้แก้ผ่าน updateGroupCareRecipient ทางเดียว):
+   *   ออกจากกลุ่มแล้วโปรไฟล์ยังค้างอยู่ในกลุ่ม (PYG-477/481) และ mutation ของกลุ่มต้องเป็นสมาชิก ACTIVE
+   *   → ถ้าปิดที่นี่ เจ้าของข้อมูลจะแก้/ลบข้อมูลของตัวเองไม่ได้อีกเลย
+   * ★ metadata ว่างเหมือน RECIPIENT_* ฝั่ง family-group (เหตุผลเรื่องชื่อในฟีดดูที่นั่น)
+   */
+  private async writeGroupActivity(
+    tx: Prisma.TransactionClient,
+    groupId: string,
+    actorId: string,
+    recipientId: string,
+    action: ActivityAction,
+  ): Promise<void> {
+    await tx.familyGroupActivity.create({
+      data: {
+        groupId,
+        actorId,
+        action,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId:   recipientId,
+        metadata:   {},
+      },
+    });
   }
 
   /** GET /api/v1/patient/care-recipients — list ของ patient */
@@ -122,17 +162,23 @@ export class CareRecipientsService {
     id: string,
     dto: UpdateCareRecipientDto,
   ): Promise<CareRecipientResponse> {
-    await this.assertOwned(patientId, id);
+    const { familyGroupId } = await this.assertOwned(patientId, id);
 
-    const updated = await this.prisma.careRecipient.update({
-      where: { id },
-      data: {
-        ...(dto.name     !== undefined && { name:     dto.name }),
-        ...(dto.nickname !== undefined && { nickname: dto.nickname }),
-        // merge ทีละช่อง — mapper คืนเฉพาะคีย์ที่ส่งมาจริง
-        ...(dto.details ? toCareRecipientColumns(dto.details) : {}),
-      },
-      select: RECIPIENT_SELECT,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.careRecipient.update({
+        where: { id },
+        data: {
+          ...(dto.name     !== undefined && { name:     dto.name }),
+          ...(dto.nickname !== undefined && { nickname: dto.nickname }),
+          // merge ทีละช่อง — mapper คืนเฉพาะคีย์ที่ส่งมาจริง
+          ...(dto.details ? toCareRecipientColumns(dto.details) : {}),
+        },
+        select: RECIPIENT_SELECT,
+      });
+      if (familyGroupId) {
+        await this.writeGroupActivity(tx, familyGroupId, patientId, id, ACTIVITY_ACTION.RECIPIENT_UPDATED);
+      }
+      return row;
     });
 
     this.logger.log({ event: 'care_recipient.updated', id, patientId });
@@ -150,11 +196,16 @@ export class CareRecipientsService {
    *   ลบซ้ำใบเดิมได้ผลเหมือนเดิม (ไม่พบ) เพราะ assertOwned กรอง is_deleted ออกแล้ว
    */
   async remove(patientId: string, id: string): Promise<void> {
-    await this.assertOwned(patientId, id);
+    const { familyGroupId } = await this.assertOwned(patientId, id);
 
-    await this.prisma.careRecipient.update({
-      where: { id },
-      data:  { is_deleted: true, deleted_at: new Date() },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.careRecipient.update({
+        where: { id },
+        data:  { is_deleted: true, deleted_at: new Date() },
+      });
+      if (familyGroupId) {
+        await this.writeGroupActivity(tx, familyGroupId, patientId, id, ACTIVITY_ACTION.RECIPIENT_REMOVED);
+      }
     });
 
     this.logger.log({ event: 'care_recipient.deleted', id, patientId });
