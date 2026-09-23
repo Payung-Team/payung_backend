@@ -111,8 +111,7 @@ export class MemberDetailsInput {
  *   ทุกฟิลด์ที่ REST เพิ่มในอนาคตจะโผล่ใน GraphQL schema เองแบบเงียบ ๆ
  *   รวมถึงฟิลด์ที่ไม่ควรให้คนจองแทนกรอก → แยกไฟล์ชัดเจนกว่า และ FE อ่าน schema แล้วเข้าใจตรง
  *
- * ★ ฟิลด์ที่ "จงใจไม่มี" ในนี้:
- *   - patientName    ชื่อคนไข้มาจากโปรไฟล์ผู้รับบริการอยู่แล้ว ให้กรอกซ้ำจะขัดกันเอง
+ * ★ patientName มีใน schema แต่ส่งมาไม่ได้ (PYG-516) — ชื่อมาจากบัญชีของสมาชิก ดูที่ฟิลด์
  *
  * ── memberDetails (PYG-385) ────────────────────────────────────────────────
  *   รับแล้วผ่าน MemberDetailsInput ด้านบน → เก็บลง bookings.member_details (JSONB)
@@ -152,10 +151,15 @@ export class CreateBookingOnBehalfInput {
   careRecipientId?: string;
 
   /**
-   * PYG-500 — ชื่อผู้รับบริการ ใช้เฉพาะกรณีสมาชิกยังไม่เคยมีข้อมูลเลย แล้วคนจองกรอกให้
-   * (rule 3: self_reported = false) ถ้าสมาชิกมีโปรไฟล์อยู่แล้วจะใช้ชื่อจากโปรไฟล์นั้น ค่านี้ถูกข้าม
+   * PYG-516 — ห้ามส่ง: ส่งมา = 400 PATIENT_NAME_NOT_ALLOWED (ชื่อมาจากบัญชีของสมาชิกเท่านั้น)
+   *
+   * ★ ที่ยังคงฟิลด์ไว้ใน schema: ถ้าลบออก client ที่ยังส่งมาจะได้ GraphQL validation error ทั่วไป
+   *   แทน code ที่บอกตรง ๆ ว่าผิดเพราะอะไร
    */
-  @Field({ nullable: true, description: 'ชื่อผู้รับบริการ — ใช้ตอนคนจองกรอกข้อมูลให้สมาชิกที่ยังไม่มีข้อมูล' })
+  @Field({
+    nullable: true,
+    deprecationReason: 'PYG-516: ห้ามส่ง — ชื่อผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น ส่งมา = PATIENT_NAME_NOT_ALLOWED',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(255)

@@ -717,8 +717,7 @@ input CreateBookingOnBehalfInput {
   """บันทึกเพิ่มเติมถึงผู้ดูแล"""
   notes: String
 
-  """ชื่อผู้รับบริการ — ใช้ตอนคนจองกรอกข้อมูลให้สมาชิกที่ยังไม่มีข้อมูล"""
-  patientName: String
+  patientName: String @deprecated(reason: "PYG-516: ห้ามส่ง — ชื่อผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น ส่งมา = PATIENT_NAME_NOT_ALLOWED")
 
   """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
   serviceLocations: [String!]!
