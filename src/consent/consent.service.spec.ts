@@ -53,6 +53,7 @@ describe('ConsentService (PYG-474)', () => {
   let prisma: {
     user_consents: {
       createMany: jest.Mock;
+      create: jest.Mock;
       findFirst: jest.Mock;
       findMany: jest.Mock;
     };
@@ -62,6 +63,19 @@ describe('ConsentService (PYG-474)', () => {
     prisma = {
       user_consents: {
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        // PYG-540: withdraw / grant เขียนทีละแถวผ่าน setConsent — คืนแถวที่เพิ่งเขียน
+        //   (สะท้อนค่าที่ส่งไป + เวลาที่ DB ใส่ให้ เหมือน select ของ setConsent)
+        create: jest
+          .fn()
+          .mockImplementation((args: { data: Record<string, unknown> }) =>
+            Promise.resolve({
+              consent_type: args.data.consent_type,
+              granted: args.data.granted,
+              policy_version: args.data.policy_version,
+              granted_at: new Date('2026-09-22T12:00:00Z'),
+              source: args.data.source,
+            }),
+          ),
         findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
       },
@@ -373,6 +387,347 @@ describe('ConsentService (PYG-474)', () => {
 
     it('ไม่เคยตอบอะไรเลย → []', async () => {
       await expect(service.findLatestByUser(USER_ID)).resolves.toEqual([]);
+    });
+  });
+
+  // ═══ PYG-540: ถอน / ให้กลับ / หน้าความยินยอมของฉัน ═══════════════════════
+  const PATIENT = 1;
+  const CAREGIVER = 2;
+  const ADMIN = 3;
+  const EVIDENCE = { ipAddress: '203.0.113.9', userAgent: 'jest/1.0' };
+
+  /** แถวล่าสุดใน DB (รูปแบบที่ findMany คืน) */
+  function row(
+    consent_type: string,
+    granted: boolean,
+    policy_version: string = POLICY_VERSION,
+    source: string | null = CONSENT_SOURCE.REGISTER,
+  ) {
+    return {
+      consent_type,
+      granted,
+      policy_version,
+      granted_at: new Date('2026-09-20T08:00:00Z'),
+      source,
+    };
+  }
+
+  describe('withdraw (PYG-540)', () => {
+    it('★ เขียนแถวใหม่ granted = false · source settings · หลักฐานครบ (ไม่ UPDATE ของเดิม)', async () => {
+      const result = await service.withdraw(
+        USER_ID,
+        PATIENT,
+        CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+        EVIDENCE,
+      );
+
+      expect(prisma.user_consents.create).toHaveBeenCalledWith({
+        data: {
+          user_id: USER_ID,
+          consent_type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+          policy_version: POLICY_VERSION,
+          granted: false,
+          source: CONSENT_SOURCE.SETTINGS,
+          ip_address: EVIDENCE.ipAddress,
+          user_agent: EVIDENCE.userAgent,
+        },
+        select: {
+          consent_type: true,
+          granted: true,
+          policy_version: true,
+          granted_at: true,
+          source: true,
+        },
+      });
+      // สถานะที่คืนให้ FE สะท้อนทันที (myConsents ไม่ต้องรอ)
+      expect(result).toMatchObject({
+        type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+        granted: false,
+        answered: true,
+        source: CONSENT_SOURCE.SETTINGS,
+        answeredAt: new Date('2026-09-22T12:00:00Z'),
+        required: true,
+        withdrawable: true,
+      });
+    });
+
+    it('★ ถอนข้อที่ไม่เคยให้ความยินยอม → ผ่าน (idempotent) และยังเขียนแถวเป็นหลักฐานการกด', async () => {
+      // ไม่มีแถวเดิมเลย — ไม่ต้องอ่านก่อนด้วยซ้ำ
+      await expect(
+        service.withdraw(USER_ID, PATIENT, CONSENT_TYPE.MARKETING, EVIDENCE),
+      ).resolves.toMatchObject({ granted: false });
+      expect(prisma.user_consents.create).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([CONSENT_TYPE.TERMS_OF_SERVICE, CONSENT_TYPE.PRIVACY_POLICY])(
+      '★ ถอน %s → CONSENT_NOT_WITHDRAWABLE และไม่เขียนแถว (ไม่มีผลจริงที่ทำได้นอกจากปิดบัญชี)',
+      async (type) => {
+        await expect(
+          service.withdraw(USER_ID, PATIENT, type, EVIDENCE),
+        ).rejects.toMatchObject({
+          extensions: {
+            code: CONSENT_ERROR.NOT_WITHDRAWABLE,
+            consentType: type,
+          },
+        });
+        expect(prisma.user_consents.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it('ชนิดที่ไม่รู้จัก → CONSENT_TYPE_INVALID', async () => {
+      await expect(
+        service.withdraw(USER_ID, PATIENT, 'marketting', EVIDENCE),
+      ).rejects.toMatchObject({
+        extensions: { code: CONSENT_ERROR.TYPE_INVALID },
+      });
+      expect(prisma.user_consents.create).not.toHaveBeenCalled();
+    });
+
+    it('ผู้ดูแลถอนข้อของผู้รับบริการ (ข้อมูลสุขภาพ) → CONSENT_TYPE_INVALID (ไม่มีข้อนี้ในหน้าของเขา)', async () => {
+      await expect(
+        service.withdraw(
+          USER_ID,
+          CAREGIVER,
+          CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+          EVIDENCE,
+        ),
+      ).rejects.toMatchObject({
+        extensions: { code: CONSENT_ERROR.TYPE_INVALID },
+      });
+    });
+
+    it('ผู้ดูแลถอน marketing ได้', async () => {
+      await expect(
+        service.withdraw(USER_ID, CAREGIVER, CONSENT_TYPE.MARKETING, EVIDENCE),
+      ).resolves.toMatchObject({ granted: false });
+    });
+  });
+
+  describe('grant (PYG-540)', () => {
+    it('★ ให้ความยินยอมกลับ → แถวใหม่ granted = true ของเวอร์ชันปัจจุบัน', async () => {
+      const result = await service.grant(
+        USER_ID,
+        PATIENT,
+        CONSENT_TYPE.MARKETING,
+        POLICY_VERSION,
+        EVIDENCE,
+      );
+
+      const [createArgs] = prisma.user_consents.create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(createArgs.data).toMatchObject({
+        consent_type: CONSENT_TYPE.MARKETING,
+        granted: true,
+        policy_version: POLICY_VERSION,
+        source: CONSENT_SOURCE.SETTINGS,
+      });
+      expect(result).toMatchObject({
+        granted: true,
+        answered: true,
+        isCurrentVersion: true,
+      });
+    });
+
+    it('★ policyVersion ไม่ตรง → CONSENT_POLICY_VERSION_MISMATCH และไม่เขียน', async () => {
+      await expect(
+        service.grant(
+          USER_ID,
+          PATIENT,
+          CONSENT_TYPE.MARKETING,
+          '0.9',
+          EVIDENCE,
+        ),
+      ).rejects.toMatchObject({
+        extensions: {
+          code: CONSENT_ERROR.POLICY_VERSION_MISMATCH,
+          currentVersion: POLICY_VERSION,
+        },
+      });
+      expect(prisma.user_consents.create).not.toHaveBeenCalled();
+    });
+
+    it('re-consent ข้อกำหนดการใช้บริการ (ให้ได้ แม้จะถอนไม่ได้)', async () => {
+      await expect(
+        service.grant(
+          USER_ID,
+          PATIENT,
+          CONSENT_TYPE.TERMS_OF_SERVICE,
+          POLICY_VERSION,
+          EVIDENCE,
+        ),
+      ).resolves.toMatchObject({ granted: true, withdrawable: false });
+    });
+
+    it('แอดมินไม่มีรายการความยินยอม → CONSENT_TYPE_INVALID', async () => {
+      await expect(
+        service.grant(
+          USER_ID,
+          ADMIN,
+          CONSENT_TYPE.MARKETING,
+          POLICY_VERSION,
+          EVIDENCE,
+        ),
+      ).rejects.toMatchObject({
+        extensions: { code: CONSENT_ERROR.TYPE_INVALID },
+      });
+    });
+  });
+
+  describe('getMyConsents (PYG-540)', () => {
+    it('★ ผู้รับบริการเห็นครบ 6 ข้อตามลำดับ — ข้อที่ไม่เคยตอบก็อยู่ในรายการ', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        row(CONSENT_TYPE.MARKETING, false),
+        row(CONSENT_TYPE.TERMS_OF_SERVICE, true),
+        row(CONSENT_TYPE.PRIVACY_POLICY, true, '0.9'),
+      ]);
+
+      const result = await service.getMyConsents(USER_ID, PATIENT);
+
+      expect(result.map((r) => r.type)).toEqual([
+        CONSENT_TYPE.TERMS_OF_SERVICE,
+        CONSENT_TYPE.PRIVACY_POLICY,
+        CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+        CONSENT_TYPE.DISCLOSE_TO_CAREGIVER,
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+        CONSENT_TYPE.MARKETING,
+      ]);
+      expect(result[0]).toMatchObject({
+        granted: true,
+        answered: true,
+        isCurrentVersion: true,
+        required: true,
+        withdrawable: false,
+      });
+      // ยินยอมไว้กับฉบับเก่า → FE ต้องเสนอให้ยินยอมใหม่
+      expect(result[1]).toMatchObject({
+        granted: true,
+        isCurrentVersion: false,
+      });
+      // ไม่เคยตอบ → ไม่ยินยอม + ไม่มีวันเวลา
+      expect(result[2]).toEqual({
+        type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+        granted: false,
+        answered: false,
+        policyVersion: null,
+        answeredAt: null,
+        source: null,
+        isCurrentVersion: false,
+        required: true,
+        withdrawable: true,
+      });
+      expect(result[5]).toMatchObject({
+        granted: false,
+        answered: true,
+        required: false,
+      });
+    });
+
+    it('ผู้ดูแลเห็นเฉพาะข้อของการสมัคร (terms / privacy / marketing)', async () => {
+      const result = await service.getMyConsents(USER_ID, CAREGIVER);
+      expect(result.map((r) => r.type)).toEqual([
+        CONSENT_TYPE.TERMS_OF_SERVICE,
+        CONSENT_TYPE.PRIVACY_POLICY,
+        CONSENT_TYPE.MARKETING,
+      ]);
+    });
+
+    it('แอดมิน → [] และไม่ยิง DB', async () => {
+      await expect(service.getMyConsents(USER_ID, ADMIN)).resolves.toEqual([]);
+      expect(prisma.user_consents.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findWithdrawnType (PYG-540 — ด่านก่อนจอง)', () => {
+    const BLOCKING = [
+      CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+      CONSENT_TYPE.DISCLOSE_TO_CAREGIVER,
+    ];
+
+    it('★ แถวล่าสุดถอนแล้ว → คืนข้อนั้น', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        { consent_type: CONSENT_TYPE.DISCLOSE_TO_CAREGIVER, granted: false },
+        { consent_type: CONSENT_TYPE.DISCLOSE_TO_CAREGIVER, granted: true },
+      ]);
+      await expect(service.findWithdrawnType(USER_ID, BLOCKING)).resolves.toBe(
+        CONSENT_TYPE.DISCLOSE_TO_CAREGIVER,
+      );
+    });
+
+    it('★ ถอนแล้วให้กลับ (แถวล่าสุด granted = true) → null จองได้อีก', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        { consent_type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA, granted: true },
+        { consent_type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA, granted: false },
+      ]);
+      await expect(
+        service.findWithdrawnType(USER_ID, BLOCKING),
+      ).resolves.toBeNull();
+    });
+
+    it('★ ยังไม่เคยตอบ (ผู้ใช้ก่อนมีระบบ consent) → null ไม่บล็อก', async () => {
+      await expect(
+        service.findWithdrawnType(USER_ID, BLOCKING),
+      ).resolves.toBeNull();
+    });
+
+    it('ถอนทั้งสองข้อ → คืนข้อแรกตามลำดับที่ผู้เรียกส่งมา (ข้อความคงที่)', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        { consent_type: CONSENT_TYPE.DISCLOSE_TO_CAREGIVER, granted: false },
+        { consent_type: CONSENT_TYPE.SENSITIVE_HEALTH_DATA, granted: false },
+      ]);
+      await expect(service.findWithdrawnType(USER_ID, BLOCKING)).resolves.toBe(
+        CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+      );
+    });
+
+    it('อ่านเฉพาะข้อที่ถาม ของผู้ใช้คนนี้ เรียงล่าสุดก่อน', async () => {
+      await service.findWithdrawnType(USER_ID, BLOCKING);
+      expect(prisma.user_consents.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { user_id: USER_ID, consent_type: { in: BLOCKING } },
+          orderBy: { granted_at: 'desc' },
+        }),
+      );
+    });
+  });
+
+  describe('withdrawnUserIds (PYG-540 — กรองข้อมูลกลุ่มครอบครัว)', () => {
+    it('★ คืนเฉพาะคนที่แถวล่าสุดถอน — ไม่เคยตอบ/ให้กลับแล้ว ไม่นับ', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        { user_id: 'a', granted: false },
+        { user_id: 'b', granted: true },
+        { user_id: 'b', granted: false },
+        { user_id: 'a', granted: true },
+      ]);
+
+      const result = await service.withdrawnUserIds(
+        ['a', 'b', 'c'],
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+      expect([...result]).toEqual(['a']);
+    });
+
+    it('รายชื่อว่าง → Set ว่าง และไม่ยิง DB', async () => {
+      await expect(
+        service.withdrawnUserIds([], CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP),
+      ).resolves.toEqual(new Set());
+      expect(prisma.user_consents.findMany).not.toHaveBeenCalled();
+    });
+
+    it('ตัด id ซ้ำ / ว่าง ก่อนยิง query เดียว', async () => {
+      await service.withdrawnUserIds(
+        ['a', 'a', '', 'b'],
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+      expect(prisma.user_consents.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.user_consents.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            user_id: { in: ['a', 'b'] },
+            consent_type: CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+          },
+        }),
+      );
     });
   });
 });

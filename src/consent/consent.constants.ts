@@ -108,6 +108,67 @@ export const CONSENTS_BY_SOURCE: Record<ConsentSource, readonly ConsentType[]> =
   [CONSENT_SOURCE.RE_CONSENT]: [],
 };
 
+/**
+ * ข้อที่ "ถอนผ่านหน้าตั้งค่าไม่ได้" — PYG-540
+ *
+ * ★ ข้อกำหนดการใช้บริการ + ประกาศความเป็นส่วนตัว คือเงื่อนไขของการ "มีบัญชี" ไม่ใช่ฟีเจอร์หนึ่ง
+ *   ถ้าเปิดปุ่มถอนให้ ระบบก็ไม่มีผลอะไรที่ทำจริงได้นอกจากปิดบัญชี — ได้แค่ธง granted = false
+ *   ในตารางโดยที่ทุกอย่างทำงานเหมือนเดิม ซึ่งการ์ดเตือนไว้ว่า "แย่กว่าไม่มีปุ่มถอนเลย"
+ *   ผู้ใช้ที่ไม่ต้องการใช้บริการต่อให้ขอลบบัญชีทาง privacy@payung.app (สิทธิ์ลบข้อมูล = คนละการ์ด)
+ */
+export const NON_WITHDRAWABLE_CONSENTS: readonly ConsentType[] = [
+  CONSENT_TYPE.TERMS_OF_SERVICE,
+  CONSENT_TYPE.PRIVACY_POLICY,
+];
+
+/**
+ * ถอนข้อใดข้อหนึ่งนี้ → "จองใหม่ไม่ได้" (PYG-540)
+ *
+ * ★ ตรวจกับเจ้าของข้อมูลผู้รับบริการ (care_recipients.patient_id) ไม่ใช่คนกดจองเสมอไป
+ *   และบล็อกเฉพาะ "ถอนแล้ว" (แถวล่าสุด granted = false) — ผู้ใช้ที่ยังไม่เคยถูกถาม
+ *   (สมัครก่อนมีระบบ consent) ยังจองได้ตามเดิม การขอย้อนหลังเป็นงานของ PYG-504
+ */
+export const BOOKING_BLOCKING_CONSENTS: readonly ConsentType[] = [
+  CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+  CONSENT_TYPE.DISCLOSE_TO_CAREGIVER,
+];
+
+/**
+ * จองแทนในกลุ่มครอบครัว = ข้อข้างบน + การเปิดเผยให้สมาชิกกลุ่ม (PYG-540)
+ *
+ * ★ การจองแทนทำให้ข้อมูลของเจ้าของไปโผล่ในนัดหมายของกลุ่ม ถ้าเขาถอนข้อ family group แล้ว
+ *   ยังปล่อยให้จองแทนได้ = เปิดเผยให้กลุ่มต่อทั้งที่เขาถอนไปแล้ว
+ */
+export const ON_BEHALF_BLOCKING_CONSENTS: readonly ConsentType[] = [
+  ...BOOKING_BLOCKING_CONSENTS,
+  CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+];
+
+/**
+ * ข้อที่แสดงในหน้า "ความยินยอมของฉัน" ตาม role — PYG-540
+ *
+ * ผู้รับบริการ (1): ทุกข้อของ PATIENT_CONSENT_ITEMS
+ * ผู้ดูแล (2): เฉพาะข้อที่ถามตอนสมัคร — ข้อความเรื่องข้อมูลสุขภาพ/การเปิดเผยเขียนไว้สำหรับ
+ *   ผู้รับบริการ (ขอบเขต PYG-472) ถ้าโชว์ให้ผู้ดูแลจะอ่านแล้วงง · ข้อของผู้ดูแลเอง (KYC,
+ *   ข้อมูลชีวภาพ) เป็นการ์ดถัดไป
+ * role อื่น (แอดมิน) → ไม่มีรายการ
+ */
+export const CONSENTS_BY_ROLE: Readonly<Record<number, readonly ConsentType[]>> = {
+  1: [
+    CONSENT_TYPE.TERMS_OF_SERVICE,
+    CONSENT_TYPE.PRIVACY_POLICY,
+    CONSENT_TYPE.SENSITIVE_HEALTH_DATA,
+    CONSENT_TYPE.DISCLOSE_TO_CAREGIVER,
+    CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    CONSENT_TYPE.MARKETING,
+  ],
+  2: [
+    CONSENT_TYPE.TERMS_OF_SERVICE,
+    CONSENT_TYPE.PRIVACY_POLICY,
+    CONSENT_TYPE.MARKETING,
+  ],
+};
+
 /** ระยะเวลาเก็บข้อมูลหลังปิดบัญชี (ปี) — อ้างในประกาศความเป็นส่วนตัว */
 export const DATA_RETENTION_YEARS = {
   /** เอกสารที่กฎหมายบัญชี/ภาษีบังคับให้เก็บ */

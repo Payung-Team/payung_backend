@@ -14,6 +14,7 @@ import {
   SettlementReason,
 } from '../payment/settlement/booking-settlement.types';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+import { ConsentService } from '../consent/consent.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -135,6 +136,14 @@ describe('BookingService — new REST methods', () => {
         { provide: BookingSettlementService, useValue: settlement },
         // PYG-434: สร้างใบ QR พร้อม booking — mock ไว้ ตรรกะจริงเทสที่ job-qr.service.spec.ts
         { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
+        // PYG-540: ด่านความยินยอมก่อนจอง — ค่าเริ่มต้น = ไม่มีใครถอน (เทสด่านอยู่ที่ booking-consent-gate.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: {
+            findWithdrawnType: jest.fn().mockResolvedValue(null),
+            withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+          },
+        },
       ],
     }).compile();
 

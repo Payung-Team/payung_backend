@@ -65,8 +65,10 @@ export class FamilyBookingResolver {
   @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
   async groupCareRecipients(
     @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
   ): Promise<GroupCareRecipient[]> {
-    return this.familyGroupService.groupCareRecipients(groupId);
+    // PYG-540: ผู้อ่านเป็นใครมีผล — เจ้าของโปรไฟล์ที่ถอนความยินยอมยังเห็นของตัวเอง
+    return this.familyGroupService.groupCareRecipients(groupId, user.id);
   }
 
 
@@ -87,8 +89,10 @@ export class FamilyBookingResolver {
   @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
   async groupBookingRecipients(
     @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
   ): Promise<GroupBookingRecipient[]> {
-    return this.familyGroupService.groupBookingRecipients(groupId);
+    // PYG-540: ผู้อ่านเป็นใครมีผล — สมาชิกที่ถอนความยินยอมเปิดเผยให้กลุ่มยังเห็นรายการของตัวเอง
+    return this.familyGroupService.groupBookingRecipients(groupId, user.id);
   }
 
   @Query(() => [GroupBookingSummary], {
