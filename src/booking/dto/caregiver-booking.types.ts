@@ -63,6 +63,12 @@ export class CaregiverBookingSummary {
 
   // ชื่อผู้รับการดูแล — ถ้า null แปลว่าจองให้ "ตัวเอง" (สำหรับตัวเอง)
   @Field({ nullable: true }) careRecipientName?: string;
+
+  /**
+   * ค่าดิบของรูปผู้รับบริการ (ไม่ใช่ GraphQL field) — ออกสู่ client ผ่าน
+   * @ResolveField recipientAvatarUrl ที่ sign storage path ให้ก่อน (ดู recipientAvatarPath)
+   */
+  recipientAvatarPath?: string;
   /**
    * PYG-460 — ข้อมูลสุขภาพที่ผู้จองกรอกไว้ ณ วันจอง
    *

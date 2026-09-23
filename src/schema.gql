@@ -473,6 +473,11 @@ type CaregiverBookingSummary {
   patientProfile: PatientProfileType
   payoutAmount: Float
   payoutStatus: String
+
+  """
+  รูปโปรไฟล์ของผู้รับบริการ (signed URL) — null เมื่อไม่มีรูปหรือระบุตัวผู้รับบริการเป็นบัญชีไม่ได้ (FE ตกเป็นตัวอักษรย่อ)
+  """
+  recipientAvatarUrl: String
   rejectionReason: String
   serviceLocations: [String!]!
   serviceType: String!

@@ -102,6 +102,66 @@ describe('CaregiverBookingService', () => {
     service = module.get<CaregiverBookingService>(CaregiverBookingService);
   });
 
+  // ── รูปของ "ผู้รับบริการ" (recipientAvatarPath) ────────────────────────
+  // ★ เดาผิด = ผู้ดูแลเห็นหน้าคนอื่นบนการ์ดผู้รับบริการ — ต้องแสดงเฉพาะเมื่อมั่นใจเท่านั้น
+  describe('recipientAvatarPath', () => {
+    const BOOKER = PATIENT_ID;
+    const MEMBER = 'member-2';
+    const recipient = (patientId: string, isSelf: boolean, avatarUrl: string | null) => ({
+      name: 'ผู้รับบริการ',
+      patientId,
+      is_self: isSelf,
+      patient: { avatarUrl },
+    });
+
+    it.each([
+      {
+        label: 'จองให้ตัวเอง (ไม่มี careRecipient) → รูปผู้จอง',
+        row: { patient: { id: BOOKER, displayName: null, avatarUrl: 'booker.jpg' } },
+        expected: 'booker.jpg',
+      },
+      {
+        label: 'ใบ is_self → รูปเจ้าของใบ',
+        row: { careRecipient: recipient(BOOKER, true, 'self.jpg') },
+        expected: 'self.jpg',
+      },
+      {
+        label: 'จองแทนสมาชิก (ใบเป็นของตัวสมาชิก) → รูปสมาชิก ไม่ใช่รูปคนกดจอง',
+        row: {
+          familyGroupId: 'g-1',
+          bookedBy: BOOKER,
+          patient: { id: BOOKER, displayName: null, avatarUrl: 'booker.jpg' },
+          careRecipient: recipient(MEMBER, false, 'member.jpg'),
+        },
+        expected: 'member.jpg',
+      },
+      {
+        label: '★ โปรไฟล์ที่ผู้จองสร้างให้คนอื่น (เช่น คุณยาย) → ไม่มีรูป',
+        row: {
+          patient: { id: BOOKER, displayName: null, avatarUrl: 'booker.jpg' },
+          careRecipient: recipient(BOOKER, false, 'booker.jpg'),
+        },
+        expected: undefined,
+      },
+      {
+        label: '★ จองแทนในกลุ่มแต่ใบเป็นของคนกดจองเอง (ใบเก่า) → ไม่มีรูป',
+        row: {
+          familyGroupId: 'g-1',
+          bookedBy: BOOKER,
+          careRecipient: recipient(BOOKER, false, 'booker.jpg'),
+        },
+        expected: undefined,
+      },
+    ])('$label', async ({ row, expected }) => {
+      prisma.booking.findMany.mockResolvedValue([fakeBooking(row)]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const res = await service.caregiverBookingHistory(USER_ID, {});
+
+      expect(res.data[0].recipientAvatarPath).toBe(expected);
+    });
+  });
+
   // ── resolveCaregiverId (ผ่าน public method) ─────────────────────────────
 
   it('throws ForbiddenException when the user has no caregiver profile', async () => {
