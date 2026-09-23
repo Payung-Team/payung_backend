@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# PYG-453 — CI ขั้นต่ำ (Phase 0: report-only)
+#
+# ★ ทำไมทุก step เป็น continue-on-error ตอนนี้
+#   วัดบน dev (bf07b05) ด้วย worktree สะอาด ทั้งสามด่านแดงอยู่ก่อนแล้ว:
+#     tsc --noEmit           exit=2   (แก้แล้วใน PR นี้ — เหลือ 0)
+#     npm test               21 failed / 772   → PYG-452
+#     prisma migrate status  exit=1   drift 5 migration → PYG-348
+#   ถ้าตั้งเป็น required check ทันที จะบล็อกทุก PR รวมของที่รอ gate อยู่
+#   Phase 0 จึงเอาแค่ "มองเห็น" ก่อน แล้วค่อยไล่ทำให้เขียวทีละด่าน
+#
+# ★ Phase 2 คือของจริง: เปิด branch protection + required checks บน dev
+#   เป็นการตั้งค่าใน GitHub ไม่ใช่ไฟล์นี้ ต้องให้คนที่มีสิทธิ์ admin ทำ
+#   สามด่านข้างล่างแค่ทำให้มองเห็น — branch protection คือสิ่งเดียวที่กันของหลุด
+#
+# วิธีเปลี่ยนเป็นบังคับ: ลบ `continue-on-error: true` ของด่านที่เขียวแล้วทีละอัน
+# ═══════════════════════════════════════════════════════════════════════════
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # prisma generate — ต้องมี client ก่อน tsc/jest ถึงจะ resolve @prisma/client ได้
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Typecheck (tsc --noEmit)
+        id: tsc
+        continue-on-error: true
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Unit tests
+        id: tests
+        continue-on-error: true
+        run: npx jest --ci
+
+      # ต้องมี DATABASE_URL ถึงจะเช็คได้ — ถ้ายังไม่ได้ตั้ง secret ให้ข้ามแบบบอกเหตุผล
+      - name: Migration drift (prisma migrate status)
+        id: migrate
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::warning::ยังไม่ได้ตั้ง secret DATABASE_URL — ข้ามการเช็ค migration drift"
+            exit 0
+          fi
+          npx prisma migrate status
+
+      # สรุปให้เห็นในหน้า PR ว่าด่านไหนแดง โดยไม่ต้องเปิดเข้าไปอ่าน log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## CI (report-only — PYG-453 Phase 0)"
+            echo ""
+            echo "| ด่าน | ผล |"
+            echo "|---|---|"
+            echo "| tsc --noEmit | ${{ steps.tsc.outcome }} |"
+            echo "| npm test | ${{ steps.tests.outcome }} |"
+            echo "| prisma migrate status | ${{ steps.migrate.outcome }} |"
+            echo ""
+            echo "ยังไม่บล็อกการ merge — ดูเหตุผลและแผน Phase 1/2 ที่ PYG-453"
+          } >> "$GITHUB_STEP_SUMMARY"
