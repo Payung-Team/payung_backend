@@ -1,5 +1,5 @@
 /**
- * GraphQL type ของสถานะความยินยอมของผู้ใช้ — PYG-474
+ * GraphQL type ของสถานะความยินยอมของผู้ใช้ — PYG-474 · PYG-540
  *
  * หนึ่งตัว = หนึ่งข้อ (terms_of_service / privacy_policy / marketing / ...)
  * ค่ามาจาก "แถวล่าสุด" ของข้อนั้นใน user_consents (ตาราง append-only)
@@ -8,8 +8,8 @@
  *   FE เอา `type` ไปจับคู่กับ `consentPolicy.items[].type` เพื่อแสดงข้อความ
  *   (ข้อความอยู่ที่ BE ที่เดียว ไม่ต้องส่งซ้ำ)
  *
- * ★ policyVersion / answeredAt / source เป็น nullable ตั้งแต่แรก เผื่อหน้า "ความยินยอมของฉัน"
- *   (PYG-540) ที่ต้องแสดงข้อที่ผู้ใช้ยังไม่เคยตอบด้วย — ตอนนี้ (PYG-474) ทุกตัวที่คืนมามีค่าครบ
+ * ★ PYG-540: `myConsents` คืน "ทุกข้อที่เกี่ยวกับ role" รวมข้อที่ยังไม่เคยตอบ
+ *   (answered = false → policyVersion / answeredAt / source เป็น null)
  */
 import { Field, ObjectType } from '@nestjs/graphql';
 
@@ -18,8 +18,14 @@ export class ConsentStatus {
   @Field({ description: 'ชนิดความยินยอม — ตรงกับ consentPolicy.items[].type' })
   type!: string;
 
-  @Field({ description: 'true = ยินยอมอยู่ (แถวล่าสุด granted = true)' })
+  @Field({
+    description:
+      'true = ยินยอมอยู่ (แถวล่าสุด granted = true) · ยังไม่เคยตอบถือว่า false',
+  })
   granted!: boolean;
+
+  @Field({ description: 'เคยตอบข้อนี้แล้วหรือยัง (PYG-540)' })
+  answered!: boolean;
 
   @Field({ nullable: true, description: 'เวอร์ชันนโยบายของแถวล่าสุด' })
   policyVersion?: string;
@@ -41,4 +47,17 @@ export class ConsentStatus {
     description: 'เวอร์ชันของแถวล่าสุดตรงกับนโยบายที่บังคับใช้อยู่หรือไม่',
   })
   isCurrentVersion!: boolean;
+
+  @Field({
+    description:
+      'ข้อบังคับ — ถอนแล้วจะใช้งานบางส่วนไม่ได้ (FE ต้องเตือนผลที่ตามมาก่อนถอน) (PYG-540)',
+  })
+  required!: boolean;
+
+  /**
+   * ★ false = ถอนผ่านหน้าตั้งค่าไม่ได้ (ข้อกำหนดการใช้บริการ / ประกาศความเป็นส่วนตัว)
+   *   FE ไม่ต้องแสดงปุ่มถอน ให้แสดงช่องทางขอลบบัญชีแทน
+   */
+  @Field({ description: 'ถอนผ่านหน้าตั้งค่าได้หรือไม่ (PYG-540)' })
+  withdrawable!: boolean;
 }

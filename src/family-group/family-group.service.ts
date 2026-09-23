@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+// PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" ต้องไม่ถูกเห็นในกลุ่มอีก
+import { ConsentService } from '../consent/consent.service';
+import { CONSENT_TYPE } from '../consent/consent.constants';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
@@ -169,7 +172,11 @@ type ActivityRow = Prisma.FamilyGroupActivityGetPayload<{
 export class FamilyGroupService {
   private readonly logger = new Logger(FamilyGroupService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // PYG-540: กรองโปรไฟล์/ฟีดของสมาชิกที่ถอนความยินยอมเปิดเผยให้กลุ่ม
+    private readonly consentService: ConsentService,
+  ) {}
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Mutations
@@ -537,13 +544,22 @@ export class FamilyGroupService {
   /**
    * โปรไฟล์ที่สมาชิก ACTIVE ของกลุ่มเคยบันทึกไว้ทั้งหมด พร้อมรายละเอียดสำหรับจองแทน.
    * คืนทั้งโปรไฟล์ส่วนตัวและโปรไฟล์ของกลุ่มปัจจุบัน แต่ไม่ดึงโปรไฟล์จากกลุ่มอื่น.
+   *
+   * PYG-540: ไม่แสดงโปรไฟล์ของเจ้าของที่ "ถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว"
+   *   ยกเว้นเจ้าของดูเอง (ยังจัดการโปรไฟล์ของตัวเองได้) · ไม่ลบโปรไฟล์ — ให้ความยินยอมกลับก็เห็นอีก
+   *   ★ สำคัญเป็นพิเศษเพราะรายการนี้ส่ง details (ข้อมูลสุขภาพ) ออกไปด้วย
+   *   ผลพลอยได้: คนที่ถอนหายจากตัวเลือก "จองให้ใคร" ไปด้วย
+   *   (ด่านจริงอยู่ที่ BookingService.createBookingOnBehalf อีกชั้น เผื่อ FE ส่ง id เก่ามา)
    */
-  async groupCareRecipients(groupId: string): Promise<GroupCareRecipient[]> {
+  async groupCareRecipients(
+    groupId: string,
+    viewerId: string,
+  ): Promise<GroupCareRecipient[]> {
     const members = await this.prisma.familyGroupMember.findMany({
       where: { groupId, status: MEMBER_STATUS.ACTIVE },
       select: { userId: true },
     });
-    const rows = await this.prisma.careRecipient.findMany({
+    const all = await this.prisma.careRecipient.findMany({
       where: {
         patientId: { in: members.map((member) => member.userId) },
         is_deleted: false,
@@ -559,6 +575,15 @@ export class FamilyGroupService {
         ...PATIENT_PROFILE_SELECT,
       },
     });
+
+    // query เดียวสำหรับทุกเจ้าของในหน้านี้ (ไม่ใช่โปรไฟล์ละ query)
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      all.map((r) => r.patientId),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const rows = all.filter(
+      (r) => !withdrawn.has(r.patientId) || r.patientId === viewerId,
+    );
 
     return rows.map((r) => ({
       id: r.id,
@@ -594,8 +619,9 @@ export class FamilyGroupService {
    */
   async groupBookingRecipients(
     groupId: string,
+    viewerId: string,
   ): Promise<GroupBookingRecipient[]> {
-    const members = await this.prisma.familyGroupMember.findMany({
+    const activeMembers = await this.prisma.familyGroupMember.findMany({
       where: { groupId, status: MEMBER_STATUS.ACTIVE },
       orderBy: { joinedAt: 'asc' },
       select: {
@@ -603,6 +629,19 @@ export class FamilyGroupService {
         user: { select: ACCOUNT_NAME_SELECT },
       },
     });
+    if (activeMembers.length === 0) return [];
+
+    // PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" → ไม่อยู่ในรายการ (ยกเว้นดูตัวเอง)
+    // ★ ตัดออกทั้งคน ไม่ใช่แค่ซ่อน details: จองแทนคนนี้ยังไงก็ถูกปฏิเสธ (CONSENT_WITHDRAWN ที่
+    //   BookingService) ถ้ายังโชว์ปุ่มไว้ คนจองจะนั่งพิมพ์ข้อมูลสุขภาพของเขาเองแล้วไปติดตอนกดยืนยัน
+    //   ชื่อสมาชิกยังเห็นได้ที่หน้ารายชื่อสมาชิกตามเดิม — ที่นี่คือรายการ "จองให้ใครได้บ้าง"
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      activeMembers.map((m) => m.userId),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const members = activeMembers.filter(
+      (m) => !withdrawn.has(m.userId) || m.userId === viewerId,
+    );
     if (members.length === 0) return [];
 
     // โปรไฟล์ "ในกลุ่มนี้" เท่านั้น — familyGroupId ต้องเท่ากับ groupId ตรง ๆ
@@ -1460,12 +1499,14 @@ export class FamilyGroupService {
   /**
    * ฟีดกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าด้วย keyset
    *
-   * @param groupId กลุ่มที่จะอ่าน (guard ตรวจสิทธิ์มาแล้ว)
-   * @param first   จำนวนแถวที่ขอ — ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเหลือ 50
-   * @param after   cursor ของแถวสุดท้ายที่ได้ไปแล้ว — ไม่ส่ง = เริ่มจากใหม่สุด
+   * @param groupId  กลุ่มที่จะอ่าน (guard ตรวจสิทธิ์มาแล้ว)
+   * @param viewerId ผู้อ่าน — PYG-540 ใช้ตัดสินว่าเห็นรายละเอียดนัดของคนที่ถอนความยินยอมได้ไหม
+   * @param first    จำนวนแถวที่ขอ — ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเหลือ 50
+   * @param after    cursor ของแถวสุดท้ายที่ได้ไปแล้ว — ไม่ส่ง = เริ่มจากใหม่สุด
    */
   async familyGroupActivity(
     groupId: string,
+    viewerId: string,
     first?: number | null,
     after?: string | null,
   ): Promise<FamilyGroupActivityConnection> {
@@ -1499,8 +1540,12 @@ export class FamilyGroupService {
     });
 
     const hasNextPage = rows.length > take;
-    const nodes = (hasNextPage ? rows.slice(0, take) : rows).map((row) =>
-      this.toActivityItem(row),
+    const pageRows = hasNextPage ? rows.slice(0, take) : rows;
+    // PYG-540: "ปิดรายละเอียด" แทนการตัดแถวทิ้ง — ถ้าตัดทิ้ง หน้านี้จะได้แถวไม่ครบ take
+    //   และ cursor/hasNextPage ที่คำนวณไว้ข้างบนจะเพี้ยน (keyset pagination พึ่งจำนวนแถวที่แน่นอน)
+    const redacted = await this.redactedBookingActivityIds(pageRows, viewerId);
+    const nodes = pageRows.map((row) =>
+      this.toActivityItem(row, redacted.has(row.id)),
     );
 
     return {
@@ -1512,6 +1557,58 @@ export class FamilyGroupService {
         hasNextPage,
       },
     };
+  }
+
+  /**
+   * PYG-540 — แถว BOOKING_ON_BEHALF ในหน้านี้ที่ต้องปิดรายละเอียด (ชื่อผู้รับบริการ / วัน / เวลา)
+   *
+   * ปิดเมื่อ "เจ้าของข้อมูล" ของนัดนั้นถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว
+   * ยกเว้นผู้อ่านเป็นเจ้าของเอง หรือเป็นคนกดจอง (actor) — เกณฑ์เดียวกับ BookingService.groupBookings
+   *
+   * ★ อ่านแค่ 2 query ต่อหน้า (booking ทั้งหน้า + ความยินยอมทั้งหน้า) ไม่ใช่แถวละ query
+   * ★ หน้าไหนไม่มีแถวจองแทนเลย → ไม่ยิง query เพิ่มสักตัว
+   */
+  private async redactedBookingActivityIds(
+    rows: ActivityRow[],
+    viewerId: string,
+  ): Promise<Set<string>> {
+    const bookingRows = rows.filter(
+      (r) => r.action === ACTIVITY_ACTION.BOOKING_ON_BEHALF && r.targetId,
+    );
+    if (bookingRows.length === 0) return new Set();
+
+    const bookings = await this.prisma.booking.findMany({
+      where: { id: { in: bookingRows.map((r) => r.targetId as string) } },
+      select: {
+        id: true,
+        patientId: true,
+        careRecipient: { select: { patientId: true } },
+      },
+    });
+    // เจ้าของข้อมูล = เจ้าของโปรไฟล์ผู้รับบริการ (ไม่มีโปรไฟล์ → ถือว่าคนจองเป็นเจ้าของ)
+    const subjectByBooking = new Map(
+      bookings.map((b) => [b.id, b.careRecipient?.patientId ?? b.patientId]),
+    );
+
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      [...subjectByBooking.values()],
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    if (withdrawn.size === 0) return new Set();
+
+    return new Set(
+      bookingRows
+        .filter((r) => {
+          const subject = subjectByBooking.get(r.targetId as string);
+          return (
+            subject !== undefined &&
+            withdrawn.has(subject) &&
+            subject !== viewerId &&
+            r.actorId !== viewerId
+          );
+        })
+        .map((r) => r.id),
+    );
   }
 
   /**
@@ -1574,8 +1671,17 @@ export class FamilyGroupService {
     ).toString('base64url');
   }
 
-  /** แปลงแถวกิจกรรม 1 แถวเป็น type ที่ GraphQL ส่งออก */
-  private toActivityItem(row: ActivityRow): FamilyGroupActivityItem {
+  /**
+   * แปลงแถวกิจกรรม 1 แถวเป็น type ที่ GraphQL ส่งออก
+   *
+   * @param redacted PYG-540 — true = ปิดรายละเอียด: ล้าง metadata + targetId
+   *   แถวยังอยู่ (ผู้อ่านเห็นว่า "มีคนจองแทนสมาชิก") แต่ไม่รู้ว่าให้ใคร วันไหน
+   *   FE (activityCopy.ts) รองรับ metadata ว่างอยู่แล้ว → แสดง "จองผู้ดูแลแทนสมาชิกในกลุ่ม"
+   */
+  private toActivityItem(
+    row: ActivityRow,
+    redacted = false,
+  ): FamilyGroupActivityItem {
     return {
       id: row.id,
       // actorId ยังอยู่แต่ actor เป็น null = บัญชีถูกลบไปแล้ว (FK ตั้ง ON DELETE SET NULL)
@@ -1590,10 +1696,10 @@ export class FamilyGroupService {
           : undefined,
       action: row.action,
       targetType: row.targetType ?? undefined,
-      targetId: row.targetId ?? undefined,
+      targetId: redacted ? undefined : (row.targetId ?? undefined),
       // คอลัมน์เป็น JSONB NOT NULL DEFAULT '{}' → ไม่มีทางเป็น null จากดีบี
       // ที่ ?? '{}' ไว้เพราะชนิดฝั่ง Prisma ยังเป็น JsonValue ที่รวม null ได้
-      metadata: JSON.stringify(row.metadata ?? {}),
+      metadata: redacted ? '{}' : JSON.stringify(row.metadata ?? {}),
       createdAt: row.createdAt,
       cursor: this.encodeActivityCursor(row.createdAt, row.id),
     };

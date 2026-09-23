@@ -12,15 +12,43 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import {
+  CONSENT_SOURCE,
   CONSENT_TYPE,
+  CONSENTS_BY_ROLE,
   CONSENTS_BY_SOURCE,
   type ConsentSource,
   type ConsentType,
+  NON_WITHDRAWABLE_CONSENTS,
   POLICY_VERSION,
   REQUIRED_CONSENTS,
 } from './consent.constants';
-import { CONSENT_ERROR, ConsentError } from './consent.errors';
+import {
+  CONSENT_ERROR,
+  ConsentError,
+  NOT_WITHDRAWABLE_MESSAGE,
+} from './consent.errors';
 import type { ConsentAnswerInput } from './dto/consent-answer.input';
+import type { RequestEvidence } from '../common/utils/request-evidence';
+
+/**
+ * สถานะความยินยอมหนึ่งข้อสำหรับหน้า "ความยินยอมของฉัน" — PYG-540
+ * รวมข้อที่ผู้ใช้ยังไม่เคยตอบด้วย (answered = false)
+ */
+export interface MyConsentStatus {
+  type: string;
+  /** สถานะปัจจุบัน — ยังไม่เคยตอบถือว่า "ไม่ยินยอม" */
+  granted: boolean;
+  /** เคยตอบข้อนี้หรือยัง */
+  answered: boolean;
+  policyVersion: string | null;
+  answeredAt: Date | null;
+  source: string | null;
+  /** แถวล่าสุดเป็นนโยบายฉบับที่บังคับใช้อยู่ (ยังไม่เคยตอบ = false) */
+  isCurrentVersion: boolean;
+  required: boolean;
+  /** ถอนผ่านหน้าตั้งค่าได้ไหม (terms / privacy = ไม่ได้) */
+  withdrawable: boolean;
+}
 
 /**
  * แถวล่าสุดของความยินยอมหนึ่งข้อ — ผลของ findLatestByUser (PYG-474)
@@ -258,6 +286,9 @@ export class ConsentService {
    *   จึงบังคับให้ส่ง policyVersion มาและตรวจว่าตรงกับที่บังคับใช้อยู่
    *   ส่วนตอนถอนไม่ต้องอ่านอะไรก่อน — บันทึกเป็นเวอร์ชันปัจจุบันเพื่อให้รู้ว่า
    *   ถอนตอนนโยบายฉบับไหนบังคับใช้อยู่
+   *
+   * PYG-540 (หน้าความยินยอมของฉัน): นี่คือ "ทางเขียนทางเดียว" ของการถอน/ให้ทีละข้อ
+   *   mutation เรียกผ่าน withdraw / grant ข้างล่าง ซึ่งตรวจ role + ข้อที่ถอนไม่ได้ ก่อนส่งมาที่นี่
    */
   async setConsent(
     userId: string,
@@ -315,6 +346,171 @@ export class ConsentService {
       policyVersion: row.policy_version,
       answeredAt: row.granted_at,
       source: row.source,
+    };
+  }
+
+  // ─── PYG-540: หน้า "ความยินยอมของฉัน" + ด่านใช้งานจริงของการถอน ────────────────
+
+  /**
+   * ทุกข้อที่เกี่ยวกับ role นี้ พร้อมสถานะปัจจุบัน — ข้อที่ไม่เคยตอบก็อยู่ในรายการ
+   *
+   * ลำดับตาม CONSENTS_BY_ROLE (ข้อบังคับขึ้นก่อน marketing อยู่ท้าย) ให้ FE แสดงตามนี้ได้เลย
+   * ข้อความของแต่ละข้อไม่อยู่ที่นี่ — FE จับคู่กับ consentPolicy.items[].type
+   */
+  async getMyConsents(userId: string, role: number): Promise<MyConsentStatus[]> {
+    const types = CONSENTS_BY_ROLE[role] ?? [];
+    if (types.length === 0) return [];
+
+    const latestByType = new Map(
+      (await this.findLatestByUser(userId)).map((r) => [r.type, r]),
+    );
+    return types.map((type) => this.toStatus(type, latestByType.get(type)));
+  }
+
+  /**
+   * ถอนความยินยอมจากหน้าตั้งค่า — ตรวจ 2 ชั้นแล้วเขียนผ่าน setConsent
+   *
+   *   1. ข้อนี้ต้องอยู่ในรายการของ role (ผู้ดูแลไม่มีข้อข้อมูลสุขภาพของผู้รับบริการให้ถอน)
+   *   2. ข้อกำหนดการใช้บริการ / ประกาศความเป็นส่วนตัว ถอนไม่ได้ → CONSENT_NOT_WITHDRAWABLE
+   *      (ถอนไปก็ได้แค่ธงในตารางที่ไม่มีผลอะไร — การ์ดเตือนว่าแย่กว่าไม่มีปุ่ม)
+   *
+   * ★ ผลที่เกิดจริง (จองไม่ได้ / กลุ่มไม่เห็นข้อมูล / ไม่ส่งอีเมลข่าวสาร) อยู่ที่จุดใช้งานแต่ละจุด
+   *   ซึ่งอ่านแถวล่าสุดผ่าน findWithdrawnType / withdrawnUserIds / hasGrantedCurrent
+   */
+  async withdraw(
+    userId: string,
+    role: number,
+    type: string,
+    evidence: RequestEvidence,
+  ): Promise<MyConsentStatus> {
+    const consentType = this.assertTypeForRole(type, role);
+
+    if (NON_WITHDRAWABLE_CONSENTS.includes(consentType)) {
+      throw new ConsentError(
+        NOT_WITHDRAWABLE_MESSAGE,
+        CONSENT_ERROR.NOT_WITHDRAWABLE,
+        { consentType },
+      );
+    }
+
+    const record = await this.setConsent(userId, consentType, false, {
+      ...evidence,
+      source: CONSENT_SOURCE.SETTINGS,
+    });
+    return this.toStatus(consentType, record);
+  }
+
+  /**
+   * ให้ความยินยอม (กลับ) จากหน้าตั้งค่า — ข้อที่เคยปฏิเสธ/ถอน และ re-consent เมื่อนโยบายขึ้นเวอร์ชัน
+   * ตรวจ role แล้วเขียนผ่าน setConsent (ซึ่งตรวจ policyVersion ให้ — ไม่ตรง = MISMATCH)
+   */
+  async grant(
+    userId: string,
+    role: number,
+    type: string,
+    policyVersion: string,
+    evidence: RequestEvidence,
+  ): Promise<MyConsentStatus> {
+    const consentType = this.assertTypeForRole(type, role);
+    const record = await this.setConsent(
+      userId,
+      consentType,
+      true,
+      { ...evidence, source: CONSENT_SOURCE.SETTINGS },
+      policyVersion,
+    );
+    return this.toStatus(consentType, record);
+  }
+
+  /**
+   * ข้อแรกใน `types` ที่ผู้ใช้ "ถอนไว้" (แถวล่าสุด granted = false) — ไม่มีคืน null
+   *
+   * ใช้เป็นด่านก่อนจองใหม่ (BOOKING_BLOCKING_CONSENTS) — PYG-540
+   *
+   * ★ ยังไม่เคยตอบ ≠ ถอน: คืน null ให้ผ่าน เพราะผู้ใช้ที่สมัครก่อนมีระบบ consent (dry-run
+   *   production 2026-09-22: ผู้รับบริการ 68 คน มีแถว consent แค่ 2 คน) และข้อ
+   *   disclose_to_caregiver ที่ยังไม่มีจุดขอจริง จะจองไม่ได้ทั้งหมดถ้าตีความว่า
+   *   "ไม่มีแถว = ไม่ยินยอม" · การขอความยินยอมย้อนหลังเป็นงานของ PYG-504
+   *   → ด่านนี้บล็อกเฉพาะคนที่ "กดถอนเอง" จึงเปิดใช้ได้ทันทีโดยไม่กระทบผู้ใช้เดิม
+   */
+  async findWithdrawnType(
+    userId: string,
+    types: readonly ConsentType[],
+  ): Promise<ConsentType | null> {
+    if (types.length === 0) return null;
+
+    const rows = await this.prisma.user_consents.findMany({
+      where: { user_id: userId, consent_type: { in: [...types] } },
+      orderBy: { granted_at: 'desc' },
+      select: { consent_type: true, granted: true },
+    });
+
+    // แถวแรกของแต่ละข้อ = แถวล่าสุด
+    const latest = new Map<string, boolean>();
+    for (const row of rows) {
+      if (!latest.has(row.consent_type)) latest.set(row.consent_type, row.granted);
+    }
+    // ไล่ตามลำดับที่ผู้เรียกส่งมา → ข้อความ error คงที่ ไม่ขึ้นกับลำดับที่ DB คืน
+    return types.find((type) => latest.get(type) === false) ?? null;
+  }
+
+  /**
+   * ในกลุ่มผู้ใช้ที่ให้มา ใครบ้างที่ "ถอน" ข้อนี้ไว้ (แถวล่าสุด granted = false) — PYG-540
+   *
+   * ใช้กรองข้อมูลที่สมาชิกกลุ่มครอบครัวเห็น (disclose_to_family_group) — ยิง query เดียวต่อหน้า
+   * ความหมายเดียวกับ findWithdrawnType: ยังไม่เคยตอบ = ไม่ได้ถอน (ข้อมูลกลุ่มเดิมไม่หายทั้งระบบ)
+   */
+  async withdrawnUserIds(
+    userIds: readonly string[],
+    type: ConsentType,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (ids.length === 0) return new Set();
+
+    const rows = await this.prisma.user_consents.findMany({
+      where: { user_id: { in: ids }, consent_type: type },
+      orderBy: { granted_at: 'desc' },
+      select: { user_id: true, granted: true },
+    });
+
+    const latest = new Map<string, boolean>();
+    for (const row of rows) {
+      if (!latest.has(row.user_id)) latest.set(row.user_id, row.granted);
+    }
+    return new Set(
+      [...latest.entries()].filter(([, granted]) => !granted).map(([id]) => id),
+    );
+  }
+
+  /** ชนิดต้องอยู่ในรายการของ role นี้ — กันถอน/ให้ข้อที่หน้าจอไม่ได้แสดง (หรือสะกดผิด) */
+  private assertTypeForRole(type: string, role: number): ConsentType {
+    const allowed = CONSENTS_BY_ROLE[role] ?? [];
+    const match = allowed.find((t) => t === type);
+    if (!match) {
+      throw new ConsentError(
+        'ข้อมูลความยินยอมไม่ถูกต้อง กรุณารีเฟรชหน้าเว็บแล้วลองอีกครั้ง',
+        CONSENT_ERROR.TYPE_INVALID,
+        { consentType: type },
+      );
+    }
+    return match;
+  }
+
+  /** แถวล่าสุด (หรือไม่มี) → สถานะที่หน้า "ความยินยอมของฉัน" ใช้ */
+  private toStatus(
+    type: ConsentType,
+    latest: LatestConsentRecord | undefined,
+  ): MyConsentStatus {
+    return {
+      type,
+      granted: latest?.granted ?? false,
+      answered: latest !== undefined,
+      policyVersion: latest?.policyVersion ?? null,
+      answeredAt: latest?.answeredAt ?? null,
+      source: latest?.source ?? null,
+      isCurrentVersion: latest?.policyVersion === POLICY_VERSION,
+      required: REQUIRED_CONSENTS.includes(type),
+      withdrawable: !NON_WITHDRAWABLE_CONSENTS.includes(type),
     };
   }
 }

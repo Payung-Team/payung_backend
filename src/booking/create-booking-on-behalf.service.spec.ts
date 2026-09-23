@@ -6,6 +6,7 @@ import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+import { ConsentService } from '../consent/consent.service';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 
@@ -75,6 +76,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
   let emitter: { emit: jest.Mock };
   // PYG-434: ใบ QR ที่ต้องถูกสร้างพร้อม booking ทุกใบ
   let jobQr: { createForBooking: jest.Mock };
+  // PYG-540: ความยินยอมของเจ้าของข้อมูล
+  let consent: { findWithdrawnType: jest.Mock; withdrawnUserIds: jest.Mock };
 
   beforeEach(async () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
@@ -109,6 +112,10 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     };
     emitter = { emit: jest.fn() };
     jobQr = { createForBooking: jest.fn().mockResolvedValue(undefined) };
+    consent = {
+      findWithdrawnType: jest.fn().mockResolvedValue(null),
+      withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -118,6 +125,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         // PYG-461 เฟส 3a: dep ของ cancelBooking — ไฟล์นี้เทสการจองแทน ไม่ได้เทสการยกเลิก
         { provide: BookingSettlementService, useValue: { settle: jest.fn() } },
         { provide: JobQrService, useValue: jobQr },
+        // PYG-540: ด่านความยินยอมของเจ้าของข้อมูล — ค่าเริ่มต้น = ไม่มีใครถอน
+        { provide: ConsentService, useValue: consent },
       ],
     }).compile();
 

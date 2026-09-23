@@ -21,6 +21,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { createHash } from 'crypto';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
+import { ConsentService } from '../consent/consent.service';
 import {
   ACTIVITY_ACTION,
   GROUP_MAX_MEMBERS,
@@ -114,6 +115,11 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: { withdrawnUserIds: jest.fn().mockResolvedValue(new Set()) },
+        },
       ],
     }).compile();
 
