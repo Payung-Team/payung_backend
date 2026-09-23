@@ -535,8 +535,26 @@ export class FamilyGroupService {
   }
 
   /**
-   * โปรไฟล์ที่สมาชิก ACTIVE ของกลุ่มเคยบันทึกไว้ทั้งหมด พร้อมรายละเอียดสำหรับจองแทน.
-   * คืนทั้งโปรไฟล์ส่วนตัวและโปรไฟล์ของกลุ่มปัจจุบัน แต่ไม่ดึงโปรไฟล์จากกลุ่มอื่น.
+   * โปรไฟล์ที่ถูก "แชร์เข้ากลุ่มนี้" แล้วเท่านั้น พร้อมรายละเอียดสำหรับจองแทน.
+   *
+   * ★ ไม่ดึงโปรไฟล์ส่วนตัว (`family_group_id IS NULL`) ของสมาชิก
+   *   เดิมเงื่อนไขเป็น `OR: [{ familyGroupId: null }, { familyGroupId: groupId }]`
+   *   ซึ่งหมายความว่า "ทุกโปรไฟล์ส่วนตัวของสมาชิกทุกคน" ถูกส่งออกมาพร้อม `details`
+   *   (อายุ เพศ โรคประจำตัว ยาที่ใช้ ประวัติแพ้ ฯลฯ) ให้สมาชิกคนอื่นในกลุ่มเห็น
+   *   รวมใบ `is_self` ที่ระบบสร้างให้ตอน Onboarding — คนกรอกไม่เคยเลือกที่จะแชร์อะไรเลย
+   *
+   *   นั่นคือการเปิดเผยข้อมูลสุขภาพโดยไม่มีความยินยอม (PDPA ม.26) และขัดกับ
+   *   ประกาศความเป็นส่วนตัวของเราเองที่เขียนว่าข้อมูลสุขภาพแชร์เฉพาะที่เจ้าของเลือกแชร์
+   *
+   *   การแชร์เข้ากลุ่มมีทางเดียวคือ `addGroupCareRecipient` ซึ่งเจ้าของเป็นคนกด
+   *   (หรือกลไกคัดลอกเข้ากลุ่มตอนจองจริงของ PYG-500) — เงื่อนไขนี้จึงตรงกับ
+   *   คำอธิบายของ query ที่เขียนไว้ตั้งแต่แรกว่า "โปรไฟล์ทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้"
+   *
+   *   ★ ไม่มีใครเสียความสามารถไป: เส้นทางจองแทนด้วย careRecipientId ปฏิเสธโปรไฟล์
+   *     ส่วนตัวอยู่แล้ว (`recipient.familyGroupId !== input.groupId` → RecipientNotInGroupError)
+   *     แถวที่ตัดออกนี้จึงเป็นตัวเลือกที่กดแล้ว error มาตลอด — รั่วข้อมูลโดยไม่มีคนได้ใช้
+   *
+   *   PYG-517 (`groupBookingRecipients`) ใช้เงื่อนไขนี้อยู่แล้ว ใบนี้แก้ของเดิมให้ตรงกัน
    */
   async groupCareRecipients(groupId: string): Promise<GroupCareRecipient[]> {
     const members = await this.prisma.familyGroupMember.findMany({
@@ -547,7 +565,7 @@ export class FamilyGroupService {
       where: {
         patientId: { in: members.map((member) => member.userId) },
         is_deleted: false,
-        OR: [{ familyGroupId: null }, { familyGroupId: groupId }],
+        familyGroupId: groupId,
       },
       orderBy: { name: 'asc' },
       select: {
