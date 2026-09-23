@@ -8,6 +8,10 @@
  *   B5  token ที่ไม่ตรงแถวไหนเลย → JOIN_LINK_INVALID
  *   B6  โควตาเต็ม → EXHAUSTED · กลุ่มเต็ม → GROUP_FULL
  *   B8  rotate → ใบเดิมถูก REVOKED และออกใบใหม่ในธุรกรรมเดียว
+ *   B9  (PYG-478 · Amendment 1) สมาชิก ACTIVE ทุกคนอ่านลิงก์ได้ · คนนอก/คนที่ออกไปแล้ว → NOT_A_MEMBER
+ *       · สมาชิกธรรมดาเรียก สร้าง/หมุน/ยกเลิก → NOT_GROUP_OWNER เหมือนเดิม
+ *   B10 (PYG-478 · Amendment 1) สมาชิกเปิดดูตอนไม่มีลิงก์ → JOIN_LINK_NOT_FOUND
+ *       ข้อความบอกให้ไปขอเจ้าของ และการอ่านต้องไม่สร้างลิงก์ให้
  *
  * ส่วน B4/B7 (กดเข้าร่วมจริง, login แล้วกลับมาต่อ) อยู่ที่ PYG-417 และ PYG-418
  *
@@ -22,6 +26,7 @@ import {
   ACTIVITY_ACTION,
   GROUP_MAX_MEMBERS,
   GROUP_ROLE,
+  GroupRoleName,
   JOIN_LINK_STATUS,
   MEMBER_STATUS,
 } from './family-group.constants';
@@ -30,6 +35,7 @@ import { FG_ERROR } from './family-group.errors';
 const GROUP_ID = '11111111-1111-1111-1111-111111111111';
 const LINK_ID = '22222222-2222-2222-2222-222222222222';
 const OWNER_ID = 'u-owner';
+const MEMBER_ID = 'u-member';
 const OUTSIDER_ID = 'u-outsider';
 const BASE_URL = 'https://payung.test';
 
@@ -135,6 +141,31 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
     tx.familyGroupMember.findFirst.mockResolvedValue({ id: 'fgm-owner' });
   const givenCallerIsNotOwner = () =>
     tx.familyGroupMember.findFirst.mockResolvedValue(null);
+
+  /**
+   * จำลองตาราง family_group_members ที่มีแถวของ userId อยู่ 1 แถว (PYG-478)
+   *
+   * ต่างจาก givenCallerIsOwner/NotOwner ตรงที่ "กรองตาม where จริง" แบบที่ดีบีทำ:
+   *   assertOwner        ใส่ role: 'OWNER' ใน where → สมาชิกธรรมดาได้ null → NOT_GROUP_OWNER
+   *   assertActiveMember ไม่ใส่ role               → สมาชิกธรรมดาได้แถว → ผ่าน
+   *   และถ้า service ลืมกรอง status แถว REMOVED/LEFT จะหลุดผ่าน → เทสต์ด้านล่างจับได้
+   * ถ้าคืนค่าตายตัวแบบ helper เดิม เทสต์จะผ่านได้แม้ service ส่ง where ผิด
+   */
+  const givenMembership = (
+    userId: string,
+    role: GroupRoleName,
+    status: string = MEMBER_STATUS.ACTIVE,
+  ) =>
+    tx.familyGroupMember.findFirst.mockImplementation(
+      ({ where }: { where: Record<string, unknown> }) => {
+        const matches =
+          where.groupId === GROUP_ID &&
+          where.userId === userId &&
+          (where.status === undefined || where.status === status) &&
+          (where.role === undefined || where.role === role);
+        return Promise.resolve(matches ? { id: `fgm-${userId}`, role } : null);
+      },
+    );
 
   // ═══ B1 · createJoinLink ═════════════════════════════════════════════
   describe('createJoinLink', () => {
@@ -298,10 +329,10 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
     });
   });
 
-  // ═══ groupJoinLink ═══════════════════════════════════════════════════
+  // ═══ groupJoinLink · B9 / B10 (PYG-478 · SCR-FG2-001 Amendment 1) ═════
   describe('groupJoinLink', () => {
     it('เจ้าของกด Copy ซ้ำได้ — คืน url เดิมโดยไม่ต้อง rotate (ข้อตัดสินใจ ก. ของ SCR)', async () => {
-      givenCallerIsOwner();
+      givenMembership(OWNER_ID, GROUP_ROLE.OWNER);
       prisma.familyGroupJoinLink.findFirst.mockResolvedValue(linkRow());
 
       const first = await service.groupJoinLink(OWNER_ID, GROUP_ID);
@@ -312,16 +343,112 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
       expect(tx.familyGroupJoinLink.updateMany).not.toHaveBeenCalled();
     });
 
-    it('ยังไม่มีลิงก์ → JOIN_LINK_NOT_FOUND', async () => {
-      givenCallerIsOwner();
-      prisma.familyGroupJoinLink.findFirst.mockResolvedValue(null);
+    it('B9 — สมาชิกธรรมดา (MEMBER) ได้ลิงก์ใบเดียวกับที่เจ้าของเห็น และเป็นการอ่านอย่างเดียว', async () => {
+      tx.familyGroupJoinLink.findFirst.mockResolvedValue(linkRow());
+
+      givenMembership(OWNER_ID, GROUP_ROLE.OWNER);
+      const ownerView = await service.groupJoinLink(OWNER_ID, GROUP_ID);
+      givenMembership(MEMBER_ID, GROUP_ROLE.MEMBER);
+      const memberView = await service.groupJoinLink(MEMBER_ID, GROUP_ID);
+
+      expect(memberView.url).toBe(ownerView.url);
+      expect(memberView.url).toBe(`${BASE_URL}/join?token=raw-token-value`);
+      // อ่านอย่างเดียว — ไม่สร้าง ไม่ยกเลิก ไม่เขียนฟีด
+      expect(tx.familyGroupJoinLink.create).not.toHaveBeenCalled();
+      expect(tx.familyGroupJoinLink.updateMany).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('B9 — ตรวจสมาชิกภาพด้วย status ACTIVE และ "ไม่กรอง role" (ถ้ากรอง role = กลับไปเป็นบั๊กเดิม)', async () => {
+      givenMembership(MEMBER_ID, GROUP_ROLE.MEMBER);
+      tx.familyGroupJoinLink.findFirst.mockResolvedValue(linkRow());
+
+      await service.groupJoinLink(MEMBER_ID, GROUP_ID);
+
+      // toEqual = ต้องมีแค่ 3 key นี้ ถ้ามี role เพิ่มเข้ามาเทสต์จะแดง
+      expect(callArg(tx.familyGroupMember.findFirst).where).toEqual({
+        groupId: GROUP_ID,
+        userId: MEMBER_ID,
+        status: MEMBER_STATUS.ACTIVE,
+      });
+    });
+
+    it.each([
+      ['คนนอกกลุ่ม (ไม่มีแถวสมาชิกเลย)', OUTSIDER_ID, MEMBER_STATUS.ACTIVE],
+      ['สมาชิกที่ถูกเตะออกแล้ว (REMOVED)', MEMBER_ID, MEMBER_STATUS.REMOVED],
+      ['สมาชิกที่ออกจากกลุ่มเองแล้ว (LEFT)', MEMBER_ID, MEMBER_STATUS.LEFT],
+    ])(
+      'B9 — %s → NOT_A_MEMBER และไม่อ่านตารางลิงก์เลย',
+      async (_label, callerId, status) => {
+        // ในกลุ่มมีแถวของ MEMBER_ID อยู่แถวเดียว ด้วยสถานะตามเคส
+        givenMembership(MEMBER_ID, GROUP_ROLE.MEMBER, status);
+        tx.familyGroupJoinLink.findFirst.mockResolvedValue(linkRow());
+
+        await expect(
+          service.groupJoinLink(callerId, GROUP_ID),
+        ).rejects.toMatchObject({
+          extensions: { code: FG_ERROR.NOT_A_MEMBER },
+        });
+        // ไม่แตะตารางลิงก์ = ทั้ง url และ "กลุ่มนี้มีลิงก์หรือเปล่า" ไม่มีทางหลุดออกไป
+        expect(tx.familyGroupJoinLink.findFirst).not.toHaveBeenCalled();
+      },
+    );
+
+    it('B10 — สมาชิกเปิดดูตอนยังไม่มีลิงก์ → JOIN_LINK_NOT_FOUND บอกให้ขอเจ้าของ และไม่สร้างลิงก์ให้', async () => {
+      givenMembership(MEMBER_ID, GROUP_ROLE.MEMBER);
+      tx.familyGroupJoinLink.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.groupJoinLink(MEMBER_ID, GROUP_ID),
+      ).rejects.toMatchObject({
+        message:
+          'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณาขอให้เจ้าของกลุ่มสร้างลิงก์',
+        extensions: { code: FG_ERROR.JOIN_LINK_NOT_FOUND },
+      });
+      expect(tx.familyGroupJoinLink.create).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('B10 — เจ้าของเปิดดูตอนยังไม่มีลิงก์ → JOIN_LINK_NOT_FOUND ข้อความเดิม (ให้กดสร้างเอง)', async () => {
+      givenMembership(OWNER_ID, GROUP_ROLE.OWNER);
+      tx.familyGroupJoinLink.findFirst.mockResolvedValue(null);
 
       await expect(
         service.groupJoinLink(OWNER_ID, GROUP_ID),
       ).rejects.toMatchObject({
+        message: 'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณากดสร้างลิงก์ก่อน',
         extensions: { code: FG_ERROR.JOIN_LINK_NOT_FOUND },
       });
+      expect(tx.familyGroupJoinLink.create).not.toHaveBeenCalled();
     });
+  });
+
+  // ═══ B1 · Amendment 1 เปิดแค่ "การอ่าน" — การจัดการลิงก์ยังเป็นของเจ้าของ ═══
+  describe('สมาชิกธรรมดายังจัดการลิงก์ไม่ได้ (PYG-478 ต้องไม่ทำให้สิทธิ์นี้หลุด)', () => {
+    it.each([
+      [
+        'createJoinLink',
+        () => service.createJoinLink(MEMBER_ID, { groupId: GROUP_ID }),
+      ],
+      [
+        'rotateJoinLink',
+        () => service.rotateJoinLink(MEMBER_ID, { groupId: GROUP_ID }),
+      ],
+      ['revokeJoinLink', () => service.revokeJoinLink(MEMBER_ID, GROUP_ID)],
+    ])(
+      'สมาชิก ACTIVE เรียก %s → NOT_GROUP_OWNER และไม่มีอะไรถูกเขียน',
+      async (_name, call) => {
+        givenMembership(MEMBER_ID, GROUP_ROLE.MEMBER);
+        tx.familyGroupJoinLink.findFirst.mockResolvedValue(linkRow());
+
+        await expect(call()).rejects.toMatchObject({
+          extensions: { code: FG_ERROR.NOT_GROUP_OWNER },
+        });
+        expect(tx.familyGroupJoinLink.create).not.toHaveBeenCalled();
+        expect(tx.familyGroupJoinLink.updateMany).not.toHaveBeenCalled();
+        expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+      },
+    );
   });
 
   // ═══ B2 / B3 / B5 / B6 · joinLinkPreview ═════════════════════════════

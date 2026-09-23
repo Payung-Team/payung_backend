@@ -665,14 +665,14 @@ describe('FamilyGroupService', () => {
 
   // ═══ PYG-385 · จัดการโปรไฟล์ผู้รับบริการในกลุ่ม ═════════════════════════
   describe('groupCareRecipients', () => {
-    it('คืนโปรไฟล์ส่วนตัวพร้อมรายละเอียดของสมาชิก ACTIVE ในกลุ่ม', async () => {
+    it('คืนโปรไฟล์ที่แชร์เข้ากลุ่มแล้วพร้อมรายละเอียดของสมาชิก ACTIVE', async () => {
       tx.familyGroupMember.findMany.mockResolvedValue([
         { userId: OWNER_ID },
         { userId: MEMBER_ID },
       ]);
       prisma.careRecipient.findMany.mockResolvedValue([
         {
-          id: 'r-personal',
+          id: 'r-shared',
           name: 'คุณยายสมศรี',
           nickname: 'ยายศรี',
           patientId: MEMBER_ID,
@@ -691,19 +691,19 @@ describe('FamilyGroupService', () => {
         },
       ]);
 
-      const result = await service.groupCareRecipients(GROUP_ID);
+      const result = await service.groupCareRecipients(GROUP_ID, OWNER_ID);
 
       expect(prisma.careRecipient.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             patientId: { in: [OWNER_ID, MEMBER_ID] },
             is_deleted: false,
-            OR: [{ familyGroupId: null }, { familyGroupId: GROUP_ID }],
+            familyGroupId: GROUP_ID,
           },
         }),
       );
       expect(result[0]).toMatchObject({
-        id: 'r-personal',
+        id: 'r-shared',
         ownerUserId: MEMBER_ID,
         details: {
           age: 72,
@@ -712,6 +712,23 @@ describe('FamilyGroupService', () => {
           careInstructions: 'ช่วยพยุงเดิน',
         },
       });
+    });
+
+    /**
+     * ★ เทสนี้ยืนยัน "สิ่งที่ห้ามมีใน where" ไม่ใช่แค่ผลลัพธ์ที่ถูก
+     *   เพราะโปรไฟล์ส่วนตัวถูกกรองที่ชั้น DB ถ้าใครเผลอเติม OR กลับเข้ามา
+     *   เทสที่เช็คแต่ output จะยังเขียวอยู่ (mock คืนอะไรมาก็ผ่าน) แต่ของจริงรั่ว
+     */
+    it('ไม่ดึงโปรไฟล์ส่วนตัว — where ต้องไม่มี OR และไม่มี familyGroupId: null', async () => {
+      tx.familyGroupMember.findMany.mockResolvedValue([{ userId: MEMBER_ID }]);
+      prisma.careRecipient.findMany.mockResolvedValue([]);
+
+      await service.groupCareRecipients(GROUP_ID, OWNER_ID);
+
+      const where = prisma.careRecipient.findMany.mock.calls[0][0].where;
+      expect(where.OR).toBeUndefined();
+      expect(where.familyGroupId).toBe(GROUP_ID);
+      expect(JSON.stringify(where)).not.toContain('null');
     });
   });
 

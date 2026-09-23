@@ -38,6 +38,7 @@ import {
   GROUP_NAME_MAX_LENGTH,
   GROUP_NAME_MIN_LENGTH,
   GROUP_ROLE,
+  GroupRoleName,
   MEMBER_STATUS,
   joinLinkBaseUrl,
   GROUP_MAX_MEMBERS,
@@ -54,6 +55,7 @@ import {
   GroupNotFoundError,
   LastOwnerError,
   MemberNotFoundError,
+  NotAMemberError,
   NotGroupOwnerError,
   GroupMemberLimitReachedError,
   JoinLinkConfigMissingError,
@@ -550,14 +552,37 @@ export class FamilyGroupService {
   }
 
   /**
-   * โปรไฟล์ที่สมาชิก ACTIVE ของกลุ่มเคยบันทึกไว้ทั้งหมด พร้อมรายละเอียดสำหรับจองแทน.
-   * คืนทั้งโปรไฟล์ส่วนตัวและโปรไฟล์ของกลุ่มปัจจุบัน แต่ไม่ดึงโปรไฟล์จากกลุ่มอื่น.
+   * โปรไฟล์ที่ถูก "แชร์เข้ากลุ่มนี้" แล้วเท่านั้น พร้อมรายละเอียดสำหรับจองแทน.
+   *
+   * ★ ไม่ดึงโปรไฟล์ส่วนตัว (`family_group_id IS NULL`) ของสมาชิก
+   *   เดิมเงื่อนไขเป็น `OR: [{ familyGroupId: null }, { familyGroupId: groupId }]`
+   *   ซึ่งหมายความว่า "ทุกโปรไฟล์ส่วนตัวของสมาชิกทุกคน" ถูกส่งออกมาพร้อม `details`
+   *   (อายุ เพศ โรคประจำตัว ยาที่ใช้ ประวัติแพ้ ฯลฯ) ให้สมาชิกคนอื่นในกลุ่มเห็น
+   *   รวมใบ `is_self` ที่ระบบสร้างให้ตอน Onboarding — คนกรอกไม่เคยเลือกที่จะแชร์อะไรเลย
+   *
+   *   นั่นคือการเปิดเผยข้อมูลสุขภาพโดยไม่มีความยินยอม (PDPA ม.26) และขัดกับ
+   *   ประกาศความเป็นส่วนตัวของเราเองที่เขียนว่าข้อมูลสุขภาพแชร์เฉพาะที่เจ้าของเลือกแชร์
+   *
+   *   การแชร์เข้ากลุ่มมีทางเดียวคือ `addGroupCareRecipient` ซึ่งเจ้าของเป็นคนกด
+   *   (หรือกลไกคัดลอกเข้ากลุ่มตอนจองจริงของ PYG-500) — เงื่อนไขนี้จึงตรงกับ
+   *   คำอธิบายของ query ที่เขียนไว้ตั้งแต่แรกว่า "โปรไฟล์ทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้"
+   *
+   *   ★ ไม่มีใครเสียความสามารถไป: เส้นทางจองแทนด้วย careRecipientId ปฏิเสธโปรไฟล์
+   *     ส่วนตัวอยู่แล้ว (`recipient.familyGroupId !== input.groupId` → RecipientNotInGroupError)
+   *     แถวที่ตัดออกนี้จึงเป็นตัวเลือกที่กดแล้ว error มาตลอด — รั่วข้อมูลโดยไม่มีคนได้ใช้
+   *
+   *   PYG-517 (`groupBookingRecipients`) ใช้เงื่อนไขนี้อยู่แล้ว ใบนี้แก้ของเดิมให้ตรงกัน
    *
    * PYG-540: ไม่แสดงโปรไฟล์ของเจ้าของที่ "ถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว"
    *   ยกเว้นเจ้าของดูเอง (ยังจัดการโปรไฟล์ของตัวเองได้) · ไม่ลบโปรไฟล์ — ให้ความยินยอมกลับก็เห็นอีก
    *   ★ สำคัญเป็นพิเศษเพราะรายการนี้ส่ง details (ข้อมูลสุขภาพ) ออกไปด้วย
    *   ผลพลอยได้: คนที่ถอนหายจากตัวเลือก "จองให้ใคร" ไปด้วย
    *   (ด่านจริงอยู่ที่ BookingService.createBookingOnBehalf อีกชั้น เผื่อ FE ส่ง id เก่ามา)
+   *
+   * ── สองด่านนี้คนละเรื่องกัน ต้องมีทั้งคู่ ────────────────────────────────
+   *   `familyGroupId: groupId`  = "ใบนี้ถูกแชร์เข้ากลุ่มหรือยัง" (เจ้าของยังไม่เคยตัดสินใจ = ไม่แชร์)
+   *   ตัวกรอง `withdrawnUserIds` = "เจ้าของถอนความยินยอมไปแล้วหรือยัง" (เคยแชร์ แต่ขอถอนคืน)
+   *   ตัดอันแรกทิ้งแล้วเหลือแต่อันหลัง = คนที่ยังไม่เคยตอบความยินยอม (เกือบทุกคน) รั่วหมด
    */
   async groupCareRecipients(
     groupId: string,
@@ -571,7 +596,7 @@ export class FamilyGroupService {
       where: {
         patientId: { in: members.map((member) => member.userId) },
         is_deleted: false,
-        OR: [{ familyGroupId: null }, { familyGroupId: groupId }],
+        familyGroupId: groupId,
       },
       orderBy: { name: 'asc' },
       select: {
@@ -990,26 +1015,42 @@ export class FamilyGroupService {
   }
 
   /**
-   * อ่านลิงก์ปัจจุบันของกลุ่ม (เจ้าของเท่านั้น) — ตัวที่ทำให้ปุ่ม "คัดลอกลิงก์" กดซ้ำได้
+   * อ่านลิงก์ปัจจุบันของกลุ่ม (สมาชิก ACTIVE ทุกคน) — ตัวที่ทำให้ปุ่ม "คัดลอกลิงก์" กดซ้ำได้
+   *
+   * ★ PYG-478 · SCR-FG2-001 Amendment 1 (B9/B10) — เดิมเปิดให้เจ้าของคนเดียว
+   *   ตอนนี้สมาชิก ACTIVE ทุกคน (ทั้ง OWNER และ MEMBER) อ่านได้ เพราะคนที่นึกได้ว่า
+   *   ต้องชวนญาติคนไหนเพิ่ม มักไม่ใช่คนเดียวกับคนที่สร้างกลุ่ม
+   *   ส่วน สร้าง/หมุน/ยกเลิก ลิงก์ ยังเป็นของเจ้าของคนเดียวเหมือนเดิม (assertOwner ใน
+   *   createJoinLink / rotateJoinLink / revokeJoinLink ด้านบน ไม่ได้แตะ)
+   *   → ตัวคุมจริงของลิงก์ (โควตา max_uses, เพดานสมาชิก, วันหมดอายุ, การ rotate)
+   *     ยังอยู่ในมือเจ้าของ — ระบบคุม "การส่งต่อ" ไม่ได้อยู่แล้วตั้งแต่ลิงก์ออกจากแอป
    *
    * ★ เมธอดนี้คือเหตุผลทั้งหมดที่เราเก็บ tokenRaw ลงดีบี (ข้อตัดสินใจ ก. ของ SCR)
    *   ถ้าเก็บแค่ hash เมธอดนี้จะเขียนไม่ได้เลย และเจ้าของกลุ่มจะต้อง rotate
    *   ทุกครั้งที่อยากส่งลิงก์ให้คนถัดไป ซึ่งจะฆ่าลิงก์ของคนก่อนหน้าที่ยังไม่ได้กด
+   *
+   * ★ อ่านอย่างเดียวเสมอ — ไม่มีลิงก์ก็โยน JOIN_LINK_NOT_FOUND ไม่สร้างให้ (B10)
+   *   ห้ามเปลี่ยนเป็น "ไม่มีก็สร้างให้เลย" เด็ดขาด เพราะเมธอดนี้สมาชิกธรรมดาเรียกได้
+   *   = จะกลายเป็นประตูหลังให้สมาชิกสร้างลิงก์ได้ ทั้งที่ B1 บอกว่าต้องเป็นเจ้าของเท่านั้น
    */
   async groupJoinLink(
     userId: string,
     groupId: string,
   ): Promise<FamilyGroupJoinLink> {
-    // ตรวจสิทธิ์กับอ่านลิงก์อยู่ในธุรกรรมเดียวกัน — ถ้าแยกกัน คนที่เพิ่งถูกโอนสิทธิ์ออก
-    // ระหว่างสองคำสั่งจะยังได้ url กลับไป ซึ่งเท่ากับแจกลิงก์ให้คนที่ไม่ใช่เจ้าของแล้ว
     const link = await this.prisma.$transaction(async (tx) => {
-      await this.assertOwner(tx, groupId, userId);
+      // ตรวจซ้ำชั้นที่สอง (ชั้นแรกคือ @GroupRole('MEMBER') ที่ resolver)
+      // ทำไมไม่ปล่อยให้ guard ทำคนเดียว: ค่าที่เมธอดนี้คืนคือ url ที่ใช้เข้ากลุ่มได้จริง
+      // ถ้าวันหนึ่งมีคนเผลอถอด @GroupRole ออก หรือเรียกเมธอดนี้จากโค้ดอื่นที่ไม่ผ่าน guard
+      // คนนอกกลุ่ม / คนที่ถูกเตะออกแล้ว ก็ยังได้ NOT_A_MEMBER อยู่ดี ไม่ใช่ได้ url ไป
+      const role = await this.assertActiveMember(tx, groupId, userId);
 
       const active = await tx.familyGroupJoinLink.findFirst({
         where: { groupId, status: JOIN_LINK_STATUS.ACTIVE },
       });
       if (!active) {
-        throw new JoinLinkNotFoundError();
+        // B10 — code เดียวกันทั้งเจ้าของและสมาชิก (FE แยกกรณีด้วย code นี้)
+        // ต่างกันแค่ข้อความ: เจ้าของ → "กดสร้างลิงก์ก่อน" · สมาชิก → "ขอให้เจ้าของกลุ่มสร้างลิงก์"
+        throw new JoinLinkNotFoundError(role !== GROUP_ROLE.OWNER);
       }
       return active;
     });
@@ -1344,7 +1385,7 @@ export class FamilyGroupService {
     }
   }
 
-  /** แถวจากดีบี → type ที่ GraphQL ส่งออก (เฉพาะฝั่งเจ้าของกลุ่ม) */
+  /** แถวจากดีบี → type ที่ GraphQL ส่งออก (เฉพาะสมาชิก ACTIVE ของกลุ่ม — คนนอกห้ามเห็น) */
   private toJoinLink(
     link: {
       id: string;
@@ -1420,6 +1461,44 @@ export class FamilyGroupService {
     if (!owner) {
       throw new NotGroupOwnerError();
     }
+  }
+
+  /**
+   * ยืนยันว่า userId เป็นสมาชิก ACTIVE ของกลุ่มนี้ (OWNER หรือ MEMBER ก็ได้) — ใช้ภายใน transaction
+   *
+   * คู่แฝดของ assertOwner ด้านบน ต่างกันแค่ "ไม่กรอง role"
+   * ใช้กับการอ่านที่สมาชิกทุกคนมีสิทธิ์ แต่ผลลัพธ์อ่อนไหวพอที่ต้องตรวจซ้ำหลัง guard
+   * (ตอนนี้มีที่เดียวคือ groupJoinLink — PYG-478)
+   *
+   * ★ กรอง status = ACTIVE เสมอ ตามกติกาข้อ 1 ของไฟล์นี้
+   *   คนที่ LEFT/REMOVED ยังมีแถวค้างอยู่ ถ้าลืมกรอง คนที่ถูกเตะแล้วจะยังเอา url ไปได้
+   *
+   * @returns role ของผู้เรียกในกลุ่มนี้ — ให้ผู้เรียกเลือกข้อความตามบทบาทได้
+   *          โดยไม่ต้องคิวรี่ตารางสมาชิกซ้ำอีกรอบ
+   * @throws NotAMemberError — code เดียวกับที่ FamilyGroupGuard ตอบคนนอกกลุ่ม
+   *         (คนนอกจึงแยกไม่ออกว่าโดนกันที่ชั้นไหน และเดาไม่ได้ว่ากลุ่มนี้มีลิงก์หรือเปล่า)
+   */
+  private async assertActiveMember(
+    tx: Prisma.TransactionClient,
+    groupId: string,
+    userId: string,
+  ): Promise<GroupRoleName> {
+    const member = await tx.familyGroupMember.findFirst({
+      where: {
+        groupId,
+        userId,
+        status: MEMBER_STATUS.ACTIVE,
+        // ★ ไม่มี role ในนี้โดยตั้งใจ — นี่คือจุดต่างเดียวจาก assertOwner
+      },
+      select: { role: true },
+    });
+    if (!member) {
+      throw new NotAMemberError();
+    }
+    // role ในดีบีเป็น TEXT → แปลงเป็นชนิดที่แคบลง แบบเดียวกับที่ FamilyGroupGuard ทำ
+    return member.role === GROUP_ROLE.OWNER
+      ? GROUP_ROLE.OWNER
+      : GROUP_ROLE.MEMBER;
   }
 
   /**
