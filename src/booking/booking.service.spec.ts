@@ -201,7 +201,18 @@ describe('BookingService', () => {
       await service.myBookingHistory(PATIENT_ID, {});
 
       const call = prisma.booking.findMany.mock.calls[0][0];
-      expect(call.where).toEqual({ patientId: PATIENT_ID });
+      expect(call.where).toEqual({ patientId: PATIENT_ID, familyGroupId: null });
+    });
+
+    it('ไม่รวมใบจองแทนในกลุ่มครอบครัว — ทั้งรายการและตัวนับ', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.count.mockResolvedValue(0);
+
+      await service.myBookingHistory(PATIENT_ID, {});
+
+      // ใบจองแทนมี patientId = คนกดจอง ถ้าไม่กรอง familyGroupId จะปนมาใน "นัดหมายของฉัน"
+      expect(prisma.booking.findMany.mock.calls[0][0].where).toMatchObject({ familyGroupId: null });
+      expect(prisma.booking.count.mock.calls[0][0].where).toMatchObject({ familyGroupId: null });
     });
 
     it('filters by status when status is set', async () => {
@@ -211,7 +222,7 @@ describe('BookingService', () => {
       await service.myBookingHistory(PATIENT_ID, { status: BookingStatusEnum.COMPLETED });
 
       const call = prisma.booking.findMany.mock.calls[0][0];
-      expect(call.where).toEqual({ patientId: PATIENT_ID, status: 'completed' });
+      expect(call.where).toEqual({ patientId: PATIENT_ID, familyGroupId: null, status: 'completed' });
     });
 
     it('orders by createdAt desc', async () => {
