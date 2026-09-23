@@ -38,7 +38,19 @@ jobs:
         run: npm ci
 
       # prisma generate — ต้องมี client ก่อน tsc/jest ถึงจะ resolve @prisma/client ได้
+      #
+      # ★ ต้องตั้ง DATABASE_URL ทั้งที่ generate ไม่ได้ต่อ DB
+      #   prisma.config.ts อ่าน env ตอนโหลดไฟล์ ไม่มีตัวแปรนี้ = ล้มตั้งแต่โหลด config
+      #     PrismaConfigEnvError: Missing required environment variable: DATABASE_URL
+      #   step นี้ไม่มี continue-on-error (ตั้งใจ — ไม่มี client แล้ว tsc/jest ไม่มีความหมาย)
+      #   ผลคือ run ทั้งอันตายตรงนี้ tsc/unit test ถูก skip ทั้งคู่ CI ที่ทำมาเพื่อ
+      #   "มองเห็น" จึงไม่ได้รายงานอะไรเลยสักด่าน
+      #
+      #   ★ ค่านี้เป็นค่าหลอก ห้ามเอาไปใช้ต่อที่ step อื่น — ด่าน migration drift
+      #     ต้องใช้ secrets.DATABASE_URL ตัวจริง จึงตั้ง env ที่ step ไม่ใช่ที่ job
       - name: Prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
         run: npx prisma generate
 
       - name: Typecheck (tsc --noEmit)
