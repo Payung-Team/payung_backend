@@ -19,6 +19,7 @@ import { CheckOutInput } from './dto/check-out.input';
 import { JobEvent } from './entities/job-event.entity';
 import { ProofOfWorkSummary } from './entities/proof-of-work.entity';
 import { JobEvidenceService } from './job-evidence.service';
+import { canViewBookingMonitoring } from './booking-viewer-access.util';
 import {
   BOOKING_STATUS,
   BUSINESS_TIMEZONE,
@@ -471,7 +472,7 @@ export class MonitoringService {
   /**
    * สรุปหลักฐานการทำงานของ booking 1 ใบ
    *
-   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน
+   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน / สมาชิกกลุ่มครอบครัวของงานนี้
    */
   async proofOfWork(
     userId: string,
@@ -490,12 +491,8 @@ export class MonitoringService {
       throw new NotFoundException('ไม่พบงานนี้');
     }
 
-    // แอดมิน (3) ดูได้ทุกงาน; คนอื่นต้องเป็นคู่กรณีของงานนั้นเท่านั้น
-    const isAdmin = role === 3;
-    const isParticipant =
-      booking.patientId === userId || booking.caregiver?.userId === userId;
-
-    if (!isAdmin && !isParticipant) {
+    // แอดมิน / คู่กรณี / สมาชิกกลุ่มครอบครัวของ booking นี้ — ดู booking-viewer-access.util
+    if (!(await canViewBookingMonitoring(this.prisma, userId, role, booking))) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูข้อมูลงานนี้');
     }
 

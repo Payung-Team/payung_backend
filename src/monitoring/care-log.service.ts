@@ -27,6 +27,7 @@ import {
   SIGNED_URL_TTL_SEC,
 } from './monitoring.constants';
 import { scheduledStartOf } from './booking-schedule.util';
+import { canViewBookingMonitoring } from './booking-viewer-access.util';
 import {
   hasJpegSignature,
   InvalidJpegError,
@@ -250,7 +251,7 @@ export class CareLogService {
 
   /**
    * รายการบันทึกทั้งหมดของ booking หนึ่งใบ เรียงใหม่→เก่า
-   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน (เหมือน proofOfWork)
+   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน / สมาชิกกลุ่มครอบครัวของงานนี้ (เหมือน proofOfWork)
    */
   async careLogs(
     userId: string,
@@ -268,12 +269,8 @@ export class CareLogService {
       throw new NotFoundException('ไม่พบงานนี้');
     }
 
-    // แอดมิน (3) ดูได้ทุกงาน; คนอื่นต้องเป็นคู่กรณีของงานนั้นเท่านั้น (เหมือน proofOfWork)
-    const isAdmin = role === 3;
-    const isParticipant =
-      booking.patientId === userId || booking.caregiver?.userId === userId;
-
-    if (!isAdmin && !isParticipant) {
+    // กติกาเดียวกับ proofOfWork — ดู booking-viewer-access.util
+    if (!(await canViewBookingMonitoring(this.prisma, userId, role, booking))) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูข้อมูลงานนี้');
     }
 

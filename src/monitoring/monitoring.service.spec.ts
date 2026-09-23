@@ -117,6 +117,7 @@ describe('MonitoringService', () => {
     caregiver: { findUnique: jest.Mock };
     booking: { findUnique: jest.Mock; update: jest.Mock };
     jobEvent: { create: jest.Mock; findFirst: jest.Mock };
+    familyGroupMember: { findUnique: jest.Mock };
     $transaction: jest.Mock;
   };
   let eventEmitter: { emit: jest.Mock };
@@ -141,6 +142,7 @@ describe('MonitoringService', () => {
       },
       booking: { findUnique: jest.fn(), update: jest.fn() },
       jobEvent: { create: jest.fn(), findFirst: jest.fn() },
+      familyGroupMember: { findUnique: jest.fn().mockResolvedValue(null) },
       // $transaction รับ array ของ promise → คืน array ของผลลัพธ์
       $transaction: jest.fn().mockResolvedValue([fakeEventRow(), {}]),
     };
@@ -975,6 +977,54 @@ describe('MonitoringService', () => {
       );
 
       expect(result.verdict).toBe(VERDICT.VALID);
+    });
+
+    // ── สมาชิกกลุ่มครอบครัวติดตามงานได้เหมือนผู้จอง ─────────────────────────────
+    describe('สมาชิกกลุ่มครอบครัว', () => {
+      const GROUP_ID = 'group-1';
+      const MEMBER_ID = 'user-family-member';
+
+      it('สมาชิก ACTIVE ของกลุ่มที่ booking สังกัด → ดูได้', async () => {
+        prisma.booking.findUnique.mockResolvedValue(
+          bookingWithBothEvents({ familyGroupId: GROUP_ID }),
+        );
+        prisma.familyGroupMember.findUnique.mockResolvedValue({
+          status: 'ACTIVE',
+        });
+
+        const result = await service.proofOfWork(MEMBER_ID, 1, BOOKING_ID);
+
+        expect(result.verdict).toBe(VERDICT.VALID);
+        expect(prisma.familyGroupMember.findUnique).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { groupId_userId: { groupId: GROUP_ID, userId: MEMBER_ID } },
+          }),
+        );
+      });
+
+      it('ออกจากกลุ่มแล้ว (LEFT) → ForbiddenException', async () => {
+        prisma.booking.findUnique.mockResolvedValue(
+          bookingWithBothEvents({ familyGroupId: GROUP_ID }),
+        );
+        prisma.familyGroupMember.findUnique.mockResolvedValue({
+          status: 'LEFT',
+        });
+
+        await expect(
+          service.proofOfWork(MEMBER_ID, 1, BOOKING_ID),
+        ).rejects.toThrow(ForbiddenException);
+      });
+
+      it('booking ไม่ได้อยู่ในกลุ่มไหน → Forbidden โดยไม่ต้องค้นสมาชิกภาพ', async () => {
+        prisma.booking.findUnique.mockResolvedValue(
+          bookingWithBothEvents({ familyGroupId: null }),
+        );
+
+        await expect(
+          service.proofOfWork(MEMBER_ID, 1, BOOKING_ID),
+        ).rejects.toThrow(ForbiddenException);
+        expect(prisma.familyGroupMember.findUnique).not.toHaveBeenCalled();
+      });
     });
 
     // ── PYG-470: photoUrl ต้องเป็น signed URL ไม่ใช่ storage path ดิบ ──────────────
