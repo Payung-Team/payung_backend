@@ -666,6 +666,131 @@ type CompleteBookingResult {
   status: String!
 }
 
+"""ข้อมูลที่ผู้สูงอายุกรอกตอน Onboarding (PYG-496)"""
+input CompleteOnboardingInput {
+  """
+  ความยินยอมจากหน้า Onboarding — ต้องมี sensitive_health_data ที่ granted = true
+  """
+  consents: [ConsentAnswerInput!]!
+
+  """ข้อมูลสุขภาพของผู้รับบริการ"""
+  details: PatientProfileInput!
+
+  """ชื่อจริง"""
+  firstName: String!
+
+  """นามสกุล"""
+  lastName: String!
+
+  """ชื่อเล่น"""
+  nickname: String
+}
+
+"""คำตอบความยินยอมหนึ่งข้อ"""
+input ConsentAnswerInput {
+  """true = ยินยอม, false = ไม่ยินยอม"""
+  granted: Boolean!
+
+  """เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด (จาก consentPolicy.version)"""
+  policyVersion: String!
+
+  """ค่าจาก consentPolicy.items[].type"""
+  type: String!
+}
+
+"""ความยินยอมหนึ่งข้อ พร้อมข้อความ TH/EN"""
+type ConsentItem {
+  """คำอธิบายใต้ checkbox (อังกฤษ)"""
+  descriptionEn: String!
+
+  """คำอธิบายใต้ checkbox (ไทย)"""
+  descriptionTh: String!
+
+  """ข้อความบน checkbox (อังกฤษ)"""
+  labelEn: String!
+
+  """ข้อความบน checkbox (ไทย)"""
+  labelTh: String!
+
+  """ไม่ติ๊กแล้วไปต่อไม่ได้ ณ จุดที่ขอ"""
+  required: Boolean!
+
+  """ข้อมูลอ่อนไหวตาม ม.26 — ต้องแยกกล่องและห้ามติ๊กล่วงหน้า"""
+  sensitive: Boolean!
+
+  """ค่าที่ต้องส่งกลับมาตอนบันทึก (user_consents.consent_type)"""
+  type: String!
+}
+
+"""นโยบายความยินยอมที่บังคับใช้อยู่"""
+type ConsentPolicy {
+  """วันที่เริ่มใช้เวอร์ชันนี้ (YYYY-MM-DD)"""
+  effectiveDate: String!
+
+  """ความยินยอมที่ต้องขอ ณ จุดที่ร้องขอมา"""
+  items: [ConsentItem!]!
+
+  """ประกาศความเป็นส่วนตัวฉบับเต็ม (อังกฤษ, Markdown)"""
+  privacyNoticeEn: String!
+
+  """ประกาศความเป็นส่วนตัวฉบับเต็ม (ไทย, Markdown)"""
+  privacyNoticeTh: String!
+
+  """ข้อความสิทธิ์เจ้าของข้อมูล (อังกฤษ)"""
+  rightsNoteEn: String!
+
+  """ข้อความสิทธิ์เจ้าของข้อมูล (ไทย) — แสดงท้ายกล่องเสมอ"""
+  rightsNoteTh: String!
+
+  """หัวข้อ/คำนำของจุดนั้น"""
+  screen: ConsentScreenCopy
+
+  """เวอร์ชันนโยบายที่ต้องบันทึกคู่กับคำตอบ"""
+  version: String!
+}
+
+"""หัวข้อและคำนำของกล่อง consent ณ จุดหนึ่ง"""
+type ConsentScreenCopy {
+  introEn: String!
+  introTh: String!
+  titleEn: String!
+  titleTh: String!
+}
+
+"""สถานะความยินยอมล่าสุดของผู้ใช้ต่อหนึ่งข้อ"""
+type ConsentStatus {
+  """เคยตอบข้อนี้แล้วหรือยัง (PYG-540)"""
+  answered: Boolean!
+
+  """เวลาที่ผู้ใช้กดตอบข้อนี้ครั้งล่าสุด"""
+  answeredAt: DateTime
+
+  """
+  true = ยินยอมอยู่ (แถวล่าสุด granted = true) · ยังไม่เคยตอบถือว่า false
+  """
+  granted: Boolean!
+
+  """เวอร์ชันของแถวล่าสุดตรงกับนโยบายที่บังคับใช้อยู่หรือไม่"""
+  isCurrentVersion: Boolean!
+
+  """เวอร์ชันนโยบายของแถวล่าสุด"""
+  policyVersion: String
+
+  """
+  ข้อบังคับ — ถอนแล้วจะใช้งานบางส่วนไม่ได้ (FE ต้องเตือนผลที่ตามมาก่อนถอน) (PYG-540)
+  """
+  required: Boolean!
+
+  """จุดในแอปที่กดล่าสุด เช่น register / onboarding / settings"""
+  source: String
+
+  """ชนิดความยินยอม — ตรงกับ consentPolicy.items[].type"""
+  type: String!
+
+  """ถอนผ่านหน้าตั้งค่าได้หรือไม่ (PYG-540)"""
+  withdrawable: Boolean!
+}
+
 input CreateBookingOnBehalfInput {
   """
   วันที่ให้บริการ รูปแบบ ISO: "2026-09-15"
@@ -743,6 +868,9 @@ input CreateBookingOnBehalfInput {
 }
 
 input CreateFamilyGroupInput {
+  """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
+  consents: [ConsentAnswerInput!]
+
   """ชื่อกลุ่ม 1–80 ตัวอักษร (ตัดช่องว่างหัวท้ายให้อัตโนมัติ)"""
   name: String!
 }
@@ -1109,6 +1237,52 @@ type FieldLockResult {
 input FlagDisputeInput {
   bookingId: ID!
   reason: String!
+}
+
+"""
+สมาชิก ACTIVE หนึ่งคนในกลุ่ม พร้อมข้อมูลผู้รับบริการสำหรับ autofill ตอนจองแทน
+"""
+type GroupBookingRecipient {
+  """null เมื่อไม่มีข้อมูลให้เติม — FE ปล่อยช่องว่างให้กรอก"""
+  details: GroupBookingRecipientDetails
+
+  """
+  มีข้อมูลผู้รับบริการให้เติมหรือไม่ (โปรไฟล์ในกลุ่ม หรือใบ is_self ที่เจ้าของยินยอมให้กลุ่มเห็น)
+  """
+  hasProfile: Boolean!
+
+  """users.id ของสมาชิก — ส่งกลับเป็น memberUserId ตอนจอง"""
+  memberUserId: ID!
+
+  """
+  ชื่อ-นามสกุลจากบัญชีของสมาชิก — แก้ไม่ได้ (PYG-516 ปฏิเสธ patientName ที่ส่งมา)
+  """
+  name: String!
+
+  """ชื่อ-นามสกุลล็อกเสมอ — FE ต้องแสดงเป็น read-only"""
+  nameLocked: Boolean!
+
+  """ชื่อเล่นจากโปรไฟล์ที่ใช้เติม (ถ้ามี)"""
+  nickname: String
+}
+
+"""ข้อมูลผู้รับบริการสำหรับเติมฟอร์มจองแทน"""
+type GroupBookingRecipientDetails {
+  """ที่อยู่ที่ให้บริการ"""
+  addressLine: String
+  age: Int
+  allergies: String
+  bloodGroup: String
+  careInstructions: String
+  conditions: [String!]
+  district: String
+  gender: String
+  height: Float
+  medicines: String
+  province: String
+  regularHospital: String
+  supportLevel: String
+  weight: Float
 }
 
 type GroupBookingSummary {
@@ -1641,6 +1815,11 @@ type Mutation {
   completeBooking(bookingId: ID!): CompleteBookingResult!
 
   """
+  บันทึกข้อมูลผู้รับบริการของตัวเองตอน Onboarding (เฉพาะผู้สูงอายุ) — เรียกซ้ำเพื่อแก้ข้อมูลได้
+  """
+  completeOnboarding(input: CompleteOnboardingInput!): User!
+
+  """
   Clear the mustChangePassword flag after the user has changed their password via Supabase Auth. Call this AFTER supabase.auth.updateUser({ password }) succeeds on the frontend.
   """
   completePasswordChange: User!
@@ -1698,6 +1877,17 @@ type Mutation {
   """
   flagBookingDispute(input: FlagDisputeInput!): DisputeBooking!
 
+  """
+  ให้ความยินยอมหนึ่งข้อ (รวมถึงให้กลับหลังถอน / re-consent) · policyVersion ต้องมาจาก consentPolicy.version
+  """
+  grantConsent(
+    """เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด (จาก consentPolicy.version)"""
+    policyVersion: String!
+
+    """ค่าจาก consentPolicy.items[].type"""
+    type: String!
+  ): ConsentStatus!
+
   """Admin ซ่อนรีวิว (is_visible=false) เช่นรีวิวไม่เหมาะสม"""
   hideReview(reviewId: ID!): ReviewItem!
 
@@ -1709,7 +1899,11 @@ type Mutation {
   """
   เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์
   """
-  joinGroupByLink(token: String!): FamilyGroup!
+  joinGroupByLink(
+    """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
+    consents: [ConsentAnswerInput!]
+    token: String!
+  ): FamilyGroup!
 
   """
   ออกจากกลุ่มด้วยตัวเอง — คืน id + ชื่อกลุ่มที่เพิ่งออกมา เพราะหลังออกแล้วจะอ่านกลุ่มนั้นไม่ได้อีก. ★ เจ้าของออกเองไม่ได้ → LAST_OWNER ต้องโอนสิทธิ์ให้คนอื่นหรือลบกลุ่มก่อน.
@@ -1862,6 +2056,14 @@ type Mutation {
 
   """Register a KYC document record after uploading to storage"""
   uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+
+  """
+  ถอนความยินยอมหนึ่งข้อ — มีผลทันที (จองใหม่ไม่ได้ / กลุ่มไม่เห็นข้อมูล / หยุดอีเมลข่าวสาร ตามข้อที่ถอน) · ไม่ลบข้อมูลย้อนหลัง
+  """
+  withdrawConsent(
+    """ค่าจาก consentPolicy.items[].type"""
+    type: String!
+  ): ConsentStatus!
 }
 
 type Notification {
@@ -1917,6 +2119,44 @@ type PatientBriefDto {
   avatarUrl: String
   displayName: String
   id: ID!
+}
+
+"""ข้อมูลสุขภาพผู้รับบริการ — ชุดเดียวกับฟอร์มเลือกผู้เข้ารับบริการ"""
+input PatientProfileInput {
+  """อายุเป็นปี 0-130"""
+  age: Int!
+
+  """ยาที่แพ้ / อาหารที่แพ้"""
+  allergies: String
+
+  """กรุ๊ปเลือด"""
+  bloodGroup: String
+
+  """สิ่งที่ผู้ดูแลควรรู้เพิ่มเติม"""
+  careInstructions: String
+
+  """โรคประจำตัว"""
+  conditions: [String!]
+
+  """
+  เพศ — "ชาย" หรือ "หญิง"
+  """
+  gender: String!
+
+  """ส่วนสูง (ซม.)"""
+  height: Float
+
+  """ยาที่ทานประจำ"""
+  medicines: String
+
+  """โรงพยาบาลที่ใช้บริการประจำ"""
+  regularHospital: String
+
+  """ระดับการช่วยเหลือตัวเอง"""
+  supportLevel: String!
+
+  """น้ำหนัก (กก.)"""
+  weight: Float
 }
 
 type PatientProfileType {
@@ -2170,6 +2410,14 @@ type Query {
   caregiverReviews(input: CaregiverReviewsInput!): CaregiverReviewsResponse!
 
   """
+  ข้อความความยินยอมและประกาศความเป็นส่วนตัวที่บังคับใช้อยู่ · ส่ง source เพื่อขอเฉพาะข้อที่ต้องแสดง ณ จุดนั้น (register / onboarding / booking / family_group / settings) · ไม่ส่ง = ได้ทุกข้อ
+  """
+  consentPolicy(
+    """จุดในแอปที่กำลังขอความยินยอม"""
+    source: String
+  ): ConsentPolicy!
+
+  """
   รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
   """
   familyGroup(groupId: ID!): FamilyGroup!
@@ -2183,6 +2431,11 @@ type Query {
   รายละเอียดคำจองในกลุ่ม — สมาชิก ACTIVE ทุกคนอ่านได้ แต่ bookedByMe บอกว่าผู้เรียกมีสิทธิ์จัดการคำจองหรือไม่
   """
   groupBooking(bookingId: ID!, groupId: ID!): BookingSummary!
+
+  """
+  PYG-517: สมาชิก ACTIVE ทุกคนในกลุ่ม (รวมเจ้าของ) พร้อมข้อมูลผู้รับบริการในกลุ่ม สำหรับ shortcut + autofill ตอนจองแทน · ชื่อ-นามสกุลล็อก (nameLocked = true) · ยังไม่มีโปรไฟล์ในกลุ่ม = hasProfile false, details null (FE ปล่อยช่องว่างให้กรอก)
+  """
+  groupBookingRecipients(groupId: ID!): [GroupBookingRecipient!]!
 
   """
   PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง
@@ -2233,6 +2486,11 @@ type Query {
 
   """Get current caregiver profile"""
   myCaregiverProfile: Caregiver!
+
+  """
+  สถานะความยินยอมของผู้ใช้ที่ login อยู่ ทุกข้อที่เกี่ยวกับ role (รวมข้อที่ยังไม่เคยตอบ) · จับคู่ข้อความกับ consentPolicy.items[].type
+  """
+  myConsents: [ConsentStatus!]!
 
   """
   กลุ่มครอบครัวทั้งหมดที่ฉันเป็นสมาชิกอยู่ (ใหม่สุดก่อน) พร้อมรายชื่อสมาชิกและบทบาทของฉันในแต่ละกลุ่ม. ไม่มีกลุ่ม = คืน array ว่าง ไม่ใช่ error.
@@ -2357,6 +2615,10 @@ input RefundPaymentInput {
 }
 
 input RegisterInput {
+  """
+  ความยินยอมจากหน้าสมัคร (consentPolicy source: register) — ต้องมี terms_of_service และ privacy_policy ที่ granted = true ไม่งั้นสมัครไม่ได้ (CONSENT_REQUIRED)
+  """
+  consents: [ConsentAnswerInput!]
   email: String!
   password: String!
   role: Int!
@@ -2813,8 +3075,8 @@ input UpdateProfileInput {
   """User address"""
   address: String
 
-  """Avatar image URL"""
-  avatarUrl: String
+  """Avatar image URL (deprecated)"""
+  avatarUrl: String @deprecated(reason: "PYG-507: ใช้ POST /api/v1/profile/photo แทน — ส่งค่ามาจะได้ 400")
 
   """Bio or personal description"""
   bio: String
@@ -2903,6 +3165,9 @@ type User {
   """Whether the user receives email notifications"""
   emailPreferences: Boolean!
 
+  """ชื่อจริง (จาก Onboarding)"""
+  firstName: String
+
   """Unique identifier of the user"""
   id: ID!
 
@@ -2912,8 +3177,14 @@ type User {
   """Whether the user is currently suspended"""
   isSuspended: Boolean!
 
+  """นามสกุล (จาก Onboarding)"""
+  lastName: String
+
   """Whether the user must change their password before using the app"""
   mustChangePassword: Boolean!
+
+  """ผ่านหน้า Onboarding แล้วหรือยัง"""
+  onboardingCompleted: Boolean!
 
   """Phone number"""
   phone: String

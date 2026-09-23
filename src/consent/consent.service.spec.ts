@@ -730,4 +730,30 @@ describe('ConsentService (PYG-474)', () => {
       );
     });
   });
+
+  describe('grantedCurrentUserIds (เปิดเผยโปรไฟล์ส่วนตัวให้กลุ่มตอนจองแทน)', () => {
+    it('★ นับเฉพาะแถวล่าสุดที่ยินยอม + เวอร์ชันปัจจุบัน — ไม่เคยตอบ/ถอน/เวอร์ชันเก่า ไม่นับ', async () => {
+      prisma.user_consents.findMany.mockResolvedValue([
+        { user_id: 'a', granted: true, policy_version: POLICY_VERSION },
+        { user_id: 'b', granted: false, policy_version: POLICY_VERSION },
+        { user_id: 'b', granted: true, policy_version: POLICY_VERSION },
+        { user_id: 'c', granted: true, policy_version: '0.9' },
+        { user_id: 'a', granted: false, policy_version: POLICY_VERSION },
+      ]);
+
+      const result = await service.grantedCurrentUserIds(
+        ['a', 'b', 'c', 'd'],
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+      // a: ถอนแล้วให้กลับ → นับ · b: ล่าสุดถอน · c: เวอร์ชันเก่า · d: ไม่เคยตอบ
+      expect([...result]).toEqual(['a']);
+    });
+
+    it('รายชื่อว่าง → Set ว่าง และไม่ยิง DB', async () => {
+      await expect(
+        service.grantedCurrentUserIds([], CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP),
+      ).resolves.toEqual(new Set());
+      expect(prisma.user_consents.findMany).not.toHaveBeenCalled();
+    });
+  });
 });

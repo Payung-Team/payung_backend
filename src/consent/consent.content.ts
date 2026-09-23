@@ -148,6 +148,16 @@ export const CONSENT_SCREEN_COPY = {
     introEn:
       'So the caregiver can reach you and care for you correctly, we need to share some information with them.',
   },
+  family_group: {
+    titleTh: 'การเปิดเผยข้อมูลให้สมาชิกกลุ่ม',
+    titleEn: 'Sharing information with your family group',
+    introTh:
+      'ถ้ายินยอม สมาชิกในกลุ่มจะจองผู้ดูแลแทนคุณได้ และเห็นข้อมูลที่คุณกรอกไว้เพื่อเติมให้อัตโนมัติ ' +
+      'ไม่ยินยอมก็ยังเข้ากลุ่มได้',
+    introEn:
+      'If you agree, group members can book care on your behalf and see the details you entered so the form fills in for them. ' +
+      'You can still join the group without agreeing.',
+  },
 } as const;
 
 /** ข้อความสิทธิ์ของเจ้าของข้อมูล — แสดงท้ายกล่อง consent ทุกจุด */

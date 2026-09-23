@@ -1,4 +1,15 @@
-import { Args, ID, Int, Mutation, Query, Resolver } from '@nestjs/graphql';
+import {
+  Args,
+  Context,
+  ID,
+  Int,
+  Mutation,
+  Query,
+  Resolver,
+} from '@nestjs/graphql';
+import { ConsentAnswerInput } from '../consent/dto/consent-answer.input';
+import { requestEvidenceOf } from '../common/utils/request-evidence';
+import type { GqlContext } from '../common/types/gql-context.type';
 import { UseGuards } from '@nestjs/common';
 import { FamilyGroupService } from './family-group.service';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
@@ -89,8 +100,14 @@ export class FamilyGroupResolver {
   async createFamilyGroup(
     @Args('input') input: CreateFamilyGroupInput,
     @CurrentUser() user: AuthUser,
+    @Context() ctx: GqlContext,
   ): Promise<FamilyGroup> {
-    return this.familyGroupService.createFamilyGroup(user.id, input);
+    // IP + user agent เป็นหลักฐานประกอบความยินยอม — เอาจาก request ไม่ใช่ให้ FE ส่ง (ปลอมได้)
+    return this.familyGroupService.createFamilyGroup(
+      user.id,
+      input,
+      requestEvidenceOf(ctx.req),
+    );
   }
 
   @Mutation(() => FamilyGroup, {
@@ -195,8 +212,20 @@ export class FamilyGroupResolver {
   async joinGroupByLink(
     @Args('token') token: string,
     @CurrentUser() user: AuthUser,
+    @Context() ctx: GqlContext,
+    @Args('consents', {
+      type: () => [ConsentAnswerInput],
+      nullable: true,
+      description: 'คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ',
+    })
+    consents?: ConsentAnswerInput[],
   ): Promise<FamilyGroup> {
-    return this.familyGroupService.joinGroupByLink(user.id, token);
+    return this.familyGroupService.joinGroupByLink(
+      user.id,
+      token,
+      consents ?? undefined,
+      requestEvidenceOf(ctx.req),
+    );
   }
 
   @Mutation(() => FamilyGroupJoinLink, {
