@@ -18,6 +18,7 @@ import { PrismaService } from '../common/prisma.service';
 import { ConsentService } from '../consent/consent.service';
 import {
   ACTIVITY_ACTION,
+  ACTIVITY_TARGET,
   GROUP_ROLE,
   MEMBER_STATUS,
 } from './family-group.constants';
@@ -84,6 +85,15 @@ describe('FamilyGroupService', () => {
       findMany: jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
+    // careRecipient อยู่ใน tx (ตามฝั่ง dev) ไม่ใช่เฉพาะใน prisma —
+    // prisma เป็น `typeof tx & {...}` อยู่แล้ว วางไว้ที่นี่ที่เดียวจึงครอบทั้ง
+    // เทสที่เรียกผ่าน tx และเทสที่เรียกผ่าน prisma
+    careRecipient: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
   };
   let consent: {
     withdrawnUserIds: jest.Mock;
@@ -93,12 +103,6 @@ describe('FamilyGroupService', () => {
   };
   let prisma: typeof tx & {
     $transaction: jest.Mock;
-    careRecipient: {
-      create: jest.Mock;
-      findUnique: jest.Mock;
-      findMany: jest.Mock;
-      update: jest.Mock;
-    };
   };
 
   beforeEach(async () => {
@@ -118,15 +122,15 @@ describe('FamilyGroupService', () => {
         findMany: jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
-    };
-    prisma = {
-      ...tx,
       careRecipient: {
         create: jest.fn(),
         findUnique: jest.fn(),
         findMany: jest.fn(),
         update: jest.fn(),
       },
+    };
+    prisma = {
+      ...tx,
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
 
@@ -755,6 +759,33 @@ describe('FamilyGroupService', () => {
       expect(res).toMatchObject({ id: 'r-new', ownerUserId: OWNER_ID });
     });
 
+    it('เขียน RECIPIENT_ADDED 1 แถวใน transaction เดียวกัน (PYG-423_18)', async () => {
+      tx.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'คุณตา',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+
+      await service.addGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        name: 'คุณตา',
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_ADDED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r-new',
+          metadata: {},
+        },
+      });
+    });
+
     it('ไม่ส่งชื่อเล่น → เก็บเป็น null', async () => {
       prisma.careRecipient.create.mockResolvedValue({
         id: 'r-new',
@@ -776,6 +807,7 @@ describe('FamilyGroupService', () => {
         extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
       });
       expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
     });
 
     it('โปรไฟล์อยู่คนละกลุ่ม → RECIPIENT_NOT_IN_GROUP', async () => {
@@ -797,6 +829,7 @@ describe('FamilyGroupService', () => {
         extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
       });
       expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
     });
 
     it('เจ้าของแก้ได้ + trim ค่า', async () => {
@@ -819,6 +852,20 @@ describe('FamilyGroupService', () => {
       const data = prisma.careRecipient.update.mock.calls[0][0].data;
       expect(data.name).toBe('ชื่อใหม่');
       expect(data.nickname).toBeNull(); // ชื่อเล่นว่างหลัง trim → ล้างเป็น null
+
+      // PYG-423_18: แก้ 1 ครั้ง = RECIPIENT_UPDATED 1 แถว actor = คนแก้
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_UPDATED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r1',
+          metadata: {},
+        },
+      });
     });
   });
 
@@ -834,6 +881,7 @@ describe('FamilyGroupService', () => {
         extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
       });
       expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
     });
 
     it('เจ้าของนำออก = unshare (set familyGroupId = null) ไม่ใช่ลบทิ้ง', async () => {
@@ -849,6 +897,19 @@ describe('FamilyGroupService', () => {
         data: { familyGroupId: null },
       });
       expect(res).toEqual({ recipientId: 'r1', removed: true });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_REMOVED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r1',
+          metadata: {},
+        },
+      });
     });
   });
 

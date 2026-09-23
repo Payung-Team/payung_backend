@@ -2,12 +2,14 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { CareRecipientsService } from './care-recipients.service';
 import { PrismaService } from '../common/prisma.service';
+import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const PATIENT_ID    = 'patient-111';
 const OTHER_PATIENT = 'patient-999';
 const RECIPIENT_ID  = 'r1111111-1111-1111-1111-111111111111';
+const GROUP_ID      = 'g1111111-1111-1111-1111-111111111111';
 
 /**
  * แถวเปล่าตามรูปทรงที่ RECIPIENT_SELECT ดึงมาจริง
@@ -47,6 +49,8 @@ describe('CareRecipientsService', () => {
       findUnique: jest.Mock;
       update:    jest.Mock;
     };
+    familyGroupActivity: { create: jest.Mock };
+    $transaction: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -57,6 +61,9 @@ describe('CareRecipientsService', () => {
         findUnique: jest.fn(),
         update:     jest.fn(),
       },
+      familyGroupActivity: { create: jest.fn() },
+      // interactive transaction: ส่ง mock ตัวเดิมเป็น tx — เทสอ่าน call ได้ที่เดียว
+      $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -186,6 +193,44 @@ describe('CareRecipientsService', () => {
       await expect(service.update(PATIENT_ID, RECIPIENT_ID, { name: 'X' }))
         .rejects.toThrow(ForbiddenException);
     });
+
+    // PYG-484 — endpoint นี้แก้ใบที่อยู่ในกลุ่มได้ด้วย ต้องไม่หลุดฟีด
+    it('★ ใบในกลุ่ม → ลง RECIPIENT_UPDATED ในฟีดของกลุ่มนั้น', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, familyGroupId: GROUP_ID });
+      prisma.careRecipient.update.mockResolvedValue(fakeRecipient());
+
+      await service.update(PATIENT_ID, RECIPIENT_ID, { details: { allergies: 'กุ้ง' } });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.familyGroupActivity.create).toHaveBeenCalledWith({
+        data: {
+          groupId:    GROUP_ID,
+          actorId:    PATIENT_ID,
+          action:     ACTIVITY_ACTION.RECIPIENT_UPDATED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId:   RECIPIENT_ID,
+          metadata:   {},
+        },
+      });
+    });
+
+    it('โปรไฟล์ส่วนตัว → ไม่เขียนฟีด', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, familyGroupId: null });
+      prisma.careRecipient.update.mockResolvedValue(fakeRecipient());
+
+      await service.update(PATIENT_ID, RECIPIENT_ID, { name: 'คุณตา' });
+
+      expect(prisma.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('ไม่ใช่เจ้าของ → ไม่เขียนทั้งโปรไฟล์และฟีด', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: OTHER_PATIENT, familyGroupId: GROUP_ID });
+
+      await expect(service.update(PATIENT_ID, RECIPIENT_ID, { name: 'X' }))
+        .rejects.toThrow(ForbiddenException);
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(prisma.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
   });
 
   // ── PYG-460: ข้อมูลสุขภาพ ───────────────────────────────────────────────────
@@ -284,6 +329,39 @@ describe('CareRecipientsService', () => {
     it('refuses to delete a profile owned by another patient', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ patientId: OTHER_PATIENT, is_deleted: false });
       await expect(service.remove(PATIENT_ID, RECIPIENT_ID)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('★ ใบในกลุ่ม → ลง RECIPIENT_REMOVED ในฟีดของกลุ่มนั้น (PYG-484)', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: PATIENT_ID,
+        is_deleted: false,
+        familyGroupId: GROUP_ID,
+      });
+      prisma.careRecipient.update.mockResolvedValue(fakeRecipient());
+
+      await service.remove(PATIENT_ID, RECIPIENT_ID);
+
+      expect(prisma.familyGroupActivity.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          groupId:  GROUP_ID,
+          actorId:  PATIENT_ID,
+          action:   ACTIVITY_ACTION.RECIPIENT_REMOVED,
+          targetId: RECIPIENT_ID,
+        }),
+      });
+    });
+
+    it('โปรไฟล์ส่วนตัว → ลบโดยไม่เขียนฟีด', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: PATIENT_ID,
+        is_deleted: false,
+        familyGroupId: null,
+      });
+      prisma.careRecipient.update.mockResolvedValue(fakeRecipient());
+
+      await service.remove(PATIENT_ID, RECIPIENT_ID);
+
+      expect(prisma.familyGroupActivity.create).not.toHaveBeenCalled();
     });
   });
 });
