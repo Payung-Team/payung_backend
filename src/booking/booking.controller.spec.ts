@@ -75,6 +75,8 @@ describe('BookingService — new REST methods', () => {
     };
     careRecipient: { findUnique: jest.Mock; create: jest.Mock };
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
+    // PYG-499: ด่าน Onboarding อ่าน role + ชื่อ-นามสกุลของผู้จอง
+    user:          { findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -109,6 +111,10 @@ describe('BookingService — new REST methods', () => {
       },
       careRecipient: { findUnique: jest.fn(), create: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
+      // PYG-499: ค่าเริ่มต้น = ผู้สูงอายุที่ผ่าน Onboarding แล้ว (เทสด่านอยู่ที่ booking-onboarding-gate.service.spec.ts)
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ role: 1, firstName: 'สมศรี', lastName: 'ใจดี' }),
+      },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     settlement = {

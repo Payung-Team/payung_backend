@@ -53,6 +53,8 @@ type PrismaMock = {
   };
   familyGroupMember: { findFirst: jest.Mock };
   booking: { findMany: jest.Mock };
+  // PYG-499: ด่าน Onboarding ของคนกดจอง (อยู่ก่อนด่านความยินยอม)
+  user: { findUnique: jest.Mock };
 };
 
 /** เมธอด private ที่เทสนี้ spy แทน (ตัวสร้าง booking จริง + ตัวแปลงผลลัพธ์) */
@@ -88,6 +90,12 @@ describe('BookingService — ด่านความยินยอม (PYG-540
       },
       familyGroupMember: { findFirst: jest.fn() },
       booking: { findMany: jest.fn().mockResolvedValue([]) },
+      // PYG-499: ค่าเริ่มต้น = คนกดจองผ่าน Onboarding แล้ว — ไฟล์นี้สนใจแค่ด่านความยินยอม
+      user: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ role: 1, firstName: 'สมชาย', lastName: 'ใจดี' }),
+      },
     };
     consent = {
       findWithdrawnType: jest.fn().mockResolvedValue(null),

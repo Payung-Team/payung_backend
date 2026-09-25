@@ -98,8 +98,13 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         findFirst: jest.fn().mockResolvedValue({ userId: OWNER_ID }),
       },
       // PYG-516: ชื่อผู้รับบริการมาจากบัญชีของสมาชิก ไม่ใช่ค่าที่คนจองพิมพ์
+      // PYG-499: mock ตัวเดียวกันนี้ตอบด่าน Onboarding ของคนกดจองด้วย
+      //   role 1 + มีชื่อครบ = ผ่าน Onboarding แล้ว (เทสด่านอยู่ที่ booking-onboarding-gate.service.spec.ts)
+      //   เทสที่ override เป็นบัญชีไม่มีชื่อด้านล่างไม่ได้ใส่ role → ไม่ใช่ role 1 → ด่านปล่อยผ่าน
+      //   ซึ่งตั้งใจแล้ว: เทสพวกนั้นทดสอบ "ชื่อของสมาชิก" ไม่ใช่ด่านของคนกดจอง
       user: {
         findUnique: jest.fn().mockResolvedValue({
+          role: 1,
           firstName: 'สมศรี',
           lastName: 'ใจดี',
           displayName: 'ยายศรี',

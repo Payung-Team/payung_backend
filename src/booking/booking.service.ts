@@ -64,6 +64,13 @@ import {
   consentWithdrawnError,
   consentWithdrawnHttpError,
 } from '../consent/consent.errors';
+// PYG-499: ผู้สูงอายุที่ยังไม่ผ่าน Onboarding สร้าง Booking ไม่ได้ (plain file ไม่มี DI)
+import {
+  ONBOARDING_GATE_SELECT,
+  OnboardingRequiredError,
+  isOnboardingRequired,
+  onboardingRequiredHttpError,
+} from '../identity/auth/onboarding-gate';
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -218,8 +225,17 @@ export class BookingService {
    * caregiverId = null จนกว่า Phase 3 matching engine จะ assign
    */
   async createBooking(patientId: string, dto: CreateBookingDto): Promise<BookingRest> {
+    // PYG-499: ยังไม่ผ่าน Onboarding → 403 ONBOARDING_REQUIRED ไม่สร้างอะไรเลย
+    // ★ อยู่ก่อนด่านความยินยอม — หน้า Onboarding ขอความยินยอมข้อมูลสุขภาพด้วยอยู่แล้ว (PYG-538)
+    //   ส่งไปหน้านั้นหน้าเดียวจึงแก้ได้ทั้งสองเรื่อง ถ้าสลับกันผู้ใช้ต้องเดินสองรอบ
+    // ★ REST ต้องโยน HttpException (มี statusCode) — ดู onboarding-gate.ts
+    if (await this.needsOnboarding(patientId)) {
+      this.logger.log({ event: 'booking.blocked_onboarding_required', patientId });
+      throw onboardingRequiredHttpError();
+    }
+
     // PYG-540: จองให้ตัวเอง/คนในความดูแล = เจ้าของข้อมูลคือ patient คนนี้เอง
-    // ★ ตรวจก่อนทุกอย่าง — ถอนไว้แล้วต้องไม่มีอะไรถูกเขียนลง DB เลย
+    // ★ ตรวจก่อนเขียนอะไรทั้งหมด — ถอนไว้แล้วต้องไม่มีอะไรถูกเขียนลง DB เลย
     // ★ REST ต้องโยน HttpException (มี statusCode) ไม่ใช่ ConsentError — ดู consent.errors.ts
     const withdrawn = await this.consentService.findWithdrawnType(
       patientId,
@@ -293,6 +309,20 @@ export class BookingService {
     //     และตอนเขียน bookings.patient_name (createBookingRecord) — กันที่เดียวจบ
     if (input.patientName !== undefined) {
       throw new PatientNameNotAllowedError();
+    }
+
+    // PYG-499: คนกดจอง (ผู้เรียก) เป็นผู้สูงอายุที่ยังไม่ผ่าน Onboarding → ONBOARDING_REQUIRED
+    //   ★ ตรวจ "คนกดจอง" ไม่ใช่สมาชิกที่ถูกจองให้ — การ์ดกันผู้เรียกที่ข้ามหน้า Onboarding
+    //     สมาชิกที่ยังไม่มีข้อมูลยังถูกจองแทนได้ตามสาขา ③ ของ resolveGroupPatientProfile
+    //   ★ อยู่ก่อนอ่านข้อมูลกลุ่ม/โปรไฟล์ใด ๆ — ไม่ผ่านด่านก็ไม่มีเหตุให้ไปอ่านข้อมูลสุขภาพของใคร
+    //   ★ GraphQL ต้องโยน GraphQLError (extensions.code) — ดู onboarding-gate.ts
+    if (await this.needsOnboarding(bookerId)) {
+      this.logger.log({
+        event: 'booking.on_behalf_blocked_onboarding_required',
+        groupId: input.groupId,
+        bookerId,
+      });
+      throw new OnboardingRequiredError();
     }
 
     // สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
@@ -524,6 +554,20 @@ export class BookingService {
     const name = accountDisplayName(account);
     if (!name) throw new MemberNameMissingError();
     return name;
+  }
+
+  /**
+   * PYG-499 — ผู้เรียกเป็นผู้สูงอายุ (role 1) ที่ยังไม่ผ่าน Onboarding หรือไม่
+   *
+   * คืน boolean แทนการโยนเอง เพราะแต่ละเส้นทางต้องโยน error คนละแบบ
+   * (REST = HttpException · GraphQL = GraphQLError) — เกณฑ์เต็มอยู่ที่ onboarding-gate.ts
+   */
+  private async needsOnboarding(userId: string): Promise<boolean> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: ONBOARDING_GATE_SELECT,
+    });
+    return isOnboardingRequired(account);
   }
 
   /**
