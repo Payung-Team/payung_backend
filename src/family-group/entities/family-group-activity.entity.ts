@@ -85,6 +85,7 @@ export class FamilyGroupActivityItem {
    * ★★ ห้ามใส่ token หรือ URL ของลิงก์เข้าร่วมลง metadata เด็ดขาด (คำสั่งตรงจาก PYG-422)
    *    ฟีดนี้สมาชิกทุกคนอ่านได้ — ใครอ่านฟีดได้ก็จะพาคนนอกเข้ากลุ่มได้ทันที
    *    ตอนนี้ฝั่งเขียน (createJoinLink/rotate/revoke) ใส่มาแค่ maxUses/expiresAt/usedCount
+   *    ส่วน MEMBER_JOINED ใส่ { linkId } = id ของแถวลิงก์ ไม่ใช่ token (PYG-485)
    */
   @Field(() => String, {
     description:

@@ -1265,7 +1265,9 @@ export class FamilyGroupService {
         action: ACTIVITY_ACTION.MEMBER_JOINED,
         targetType: ACTIVITY_TARGET.MEMBER,
         targetId: userId,
-        metadata: { joinedViaLinkId: link.id },
+        // PYG-485: key = linkId ตามข้อกำหนด PYG-423 (ไม่ใช่ joinedViaLinkId ตามชื่อคอลัมน์)
+        //   แถวเก่าที่ยังเป็น joinedViaLinkId ถูกแปลงตอนอ่านใน normalizeActivityMetadata
+        metadata: { linkId: link.id },
       });
     });
 
@@ -1868,9 +1870,40 @@ export class FamilyGroupService {
       targetId: redacted ? undefined : (row.targetId ?? undefined),
       // คอลัมน์เป็น JSONB NOT NULL DEFAULT '{}' → ไม่มีทางเป็น null จากดีบี
       // ที่ ?? '{}' ไว้เพราะชนิดฝั่ง Prisma ยังเป็น JsonValue ที่รวม null ได้
-      metadata: redacted ? '{}' : JSON.stringify(row.metadata ?? {}),
+      metadata: redacted
+        ? '{}'
+        : JSON.stringify(
+            this.normalizeActivityMetadata(row.action, row.metadata ?? {}),
+          ),
       createdAt: row.createdAt,
       cursor: this.encodeActivityCursor(row.createdAt, row.id),
     };
+  }
+
+  /**
+   * PYG-485 — แปลงชื่อ key เก่าใน metadata ก่อนส่งออก (ใช้แทนการ backfill ข้อมูลในดีบี)
+   *
+   * MEMBER_JOINED เคยเขียนเป็น { joinedViaLinkId } (ตั้งชื่อตามคอลัมน์ family_group_members)
+   * แต่ข้อกำหนด PYG-423 ระบุว่าต้องเป็น { linkId } → ฝั่งเขียนแก้แล้ว แต่แถวเก่าในดีบียังใช้ชื่อเดิม
+   * แปลงตรงนี้ทำให้ API คืน linkId ทุกแถว โดยไม่ต้องมี migration ไปแก้ข้อมูล
+   *
+   * ★ ถ้าแถวไหนมีทั้งสอง key (ไม่ควรเกิด) ให้ถือ linkId เป็นหลัก
+   */
+  private normalizeActivityMetadata(
+    action: string,
+    metadata: Prisma.JsonValue,
+  ): Prisma.JsonValue {
+    if (
+      action !== ACTIVITY_ACTION.MEMBER_JOINED ||
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      !('joinedViaLinkId' in metadata)
+    ) {
+      return metadata;
+    }
+
+    const { joinedViaLinkId, ...rest } = metadata;
+    return { linkId: joinedViaLinkId, ...rest };
   }
 }
