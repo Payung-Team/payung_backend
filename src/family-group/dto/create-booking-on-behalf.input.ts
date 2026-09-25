@@ -192,21 +192,44 @@ export class CreateBookingOnBehalfInput {
   @IsNotEmpty()
   serviceType: string;
 
-  @Field({ description: 'ช่วงเวลา: "morning" | "afternoon" | "evening"' })
-  @IsString()
-  @IsNotEmpty()
-  timeSlot: string;
-
-  @Field({ description: 'เวลาเริ่ม รูปแบบ "09:00:00"' })
+  @Field({
+    description:
+      'เวลาเริ่ม รูปแบบ "HH:mm" เช่น "09:00" (รับ "09:00:00" แบบเดิมด้วย)',
+  })
   @IsString()
   @IsNotEmpty()
   startTime: string;
 
-  @Field(() => Float, { description: 'จำนวนชั่วโมง (ขั้นต่ำ 0.5)' })
+  /** PYG-523 — ส่งมา = BE คำนวณ durationHours + timeSlot เอง (กฎอยู่ที่ booking/booking-time.ts) */
+  @Field({
+    nullable: true,
+    description:
+      'เวลาสิ้นสุด "HH:mm" — ส่งมาแล้ว BE คำนวณจำนวนชั่วโมงและช่วงเวลาเอง ' +
+      '(ขั้นละ 30 นาที, 1–12 ชม., ไม่ข้ามเที่ยงคืน, เริ่ม 06:00–21:30)',
+  })
+  @IsOptional()
+  @IsString()
+  endTime?: string;
+
+  @Field({
+    nullable: true,
+    deprecationReason:
+      'PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)',
+  })
+  @IsOptional()
+  @IsString()
+  timeSlot?: string;
+
+  @Field(() => Float, {
+    nullable: true,
+    deprecationReason:
+      'PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)',
+  })
+  @IsOptional()
   @IsNumber()
   @Min(0.5)
   @Type(() => Number)
-  durationHours: number;
+  durationHours?: number;
 
   @Field({ description: 'ที่อยู่จุดให้บริการ' })
   @IsString()

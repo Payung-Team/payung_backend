@@ -819,8 +819,12 @@ input CreateBookingOnBehalfInput {
   """ความสัมพันธ์ของผู้ติดต่อกับผู้รับบริการ"""
   dayOfContactRelationship: String
 
-  """จำนวนชั่วโมง (ขั้นต่ำ 0.5)"""
-  durationHours: Float!
+  durationHours: Float @deprecated(reason: "PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)")
+
+  """
+  เวลาสิ้นสุด "HH:mm" — ส่งมาแล้ว BE คำนวณจำนวนชั่วโมงและช่วงเวลาเอง (ขั้นละ 30 นาที, 1–12 ชม., ไม่ข้ามเที่ยงคืน, เริ่ม 06:00–21:30)
+  """
+  endTime: String
 
   """กลุ่มครอบครัวที่ใช้จอง — ผู้เรียกต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้"""
   groupId: ID!
@@ -857,18 +861,13 @@ input CreateBookingOnBehalfInput {
   """
   serviceType: String!
 
-  """
-  เวลาเริ่ม รูปแบบ "09:00:00"
-  """
+  """เวลาเริ่ม รูปแบบ "HH:mm" เช่น "09:00" (รับ "09:00:00" แบบเดิมด้วย)"""
   startTime: String!
 
   """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
   tasks: [String!]!
 
-  """
-  ช่วงเวลา: "morning" | "afternoon" | "evening"
-  """
-  timeSlot: String!
+  timeSlot: String @deprecated(reason: "PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)")
 }
 
 input CreateFamilyGroupInput {

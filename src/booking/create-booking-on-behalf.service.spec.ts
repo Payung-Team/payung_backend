@@ -300,6 +300,36 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       const data = tx.booking.create.mock.calls[0][0].data;
       expect(data.memberDetails).toBeUndefined();
     });
+
+    // PYG-523 — จองแทนผ่าน createBookingRecord ตัวเดียวกับจองปกติ ได้กฎเวลาชุดเดียวกัน
+    it('PYG-523: ส่ง startTime + endTime → บันทึก durationHours / timeSlot ที่คำนวณเอง', async () => {
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
+        makeInput({
+          startTime: '17:30',
+          endTime: '20:00',
+          timeSlot: undefined,
+          durationHours: undefined,
+        }),
+      );
+
+      const data = tx.booking.create.mock.calls[0][0].data;
+      expect(data.durationHours).toBe(2.5);
+      expect(data.timeSlot).toBe('evening');
+      expect(data.startTime).toEqual(new Date('1970-01-01T17:30:00Z'));
+    });
+
+    it('PYG-523: เวลาไม่ผ่านกฎ → 400 และไม่สร้างอะไรเลย', async () => {
+      await expect(
+        service.createBookingOnBehalf(
+          BOOKER_ID,
+          makeInput({ startTime: '09:00', endTime: '22:00' }), // 13 ชม.
+        ),
+      ).rejects.toThrow('จองได้สูงสุด 12 ชั่วโมงต่อครั้ง');
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(tx.booking.create).not.toHaveBeenCalled();
+    });
   });
 
 
