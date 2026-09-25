@@ -183,6 +183,40 @@ export const joinLinkBaseUrl = (): string =>
 /** path ของหน้ารับลิงก์ฝั่ง FE (PYG-418) */
 export const JOIN_LINK_PATH = '/join';
 
+// ─── 5.1 จำกัดอัตราการเรียกลิงก์เข้าร่วม (PYG-479 · SCR-FG2-001 ข้อ 3) ─────────
+/**
+ * ใช้กับ joinLinkPreview + joinGroupByLink "รวมกัน" (นับในตัวนับเดียวกัน)
+ *
+ * ★ ทำไมต้องรวม preview ด้วย ไม่ใช่แค่ join?
+ *   preview ก็ค้นดีบีด้วย token เหมือนกัน และตอบชื่อกลุ่มกลับมาถ้า token ถูก
+ *   ถ้าจำกัดแค่ join คนที่อยากเดา token จะหันไปยิง preview แทน = จำกัดไปก็เปล่าประโยชน์
+ *
+ * ★ ที่มาของตัวเลข default (สเปกยังไม่ได้กำหนด — การ์ดให้ทีมตัดสินใจ ปรับผ่าน env ได้)
+ *   - การใช้งานปกติ 1 ลิงก์ = preview 1–2 ครั้ง + join 1 ครั้ง ≈ 3 ครั้ง
+ *   - ต่อผู้ใช้ 20 ครั้ง/นาที = กดผิด/รีเฟรช/ลองหลายลิงก์ได้สบาย ๆ แต่ยิงรัว ๆ ไม่ได้
+ *   - ต่อ IP 100 ครั้ง/นาที = สูงกว่าต่อผู้ใช้มาก เพราะคนหลายคนใช้ IP เดียวกันได้
+ *     (สมาชิกครอบครัวใน Wi-Fi บ้านเดียวกัน, เน็ตมือถือไทยที่ใช้ CGNAT แชร์ IP กันทั้งย่าน)
+ *     ตัวนี้มีไว้กัน "คนเดียวสมัครหลายบัญชีมายิง" ไม่ใช่ตัวคุมหลัก
+ *   - ตัวคุมหลักคือ "ต่อผู้ใช้" เพราะ userId มาจาก JWT ปลอมไม่ได้
+ */
+/** ความยาวหน้าต่างเวลาที่ใช้นับ (วินาที) */
+export const JOIN_RATE_LIMIT_WINDOW_SECONDS = envPositiveInt(
+  process.env.FAMILY_JOIN_RATE_LIMIT_WINDOW_SECONDS,
+  60,
+);
+
+/** จำนวนครั้งสูงสุดต่อผู้ใช้ 1 คน ภายใน 1 หน้าต่าง */
+export const JOIN_RATE_LIMIT_PER_USER = envPositiveInt(
+  process.env.FAMILY_JOIN_RATE_LIMIT_PER_USER,
+  20,
+);
+
+/** จำนวนครั้งสูงสุดต่อ IP 1 ตัว ภายใน 1 หน้าต่าง (รวมทุกบัญชีที่มาจาก IP นั้น) */
+export const JOIN_RATE_LIMIT_PER_IP = envPositiveInt(
+  process.env.FAMILY_JOIN_RATE_LIMIT_PER_IP,
+  100,
+);
+
 // ─── 6. ฟีดกิจกรรม (PYG-421) ────────────────────────────────────────────────
 /**
  * ขนาดหน้าเริ่มต้นเมื่อ client ไม่ส่ง first มา

@@ -29,10 +29,13 @@ import {
 import { FamilyGroupActivityConnection } from './entities/family-group-activity.entity';
 import { GroupRole } from './decorators/group-role.decorator';
 import { FamilyGroupGuard } from './guards/family-group.guard';
+import { JoinLinkRateLimitGuard } from './guards/join-link-rate-limit.guard';
 import {
   ACTIVITY_PAGE_SIZE_DEFAULT,
   ACTIVITY_PAGE_SIZE_MAX,
   GROUP_ROLE,
+  JOIN_RATE_LIMIT_PER_USER,
+  JOIN_RATE_LIMIT_WINDOW_SECONDS,
 } from './family-group.constants';
 import {
   AuthUser,
@@ -40,6 +43,17 @@ import {
 } from '../common/decorators/current-user.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+
+/**
+ * ประโยคท้าย description ของ joinLinkPreview / joinGroupByLink (PYG-479)
+ * ประกอบจากค่าคงที่จริง → ตัวเลขใน schema ตรงกับที่ guard ใช้เสมอ ไม่ต้องจำไปแก้สองที่
+ * (⚠ ถ้าตั้ง env ต่างจาก default ตัวเลขใน schema.gql ที่ commit ไว้จะไม่ตรงกับเซิร์ฟเวอร์นั้น
+ *  แต่ schema ที่เซิร์ฟเวอร์ให้ตอน runtime จะตรงเสมอ)
+ */
+const JOIN_RATE_LIMIT_NOTE =
+  `จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน ${JOIN_RATE_LIMIT_PER_USER} ครั้ง` +
+  `ต่อผู้ใช้ใน ${JOIN_RATE_LIMIT_WINDOW_SECONDS} วินาที (มีเพดานต่อ IP อีกชั้น) ` +
+  'เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds';
 
 /**
  * FamilyGroupResolver (PYG-412) — GraphQL ของ "สร้าง/จัดการกลุ่มครอบครัว"
@@ -202,8 +216,11 @@ export class FamilyGroupResolver {
     description:
       'ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ' +
       'ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error ' +
-      'โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย',
+      'โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย ' +
+      JOIN_RATE_LIMIT_NOTE,
   })
+  // PYG-479: นับรวมกับ joinGroupByLink — preview ก็ค้นดีบีด้วย token เหมือนกัน
+  @UseGuards(JoinLinkRateLimitGuard)
   async joinLinkPreview(
     @Args('token') token: string,
     @CurrentUser() user: AuthUser,
@@ -214,8 +231,11 @@ export class FamilyGroupResolver {
   @Mutation(() => FamilyGroup, {
     description:
       'เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL ' +
-      'กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์',
+      'กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์ ' +
+      JOIN_RATE_LIMIT_NOTE,
   })
+  // PYG-479: จำกัดอัตราต่อผู้ใช้/IP — ตัดคำขอที่เกินเพดานทิ้งก่อนถึง service (ไม่แตะดีบี)
+  @UseGuards(JoinLinkRateLimitGuard)
   async joinGroupByLink(
     @Args('token') token: string,
     @CurrentUser() user: AuthUser,

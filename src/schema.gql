@@ -1902,7 +1902,7 @@ type Mutation {
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
 
   """
-  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์
+  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์ จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน 20 ครั้งต่อผู้ใช้ใน 60 วินาที (มีเพดานต่อ IP อีกชั้น) เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds
   """
   joinGroupByLink(
     """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
@@ -2466,7 +2466,7 @@ type Query {
   jobQr(bookingId: ID!): JobQr!
 
   """
-  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย
+  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน 20 ครั้งต่อผู้ใช้ใน 60 วินาที (มีเพดานต่อ IP อีกชั้น) เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds
   """
   joinLinkPreview(token: String!): JoinLinkPreview!
 
