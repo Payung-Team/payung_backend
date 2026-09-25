@@ -53,24 +53,37 @@ export class CreateBookingDto {
   @IsNotEmpty()
   serviceType!: string;
 
-  /** ช่วงเวลา เช่น "morning" | "afternoon" | "evening" */
-  @IsString()
-  @IsNotEmpty()
-  timeSlot!: string;
-
   /**
-   * เวลาเริ่มต้น เช่น "09:00:00"
-   * เก็บเป็น Time ใน PostgreSQL
+   * เวลาเริ่มต้น "HH:mm" เช่น "09:00" (รับ "09:00:00" แบบเดิมด้วย)
+   * เก็บเป็น Time ใน PostgreSQL — รูปแบบตรวจใน resolveBookingTime (booking-time.ts)
    */
   @IsString()
   @IsNotEmpty()
   startTime!: string;
 
-  /** จำนวนชั่วโมง (เช่น 4, 8) */
+  /**
+   * PYG-523 — เวลาสิ้นสุด "HH:mm" เช่น "13:00"
+   * ส่งมา = BE คำนวณ durationHours + timeSlot เอง (ค่าสองช่องล่างที่ส่งมาด้วยถูกทิ้ง)
+   * กฎ: ขั้นละ 30 นาที, 1–12 ชม., ไม่ข้ามเที่ยงคืน, เริ่ม 06:00–21:30 — ดู booking-time.ts
+   */
+  @IsOptional()
+  @IsString()
+  endTime?: string;
+
+  /**
+   * @deprecated PYG-523 — แบบเดิม ใช้เมื่อไม่ส่ง endTime เท่านั้น (ช่วงเปลี่ยนผ่านของ FE)
+   * ช่วงเวลา "morning" | "afternoon" | "evening"
+   */
+  @IsOptional()
+  @IsString()
+  timeSlot?: string;
+
+  /** @deprecated PYG-523 — แบบเดิม ใช้เมื่อไม่ส่ง endTime เท่านั้น · จำนวนชั่วโมง (เช่น 4, 8) */
+  @IsOptional()
   @IsNumber()
   @Min(0.5)
   @Type(() => Number)
-  durationHours!: number;
+  durationHours?: number;
 
   /** ที่อยู่บริการ */
   @IsString()

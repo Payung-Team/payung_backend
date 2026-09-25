@@ -184,6 +184,100 @@ describe('BookingService — new REST methods', () => {
       expect(result.caregiver).toBeUndefined();
     });
 
+    // ── PYG-523: startTime + endTime → BE คำนวณ durationHours / timeSlot เอง ───
+
+    describe('PYG-523 เวลาเริ่ม–สิ้นสุด', () => {
+      const newDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        startTime:        '13:00',
+        endTime:          '16:30',
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      it('บันทึก durationHours / timeSlot / startTime ที่คำนวณเอง', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.durationHours).toBe(3.5);
+        expect(call.data.timeSlot).toBe('afternoon');
+        expect(call.data.startTime).toEqual(new Date('1970-01-01T13:00:00Z'));
+      });
+
+      it('ราคาประเมินใช้ชั่วโมงที่คำนวณ (hourlyRate × (end − start))', async () => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+          hourlyRate: 300,
+        });
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, {
+          ...newDto,
+          caregiverId: 'c2222222-2222-4222-8222-222222222222',
+        });
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.estimatedCost).toBe(1050); // 300 × 3.5
+      });
+
+      it('เช็คเวลาชนด้วยช่วงที่คำนวณ — นัดเดิม 15:00–17:00 ชนกับ 13:00–16:30', async () => {
+        prisma.booking.findMany.mockResolvedValue([
+          { startTime: new Date('1970-01-01T15:00:00Z'), durationHours: 2 },
+        ]);
+
+        await expect(service.createBooking(PATIENT_ID, newDto)).rejects.toThrow(
+          ConflictException,
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('นัดเดิมเริ่มตอนงานใหม่จบพอดี (16:30) → ไม่ชน', async () => {
+        prisma.booking.findMany.mockResolvedValue([
+          { startTime: new Date('1970-01-01T16:30:00Z'), durationHours: 2 },
+        ]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('เวลาไม่ผ่านกฎ → 400 ก่อนแตะ DB ใด ๆ', async () => {
+        await expect(
+          service.createBooking(PATIENT_ID, { ...newDto, endTime: '12:00' }),
+        ).rejects.toThrow('เวลาสิ้นสุดต้องหลังเวลาเริ่ม และอยู่ในวันเดียวกัน');
+
+        expect(prisma.booking.findMany).not.toHaveBeenCalled();
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('แบบเดิม (timeSlot + durationHours) ยังจองได้ และเก็บค่าตามที่ส่งมา', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, dto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.durationHours).toBe(4);
+        expect(call.data.timeSlot).toBe('morning');
+        expect(call.data.startTime).toEqual(new Date('1970-01-01T09:00:00Z'));
+      });
+    });
+
     // ── PYG-460: ข้อมูลสุขภาพผู้รับบริการ ─────────────────────────────────────
 
     it('เก็บ patientProfile เป็น snapshot ลง member_details', async () => {

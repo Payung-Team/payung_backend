@@ -27,6 +27,7 @@ import {
   MatchedCaregiverRest,
   TaskSuggestion,
 } from './dto/booking-rest.types';
+import { resolveBookingTime } from './booking-time';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
@@ -565,6 +566,11 @@ export class BookingService {
     dto: CreateBookingDto,
     onBehalf?: OnBehalfContext,
   ): Promise<BookingWithIncludes> {
+    // PYG-523 — ตรวจ/คำนวณเวลาก่อนอย่างอื่นทั้งหมด (ยังไม่มีอะไรถูกเขียนลง DB)
+    //   ค่าด้านล่างทุกจุด (ราคา / เวลาชน / แถวที่บันทึก) ต้องใช้ time.* ไม่ใช่ dto.* ตรง ๆ
+    //   เพราะแบบใหม่ client ไม่ได้ส่ง durationHours / timeSlot มาเลย
+    const time = resolveBookingTime(dto);
+
     // ตรวจสอบ careRecipientId ถ้าส่งมา — ต้องเป็นของ patient คนนี้
     //
     // PYG-424: ข้ามเช็คนี้เมื่อเป็นการจองแทน เพราะโปรไฟล์เป็นของ "สมาชิกคนอื่น"
@@ -594,14 +600,13 @@ export class BookingService {
       }
       resolvedCaregiverId = caregiver.id;
       if (caregiver.hourlyRate != null) {
-        estimatedCost = caregiver.hourlyRate * dto.durationHours;
+        estimatedCost = caregiver.hourlyRate * time.durationHours;
       }
     }
 
     // ── ตรวจสอบ time conflict ──────────────────────────────────────────────────
-    const [startH, startM] = dto.startTime.split(':').map(Number);
-    const newStart = startH * 60 + startM;
-    const newEnd = newStart + Math.round(dto.durationHours * 60);
+    const newStart = time.startMinute;
+    const newEnd = newStart + Math.round(time.durationHours * 60);
     const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
 
     /**
@@ -665,9 +670,9 @@ export class BookingService {
       tasks:            dto.tasks,
       serviceLocations: dto.serviceLocations,
       serviceType:      dto.serviceType as booking_service_type,
-      timeSlot:         dto.timeSlot as time_slot,
-      startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
-      durationHours:    dto.durationHours,
+      timeSlot:         time.timeSlot as time_slot,
+      startTime:        new Date(`1970-01-01T${time.startTime}Z`),
+      durationHours:    time.durationHours,
       locationAddress:  dto.locationAddress,
       // PYG-352: เก็บพิกัดจุดงานที่ลูกค้าปักหมุดไว้ — ก่อนหน้านี้ค่านี้ถูกทิ้งทุกครั้ง
       // ระบบเช็คอินใช้พิกัดคู่นี้คำนวณระยะ ถ้าไม่มีก็ไม่คำนวณและไม่ติดธง
@@ -828,7 +833,7 @@ export class BookingService {
             metadata: {
               recipientName: onBehalf.recipientName,
               bookingDate:   dto.bookingDate,
-              startTime:     dto.startTime,
+              startTime:     time.startTime,
             },
           },
         });
