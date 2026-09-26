@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
@@ -182,6 +183,24 @@ describe('BookingService — new REST methods', () => {
       );
       expect(result.status).toBe('unmatched');
       expect(result.caregiver).toBeUndefined();
+    });
+
+    // PYG-526: REST เดิมคืนแค่ timeSlot → client แสดงได้แค่ "ช่วงเช้า" ตอนนี้คืนเวลาจริงด้วย
+    it('response มี startTime / endTime / durationHours (endTime = start + ชั่วโมง)', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(
+        fakeBooking({
+          startTime: new Date('1970-01-01T11:00:00Z'),
+          // Decimal จริงของ Prisma — ต้องออกเป็น number 4 ไม่ใช่ string "4" ใน JSON
+          durationHours: new Prisma.Decimal('4'),
+        }),
+      );
+
+      const result = await service.createBooking(PATIENT_ID, dto);
+
+      expect(result.startTime).toBe('11:00');
+      expect(result.endTime).toBe('15:00');
+      expect(result.durationHours).toBe(4);
     });
 
     // ── PYG-523: startTime + endTime → BE คำนวณ durationHours / timeSlot เอง ───

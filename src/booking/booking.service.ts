@@ -28,6 +28,8 @@ import {
   TaskSuggestion,
 } from './dto/booking-rest.types';
 import { resolveBookingTime } from './booking-time';
+// PYG-526: เวลาสิ้นสุด/รูปแบบแสดงผลของใบจอง — ที่เดียวในระบบ
+import { computeEndTime, formatStartTime } from './booking-time-display';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
@@ -1302,10 +1304,9 @@ export class BookingService {
         b.bookingDate instanceof Date
           ? b.bookingDate.toISOString().slice(0, 10)
           : String(b.bookingDate),
-      startTime:
-        b.startTime instanceof Date
-          ? b.startTime.toISOString().slice(11, 16)
-          : undefined,
+      startTime: formatStartTime(b.startTime),
+      // PYG-526: การ์ดนัดหมายของกลุ่มแสดง "เริ่ม – สิ้นสุด (N ชม.)"
+      endTime: computeEndTime(b.startTime, b.durationHours),
       status: b.status,
       serviceType: b.serviceType,
       durationHours: b.durationHours != null ? Number(b.durationHours) : undefined,
@@ -1355,6 +1356,11 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
+      // PYG-526: ให้ REST มีเวลาจริงเหมือน GraphQL — endTime คำนวณจาก startTime + durationHours
+      startTime:        formatStartTime(booking.startTime),
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
+      // Number(): คอลัมน์เป็น Decimal — ถ้าส่งตรง ๆ JSON จะออกมาเป็น string "4"
+      durationHours:    booking.durationHours != null ? Number(booking.durationHours) : undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,
       locationAddress:  booking.locationAddress,
@@ -1394,9 +1400,9 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
-      startTime:        booking.startTime instanceof Date
-                          ? booking.startTime.toISOString().slice(11, 16)
-                          : undefined,
+      startTime:        formatStartTime(booking.startTime),
+      // PYG-526: FE แสดง "เริ่ม – สิ้นสุด (N ชม.)" แทนชื่อ slot — คำนวณที่ BE ที่เดียว
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
       durationHours:    booking.durationHours ?? undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,

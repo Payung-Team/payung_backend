@@ -18,7 +18,14 @@ export interface BookingRest {
   bookingDate: string;
   status: string;
   serviceType: string;
+  /** PYG-526: ข้อมูลภายในของการจับคู่ — ห้ามแสดงให้ผู้ใช้เห็น ใช้ startTime / endTime แทน */
   timeSlot: string;
+  // PYG-526: เดิม REST ไม่คืนเวลาเลย มีแต่ timeSlot → client แสดงได้แค่ "ช่วงเช้า"
+  /** เวลาเริ่ม "HH:mm" (เวลาไทย) */
+  startTime?: string;
+  /** เวลาสิ้นสุด "HH:mm" = startTime + durationHours (คำนวณตอนอ่าน ไม่ได้เก็บในดีบี) */
+  endTime?: string;
+  durationHours?: number;
   tasks: string[];
   serviceLocations: string[];
   locationAddress: string;

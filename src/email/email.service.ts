@@ -221,6 +221,7 @@ export class EmailService {
       intro: params.intro,
       caregiverName: params.caregiverName,
       dateText: params.dateText,
+      timeText: params.timeText, // PYG-526: แถว "เวลา" แบบ "09:00 – 13:00 (4 ชม.)"
       serviceText: params.serviceText,
       amountText: params.amountText,
       ctaUrl: params.ctaPath ? `${this.frontendUrl}${params.ctaPath}` : undefined,

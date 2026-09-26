@@ -36,10 +36,15 @@ export class CaregiverBookingSummary {
   @Field() serviceType: string; // ประเภทบริการ เช่น "ดูแลผู้สูงอายุที่บ้านผู้ป่วย"
   @Field(() => [String]) serviceLocations: string[]; // รูปแบบ/สถานที่ให้บริการ
   @Field(() => [String]) tasks: string[]; // รายการงานที่ต้องปฏิบัติ
-  @Field() timeSlot: string; // ช่วงเวลา เช่น "morning"
+  // ช่วงเวลา เช่น "morning" — PYG-526: BE อนุมานจากเวลาเริ่มแล้ว (PYG-523) ห้ามแสดงชื่อ slot
+  @Field({ deprecationReason: 'PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน' })
+  timeSlot: string;
 
   @Field() bookingDate: string; // วันที่นัด รูปแบบ YYYY-MM-DD (string เพื่อเลี่ยงปัญหา timezone)
   @Field() startTime: string; // เวลาเริ่ม รูปแบบ HH:mm
+  // PYG-526: เวลาสิ้นสุด HH:mm = startTime + durationHours (คำนวณตอนอ่าน ไม่ได้เก็บในดีบี)
+  // nullable กันกรณี durationHours ผิดปกติ (≤ 0) — ถ้าเป็น non-null แล้วคืน null ทั้งลิสต์จะ error
+  @Field({ nullable: true }) endTime?: string;
   @Field(() => Float) durationHours: number; // ระยะเวลา (ชั่วโมง)
 
   @Field(() => Float, { nullable: true }) estimatedCost?: number; // ราคาประมาณการ (฿)

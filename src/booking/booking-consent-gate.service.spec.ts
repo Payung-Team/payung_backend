@@ -389,5 +389,11 @@ describe('BookingService — ด่านความยินยอม (PYG-540
       const result = await service.groupBookings(GROUP_ID, BOOKER_ID);
       expect(result.map((b) => b.id)).toEqual(['b-owner-withdrawn', 'b-other']);
     });
+
+    // PYG-526: การ์ดนัดหมายของกลุ่มแสดง "09:00 – 13:00 (4 ชม.)" → ต้องได้ endTime มาด้วย
+    it('คืน startTime + endTime (09:00 ยาว 4 ชม. → 13:00)', async () => {
+      const result = await service.groupBookings(GROUP_ID, BOOKER_ID);
+      expect(result[0]).toMatchObject({ startTime: '09:00', endTime: '13:00', durationHours: 4 });
+    });
   });
 });

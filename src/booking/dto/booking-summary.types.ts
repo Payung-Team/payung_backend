@@ -47,8 +47,15 @@ export class BookingSummary {
   @Field({ nullable: true })                          disputeStatus?: string;
   @Field({ nullable: true })                          disputeReason?: string;
   @Field()                                            serviceType: string;
-  @Field()                                            timeSlot: string;
-  @Field({ nullable: true })                          startTime?: string;
+  // PYG-526: ผู้ใช้ไม่ได้เลือก slot เองแล้ว (BE อนุมานจากเวลาเริ่ม — PYG-523) → ห้ามแสดงชื่อ slot
+  //   ยังคืนค่าอยู่เพราะเป็นข้อมูลภายในของการจับคู่ผู้ดูแล (work_conditions) ไม่ได้ลบ field
+  @Field({ deprecationReason: 'PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน' })
+  timeSlot: string;
+  @Field({ nullable: true, description: 'เวลาเริ่ม "HH:mm" (เวลาไทย)' })
+  startTime?: string;
+  // PYG-526: คำนวณจาก startTime + durationHours ทุกครั้งที่อ่าน (ไม่ได้เก็บในดีบี) → ใบจองเก่าก็มีค่า
+  @Field({ nullable: true, description: 'เวลาสิ้นสุด "HH:mm" (เวลาไทย) = startTime + durationHours' })
+  endTime?: string;
   @Field(() => Float, { nullable: true })             durationHours?: number;
   @Field(() => [String])                              tasks: string[];
   @Field(() => [String])                              serviceLocations: string[];

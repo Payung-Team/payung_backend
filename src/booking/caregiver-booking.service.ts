@@ -12,6 +12,8 @@ import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 // PYG-461/462: deadline รับงาน — สูตรเดียวกับ createPayment และ cron หมดอายุ
 import { acceptDeadlineOf, toBangkokText } from './booking-deadline.config';
+// PYG-526: เวลาสิ้นสุดของใบจอง — สูตรเดียวกับฝั่งผู้จอง/อีเมล
+import { computeEndTime } from './booking-time-display';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -492,6 +494,8 @@ export class CaregiverBookingService {
       timeSlot: b.timeSlot,
       bookingDate: this.formatDateYmd(b.bookingDate),
       startTime: this.formatTimeHm(b.startTime),
+      // PYG-526: หน้างานของผู้ดูแลแสดง "เริ่ม – สิ้นสุด" จากค่านี้ แทนการคำนวณเองฝั่ง FE
+      endTime: computeEndTime(b.startTime, this.toNumber(b.durationHours)),
       durationHours: this.toNumber(b.durationHours),
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
       payoutStatus: b.payout?.status ?? undefined,

@@ -13,6 +13,9 @@ export class GroupBookingSummary {
   @Field(() => ID) id: string;
   @Field({ description: 'วันที่ให้บริการ ISO "2026-09-15"' }) bookingDate: string;
   @Field({ nullable: true, description: 'เวลาเริ่ม "09:00"' }) startTime?: string;
+  // PYG-526: คำนวณจาก startTime + durationHours (ไม่ได้เก็บในดีบี) — การ์ดนัดหมายแสดง "09:00 – 13:00 (4 ชม.)"
+  @Field({ nullable: true, description: 'เวลาสิ้นสุด "13:00" = startTime + durationHours' })
+  endTime?: string;
   @Field() status: string;
   @Field() serviceType: string;
   @Field(() => Float, { nullable: true }) durationHours?: number;

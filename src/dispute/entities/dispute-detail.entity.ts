@@ -45,7 +45,13 @@ export interface DisputeDetail {
   bookingDate: string;
   status: string;
   serviceType: string;
+  /** PYG-526: ข้อมูลภายในของการจับคู่ — ห้ามแสดงให้ผู้ใช้เห็น ใช้ startTime / endTime แทน */
   timeSlot: string;
+  /** เวลาเริ่ม "HH:mm" (เวลาไทย) */
+  startTime?: string;
+  /** เวลาสิ้นสุด "HH:mm" = startTime + durationHours (คำนวณตอนอ่าน ไม่ได้เก็บในดีบี) */
+  endTime?: string;
+  durationHours?: number;
   locationAddress: string;
   estimatedCost?: number;
 

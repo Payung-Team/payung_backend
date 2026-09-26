@@ -40,8 +40,10 @@ import {
   formatRating,
   formatServiceType,
   formatThaiDate as formatThaiDateEmail,
-  formatTimeSlot,
+  formatTimeRange,
 } from '../../email/templates/booking/helpers';
+// PYG-526: รูปแบบเวลาใบจองกลาง — ข้อความแจ้งเตือนในแอปใช้ตัวเดียวกับอีเมลและหน้าเว็บ
+import { formatBookingTimeRange } from '../../booking/booking-time-display';
 
 /** ใครเป็นผู้รับ notification ของ event นี้ */
 type Recipient = 'patient' | 'caregiver' | 'both' | 'admin';
@@ -57,6 +59,11 @@ interface NotifyContext {
   caregiverName: string;
   serviceText: string;
   dateText: string;
+  /**
+   * PYG-526: "09:00 – 13:00 (4 ชม.)" — undefined ถ้าใบจองไม่มีเวลาเริ่ม
+   * แสดงต่อท้ายวันที่ผ่าน whenText() ห้ามใส่ชื่อ slot ("ช่วงเช้า") เพราะผู้ใช้ไม่ได้เลือก slot เองแล้ว
+   */
+  timeText?: string;
   amountText: string;
   /** PYG-266: ยอดสุทธิที่ caregiver ได้รับจริง (หลังหักค่าธรรมเนียมแพลตฟอร์ม) — ใช้เฉพาะ PAYMENT_TRANSFERRED */
   netAmountText: string;
@@ -87,6 +94,14 @@ const SERVICE_LABEL: Record<booking_service_type, string> = {
 };
 
 /**
+ * PYG-526: "วันที่ 15 ก.ค. 2569 เวลา 09:00 – 13:00 (4 ชม.)" — ข้อความวัน+เวลาในแจ้งเตือนในแอป
+ * ไม่มีเวลาเริ่ม → เหลือแค่ "วันที่ ..." (ไม่แสดง "เวลา -" ที่อ่านแล้วงง)
+ */
+function whenText(c: NotifyContext): string {
+  return c.timeText ? `วันที่ ${c.dateText} เวลา ${c.timeText}` : `วันที่ ${c.dateText}`;
+}
+
+/**
  * Recipient matrix + เนื้อหา ของทุก event
  * (อ้างอิง Figma anatomy + ทิศทางการนำทางของ FE: booking_new/confirmed/cancelled → caregiver)
  *
@@ -100,7 +115,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.booking_new,
     recipient: 'caregiver',
     title: 'มีคำขอจองใหม่',
-    body: (c) => `มีคำขอจองใหม่ บริการ${c.serviceText} วันที่ ${c.dateText} — แตะเพื่อดูรายละเอียดและตอบรับ`,
+    body: (c) => `มีคำขอจองใหม่ บริการ${c.serviceText} ${whenText(c)} — แตะเพื่อดูรายละเอียดและตอบรับ`,
     email: true,
     ctaLabel: 'ดูคำขอจอง',
   },
@@ -127,7 +142,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.booking_confirmed,
     recipient: 'both',
     title: 'การจองยืนยันแล้ว',
-    body: (c) => `การจองบริการ${c.serviceText} วันที่ ${c.dateText} ได้รับการยืนยันและชำระเงินแล้ว`,
+    body: (c) => `การจองบริการ${c.serviceText} ${whenText(c)} ได้รับการยืนยันและชำระเงินแล้ว`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
@@ -195,7 +210,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.booking_cancelled,
     recipient: 'caregiver',
     title: 'การจองถูกยกเลิก',
-    body: (c) => `การจองบริการ${c.serviceText} วันที่ ${c.dateText} ถูกยกเลิกโดยผู้ใช้บริการ`,
+    body: (c) => `การจองบริการ${c.serviceText} ${whenText(c)} ถูกยกเลิกโดยผู้ใช้บริการ`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
@@ -239,7 +254,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.dispute_created,
     recipient: 'admin',
     title: 'แจ้งปัญหาใหม่',
-    body: (c) => `มีการแจ้งปัญหาใหม่สำหรับการจองบริการ${c.serviceText} วันที่ ${c.dateText}`,
+    body: (c) => `มีการแจ้งปัญหาใหม่สำหรับการจองบริการ${c.serviceText} ${whenText(c)}`,
     // อุด gap: ส่ง email admin ด้วย (ครบ 11/11 email events)
     email: true,
     ctaLabel: 'ดูคิวปัญหา',
@@ -351,6 +366,7 @@ export class BookingNotificationListener {
         caregiverName: booking.caregiver?.fullName ?? 'ผู้ดูแล',
         serviceText: SERVICE_LABEL[booking.serviceType] ?? booking.serviceType,
         dateText: this.formatThaiDate(booking.bookingDate),
+        timeText: formatBookingTimeRange(booking.startTime, booking.durationHours),
         amountText: this.formatBaht(booking.payment?.amount ?? booking.estimatedCost),
         netAmountText,
         reason,
@@ -408,7 +424,8 @@ export class BookingNotificationListener {
                 ),
                 patientName: booking.patient?.displayName ?? null,
                 dateText: formatThaiDateEmail(booking.bookingDate),
-                timeText: formatTimeSlot(booking.startTime, booking.durationHours),
+                // PYG-526: "09:00 – 13:00 (4 ชม.)" เหมือนหน้าเว็บ (เดิม "09:00 - 13:00 น. (4 ชม.)")
+                timeText: formatTimeRange(booking.startTime, booking.durationHours),
                 serviceText: formatServiceType(booking.serviceType),
                 locationAddress: booking.locationAddress,
                 ...priceBreakdown,
@@ -432,6 +449,7 @@ export class BookingNotificationListener {
             intro: body,
             caregiverName: ctx.caregiverName,
             dateText: ctx.dateText,
+            timeText: ctx.timeText, // PYG-526: generic template เคยมีแต่วันที่
             serviceText: ctx.serviceText,
             amountText: ctx.amountText,
             ctaPath: data.link as string,

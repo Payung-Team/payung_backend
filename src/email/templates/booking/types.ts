@@ -23,6 +23,7 @@ export interface BookingEmailContext {
 
   // ── booking summary (พรีแคลแล้ว) ──
   dateText: string;
+  /** "09:00 – 13:00 (4 ชม.)" จาก formatTimeRange — PYG-526: ห้ามใส่ชื่อ slot ("ช่วงเช้า") */
   timeText: string;
   serviceText: string;
   locationAddress: string;

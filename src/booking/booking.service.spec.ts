@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import {
   ForbiddenException,
   NotFoundException,
@@ -243,6 +244,31 @@ describe('BookingService', () => {
       const result = await service.myBookingHistory(PATIENT_ID, {});
 
       expect(result.data[0].bookingDate).toBe('2026-07-01');
+    });
+
+    // PYG-526: FE แสดง "เริ่ม – สิ้นสุด (N ชม.)" แทนชื่อ slot → BE ต้องคืน endTime ให้
+    it('คืน endTime = startTime + durationHours (จอง 11:00 ยาว 4 ชม. → 15:00 ไม่ใช่ "ช่วงเช้า")', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        fakeBooking({
+          startTime: new Date('1970-01-01T11:00:00Z'),
+          durationHours: new Prisma.Decimal('4'),
+        }),
+      ]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const result = await service.myBookingHistory(PATIENT_ID, {});
+
+      expect(result.data[0].startTime).toBe('11:00');
+      expect(result.data[0].endTime).toBe('15:00');
+    });
+
+    it('ใบจองที่ไม่มีเวลาเริ่ม → endTime undefined (ไม่เดาเวลา)', async () => {
+      prisma.booking.findMany.mockResolvedValue([fakeBooking({ startTime: null })]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const result = await service.myBookingHistory(PATIENT_ID, {});
+
+      expect(result.data[0].endTime).toBeUndefined();
     });
 
     it('returns null confirmedAt as undefined', async () => {
