@@ -502,7 +502,9 @@ export class AdminResolver {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email ของ caregiver
+   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email/hourlyRate ของ caregiver
+   *
+   * hourlyRate (PYG-534): ทางเดียวที่เหลือสำหรับตั้งราคาผู้ดูแล (ผู้ดูแลตั้งเองไม่ได้แล้ว)
    *
    * @example
    * mutation {
@@ -512,15 +514,17 @@ export class AdminResolver {
    *     lastName: "ใจดี"
    *     idCardNumber: "1234567890123"
    *     email: "new@example.com"
+   *     hourlyRate: 250
    *   }) {
-   *     id firstName lastName idCardNumber email
+   *     id firstName lastName idCardNumber email hourlyRate
    *   }
    * }
    */
   @Mutation(() => AdminUpdateCaregiverInfoPayload, {
     description:
-      'Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). ' +
+      'Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email) and hourlyRate. ' +
       'Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. ' +
+      'hourlyRate must be > 0 (caregivers cannot set it themselves since PYG-534). ' +
       'Records audit log.',
   })
   async adminUpdateCaregiverInfo(

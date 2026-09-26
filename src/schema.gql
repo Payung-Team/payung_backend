@@ -173,6 +173,11 @@ input AdminUpdateCaregiverInfoInput {
   """First name"""
   firstName: String
 
+  """
+  Hourly rate in THB (must be > 0). Only admins can set this since PYG-534
+  """
+  hourlyRate: Float
+
   """Thai national ID (exactly 13 digits)"""
   idCardNumber: String
 
@@ -186,6 +191,9 @@ type AdminUpdateCaregiverInfoPayload {
 
   """First name (extracted from fullName)"""
   firstName: String!
+
+  """Hourly rate in THB (null = not set yet)"""
+  hourlyRate: Float
 
   """Caregiver UUID"""
   id: ID!
@@ -1777,7 +1785,7 @@ type Mutation {
   adminEditUser(input: AdminEditUserInput!): User!
 
   """
-  Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. Records audit log.
+  Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email) and hourlyRate. Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. hourlyRate must be > 0 (caregivers cannot set it themselves since PYG-534). Records audit log.
   """
   adminUpdateCaregiverInfo(input: AdminUpdateCaregiverInfoInput!): AdminUpdateCaregiverInfoPayload!
 

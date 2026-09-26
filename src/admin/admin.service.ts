@@ -1269,14 +1269,17 @@ export class AdminService {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email ของ caregiver
+   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email/hourlyRate ของ caregiver
+   *
+   * hourlyRate (PYG-534): ผู้ดูแลตั้งราคาเองไม่ได้แล้ว แอดมินเป็นคนเดียวที่แก้ได้
+   * (ทางชั่วคราวจนกว่า Catalog ราคาของ PYG-487 จะพร้อม)
    *
    * Flow:
    * 1. หา caregiver → NotFoundException ถ้าไม่พบ
    * 2. หา linked user (สำหรับ email)
    * 3. Validate email uniqueness ถ้า email เปลี่ยน
    * 4. Build fullName จาก firstName + lastName (split จาก fullName เดิมถ้าส่งมาแค่ฝั่งเดียว)
-   * 5. Update caregivers (fullName, idCardNumber)
+   * 5. Update caregivers (fullName, idCardNumber, hourlyRate)
    * 6. Update users.email + Supabase Auth (ถ้า email เปลี่ยน)
    * 7. Audit log (fire-and-forget)
    * 8. Return AdminUpdateCaregiverInfoPayload { id, firstName, lastName, idCardNumber, email }
@@ -1319,6 +1322,8 @@ export class AdminService {
     const caregiverData: Prisma.CaregiverUpdateInput = {};
     if (newFullName !== undefined)          caregiverData.fullName = newFullName;
     if (input.idCardNumber !== undefined)   caregiverData.idCardNumber = input.idCardNumber;
+    // PYG-534: DTO กันค่า null / <= 0 ไว้แล้ว — มาถึงตรงนี้ได้คือราคาที่ใช้คิดเงินได้จริง
+    if (input.hourlyRate !== undefined)     caregiverData.hourlyRate = input.hourlyRate;
 
     const updatedCaregiver = await this.prismaService.caregiver.update({
       where: { id: input.caregiverId },
@@ -1358,6 +1363,10 @@ export class AdminService {
     if (input.email !== undefined && input.email !== linkedUser.email) {
       changedFields.email = { from: linkedUser.email, to: input.email };
     }
+    // เปลี่ยนราคา = กระทบเงินที่ผู้รับบริการจ่าย → ต้องตอบได้ว่าใครเปลี่ยน จากเท่าไหร่เป็นเท่าไหร่
+    if (input.hourlyRate !== undefined && input.hourlyRate !== caregiver.hourlyRate) {
+      changedFields.hourlyRate = { from: caregiver.hourlyRate, to: input.hourlyRate };
+    }
 
     const changedFieldsJson = JSON.stringify(changedFields);
     void this.prismaService.$executeRaw`
@@ -1383,6 +1392,8 @@ export class AdminService {
       lastName: nameParts.slice(1).join(' '),
       idCardNumber: updatedCaregiver.idCardNumber ?? '',
       email: finalEmail,
+      // ไม่ใช้ ?? 0 แบบที่อื่น — 0 จะดูเหมือน "ตั้งราคาไว้ 0 บาท" ทั้งที่จริงคือ "ยังไม่ได้ตั้ง"
+      hourlyRate: updatedCaregiver.hourlyRate ?? undefined,
     };
   }
 
