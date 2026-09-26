@@ -27,8 +27,13 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 
-/** Profile fields ที่ track ได้ใน updateProfile */
-const PROFILE_TRACKED_FIELDS = ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
+/**
+ * Profile fields ที่ track ได้ใน updateProfile
+ *
+ * PYG-534: ตัด hourlyRate ออก — ถ้ายังอยู่ในนี้ edit log จะบันทึกว่า "เปลี่ยนราคา"
+ * ทั้งที่ service ไม่ได้เขียนลงตารางจริง (log โกหก)
+ */
+const PROFILE_TRACKED_FIELDS = ['bio', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -238,8 +243,9 @@ export class CaregiverService {
   /**
    * updateProfile — แก้ไข profile ของ caregiver (เฉพาะ whitelist fields)
    *
-   * Whitelist: bio, hourlyRate, skills, experienceYears, phone
+   * Whitelist: bio, skills, experienceYears, phone, address, languages
    * Locked: fullName, idCardNumber, gender, dateOfBirth, caregiverNumber
+   * Ignored: hourlyRate (PYG-534) — รับได้แต่ไม่เขียน ราคาเปลี่ยนไม่ได้จากทางผู้ดูแลแล้ว
    *
    * @param userId - internal user id ของ caregiver ที่ login อยู่
    * @param input  - fields ที่ต้องการเปลี่ยน (partial update)
@@ -264,6 +270,22 @@ export class CaregiverService {
       );
     }
 
+    // ── PYG-534: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว ─────────────────────────
+    // ช่วงเปลี่ยนผ่าน: FE รุ่นเก่ายังส่ง hourlyRate มา → รับไว้ (ไม่ตอบ 400 ให้ field อื่นพังไปด้วย)
+    // แต่ "ไม่เขียน" ลงตาราง + log warning ไว้ดูว่ายังมี client ส่งมาอยู่ไหม
+    // log หายไปเมื่อไหร่ = ลบ field ออกจาก UpdateCaregiverInput ได้
+    if (input.hourlyRate !== undefined) {
+      this.logger.warn({
+        event: 'caregiver.profile.hourly_rate_ignored',
+        caregiverId: existing.id,
+        userId,
+        submitted: input.hourlyRate,
+        // true  = FE แค่ส่งค่าเดิมกลับมา (ปกติของ FE รุ่นปัจจุบัน)
+        // false = มีคนพยายาม "เปลี่ยน" ราคาจริง — ตัวนี้ที่ควรจับตา
+        sameAsCurrent: input.hourlyRate === existing.hourlyRate,
+      });
+    }
+
     // ── Compute field changes ก่อน update ────────────────────────────
     const fieldChanges = computeFieldChanges(
       existing as unknown as Record<string, unknown>,
@@ -277,7 +299,7 @@ export class CaregiverService {
         where: { userId },
         data: {
           ...(input.bio !== undefined && { bio: input.bio }),
-          ...(input.hourlyRate !== undefined && { hourlyRate: input.hourlyRate }),
+          // ไม่มี hourlyRate โดยตั้งใจ (PYG-534) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคาจะมาจาก Catalog (PYG-487)
           ...(input.skills !== undefined && { skills: input.skills }),
           ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
           ...(input.phone !== undefined && { phone: input.phone }),

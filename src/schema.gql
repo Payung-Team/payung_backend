@@ -3037,8 +3037,8 @@ input UpdateCaregiverInput {
   """Years of caregiving experience"""
   experienceYears: Int
 
-  """Hourly rate in THB"""
-  hourlyRate: Float
+  """Hourly rate in THB (deprecated — ignored)"""
+  hourlyRate: Float @deprecated(reason: "PYG-534: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว — ส่งมาได้แต่ระบบไม่บันทึก (ช่วงเปลี่ยนผ่าน)")
 
   """Languages spoken by caregiver"""
   languages: [String!]
