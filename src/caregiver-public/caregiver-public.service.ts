@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { CaregiverPublicDto, AvailabilitySlotDto } from './dto/caregiver-public.dto';
+import { startingHourlyPrices } from '../common/pricing/display-price';
 
 @Injectable()
 export class CaregiverPublicService {
@@ -26,7 +27,6 @@ export class CaregiverPublicService {
         fullName: true,
         bio: true,
         experienceYears: true,
-        hourlyRate: true,
         skills: true,
         kycStatus: true,
         isSearchable: true,
@@ -94,7 +94,8 @@ export class CaregiverPublicService {
       avatar_url: caregiver.user.avatarUrl ?? null,
       bio: caregiver.bio ?? null,
       experience_years: caregiver.experienceYears ?? null,
-      hourly_rate: caregiver.hourlyRate ?? null,
+      // ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — ตรงกับหน้า Search
+      hourly_rate: (await startingHourlyPrices(this.prisma, [caregiver.id])).get(caregiver.id) ?? null,
       avg_rating: avgRating,
       review_count: reviewCount,
       completed_booking_count: completedBookingCount,

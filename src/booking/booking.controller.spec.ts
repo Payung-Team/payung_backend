@@ -79,6 +79,7 @@ describe('BookingService — new REST methods', () => {
     // PYG-499: ด่าน Onboarding อ่าน role + ชื่อ-นามสกุลของผู้จอง
     user:          { findUnique: jest.Mock };
     caregiverAvailability: { findMany: jest.Mock };
+    servicePriceCatalog: { findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -119,6 +120,10 @@ describe('BookingService — new REST methods', () => {
       },
       // PYG-524: findMany ต่อ prisma.caregiver.findUnique — ค่า default ในแต่ละ it() ตั้งเอง
       caregiverAvailability: { findMany: jest.fn() },
+      // ราคาจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — 300 บาท/ชม. ทุกเทส เว้นแต่ override
+      servicePriceCatalog: {
+        findUnique: jest.fn().mockResolvedValue({ pricePerHour: new Prisma.Decimal(300), isActive: true }),
+      },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     settlement = {
@@ -634,6 +639,29 @@ describe('BookingService — new REST methods', () => {
       expect(result[0].id).toBe(CAREGIVER_ID);
       expect(result[0].avgRating).toBe(4.5);
       expect(result[0].reviewCount).toBe(2);
+    });
+
+    it('hourlyRate = ราคา catalog ของ serviceType ที่ขอ ไม่ใช่ hourlyRate ของผู้ดูแล (350)', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(prisma.servicePriceCatalog.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { serviceType: 'elderly_care' } }),
+      );
+      expect(result[0].hourlyRate).toBe(300);
+    });
+
+    it('serviceType ที่ปิดขาย → hourlyRate undefined', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+      prisma.servicePriceCatalog.findUnique.mockResolvedValue({
+        pricePerHour: new Prisma.Decimal(300),
+        isActive: false,
+      });
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(result[0].hourlyRate).toBeUndefined();
     });
 
     it('filters by province when provided', async () => {

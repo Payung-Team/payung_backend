@@ -35,6 +35,7 @@ import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma
 // รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
+import { bookingHourlyRate } from '../common/pricing/display-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -1052,6 +1053,9 @@ export class BookingService {
    *  - kycStatus    = 'verified'
    *  - serviceAreaProvince ตรงกับ dto.province (ถ้าส่งมา)
    * เรียงตาม hourlyRate ASC (ถูกที่สุดก่อน)
+   *
+   * ราคาที่คืน = ราคา catalog ของ dto.serviceType (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — เท่ากับยอดที่จะคิดตอนจองจริง
+   * ⚠ ลำดับยังเรียงตาม caregivers.hourly_rate เดิม (placeholder ไม่แตะ ranking) รอ matching engine
    */
   async searchMatchesBasic(dto: SearchMatchesDto): Promise<MatchedCaregiverRest[]> {
     const where: Record<string, unknown> = {
@@ -1080,6 +1084,13 @@ export class BookingService {
       take:    20, // hard cap — Phase 3 will paginate properly
     });
 
+    const catalogRow = await this.prisma.servicePriceCatalog.findUnique({
+      where: { serviceType: dto.serviceType },
+      select: { pricePerHour: true, isActive: true },
+    });
+    const servicePrice =
+      catalogRow?.isActive ? Number(catalogRow.pricePerHour) : undefined;
+
     return caregivers.map((cg) => {
       const reviewCount = cg.patientReviews.length;
       const avgRating =
@@ -1093,7 +1104,7 @@ export class BookingService {
         id:              cg.id,
         fullName:        cg.fullName        ?? undefined,
         avatarUrl:       cg.user.avatarUrl  ?? undefined,
-        hourlyRate:      cg.hourlyRate      ?? undefined,
+        hourlyRate:      servicePrice,
         experienceYears: cg.experienceYears ?? undefined,
         skills:          cg.skills,
         province:        cg.serviceAreaProvince ?? undefined,
@@ -1400,8 +1411,8 @@ export class BookingService {
             id: b.caregiver.id,
             fullName: b.caregiver.fullName ?? undefined,
             avatarUrl: b.caregiver.user.avatarUrl ?? undefined,
-            hourlyRate:
-              b.caregiver.hourlyRate != null ? Number(b.caregiver.hourlyRate) : undefined,
+            // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+            hourlyRate: bookingHourlyRate(b.estimatedCost, b.durationHours),
           }
         : undefined,
       bookedByName: b.bookedByUser?.displayName ?? undefined,
@@ -1428,7 +1439,8 @@ export class BookingService {
           id:         booking.caregiver.id,
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
-          hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+          hourlyRate: bookingHourlyRate(booking.estimatedCost, booking.durationHours),
         }
       : undefined;
 
@@ -1466,7 +1478,8 @@ export class BookingService {
           id:         booking.caregiver.id,
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
-          hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+          hourlyRate: bookingHourlyRate(booking.estimatedCost, booking.durationHours),
           averageRating:   booking.caregiver.averageRating   ?? undefined,
           reviewCount:     booking.caregiver.reviewCount     ?? undefined,
           experienceYears: booking.caregiver.experienceYears ?? undefined,

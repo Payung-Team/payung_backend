@@ -8,7 +8,7 @@ type RawCaregiverRow = {
   id: string;
   full_name: string | null;
   avatar_url: string | null;
-  hourly_rate: number | null;
+  hourly_rate: number | null; // ราคาเริ่มต้นจาก catalog (float8) — null = ไม่มีประเภทงานที่มีราคา
   avg_rating: number | null;
   // PYG-298: อ่านจากคอลัมน์ caregivers.review_count (INTEGER → number) แทนการ COUNT() สด
   review_count: number;
@@ -62,12 +62,6 @@ export class SearchService {
     if (input.district) {
       conditions.push(Prisma.sql`(${input.district} = ANY(string_to_array(c.service_area_district, ',')) OR c.service_area_district = ${input.district})`);
     }
-    if (input.minPrice !== undefined) {
-      conditions.push(Prisma.sql`c.hourly_rate >= ${input.minPrice}`);
-    }
-    if (input.maxPrice !== undefined) {
-      conditions.push(Prisma.sql`c.hourly_rate <= ${input.maxPrice}`);
-    }
     if (jobTypes.length > 0) {
       conditions.push(Prisma.sql`EXISTS (
         SELECT 1 FROM caregiver_job_types jt
@@ -78,8 +72,30 @@ export class SearchService {
 
     const whereClause = Prisma.join(conditions, ' AND ');
 
+    // ─── ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) ───
+    // = ราคาต่ำสุดของประเภทงานที่ผู้ดูแลรับ (เฉพาะแถว is_active) · กรอง jobType มา → คิดเฉพาะประเภทนั้น
+    // ไม่ใช่ caregivers.hourly_rate ที่ผู้ดูแลตั้งเองอีกต่อไป
+    // ★ กติกาเดียวกับ startingHourlyPrices() ใน common/pricing/display-price.ts — แก้ที่หนึ่งต้องแก้อีกที่
+    const priceJobTypeFilter = jobTypes.length > 0
+      ? Prisma.sql`AND jt.job_type::text = ANY(${jobTypes}::text[])`
+      : Prisma.sql``;
+    const startingPrice = Prisma.sql`(
+      SELECT MIN(spc.price_per_hour)::float8
+      FROM caregiver_job_types jt
+      JOIN service_price_catalog spc
+        ON spc.service_type = jt.job_type::text AND spc.is_active = true
+      WHERE jt.caregiver_id = c.id ${priceJobTypeFilter}
+    )`;
+
     // ─── Outer WHERE for min_rating (applied after aggregation via CTE) ───
     const outerConditions: Prisma.Sql[] = [];
+    // ตัวกรองราคาอ้าง alias hourly_rate (ราคาจาก catalog) หลัง CTE — ใน WHERE ชั้นในยังไม่มี alias นี้
+    if (input.minPrice !== undefined) {
+      outerConditions.push(Prisma.sql`hourly_rate >= ${input.minPrice}`);
+    }
+    if (input.maxPrice !== undefined) {
+      outerConditions.push(Prisma.sql`hourly_rate <= ${input.maxPrice}`);
+    }
     if (input.minRating !== undefined) {
       outerConditions.push(
         Prisma.sql`COALESCE(avg_rating, 0) >= ${input.minRating}`,
@@ -99,7 +115,7 @@ export class SearchService {
           c.id,
           c.full_name,
           u.avatar_url,
-          c.hourly_rate,
+          ${startingPrice}                          AS hourly_rate,
           -- PYG-298: อ่านค่าที่ trigger trg_recalc_rating เก็บไว้ — ไม่ JOIN/aggregate reviews สด
           c.average_rating                          AS avg_rating,
           c.review_count                            AS review_count,
