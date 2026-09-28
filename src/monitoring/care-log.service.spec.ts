@@ -103,6 +103,7 @@ describe('CareLogService', () => {
     caregiver: { findUnique: jest.Mock };
     booking: { findUnique: jest.Mock };
     care_logs: { create: jest.Mock; count: jest.Mock; findMany: jest.Mock };
+    familyGroupMember: { findUnique: jest.Mock };
   };
   let clock: { now: jest.Mock };
   let emitter: { emit: jest.Mock };
@@ -140,6 +141,7 @@ describe('CareLogService', () => {
         count: jest.fn().mockResolvedValue(1),
         findMany: jest.fn().mockResolvedValue([]),
       },
+      familyGroupMember: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     clock = { now: jest.fn().mockReturnValue(NOW) };
     emitter = { emit: jest.fn() };
@@ -670,6 +672,39 @@ describe('CareLogService', () => {
     it('ไม่ใช่คู่กรณี → 403', async () => {
       await expect(
         service.careLogs('stranger', 1, BOOKING_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('สมาชิก ACTIVE ของกลุ่มครอบครัวที่ booking สังกัด → อ่านบันทึกได้', async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        id: BOOKING_ID,
+        patientId: PATIENT_ID,
+        familyGroupId: 'group-1',
+        caregiver: { userId: USER_ID },
+      });
+      prisma.familyGroupMember.findUnique.mockResolvedValueOnce({
+        status: 'ACTIVE',
+      });
+      prisma.care_logs.findMany.mockResolvedValueOnce([row('new', null, null)]);
+
+      const logs = await service.careLogs('family-member', 1, BOOKING_ID);
+
+      expect(logs).toHaveLength(1);
+    });
+
+    it('ถูกนำออกจากกลุ่มแล้ว (REMOVED) → 403', async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        id: BOOKING_ID,
+        patientId: PATIENT_ID,
+        familyGroupId: 'group-1',
+        caregiver: { userId: USER_ID },
+      });
+      prisma.familyGroupMember.findUnique.mockResolvedValueOnce({
+        status: 'REMOVED',
+      });
+
+      await expect(
+        service.careLogs('family-member', 1, BOOKING_ID),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
   });

@@ -92,6 +92,13 @@ export const FG_ERROR = {
   MEMBER_NAME_MISSING: 'MEMBER_NAME_MISSING',
   /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
   JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
+  /**
+   * PYG-479 — เรียก joinLinkPreview / joinGroupByLink ถี่เกินเพดาน (ต่อผู้ใช้ หรือต่อ IP)
+   *
+   * ★ ไม่บอกว่าชนเพดานตัวไหน (ผู้ใช้ หรือ IP) — คนที่พยายามหลบการจำกัด
+   *   ไม่ควรได้ข้อมูลว่าต้องเปลี่ยนอะไรถึงจะผ่าน บอกแค่ว่าต้องรออีกกี่วินาทีก็พอ
+   */
+  JOIN_LINK_RATE_LIMITED: 'JOIN_LINK_RATE_LIMITED',
 
   // ── PYG-421 — ฟีดกิจกรรม ───────────────────────────────────────────────
   /**
@@ -341,6 +348,26 @@ export class JoinLinkConfigMissingError extends FamilyGroupError {
     super(
       'ระบบยังตั้งค่าลิงก์เข้าร่วมกลุ่มไม่ครบ กรุณาแจ้งผู้ดูแลระบบ',
       FG_ERROR.JOIN_LINK_CONFIG_MISSING,
+    );
+  }
+}
+
+/**
+ * PYG-479 — เรียกลิงก์เข้าร่วมถี่เกินไป
+ *
+ * ส่ง retryAfterSeconds กลับไปด้วย เพื่อให้ FE นับถอยหลัง / ปิดปุ่มชั่วคราวได้
+ * โดยไม่ต้องเดาเวลาเอง (แพตเทิร์นเดียวกับ maxUses ของ JoinLinkExhaustedError)
+ *
+ * ★ ตอบเป็น GraphQL error ปกติ (HTTP 200 + extensions.code) ไม่ใช่ HTTP 429
+ *   เพราะ error อื่นทุกตัวของโมดูลนี้เป็นแบบนี้ และ FE อ่าน extensions.code อยู่แล้ว
+ *   (AC ของการ์ด: "error รูปแบบเดียวกับ error อื่นของ family group ไม่ใช่ 500")
+ */
+export class JoinLinkRateLimitedError extends FamilyGroupError {
+  constructor(retryAfterSeconds: number) {
+    super(
+      `มีการเปิดหรือเข้าร่วมลิงก์กลุ่มถี่เกินไป กรุณารอ ${retryAfterSeconds} วินาทีแล้วลองใหม่`,
+      FG_ERROR.JOIN_LINK_RATE_LIMITED,
+      { retryAfterSeconds },
     );
   }
 }

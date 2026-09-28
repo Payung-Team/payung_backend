@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
@@ -77,6 +78,7 @@ describe('BookingService — new REST methods', () => {
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
     // PYG-499: ด่าน Onboarding อ่าน role + ชื่อ-นามสกุลของผู้จอง
     user:          { findUnique: jest.Mock };
+    caregiverAvailability: { findMany: jest.Mock };
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -115,6 +117,8 @@ describe('BookingService — new REST methods', () => {
       user: {
         findUnique: jest.fn().mockResolvedValue({ role: 1, firstName: 'สมศรี', lastName: 'ใจดี' }),
       },
+      // PYG-524: findMany ต่อ prisma.caregiver.findUnique — ค่า default ในแต่ละ it() ตั้งเอง
+      caregiverAvailability: { findMany: jest.fn() },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     settlement = {
@@ -190,6 +194,24 @@ describe('BookingService — new REST methods', () => {
       expect(result.caregiver).toBeUndefined();
     });
 
+    // PYG-526: REST เดิมคืนแค่ timeSlot → client แสดงได้แค่ "ช่วงเช้า" ตอนนี้คืนเวลาจริงด้วย
+    it('response มี startTime / endTime / durationHours (endTime = start + ชั่วโมง)', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(
+        fakeBooking({
+          startTime: new Date('1970-01-01T11:00:00Z'),
+          // Decimal จริงของ Prisma — ต้องออกเป็น number 4 ไม่ใช่ string "4" ใน JSON
+          durationHours: new Prisma.Decimal('4'),
+        }),
+      );
+
+      const result = await service.createBooking(PATIENT_ID, dto);
+
+      expect(result.startTime).toBe('11:00');
+      expect(result.endTime).toBe('15:00');
+      expect(result.durationHours).toBe(4);
+    });
+
     // ── PYG-523: startTime + endTime → BE คำนวณ durationHours / timeSlot เอง ───
 
     describe('PYG-523 เวลาเริ่ม–สิ้นสุด', () => {
@@ -224,6 +246,10 @@ describe('BookingService — new REST methods', () => {
           isSearchable: true,
           hourlyRate: 300,
         });
+        // 13:00–16:30 อยู่ใน afternoon ล้วน (12:00–17:00) — PYG-524 ต้องเจอ slot นี้ active
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'afternoon' },
+        ]);
         prisma.booking.findMany.mockResolvedValue([]);
         prisma.booking.create.mockResolvedValue(fakeBooking());
 
@@ -282,6 +308,106 @@ describe('BookingService — new REST methods', () => {
         expect(call.data.timeSlot).toBe('morning');
         expect(call.data.startTime).toEqual(new Date('1970-01-01T09:00:00Z'));
       });
+    });
+
+    // ── PYG-524: ต้องเช็ค caregiver_availability จริง ไม่ใช่แค่เชื่อ timeSlot ─────
+
+    describe('PYG-524 เช็ค caregiver_availability ตอนจอง', () => {
+      // 2026-07-01 = วันพุธ (dayOfWeek = 3)
+      const availDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        caregiverId:      CAREGIVER_ID,
+        startTime:        '09:00',
+        endTime:          '11:00', // อยู่ใน morning (06:00–12:00) ล้วน
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      beforeEach(() => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+          hourlyRate: 300,
+        });
+        prisma.booking.findMany.mockResolvedValue([]); // ไม่มีนัดชนอื่น
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+      });
+
+      it('จองช่วงที่ผู้ดูแลไม่ได้เปิดรับ (ไม่มี slot active เลย) → ถูกปฏิเสธ', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([]);
+
+        await expect(service.createBooking(PATIENT_ID, availDto)).rejects.toThrow(
+          'ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้',
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('คร่อม 2 slot (11:00–14:00 = morning+afternoon) ที่ว่างทั้งคู่ → ผ่าน', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'morning' },
+          { timeSlot: 'afternoon' },
+        ]);
+
+        await service.createBooking(PATIENT_ID, {
+          ...availDto,
+          startTime: '11:00',
+          endTime:   '14:00',
+        });
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('คร่อม 2 slot แต่ว่างแค่ slot เดียว (morning ว่าง, afternoon ไม่ว่าง) → ไม่ผ่าน', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'morning' },
+        ]);
+
+        await expect(
+          service.createBooking(PATIENT_ID, {
+            ...availDto,
+            startTime: '11:00',
+            endTime:   '14:00',
+          }),
+        ).rejects.toThrow('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('ไม่ส่ง caregiverId มา (จองแบบ unmatched) → ไม่เช็ค availability เลย', async () => {
+        prisma.booking.create.mockResolvedValue(
+          fakeBooking({ caregiverId: null, status: 'unmatched' }),
+        );
+
+        await service.createBooking(PATIENT_ID, {
+          ...availDto,
+          caregiverId: undefined,
+        });
+
+        expect(prisma.caregiverAvailability.findMany).not.toHaveBeenCalled();
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // ── บั๊ก: เช็คเวลาชนของผู้จองเดิมไม่นับสถานะ accepted ────────────────────────
+
+    it('นัดเดิมของผู้จอง (เจ้าตัว) สถานะ accepted ในเวลาเดียวกัน → ถือว่าชน (409)', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        { startTime: new Date('1970-01-01T10:00:00Z'), durationHours: 2 },
+      ]);
+
+      await expect(service.createBooking(PATIENT_ID, dto)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: ['pending', 'accepted', 'confirmed'] },
+          }),
+        }),
+      );
+      expect(prisma.booking.create).not.toHaveBeenCalled();
     });
 
     // ── PYG-460: ข้อมูลสุขภาพผู้รับบริการ ─────────────────────────────────────

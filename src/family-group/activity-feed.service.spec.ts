@@ -111,6 +111,60 @@ describe('FamilyGroupService — activity feed (PYG-421)', () => {
       });
     });
 
+    // PYG-485: แถวเก่าในดีบีเขียน key เป็น joinedViaLinkId — API ต้องคืนเป็น linkId เสมอ
+    describe('MEMBER_JOINED · ชื่อ key ของลิงก์ (PYG-485)', () => {
+      const LINK_ID = '22222222-2222-2222-2222-222222222222';
+      const joinedRow = (metadata: Record<string, unknown>) =>
+        activityRow({
+          action: ACTIVITY_ACTION.MEMBER_JOINED,
+          targetType: ACTIVITY_TARGET.MEMBER,
+          targetId: ACTOR_ID,
+          metadata,
+        });
+
+      it.each([
+        ['แถวใหม่ { linkId }', { linkId: LINK_ID }],
+        [
+          'แถวเก่า { joinedViaLinkId } → แปลงเป็น linkId',
+          { joinedViaLinkId: LINK_ID },
+        ],
+      ])('%s', async (_label, metadata) => {
+        prisma.familyGroupActivity.findMany.mockResolvedValue([
+          joinedRow(metadata),
+        ]);
+
+        const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
+
+        expect(JSON.parse(result.nodes[0].metadata)).toEqual({
+          linkId: LINK_ID,
+        });
+      });
+
+      it('มีทั้งสอง key (ไม่ควรเกิด) → ถือ linkId เป็นหลัก และไม่ส่งชื่อเก่าออกไป', async () => {
+        prisma.familyGroupActivity.findMany.mockResolvedValue([
+          joinedRow({ joinedViaLinkId: 'old-id', linkId: LINK_ID }),
+        ]);
+
+        const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
+
+        expect(JSON.parse(result.nodes[0].metadata)).toEqual({
+          linkId: LINK_ID,
+        });
+      });
+
+      it('action อื่นไม่ถูกแตะ แม้บังเอิญมี key ชื่อ joinedViaLinkId', async () => {
+        prisma.familyGroupActivity.findMany.mockResolvedValue([
+          activityRow({ metadata: { joinedViaLinkId: LINK_ID } }),
+        ]);
+
+        const result = await service.familyGroupActivity(GROUP_ID, VIEWER_ID);
+
+        expect(JSON.parse(result.nodes[0].metadata)).toEqual({
+          joinedViaLinkId: LINK_ID,
+        });
+      });
+    });
+
     it('บัญชีที่ถูกลบไปแล้ว → actor เป็น undefined แต่แถวยังอยู่ในฟีด', async () => {
       prisma.familyGroupActivity.findMany.mockResolvedValue([
         activityRow({ actorId: null, actor: null }),

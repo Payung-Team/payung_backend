@@ -22,6 +22,8 @@ import {
   DisputeSummaryConnection,
 } from './dto/dispute-summary.type';
 import { DisputeFiledBy } from './entities/dispute-filed-by.enum';
+// PYG-526: เวลาเริ่ม/สิ้นสุดของใบจอง — สูตรเดียวกับทุกหน้า
+import { computeEndTime, formatStartTime } from '../booking/booking-time-display';
 import { DisputeSortBy } from './dto/dispute-sort.enum';
 import {
   DISPUTE_SLA_HOURS,
@@ -43,6 +45,9 @@ type PrismaBookingWithRelations = {
   status: string;
   serviceType: string;
   timeSlot: string;
+  // PYG-526: disputeInclude() ใช้ include (ไม่ใช่ select) → scalar ทุกคอลัมน์ของ booking มาด้วยอยู่แล้ว
+  startTime: Date | null;
+  durationHours: { toNumber(): number } | null;
   locationAddress: string;
   bookingDate: Date;
   estimatedCost: { toNumber(): number } | null;
@@ -596,6 +601,10 @@ export class DisputeService {
       status: b.status,
       serviceType: b.serviceType,
       timeSlot: b.timeSlot,
+      // PYG-526: แอดมินเห็นเวลาจริง "เริ่ม – สิ้นสุด" เหมือนหน้าอื่น (ทั้ง GraphQL และ REST detail ใช้ตัวนี้)
+      startTime: formatStartTime(b.startTime),
+      endTime: computeEndTime(b.startTime, b.durationHours?.toNumber()),
+      durationHours: b.durationHours != null ? b.durationHours.toNumber() : undefined,
       locationAddress: b.locationAddress,
       estimatedCost:
         b.estimatedCost != null ? b.estimatedCost.toNumber() : undefined,

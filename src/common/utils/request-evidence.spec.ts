@@ -9,6 +9,7 @@ import {
   clientIpOf,
   MAX_USER_AGENT_LENGTH,
   normalizeIp,
+  rateLimitIpOf,
   requestEvidenceOf,
   userAgentOf,
 } from './request-evidence';
@@ -115,5 +116,42 @@ describe('request-evidence (PYG-474)', () => {
         }),
       ),
     ).toEqual({ ipAddress: '203.0.113.9', userAgent: 'jest/1.0' });
+  });
+
+  // PYG-479 — IP ที่ใช้เป็น key ของ rate limit ต้อง "ไม่ใช่ค่าที่ client แต่งเองได้"
+  describe('rateLimitIpOf (PYG-479)', () => {
+    it('เอาค่าขวาสุดของ X-Forwarded-For (ค่าที่ proxy ของเราต่อท้ายให้) ไม่ใช่ซ้ายสุด', () => {
+      // client แต่ง 1.1.1.1 มาเอง → proxy ต่อท้ายด้วย IP จริงที่ต่อเข้ามา
+      const r = req({ 'x-forwarded-for': '1.1.1.1, 203.0.113.9:51234' });
+      expect(rateLimitIpOf(r)).toBe('203.0.113.9');
+      // เทียบให้เห็นว่าต่างจาก clientIpOf โดยตั้งใจ
+      expect(clientIpOf(r)).toBe('1.1.1.1');
+    });
+
+    it('ส่ง X-Forwarded-For สุ่มมาทุกครั้ง ก็ยังได้ key เดิม (หนีการจำกัดต่อ IP ไม่ได้)', () => {
+      const keys = ['9.9.9.1', '9.9.9.2', '9.9.9.3'].map((spoofed) =>
+        rateLimitIpOf(req({ 'x-forwarded-for': `${spoofed}, 203.0.113.9` })),
+      );
+      expect(new Set(keys)).toEqual(new Set(['203.0.113.9']));
+    });
+
+    it('ไม่มี header (เรียกตรง ไม่ผ่าน proxy) → ใช้ req.ip', () => {
+      expect(rateLimitIpOf(req({}, '::ffff:127.0.0.1'))).toBe(
+        '::ffff:127.0.0.1',
+      );
+    });
+
+    it('header หลายตัว (array) → เอาค่าท้ายสุดของตัวสุดท้าย', () => {
+      expect(
+        rateLimitIpOf(req({ 'x-forwarded-for': ['1.1.1.1', '203.0.113.9'] })),
+      ).toBe('203.0.113.9');
+    });
+
+    it('ค่าขวาสุดไม่ใช่ IP → ถอยไปใช้ req.ip · ไม่ได้ทั้งคู่ → null', () => {
+      expect(
+        rateLimitIpOf(req({ 'x-forwarded-for': 'garbage' }, '10.0.0.5')),
+      ).toBe('10.0.0.5');
+      expect(rateLimitIpOf(req({ 'x-forwarded-for': 'garbage' }))).toBeNull();
+    });
   });
 });

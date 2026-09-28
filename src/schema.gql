@@ -173,6 +173,11 @@ input AdminUpdateCaregiverInfoInput {
   """First name"""
   firstName: String
 
+  """
+  Hourly rate in THB (must be > 0). Only admins can set this since PYG-534
+  """
+  hourlyRate: Float
+
   """Thai national ID (exactly 13 digits)"""
   idCardNumber: String
 
@@ -186,6 +191,9 @@ type AdminUpdateCaregiverInfoPayload {
 
   """First name (extracted from fullName)"""
   firstName: String!
+
+  """Hourly rate in THB (null = not set yet)"""
+  hourlyRate: Float
 
   """Caregiver UUID"""
   id: ID!
@@ -329,6 +337,9 @@ type BookingSummary {
   disputeReason: String
   disputeStatus: String
   durationHours: Float
+
+  """เวลาสิ้นสุด "HH:mm" (เวลาไทย) = startTime + durationHours"""
+  endTime: String
   estimatedCost: Float
   id: ID!
   locationAddress: String!
@@ -344,10 +355,12 @@ type BookingSummary {
   payment: Payment
   serviceLocations: [String!]!
   serviceType: String!
+
+  """เวลาเริ่ม "HH:mm" (เวลาไทย)"""
   startTime: String
   status: String!
   tasks: [String!]!
-  timeSlot: String!
+  timeSlot: String! @deprecated(reason: "PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน")
 }
 
 type BookingTask {
@@ -463,6 +476,7 @@ type CaregiverBookingSummary {
   dayOfContactPhone: String
   dayOfContactRelationship: String
   durationHours: Float!
+  endTime: String
   estimatedCost: Float
   id: ID!
   locationAddress: String
@@ -484,7 +498,7 @@ type CaregiverBookingSummary {
   startTime: String!
   status: String!
   tasks: [String!]!
-  timeSlot: String!
+  timeSlot: String! @deprecated(reason: "PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน")
 }
 
 input CaregiverBookingsInput {
@@ -818,7 +832,6 @@ input CreateBookingOnBehalfInput {
 
   """ความสัมพันธ์ของผู้ติดต่อกับผู้รับบริการ"""
   dayOfContactRelationship: String
-
   durationHours: Float @deprecated(reason: "PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)")
 
   """
@@ -850,7 +863,6 @@ input CreateBookingOnBehalfInput {
 
   """บันทึกเพิ่มเติมถึงผู้ดูแล"""
   notes: String
-
   patientName: String @deprecated(reason: "PYG-516: ห้ามส่ง — ชื่อผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น ส่งมา = PATIENT_NAME_NOT_ALLOWED")
 
   """สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ"""
@@ -866,7 +878,6 @@ input CreateBookingOnBehalfInput {
 
   """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
   tasks: [String!]!
-
   timeSlot: String @deprecated(reason: "PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)")
 }
 
@@ -964,14 +975,21 @@ type DisputeBooking {
   disputeReason: String
   disputeResolvedAt: DateTime
   disputeStatus: DisputeStatus!
+  durationHours: Float
+
+  """เวลาสิ้นสุด "HH:mm" = startTime + durationHours"""
+  endTime: String
   estimatedCost: Float
   id: ID!
   locationAddress: String!
   patient: DisputePartyBrief!
   payment: DisputePaymentBrief
   serviceType: String!
+
+  """เวลาเริ่ม "HH:mm" (เวลาไทย)"""
+  startTime: String
   status: String!
-  timeSlot: String!
+  timeSlot: String! @deprecated(reason: "PYG-526: อย่าแสดงชื่อ slot — ใช้ startTime / endTime / durationHours แทน")
   updatedAt: DateTime!
 }
 
@@ -1316,6 +1334,9 @@ type GroupBookingSummary {
   """เวลาเช็คอินจริง "09:04" (เขต Asia/Bangkok) ถ้ามี"""
   checkInTime: String
   durationHours: Float
+
+  """เวลาสิ้นสุด "13:00" = startTime + durationHours"""
+  endTime: String
 
   """ราคาประเมิน (บาท)"""
   estimatedCost: Float
@@ -1777,7 +1798,7 @@ type Mutation {
   adminEditUser(input: AdminEditUserInput!): User!
 
   """
-  Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. Records audit log.
+  Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email) and hourlyRate. Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. hourlyRate must be > 0 (caregivers cannot set it themselves since PYG-534). Records audit log.
   """
   adminUpdateCaregiverInfo(input: AdminUpdateCaregiverInfoInput!): AdminUpdateCaregiverInfoPayload!
 
@@ -1902,7 +1923,7 @@ type Mutation {
   inviteAdmin(input: InviteAdminInput!): InviteAdminPayload!
 
   """
-  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์
+  เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์ จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน 20 ครั้งต่อผู้ใช้ใน 60 วินาที (มีเพดานต่อ IP อีกชั้น) เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds
   """
   joinGroupByLink(
     """คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ"""
@@ -2466,7 +2487,7 @@ type Query {
   jobQr(bookingId: ID!): JobQr!
 
   """
-  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย
+  ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน 20 ครั้งต่อผู้ใช้ใน 60 วินาที (มีเพดานต่อ IP อีกชั้น) เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds
   """
   joinLinkPreview(token: String!): JoinLinkPreview!
 
@@ -3037,8 +3058,8 @@ input UpdateCaregiverInput {
   """Years of caregiving experience"""
   experienceYears: Int
 
-  """Hourly rate in THB"""
-  hourlyRate: Float
+  """Hourly rate in THB (deprecated — ignored)"""
+  hourlyRate: Float @deprecated(reason: "PYG-534: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว — ส่งมาได้แต่ระบบไม่บันทึก (ช่วงเปลี่ยนผ่าน)")
 
   """Languages spoken by caregiver"""
   languages: [String!]

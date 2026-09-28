@@ -78,6 +78,28 @@ export function clientIpOf(req: RequestLike): string | null {
   return normalizeIp(raw?.split(',')[0]) ?? normalizeIp(req.ip);
 }
 
+/**
+ * IP สำหรับใช้เป็น key ของ rate limit (PYG-479) — ต่างจาก clientIpOf โดยตั้งใจ
+ *
+ * clientIpOf เอาค่า "ซ้ายสุด" ของ X-Forwarded-For = IP ที่ client อ้างว่าเป็นต้นทาง
+ * ใช้เป็นหลักฐานประกอบได้ แต่ใช้จำกัดอัตราไม่ได้ เพราะ client ใส่ค่านี้มาเองได้ทั้งหมด:
+ *   - ส่ง X-Forwarded-For สุ่มใหม่ทุกคำขอ = หนีการจำกัดต่อ IP ได้ตลอด
+ *   - ส่ง IP ของคนอื่นมา = ทำให้คนนั้นโดนบล็อกแทน (แกล้งคนอื่นได้)
+ *
+ * ตัวนี้จึงเอาค่า "ขวาสุด" แทน — proxy (Azure App Service) จะ "ต่อท้าย" IP ที่ต่อเข้ามาหามัน
+ * ลงไปใน header เสมอ ค่าขวาสุดจึงเป็นค่าที่ proxy ของเราเขียน ไม่ใช่ค่าที่ client แต่งมา
+ * ไม่มี header เลย (เรียกตรงไม่ผ่าน proxy เช่นตอน dev / เทส) → ใช้ req.ip
+ *
+ * ⚠ ข้อจำกัด: ถ้าวันหนึ่งมี proxy ซ้อนสองชั้น (เช่น CDN → App Service) ค่าขวาสุด
+ *   จะเป็น IP ของ CDN ที่ผู้ใช้หลายคนใช้ร่วมกัน → เพดานต่อ IP จะตึงเกินจริง
+ *   ตอนนั้นให้ปรับเพดานผ่าน env หรือเปลี่ยนมาอ่าน header เฉพาะของ CDN แทน
+ */
+export function rateLimitIpOf(req: RequestLike): string | null {
+  const forwarded = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(forwarded) ? forwarded.join(',') : forwarded;
+  return normalizeIp(raw?.split(',').pop()) ?? normalizeIp(req.ip);
+}
+
 /** User agent ของ client — ตัดความยาวไว้ และค่าว่างถือว่าไม่มี */
 export function userAgentOf(req: Pick<Request, 'headers'>): string | null {
   const userAgent = req.headers['user-agent']?.trim();

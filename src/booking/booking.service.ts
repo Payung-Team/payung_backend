@@ -28,7 +28,13 @@ import {
   TaskSuggestion,
 } from './dto/booking-rest.types';
 import { resolveBookingTime } from './booking-time';
+// PYG-526: เวลาสิ้นสุด/รูปแบบแสดงผลของใบจอง — ที่เดียวในระบบ
+import { computeEndTime, formatStartTime } from './booking-time-display';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
+// PYG-524: นิยาม "ช่วงเวลาคาบเกี่ยว slot ไหนบ้าง" ต้องเป็นตัวเดียวกับที่ปฏิทินคิวว่าง
+// รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
+// จะตัดสิน slot คนละแบบ
+import { overlappingSlots } from '../common/constants/time-slot.constant';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -286,9 +292,10 @@ export class BookingService {
    *       ช่องที่ ① ไม่ได้กรอกจะเป็น null ซึ่ง type ประกาศเป็น nullable อยู่แล้ว
    *     ถ้าวันหนึ่งรูปทรงสองฝั่งแตกออกจากกัน ต้องแยกคอลัมน์ ไม่ใช่ยัดต่อในก้อนเดิม
    *
-   *   ⚠ เพดานความยาวยังไม่ตรงกัน: ① medicines/allergies 1000 · ② 2000
-   *     ข้อมูลชุดเดียวกันจึงผ่าน validation เส้นทางหนึ่งแต่ตกอีกเส้นทางได้
-   *     ยังไม่แก้ในรอบนี้เพราะเป็นการเปลี่ยนสัญญาของ API ที่ merge ไปแล้ว — แยกตั๋ว
+   *   ✓ เพดานความยาวของ medicines/allergies เท่ากันแล้วทั้งสองเส้นทาง (2000 ตัวอักษร)
+   *     แก้ตาม PYG-464 follow-up (พบตอน QA ของ PYG-427 TC-BS-03/06, PYG-427_32) —
+   *     ทั้งสอง DTO อ้างค่าคงที่ร่วมกันที่ patient/dto/patient-profile.constants.ts
+   *     ห้ามฮาร์ดโค้ดตัวเลขแยกกันอีก ไม่งั้นจะเหลื่อมกันซ้ำ
    *
    *   ไม่ได้กรอกทั้งสองเส้นทาง → คอลัมน์เป็น NULL เหมือนเดิม ไม่ต้องแก้ migration
    */
@@ -631,6 +638,10 @@ export class BookingService {
         throw new ForbiddenException('Care recipient does not belong to this patient');
     }
 
+    const newStart = time.startMinute;
+    const newEnd = newStart + Math.round(time.durationHours * 60);
+    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
+
     // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
     let resolvedCaregiverId: string | null = null;
     let estimatedCost: number | null = null;
@@ -646,13 +657,41 @@ export class BookingService {
       if (caregiver.hourlyRate != null) {
         estimatedCost = caregiver.hourlyRate * time.durationHours;
       }
+
+      /**
+       * PYG-524 — เช็ค caregiver_availability จริง แทนการเชื่อ timeSlot ที่ client ส่งมาเฉย ๆ
+       *
+       * ของเดิม: createBooking เก็บ dto.timeSlot ลงใบจองตรง ๆ ไม่เคยเทียบกับตารางว่างของ
+       * ผู้ดูแลเลย (search.service.ts ก็เช็คแค่ "มี slot active อย่างน้อย 1 ช่อง" ไม่ดูวัน/เวลา)
+       * → จองผู้ดูแลในวัน/ช่วงที่เขาไม่ได้เปิดรับได้อยู่เสมอมา
+       *
+       * เกณฑ์: ต้องมี caregiver_availability ที่ is_active ใน dayOfWeek ของวันจอง
+       * ครบทุก slot ที่ช่วงเวลาคาบเกี่ยว (overlappingSlots) — ขาดแม้ slot เดียวก็ไม่ผ่าน
+       * เพราะช่วงที่คร่อม 2 slot (เช่น 11:00–14:00) ต้องว่างทั้งคู่ ไม่ใช่แค่ slot ที่เวลาเริ่มอยู่
+       *
+       * ใช้ overlappingSlots ตัวเดียวกับปฏิทินคิวว่างรายวันของ PYG-493
+       * (common/constants/time-slot.constant.ts) เพื่อให้ปฏิทินกับการจองตัดสิน slot ตรงกัน
+       */
+      const dayOfWeek = bookingDateObj.getUTCDay();
+      const requiredSlots = overlappingSlots(newStart, newEnd);
+
+      const activeSlots = await this.prisma.caregiverAvailability.findMany({
+        where: {
+          caregiverId: resolvedCaregiverId,
+          dayOfWeek,
+          isActive: true,
+          timeSlot: { in: requiredSlots as time_slot[] },
+        },
+        select: { timeSlot: true },
+      });
+      const coveredSlots = new Set(activeSlots.map((slot) => slot.timeSlot));
+
+      if (!requiredSlots.every((slot) => coveredSlots.has(slot))) {
+        throw new ConflictException('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+      }
     }
 
     // ── ตรวจสอบ time conflict ──────────────────────────────────────────────────
-    const newStart = time.startMinute;
-    const newEnd = newStart + Math.round(time.durationHours * 60);
-    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
-
     /**
      * PYG-424 — เช็คเวลาชน "ต่อผู้รับบริการ" ไม่ใช่ "ต่อคนจอง"
      *
@@ -679,7 +718,10 @@ export class BookingService {
           where: {
             ...conflictScope,
             bookingDate: bookingDateObj,
-            status: { in: ['pending', 'confirmed'] },
+            // 'accepted' = caregiver กดรับงานแล้ว รอผู้ป่วยยืนยัน/จ่ายเงิน — ยังมีผลอยู่
+            // เหมือน pending/confirmed ไม่ใช่ draft ที่ยกเลิกเองได้เงียบ ๆ (ดู caregiver-booking.service.ts)
+            // ของเดิมไม่นับ → จองซ้อนกับใบที่ผู้ดูแลรับไปแล้วได้
+            status: { in: ['pending', 'accepted', 'confirmed'] },
           },
           select: { startTime: true, durationHours: true },
         });
@@ -1346,10 +1388,9 @@ export class BookingService {
         b.bookingDate instanceof Date
           ? b.bookingDate.toISOString().slice(0, 10)
           : String(b.bookingDate),
-      startTime:
-        b.startTime instanceof Date
-          ? b.startTime.toISOString().slice(11, 16)
-          : undefined,
+      startTime: formatStartTime(b.startTime),
+      // PYG-526: การ์ดนัดหมายของกลุ่มแสดง "เริ่ม – สิ้นสุด (N ชม.)"
+      endTime: computeEndTime(b.startTime, b.durationHours),
       status: b.status,
       serviceType: b.serviceType,
       durationHours: b.durationHours != null ? Number(b.durationHours) : undefined,
@@ -1399,6 +1440,11 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
+      // PYG-526: ให้ REST มีเวลาจริงเหมือน GraphQL — endTime คำนวณจาก startTime + durationHours
+      startTime:        formatStartTime(booking.startTime),
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
+      // Number(): คอลัมน์เป็น Decimal — ถ้าส่งตรง ๆ JSON จะออกมาเป็น string "4"
+      durationHours:    booking.durationHours != null ? Number(booking.durationHours) : undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,
       locationAddress:  booking.locationAddress,
@@ -1438,9 +1484,9 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
-      startTime:        booking.startTime instanceof Date
-                          ? booking.startTime.toISOString().slice(11, 16)
-                          : undefined,
+      startTime:        formatStartTime(booking.startTime),
+      // PYG-526: FE แสดง "เริ่ม – สิ้นสุด (N ชม.)" แทนชื่อ slot — คำนวณที่ BE ที่เดียว
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
       durationHours:    booking.durationHours ?? undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,

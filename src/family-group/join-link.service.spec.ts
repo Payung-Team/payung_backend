@@ -696,4 +696,36 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
       expect(consent.recordMany).not.toHaveBeenCalled();
     });
   });
+
+  // ═══ joinGroupByLink — แถวฟีด MEMBER_JOINED (PYG-485 · PYG-423_25) ══════
+  describe('joinGroupByLink · แถว MEMBER_JOINED', () => {
+    beforeEach(() => {
+      tx.familyGroupJoinLink.findUnique.mockResolvedValue({
+        ...linkRow(),
+        group: { members: [{ userId: OWNER_ID }] },
+      });
+      jest
+        .spyOn(service, 'familyGroup')
+        .mockResolvedValue({ id: GROUP_ID } as Awaited<
+          ReturnType<FamilyGroupService['familyGroup']>
+        >);
+    });
+
+    it('เขียน 1 แถว actor = คนที่เข้ากลุ่ม และ metadata มีแค่ linkId = id ของลิงก์ที่ใช้', async () => {
+      await service.joinGroupByLink(OUTSIDER_ID, 'raw');
+
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      const { data } = callArg(tx.familyGroupActivity.create) as {
+        data: {
+          action: string;
+          actorId: string;
+          metadata: Record<string, unknown>;
+        };
+      };
+      expect(data.action).toBe(ACTIVITY_ACTION.MEMBER_JOINED);
+      expect(data.actorId).toBe(OUTSIDER_ID);
+      // เทียบแบบ toEqual (ไม่ใช่ toMatchObject) → ถ้ามี joinedViaLinkId ติดมาด้วยจะตก
+      expect(data.metadata).toEqual({ linkId: LINK_ID });
+    });
+  });
 });
