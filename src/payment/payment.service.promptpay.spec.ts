@@ -10,6 +10,7 @@
  *  - paymentByBooking authorization (party / admin only)
  *  - card flow ไม่ถูกแตะ (sanity check)
  */
+import { Prisma } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, UnprocessableEntityException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -44,9 +45,9 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     caregiver: {
       id: 'cg-profile-0001',
       userId: CAREGIVER_USER_ID,
-      hourlyRate: 300,
     },
     durationHours: { toNumber: () => 4 },
+    estimatedCost: new Prisma.Decimal(1200), // ราคา catalog × 4 ชม. ที่บันทึกตอนจอง
     // PYG-461/462: guard เวลาใน createPayment — 2026-07-01 09:00 เวลาไทย (ก่อน fixedClock ของไฟล์นี้เสมอ)
     bookingDate: new Date('2026-07-01'),
     startTime: new Date('1970-01-01T09:00:00.000Z'),
