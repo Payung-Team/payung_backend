@@ -1,4 +1,4 @@
-import { ObjectType, Field, ID } from '@nestjs/graphql';
+import { ObjectType, Field, Float, ID } from '@nestjs/graphql';
 
 @ObjectType()
 export class AdminUpdateCaregiverInfoPayload {
@@ -16,4 +16,12 @@ export class AdminUpdateCaregiverInfoPayload {
 
   @Field({ description: 'Email address of the linked user' })
   email: string;
+
+  // PYG-534: คืนราคาล่าสุดกลับไปด้วย ให้หน้าแอดมินแสดงค่าที่บันทึกจริงได้ทันที
+  // nullable เพราะผู้ดูแลใหม่ (หลัง PYG-533) ยังไม่มีราคา จนกว่าแอดมินจะตั้งให้
+  @Field(() => Float, {
+    nullable: true,
+    description: 'Hourly rate in THB (null = not set yet)',
+  })
+  hourlyRate?: number;
 }

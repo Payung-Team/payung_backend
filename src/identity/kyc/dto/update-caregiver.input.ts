@@ -15,9 +15,11 @@ import { ValidThaiPhone } from '../../../common/validators/valid-thai-phone.vali
 /**
  * UpdateCaregiverInput — input สำหรับ updateCaregiverProfile mutation
  *
- * Whitelist fields: bio, hourlyRate, skills, experienceYears, phone
+ * Whitelist fields: bio, skills, experienceYears, phone, address, languages
  * Locked fields (fullName, idCardNumber, gender, dateOfBirth) ไม่อยู่ใน DTO นี้
  * → GraphQL reject อัตโนมัติถ้า client ส่ง field ที่ไม่มีใน schema
+ *
+ * hourlyRate (PYG-534): ยังอยู่ใน DTO แต่ "ไม่มีผล" — service ไม่เขียนลงตาราง
  *
  * ทุก field optional — partial update (ส่งมาแค่ field ที่อยากเปลี่ยน)
  */
@@ -29,10 +31,26 @@ export class UpdateCaregiverInput {
   @MaxLength(500, { message: 'bio ต้องไม่เกิน 500 ตัวอักษร' })
   bio?: string;
 
-  @Field(() => Float, { nullable: true, description: 'Hourly rate in THB' })
+  /**
+   * @deprecated PYG-534 — ผู้ดูแลตั้งราคาเองไม่ได้แล้ว ส่งมาได้แต่ระบบไม่บันทึก
+   *
+   * ทำไมยังไม่ลบ field ทิ้ง:
+   * - FE รุ่นปัจจุบันยังส่ง hourlyRate มากับทุกครั้งที่กดบันทึกโปรไฟล์
+   *   ถ้าลบ → GraphQL ตอบ "Unknown field" แล้วผู้ดูแลแก้ bio/ทักษะ/เบอร์โทรไม่ได้ไปด้วย
+   * - ลบได้จริงหลัง FE เลิกส่ง (PYG-536) — ดูจาก log "caregiver.profile.hourly_rate_ignored"
+   *
+   * ทำไมเอา @Min(0) ออก: ค่านี้ถูกทิ้งอยู่แล้ว การตอบ 400 เพราะค่าที่ไม่ได้ใช้ ทำให้ field อื่นแก้ไม่ได้เปล่าๆ
+   * ทำไมต้องเหลือ decorator ไว้: ValidationPipe ตั้ง whitelist + forbidNonWhitelisted
+   *   property ที่ไม่มี decorator เลยจะโดนปฏิเสธทั้ง request
+   */
+  @Field(() => Float, {
+    nullable: true,
+    deprecationReason:
+      'PYG-534: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว — ส่งมาได้แต่ระบบไม่บันทึก (ช่วงเปลี่ยนผ่าน)',
+    description: 'Hourly rate in THB (deprecated — ignored)',
+  })
   @IsOptional()
   @IsNumber({}, { message: 'ค่าบริการต้องเป็นตัวเลข' })
-  @Min(0, { message: 'ค่าบริการต้องไม่น้อยกว่า 0 บาท' })
   hourlyRate?: number;
 
   @Field(() => [String], { nullable: true, description: 'List of caregiver skills' })
