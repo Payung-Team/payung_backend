@@ -24,6 +24,10 @@ import type {
   GenderLabel,
   SupportLevelLabel,
 } from '../../patient/dto/patient-profile.dto';
+import {
+  ALLERGIES_MAX_LENGTH,
+  MEDICINES_MAX_LENGTH,
+} from '../../patient/dto/patient-profile.constants';
 
 /**
  * PYG-385 — อาการ/รายละเอียดที่สมาชิกกรอกตอน "จองแทน" (memberDetails)
@@ -81,13 +85,13 @@ export class MemberDetailsInput {
   @Field({ nullable: true, description: 'ยาประจำที่ใช้อยู่' })
   @IsOptional()
   @IsString()
-  @MaxLength(1000)
+  @MaxLength(MEDICINES_MAX_LENGTH)
   medicines?: string;
 
   @Field({ nullable: true, description: 'ประวัติแพ้ยา/อาหาร' })
   @IsOptional()
   @IsString()
-  @MaxLength(1000)
+  @MaxLength(ALLERGIES_MAX_LENGTH)
   allergies?: string;
 
   @Field({ nullable: true, description: 'ข้อควรระวัง/วิธีดูแลเฉพาะของผู้รับบริการคนนี้' })

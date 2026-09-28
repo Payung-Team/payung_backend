@@ -11,6 +11,10 @@ import {
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import {
+  ALLERGIES_MAX_LENGTH,
+  MEDICINES_MAX_LENGTH,
+} from './patient-profile.constants';
 
 /**
  * PYG-460 — ข้อมูลสุขภาพของผู้รับบริการ ตามรูปทรงที่หน้าบ้านใช้อยู่แล้ว
@@ -107,12 +111,12 @@ export class PatientProfileDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(MEDICINES_MAX_LENGTH)
   medicines?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(ALLERGIES_MAX_LENGTH)
   allergies?: string;
 
   @IsOptional()
