@@ -447,6 +447,8 @@ describe('CaregiverBookingService', () => {
       expect(row.estimatedCost).toBe(1140); // Decimal → number
       expect(row.durationHours).toBe(3);
       expect(row.startTime).toBe('09:00');
+      // PYG-526: หน้างานของผู้ดูแลแสดง "09:00 – 12:00 (3 ชม.)" จาก endTime นี้
+      expect(row.endTime).toBe('12:00');
       expect(row.bookingDate).toBe('2026-07-01');
       expect(row.careRecipientName).toBeUndefined(); // careRecipient=null → "สำหรับตัวเอง"
       // PYG-460: booking ก่อนหน้านี้ไม่มี snapshot → หน้าจอต้องรับมือกับ undefined ได้
