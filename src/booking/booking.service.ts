@@ -30,12 +30,12 @@ import {
 import { resolveBookingTime } from './booking-time';
 // PYG-526: เวลาสิ้นสุด/รูปแบบแสดงผลของใบจอง — ที่เดียวในระบบ
 import { computeEndTime, formatStartTime } from './booking-time-display';
+import { bookingHourlyRate } from '../common/pricing/display-price';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
 // PYG-524: นิยาม "ช่วงเวลาคาบเกี่ยว slot ไหนบ้าง" ต้องเป็นตัวเดียวกับที่ปฏิทินคิวว่าง
 // รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
-import { bookingHourlyRate } from '../common/pricing/display-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
