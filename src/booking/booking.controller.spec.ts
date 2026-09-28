@@ -691,6 +691,29 @@ describe('BookingService — new REST methods', () => {
       expect(result[0].reviewCount).toBe(2);
     });
 
+    it('hourlyRate = ราคา catalog ของ serviceType ที่ขอ ไม่ใช่ hourlyRate ของผู้ดูแล (350)', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(prisma.servicePriceCatalog.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { serviceType: 'elderly_care' } }),
+      );
+      expect(result[0].hourlyRate).toBe(300);
+    });
+
+    it('serviceType ที่ปิดขาย → hourlyRate undefined', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+      prisma.servicePriceCatalog.findUnique.mockResolvedValue({
+        pricePerHour: new Prisma.Decimal(300),
+        isActive: false,
+      });
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(result[0].hourlyRate).toBeUndefined();
+    });
+
     it('filters by province when provided', async () => {
       prisma.caregiver.findMany.mockResolvedValue([]);
 

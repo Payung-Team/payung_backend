@@ -55,10 +55,31 @@ function makeCaregiver(overrides: Partial<CaregiverRow> = {}): CaregiverRow {
 
 describe('CaregiverPublicService', () => {
   let service: CaregiverPublicService;
-  let prisma: { caregiver: { findUnique: jest.Mock } };
+  let prisma: {
+    caregiver: { findUnique: jest.Mock };
+    booking: { count: jest.Mock };
+    caregiverJobType: { findMany: jest.Mock };
+    servicePriceCatalog: { findMany: jest.Mock };
+  };
 
   beforeEach(async () => {
-    prisma = { caregiver: { findUnique: jest.fn() } };
+    prisma = {
+      caregiver: { findUnique: jest.fn() },
+      booking: { count: jest.fn().mockResolvedValue(0) },
+      // ราคาเริ่มต้นจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2): รับ 2 ประเภท → ต่ำสุด 280
+      caregiverJobType: {
+        findMany: jest.fn().mockResolvedValue([
+          { caregiverId: 'cg-1', jobType: 'general_care' },
+          { caregiverId: 'cg-1', jobType: 'physiotherapy' },
+        ]),
+      },
+      servicePriceCatalog: {
+        findMany: jest.fn().mockResolvedValue([
+          { serviceType: 'general_care', pricePerHour: 300 },
+          { serviceType: 'physiotherapy', pricePerHour: 280 },
+        ]),
+      },
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -84,7 +105,7 @@ describe('CaregiverPublicService', () => {
       avatar_url: 'https://cdn.example.com/avatar.jpg',
       bio: 'ดูแลผู้สูงอายุมา 5 ปี',
       experience_years: 5,
-      hourly_rate: 350,
+      hourly_rate: 280, // ราคาต่ำสุดใน catalog ของประเภทที่รับ ไม่ใช่ hourlyRate 350 ที่ผู้ดูแลตั้งเอง
       skills: ['elderly_care', 'medication_management'],
       province: 'เชียงใหม่',
       district: 'เมืองเชียงใหม่',
@@ -195,7 +216,6 @@ describe('CaregiverPublicService', () => {
       makeCaregiver({
         bio: null,
         experienceYears: null,
-        hourlyRate: null,
         kycVerifiedAt: null,
         serviceAreaProvince: null,
         serviceAreaDistrict: null,
@@ -203,6 +223,7 @@ describe('CaregiverPublicService', () => {
       }),
     );
 
+    prisma.caregiverJobType.findMany.mockResolvedValue([]); // ไม่มีประเภทงานที่มีราคา
     const result = await service.getPublicProfile('cg-1');
 
     expect(result.bio).toBeNull();

@@ -217,6 +217,33 @@ describe('SearchService', () => {
     expect(values).toContain(600);
   });
 
+  // ── ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ราคาจาก service_price_catalog ──────────
+
+  it('ราคาอ่านจาก service_price_catalog (is_active) ไม่ใช่ c.hourly_rate ที่ผู้ดูแลตั้งเอง', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await service.searchCaregivers({ minPrice: 200, sortBy: SortByEnum.PRICE_ASC });
+
+    const sql = getSql(prisma.$queryRaw);
+    expect(sql).toContain('MIN(spc.price_per_hour)');
+    expect(sql).toContain('spc.is_active = true');
+    expect(sql).not.toContain('c.hourly_rate');
+  });
+
+  it('กรอง jobType → ราคาเริ่มต้นคิดเฉพาะประเภทที่กรอง (jobTypes ถูกส่งเข้าซับคิวรีราคาด้วย)', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await service.searchCaregivers({ jobType: 'physiotherapy' });
+
+    const sql = getSql(prisma.$queryRaw);
+    expect(sql).toContain('AND jt.job_type::text = ANY(');
+    // ใช้ 2 ที่: ตัวกรอง EXISTS + ซับคิวรีราคา
+    const jobTypeParams = getValues(prisma.$queryRaw).filter(
+      (v) => Array.isArray(v) && v.includes('physiotherapy'),
+    );
+    expect(jobTypeParams).toHaveLength(2);
+  });
+
   it('passes minRating as parameter and adds outer COALESCE filter', async () => {
     prisma.$queryRaw.mockResolvedValue([]);
 
@@ -249,7 +276,8 @@ describe('SearchService', () => {
 
     await service.searchCaregivers({});
 
-    expect(getSql(prisma.$queryRaw)).not.toContain('caregiver_job_types');
+    // caregiver_job_types ยังถูกอ้างในซับคิวรีราคาเริ่มต้น — เช็คเฉพาะตัวกรอง EXISTS
+    expect(getSql(prisma.$queryRaw)).not.toContain('SELECT 1 FROM caregiver_job_types');
   });
 
   // ── All filters combined ────────────────────────────────────────────────
