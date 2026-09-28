@@ -341,6 +341,20 @@ model Review {
   @@map("reviews")
 }
 
+/// ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: เอาราคาที่ผู้ดูแลตั้งเองออก
+/// ราคาต่อชั่วโมงผูกกับ service_type (ค่าเดียวกับที่ Search ใช้กรอง jobType)
+/// CHECK price_per_hour > 0 อยู่ใน migration 20260928000000_add_service_price_catalog (Prisma เขียนไม่ได้)
+model ServicePriceCatalog {
+  id           String   @id @default(uuid())
+  serviceType  String   @unique @map("service_type")
+  pricePerHour Decimal  @map("price_per_hour") @db.Decimal(10, 2)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("service_price_catalog")
+}
+
 model Booking {
   id                       String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   patientId                String            @map("patient_id")
