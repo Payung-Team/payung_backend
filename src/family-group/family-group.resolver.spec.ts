@@ -10,8 +10,10 @@
  * อ่าน metadata ด้วย Reflector ตัวเดียวกับที่ FamilyGroupGuard ใช้ตัดสินจริง
  * → ไม่ต้องบูต GraphQL หรือต่อดีบีเลย
  */
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { FamilyGroupResolver } from './family-group.resolver';
+import { JoinLinkRateLimitGuard } from './guards/join-link-rate-limit.guard';
 import {
   GROUP_ROLE_KEY,
   GroupRoleMetadata,
@@ -36,6 +38,42 @@ describe('FamilyGroupResolver — สิทธิ์ของลิงก์เ�
     'B1 — %s ยังเป็นของเจ้าของเท่านั้น (@GroupRole OWNER)',
     (method) => {
       expect(requiredRoleOf(method)).toBe(GROUP_ROLE.OWNER);
+    },
+  );
+});
+
+/**
+ * PYG-479 — จุดไหนติดตัวจำกัดอัตราบ้าง
+ * ถ้ามีคนเผลอถอด @UseGuards(JoinLinkRateLimitGuard) ออกจาก preview หรือ join
+ * (หรือเอาไปติดที่อื่นโดยไม่ตั้งใจ) เทสต์ตรงนี้จะแดงทันที
+ */
+describe('FamilyGroupResolver — rate limit ของลิงก์เข้าร่วม (PYG-479)', () => {
+  const reflector = new Reflector();
+
+  /** guard ระดับเมธอดที่ติดไว้ (ไม่รวม guard ระดับคลาส) */
+  const methodGuardsOf = (method: keyof FamilyGroupResolver) =>
+    reflector.get<unknown[] | undefined>(
+      GUARDS_METADATA,
+      FamilyGroupResolver.prototype[method],
+    ) ?? [];
+
+  it.each(['joinLinkPreview', 'joinGroupByLink'] as const)(
+    '%s ติด JoinLinkRateLimitGuard (นับรวมกัน กันเดา token ผ่าน preview แทน)',
+    (method) => {
+      expect(methodGuardsOf(method)).toContain(JoinLinkRateLimitGuard);
+    },
+  );
+
+  it.each([
+    'groupJoinLink',
+    'createJoinLink',
+    'rotateJoinLink',
+    'revokeJoinLink',
+    'myFamilyGroups',
+  ] as const)(
+    '%s ไม่ติด (ไม่ได้รับ token จากคนนอก — จำกัดไปก็กวนผู้ใช้เปล่า ๆ)',
+    (method) => {
+      expect(methodGuardsOf(method)).not.toContain(JoinLinkRateLimitGuard);
     },
   );
 });
