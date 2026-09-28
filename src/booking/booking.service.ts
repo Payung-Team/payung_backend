@@ -29,6 +29,10 @@ import {
 } from './dto/booking-rest.types';
 import { resolveBookingTime } from './booking-time';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
+// PYG-524: นิยาม "ช่วงเวลาคาบเกี่ยว slot ไหนบ้าง" ต้องเป็นตัวเดียวกับที่ปฏิทินคิวว่าง
+// รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
+// จะตัดสิน slot คนละแบบ
+import { overlappingSlots } from '../common/constants/time-slot.constant';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -587,6 +591,10 @@ export class BookingService {
         throw new ForbiddenException('Care recipient does not belong to this patient');
     }
 
+    const newStart = time.startMinute;
+    const newEnd = newStart + Math.round(time.durationHours * 60);
+    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
+
     // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
     let resolvedCaregiverId: string | null = null;
     let estimatedCost: number | null = null;
@@ -602,13 +610,41 @@ export class BookingService {
       if (caregiver.hourlyRate != null) {
         estimatedCost = caregiver.hourlyRate * time.durationHours;
       }
+
+      /**
+       * PYG-524 — เช็ค caregiver_availability จริง แทนการเชื่อ timeSlot ที่ client ส่งมาเฉย ๆ
+       *
+       * ของเดิม: createBooking เก็บ dto.timeSlot ลงใบจองตรง ๆ ไม่เคยเทียบกับตารางว่างของ
+       * ผู้ดูแลเลย (search.service.ts ก็เช็คแค่ "มี slot active อย่างน้อย 1 ช่อง" ไม่ดูวัน/เวลา)
+       * → จองผู้ดูแลในวัน/ช่วงที่เขาไม่ได้เปิดรับได้อยู่เสมอมา
+       *
+       * เกณฑ์: ต้องมี caregiver_availability ที่ is_active ใน dayOfWeek ของวันจอง
+       * ครบทุก slot ที่ช่วงเวลาคาบเกี่ยว (overlappingSlots) — ขาดแม้ slot เดียวก็ไม่ผ่าน
+       * เพราะช่วงที่คร่อม 2 slot (เช่น 11:00–14:00) ต้องว่างทั้งคู่ ไม่ใช่แค่ slot ที่เวลาเริ่มอยู่
+       *
+       * ใช้ overlappingSlots ตัวเดียวกับปฏิทินคิวว่างรายวันของ PYG-493
+       * (common/constants/time-slot.constant.ts) เพื่อให้ปฏิทินกับการจองตัดสิน slot ตรงกัน
+       */
+      const dayOfWeek = bookingDateObj.getUTCDay();
+      const requiredSlots = overlappingSlots(newStart, newEnd);
+
+      const activeSlots = await this.prisma.caregiverAvailability.findMany({
+        where: {
+          caregiverId: resolvedCaregiverId,
+          dayOfWeek,
+          isActive: true,
+          timeSlot: { in: requiredSlots as time_slot[] },
+        },
+        select: { timeSlot: true },
+      });
+      const coveredSlots = new Set(activeSlots.map((slot) => slot.timeSlot));
+
+      if (!requiredSlots.every((slot) => coveredSlots.has(slot))) {
+        throw new ConflictException('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+      }
     }
 
     // ── ตรวจสอบ time conflict ──────────────────────────────────────────────────
-    const newStart = time.startMinute;
-    const newEnd = newStart + Math.round(time.durationHours * 60);
-    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
-
     /**
      * PYG-424 — เช็คเวลาชน "ต่อผู้รับบริการ" ไม่ใช่ "ต่อคนจอง"
      *
@@ -635,7 +671,10 @@ export class BookingService {
           where: {
             ...conflictScope,
             bookingDate: bookingDateObj,
-            status: { in: ['pending', 'confirmed'] },
+            // 'accepted' = caregiver กดรับงานแล้ว รอผู้ป่วยยืนยัน/จ่ายเงิน — ยังมีผลอยู่
+            // เหมือน pending/confirmed ไม่ใช่ draft ที่ยกเลิกเองได้เงียบ ๆ (ดู caregiver-booking.service.ts)
+            // ของเดิมไม่นับ → จองซ้อนกับใบที่ผู้ดูแลรับไปแล้วได้
+            status: { in: ['pending', 'accepted', 'confirmed'] },
           },
           select: { startTime: true, durationHours: true },
         });
