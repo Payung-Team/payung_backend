@@ -317,17 +317,16 @@ export class PaymentService {
       throw new ConflictException('A valid payment already exists for this booking');
     }
 
-    const duration = typeof (booking.durationHours as any).toNumber === 'function'
-      ? (booking.durationHours as any).toNumber()
-      : Number(booking.durationHours);
-
-    const hourlyRate = caregiver.hourlyRate ?? 0;
-    if (hourlyRate <= 0) {
-      throw new UnprocessableEntityException('Caregiver has an invalid hourly rate');
+    // ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ตัดตาม estimated_cost ที่บันทึกตอนจอง (ราคา catalog ณ วันจอง)
+    // ไม่คิดใหม่จาก caregivers.hourly_rate — ยอดที่ตัดต้องเท่ากับยอดที่ลูกค้าเห็นตอนจองเสมอ
+    // guard เดิม (hourlyRate <= 0 → 422) ย้ายมาเช็คที่ยอดนี้แทน · DB มี CHECK price_per_hour > 0 อีกชั้น
+    const estimatedCost = booking.estimatedCost != null ? Number(booking.estimatedCost) : 0;
+    if (!(estimatedCost > 0)) {
+      throw new UnprocessableEntityException('Booking has an invalid price');
     }
 
     // Payment.amount expects Baht, Omise expects Satangs
-    const amountBaht = Math.round(duration * hourlyRate * 100) / 100;
+    const amountBaht = Math.round(estimatedCost * 100) / 100;
     const amountSatangs = Math.round(amountBaht * 100);
 
     // ── PYG-278: PromptPay branch — แยกออกจาก flow card 100% ─────────────────

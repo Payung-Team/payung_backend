@@ -79,6 +79,7 @@ describe('BookingService — new REST methods', () => {
     // PYG-499: ด่าน Onboarding อ่าน role + ชื่อ-นามสกุลของผู้จอง
     user:          { findUnique: jest.Mock };
     caregiverAvailability: { findMany: jest.Mock };
+    servicePriceCatalog: { findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -119,6 +120,10 @@ describe('BookingService — new REST methods', () => {
       },
       // PYG-524: findMany ต่อ prisma.caregiver.findUnique — ค่า default ในแต่ละ it() ตั้งเอง
       caregiverAvailability: { findMany: jest.fn() },
+      // ราคาจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — 300 บาท/ชม. ทุกเทส เว้นแต่ override
+      servicePriceCatalog: {
+        findUnique: jest.fn().mockResolvedValue({ pricePerHour: new Prisma.Decimal(300), isActive: true }),
+      },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     settlement = {
@@ -239,12 +244,11 @@ describe('BookingService — new REST methods', () => {
         expect(call.data.startTime).toEqual(new Date('1970-01-01T13:00:00Z'));
       });
 
-      it('ราคาประเมินใช้ชั่วโมงที่คำนวณ (hourlyRate × (end − start))', async () => {
+      it('ราคาประเมิน = ราคา catalog ของ serviceType × ชั่วโมงที่คำนวณ (end − start)', async () => {
         prisma.caregiver.findUnique.mockResolvedValue({
           id: CAREGIVER_ID,
           kycStatus: 'verified',
           isSearchable: true,
-          hourlyRate: 300,
         });
         // 13:00–16:30 อยู่ใน afternoon ล้วน (12:00–17:00) — PYG-524 ต้องเจอ slot นี้ active
         prisma.caregiverAvailability.findMany.mockResolvedValue([
@@ -258,10 +262,61 @@ describe('BookingService — new REST methods', () => {
           caregiverId: 'c2222222-2222-4222-8222-222222222222',
         });
 
+        expect(prisma.servicePriceCatalog.findUnique).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { serviceType: newDto.serviceType } }),
+        );
+        // ไม่อ่าน hourlyRate ของผู้ดูแลอีกแล้ว
+        expect(prisma.caregiver.findUnique.mock.calls[0][0].select).not.toHaveProperty('hourlyRate');
         const call = prisma.booking.create.mock.calls[0][0] as {
-          data: Record<string, unknown>;
+          data: { estimatedCost: Prisma.Decimal };
         };
-        expect(call.data.estimatedCost).toBe(1050); // 300 × 3.5
+        expect(call.data.estimatedCost.toFixed(2)).toBe('1050.00'); // 300 × 3.5
+      });
+
+      it('ปัดเป็นสตางค์ HALF_UP — 333.33 × 1.5 = 499.995 → 500.00', async () => {
+        prisma.servicePriceCatalog.findUnique.mockResolvedValue({
+          pricePerHour: new Prisma.Decimal('333.33'),
+          isActive: true,
+        });
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, {
+          ...newDto,
+          startTime: '13:00',
+          endTime: '14:30',
+        });
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: { estimatedCost: Prisma.Decimal };
+        };
+        expect(call.data.estimatedCost.toFixed(2)).toBe('500.00');
+      });
+
+      it('จองแบบ unmatched (ไม่มีผู้ดูแล) ก็มีราคาแล้ว — ไม่ขึ้นกับผู้ดูแล', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: { estimatedCost: Prisma.Decimal; status: string };
+        };
+        expect(call.data.status).toBe('unmatched');
+        expect(call.data.estimatedCost.toFixed(2)).toBe('1050.00');
+      });
+
+      it.each([
+        ['ไม่มีแถวใน catalog', null],
+        ['is_active = false', { pricePerHour: new Prisma.Decimal(300), isActive: false }],
+      ])('serviceType ที่ยังไม่เปิดขาย (%s) → 422 ไม่สร้างใบจอง', async (_label, row) => {
+        prisma.servicePriceCatalog.findUnique.mockResolvedValue(row);
+
+        await expect(service.createBooking(PATIENT_ID, newDto)).rejects.toBeInstanceOf(
+          UnprocessableEntityException,
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
       });
 
       it('เช็คเวลาชนด้วยช่วงที่คำนวณ — นัดเดิม 15:00–17:00 ชนกับ 13:00–16:30', async () => {

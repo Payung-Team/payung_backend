@@ -35,6 +35,7 @@ import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma
 // รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
+import { activeHourlyPrice, estimatedCostOf } from '../common/pricing/service-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -642,21 +643,25 @@ export class BookingService {
     const newEnd = newStart + Math.round(time.durationHours * 60);
     const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
 
+    // ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ราคาจาก service_price_catalog ตาม serviceType
+    // ไม่ขึ้นกับผู้ดูแล → ใบ unmatched ก็มีราคาแล้ว · ประเภทที่ยังไม่เปิดขาย = 422 ไม่สร้างใบจอง
+    // ยอดนี้คือยอดที่ PaymentService ตัดจริง (ไม่คิดใหม่ตอนจ่าย)
+    const estimatedCost = estimatedCostOf(
+      await activeHourlyPrice(this.prisma, dto.serviceType),
+      time.durationHours,
+    );
+
     // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
     let resolvedCaregiverId: string | null = null;
-    let estimatedCost: number | null = null;
     if (dto.caregiverId) {
       const caregiver = await this.prisma.caregiver.findUnique({
         where: { id: dto.caregiverId },
-        select: { id: true, kycStatus: true, isSearchable: true, hourlyRate: true },
+        select: { id: true, kycStatus: true, isSearchable: true },
       });
       if (!caregiver || caregiver.kycStatus !== 'verified' || !caregiver.isSearchable) {
         throw new NotFoundException('Caregiver not found or unavailable');
       }
       resolvedCaregiverId = caregiver.id;
-      if (caregiver.hourlyRate != null) {
-        estimatedCost = caregiver.hourlyRate * time.durationHours;
-      }
 
       /**
        * PYG-524 — เช็ค caregiver_availability จริง แทนการเชื่อ timeSlot ที่ client ส่งมาเฉย ๆ

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import { GraphQLError } from 'graphql';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
@@ -111,6 +112,10 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         }),
       },
       caregiver: { findUnique: jest.fn() },
+      // ราคาจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2)
+      servicePriceCatalog: {
+        findUnique: jest.fn().mockResolvedValue({ pricePerHour: new Prisma.Decimal(300), isActive: true }),
+      },
       booking: {
         // ไม่มีนัดหมายชนกัน เว้นแต่เทสนั้นจะ override เอง
         findMany: jest.fn().mockResolvedValue([]),

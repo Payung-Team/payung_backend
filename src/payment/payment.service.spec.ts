@@ -11,6 +11,7 @@
  *  - Idempotency key ส่งไปให้ Omise
  *  - emit BOOKING_EVENTS.REFUND_ISSUED ครั้งเดียว (ไม่ซ้ำ ไม่ bypass listener)
  */
+import { Prisma } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
@@ -159,7 +160,8 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     status: 'accepted',
     durationHours: 2,
     caregiverId: CAREGIVER_ID,
-    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+    estimatedCost: 1100, // ราคา catalog × 2 ชม. ที่บันทึกตอนจอง — ยอดที่ตัดจริง
+    caregiver: { userId: CAREGIVER_ID },
     ...BOOKING_SCHEDULE, // PYG-461/462: guard เวลาต้องมีวัน/เวลาเริ่มงาน (NOT NULL ในของจริง)
   };
 
@@ -284,6 +286,32 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     await expect(service.createPayment(cardInput, patient)).rejects.toBe(CHARGE_REACHED);
     expect(omise.createCharge).toHaveBeenCalledTimes(1);
   });
+
+  // ── ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ยอดที่ตัด = estimated_cost ที่บันทึกตอนจอง ──
+  it('ตัดตาม booking.estimatedCost ไม่คิดใหม่จาก caregiver.hourlyRate', async () => {
+    prisma.booking.findUnique.mockResolvedValueOnce({
+      ...acceptedBooking,
+      estimatedCost: new Prisma.Decimal('1050.50'),
+      caregiver: { userId: CAREGIVER_ID, hourlyRate: 999 }, // ถ้ายังคิดจากตรงนี้จะได้ 1998
+    });
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.createPayment({ ...cardInput, saveCard: false }, patient)).rejects.toBe(CHARGE_REACHED);
+    expect(omise.createCharge).toHaveBeenCalledWith(105050, 'tokn_test_1'); // สตางค์
+  });
+
+  it.each([
+    ['null (ใบเก่าที่ไม่มีราคา)', null],
+    ['0', new Prisma.Decimal(0)],
+  ])('estimatedCost = %s → 422 ไม่แตะ Omise (guard เดิม hourlyRate <= 0)', async (_label, cost) => {
+    prisma.booking.findUnique.mockResolvedValueOnce({ ...acceptedBooking, estimatedCost: cost });
+    prisma.payment.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.createPayment({ ...cardInput, saveCard: false }, patient)).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(omise.createCharge).not.toHaveBeenCalled();
+  });
 });
 
 // ─── PYG-278: findByBookingId ───────────────────────────────────────────────
@@ -354,7 +382,8 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
     status: 'accepted',
     durationHours: 2,
     caregiverId: CAREGIVER_ID,
-    caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+    estimatedCost: 1100, // ราคา catalog × 2 ชม. ที่บันทึกตอนจอง — ยอดที่ตัดจริง
+    caregiver: { userId: CAREGIVER_ID },
     ...BOOKING_SCHEDULE, // PYG-461/462: guard เวลาต้องมีวัน/เวลาเริ่มงาน (NOT NULL ในของจริง)
   };
   const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);

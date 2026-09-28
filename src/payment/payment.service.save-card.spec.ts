@@ -35,7 +35,8 @@ const acceptedBooking = {
   status: 'accepted',
   durationHours: 2,
   caregiverId: CAREGIVER_ID,
-  caregiver: { userId: CAREGIVER_ID, hourlyRate: 550 },
+  estimatedCost: 1100, // ราคา catalog × 2 ชม. ที่บันทึกตอนจอง — ยอดที่ตัดจริง
+  caregiver: { userId: CAREGIVER_ID },
   bookingDate: new Date('2026-07-01'),
   startTime: new Date('1970-01-01T09:00:00.000Z'),
 };
