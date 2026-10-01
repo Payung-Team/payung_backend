@@ -764,6 +764,12 @@ type ConsentPolicy {
   """หัวข้อ/คำนำของจุดนั้น"""
   screen: ConsentScreenCopy
 
+  """ข้อกำหนดการใช้บริการฉบับเต็ม (อังกฤษ, Markdown)"""
+  termsOfServiceEn: String!
+
+  """ข้อกำหนดการใช้บริการฉบับเต็ม (ไทย, Markdown)"""
+  termsOfServiceTh: String!
+
   """เวอร์ชันนโยบายที่ต้องบันทึกคู่กับคำตอบ"""
   version: String!
 }

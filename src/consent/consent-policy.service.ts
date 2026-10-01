@@ -3,7 +3,7 @@
  *
  * อ่านอย่างเดียว ไม่แตะ DB — บันทึกคำตอบเป็นงานของ PYG-474
  *
- * ★ ประกาศความเป็นส่วนตัวอ่านจากไฟล์ .md ตอน bootstrap ครั้งเดียว แล้วถือไว้ในหน่วยความจำ
+ * ★ ประกาศความเป็นส่วนตัว + ข้อกำหนดการใช้บริการ อ่านจากไฟล์ .md ตอน bootstrap ครั้งเดียว แล้วถือไว้ในหน่วยความจำ
  *   ถ้าอ่านทุกคำขอ จะมี disk I/O ต่อทุกครั้งที่มีคนเปิดหน้าสมัคร ทั้งที่ไฟล์ไม่เคยเปลี่ยน
  *   ระหว่างรัน (เปลี่ยนเมื่อ deploy เท่านั้น)
  */
@@ -42,10 +42,14 @@ export class ConsentPolicyService implements OnModuleInit {
   private readonly logger = new Logger(ConsentPolicyService.name);
   private privacyNoticeTh = '';
   private privacyNoticeEn = '';
+  private termsOfServiceTh = '';
+  private termsOfServiceEn = '';
 
   onModuleInit(): void {
     this.privacyNoticeTh = this.readNotice('privacy-notice.th.md');
     this.privacyNoticeEn = this.readNotice('privacy-notice.en.md');
+    this.termsOfServiceTh = this.readNotice('terms-of-service.th.md');
+    this.termsOfServiceEn = this.readNotice('terms-of-service.en.md');
   }
 
   /**
@@ -82,6 +86,8 @@ export class ConsentPolicyService implements OnModuleInit {
       rightsNoteEn: DATA_SUBJECT_RIGHTS_NOTE.en,
       privacyNoticeTh: this.privacyNoticeTh,
       privacyNoticeEn: this.privacyNoticeEn,
+      termsOfServiceTh: this.termsOfServiceTh,
+      termsOfServiceEn: this.termsOfServiceEn,
     };
   }
 

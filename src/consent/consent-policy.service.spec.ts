@@ -134,6 +134,15 @@ describe('ConsentPolicyService (PYG-472)', () => {
     expect(policy.privacyNoticeEn).toContain('2 years');
   });
 
+  it('ข้อกำหนดการใช้บริการฉบับเต็มถูกอ่านเข้ามาได้ทั้งสองภาษา', () => {
+    const policy = service.getPolicy();
+    expect(policy.termsOfServiceTh).toContain('ข้อกำหนดการใช้บริการ');
+    expect(policy.termsOfServiceEn).toContain('Terms of Service');
+    // ★ ตัวเลขในข้อกำหนดต้องตรงกับที่ระบบทำจริง — ถ้าแก้ CANCELLATION_POLICY ต้องแก้ไฟล์ .md ด้วย
+    expect(policy.termsOfServiceTh).toContain('24 ชั่วโมง');
+    expect(policy.termsOfServiceEn).toContain('24 hours');
+  });
+
   it('ข้อความสิทธิ์เจ้าของข้อมูลมีช่องทางติดต่อ', () => {
     const policy = service.getPolicy();
     expect(policy.rightsNoteTh).toContain('privacy@payung.app');
