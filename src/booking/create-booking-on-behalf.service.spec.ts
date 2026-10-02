@@ -9,6 +9,8 @@ import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { ConsentService } from '../consent/consent.service';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 
 /**
  * PYG-424 — เทสของ "จองแทนในนามกลุ่มครอบครัว"
@@ -130,6 +132,12 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         { provide: JobQrService, useValue: jobQr },
         // PYG-540: ด่านความยินยอมของเจ้าของข้อมูล — ค่าเริ่มต้น = ไม่มีใครถอน
         { provide: ConsentService, useValue: consent },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
+        },
       ],
     }).compile();
 

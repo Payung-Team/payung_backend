@@ -22,6 +22,8 @@ import { createHash } from 'crypto';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
 import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import {
   ACTIVITY_ACTION,
   GROUP_MAX_MEMBERS,
@@ -132,6 +134,12 @@ describe('FamilyGroupService — join link (PYG-416)', () => {
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
         { provide: ConsentService, useValue: consent },
+        // PYG-518: sign avatarUrl ของสมาชิก — เทสเรื่อง signing อยู่ที่ family-group.service.spec.ts
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
+        },
       ],
     }).compile();
 

@@ -16,6 +16,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
 import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import {
   ACTIVITY_ACTION,
   ACTIVITY_TARGET,
@@ -104,6 +106,8 @@ describe('FamilyGroupService', () => {
   let prisma: typeof tx & {
     $transaction: jest.Mock;
   };
+  let storageFrom: jest.Mock;
+  let createSignedUrls: jest.Mock;
 
   beforeEach(async () => {
     tx = {
@@ -143,11 +147,25 @@ describe('FamilyGroupService', () => {
       recordMany: jest.fn(),
     };
 
+    createSignedUrls = jest.fn().mockImplementation((paths: string[]) => ({
+      data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}`, error: null })),
+      error: null,
+    }));
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
         { provide: ConsentService, useValue: consent },
+        // PYG-518: sign avatarUrl ของสมาชิกกลุ่ม — เทสเฉพาะเรื่อง signing อยู่ท้ายไฟล์นี้
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
       ],
     }).compile();
 
@@ -1137,4 +1155,40 @@ describe('FamilyGroupService', () => {
     });
   });
 
+  // ═══ PYG-518 · avatar signing ═══════════════════════════════════════════
+  describe('avatar signing (PYG-518)', () => {
+    it('sign avatar ของสมาชิกทุกคนด้วย createSignedUrls ครั้งเดียว กับ bucket profile-photos', async () => {
+      const members = Array.from({ length: 4 }, (_, i) =>
+        memberRow({
+          id: `fgm-${i}`,
+          userId: `u-${i}`,
+          user: { displayName: 'x', email: 'x@test.com', avatarUrl: `u-${i}/photo.jpg` },
+        }),
+      );
+      prisma.familyGroup.findUnique.mockResolvedValue(groupRow({ members }));
+
+      const result = await service.familyGroup(OWNER_ID, GROUP_ID);
+
+      expect(createSignedUrls).toHaveBeenCalledTimes(1);
+      expect(createSignedUrls.mock.calls[0][0]).toHaveLength(4);
+      expect(storageFrom).toHaveBeenCalledWith('profile-photos');
+      result.members.forEach((m, i) => {
+        expect(m.avatarUrl).toBe(`https://signed.example/u-${i}/photo.jpg`);
+      });
+    });
+
+    it('ไม่คืน storage path ดิบเมื่อ sign ไม่สำเร็จ', async () => {
+      createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
+      prisma.familyGroup.findUnique.mockResolvedValue(
+        groupRow({
+          members: [memberRow({ user: { displayName: 'x', email: 'x@test.com', avatarUrl: 'u-1/photo.jpg' } })],
+        }),
+      );
+
+      const result = await service.familyGroup(OWNER_ID, GROUP_ID);
+
+      expect(result.members[0].avatarUrl).toBeUndefined();
+      expect(result.members[0].avatarUrl).not.toBe('u-1/photo.jpg');
+    });
+  });
 });
