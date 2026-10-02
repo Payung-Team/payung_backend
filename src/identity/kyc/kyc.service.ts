@@ -39,10 +39,13 @@ import {
   validateAccountNumberForBank,
 } from '../../common/constants/omise-banks.constant';
 
-/** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
+/**
+ * Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC
+ * ไม่มี hourlyRate (PYG-536) — submitKyc ไม่เขียนค่านี้แล้ว จึงไม่ต้อง diff
+ */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
-  'phone', 'skills', 'experienceYears', 'hourlyRate', 'bio',
+  'phone', 'skills', 'experienceYears', 'bio',
 ];
 
 /**
@@ -138,7 +141,7 @@ export class KycService {
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
-          hourlyRate: input.hourlyRate,
+          // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
@@ -152,7 +155,7 @@ export class KycService {
           phone: input.phone,
           skills: input.skills,
           experienceYears: input.experienceYears,
-          hourlyRate: input.hourlyRate,
+          // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),

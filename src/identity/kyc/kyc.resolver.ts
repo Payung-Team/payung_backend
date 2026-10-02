@@ -64,7 +64,6 @@ export class KycResolver {
    *     phone: "0812345678"
    *     skills: ["elder_care", "first_aid"]
    *     experienceYears: 3
-   *     hourlyRate: 150.0
    *     bio: "มีประสบการณ์ดูแลผู้สูงอายุ"
    *     documentIds: ["uuid-1", "uuid-2"]
    *   }) {
@@ -144,7 +143,6 @@ export class KycResolver {
    *     phone: "0812345678"
    *     skills: ["elder_care"]
    *     experienceYears: 3
-   *     hourlyRate: 150.0
    *     documentIds: ["uuid-new-1", "uuid-new-2"]
    *   }) {
    *     id kycStatus kycSubmittedAt resubmitCount

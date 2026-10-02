@@ -1643,8 +1643,8 @@ input KycInput {
   """Gender: male | female | other"""
   gender: String
 
-  """Hourly rate in THB"""
-  hourlyRate: Float!
+  """Hourly rate in THB (deprecated — ignored)"""
+  hourlyRate: Float @deprecated(reason: "PYG-536: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว — ส่งมาได้แต่ระบบไม่บันทึก (ช่วงเปลี่ยนผ่าน)")
 
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!

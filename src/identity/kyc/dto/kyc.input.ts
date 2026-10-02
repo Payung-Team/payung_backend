@@ -15,7 +15,7 @@
  * - phone: เบอร์โทรไทย (0xx-xxx-xxxx)
  * - skills: array ต้องมีอย่างน้อย 1 รายการ
  * - experienceYears: จำนวนเต็ม >= 0
- * - hourlyRate: ตัวเลข >= 0
+ * - hourlyRate: deprecated (PYG-536) — optional และไม่ถูกบันทึก
  * - bio: optional, สูงสุด 500 ตัวอักษร
  * - documentIds: array ของ UUID
  *
@@ -98,12 +98,22 @@ export class KycInput {
   experienceYears!: number;
 
   /**
-   * ค่าบริการต่อชั่วโมง (บาท) — ต้อง >= 0
+   * @deprecated PYG-536 — ผู้ดูแลตั้งราคาเองไม่ได้แล้ว ส่งมาได้แต่ระบบไม่บันทึก (เหมือน UpdateCaregiverInput / PYG-534)
+   *
+   * - เปลี่ยนเป็น optional: FE รุ่นใหม่เลิกส่งแล้ว ถ้ายังเป็น Float! GraphQL จะตอบ 400 ทั้ง request
+   * - ยังไม่ลบ field: FE รุ่นเก่าที่ยังส่งมาจะได้ไม่โดน "Unknown field"
+   * - เหลือ decorator ไว้เพราะ ValidationPipe ตั้ง forbidNonWhitelisted
+   * - ไม่มี @Min(0): ค่านี้ถูกทิ้งอยู่แล้ว ไม่ควรทำให้ KYC ส่งไม่ผ่าน
    */
-  @Field(() => Float, { description: 'Hourly rate in THB' })
+  @Field(() => Float, {
+    nullable: true,
+    deprecationReason:
+      'PYG-536: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว — ส่งมาได้แต่ระบบไม่บันทึก (ช่วงเปลี่ยนผ่าน)',
+    description: 'Hourly rate in THB (deprecated — ignored)',
+  })
+  @IsOptional()
   @IsNumber({}, { message: 'ค่าบริการต้องเป็นตัวเลข' })
-  @Min(0, { message: 'ค่าบริการต้องไม่น้อยกว่า 0 บาท' })
-  hourlyRate!: number;
+  hourlyRate?: number;
 
   /**
    * เพศ — optional
