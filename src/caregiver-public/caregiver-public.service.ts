@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { CaregiverPublicDto, AvailabilitySlotDto } from './dto/caregiver-public.dto';
 import { startingHourlyPrices } from '../common/pricing/display-price';
 
 @Injectable()
 export class CaregiverPublicService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly avatarUrlService: AvatarUrlService,
+  ) {}
 
   /**
    * getPublicProfile — returns the public-safe profile for a caregiver.
@@ -87,11 +91,18 @@ export class CaregiverPublicService {
       availMap.entries(),
     ).map(([day, slots]) => ({ day, slots }));
 
+    // PYG-518: public profile ต้องเป็น signed URL ของรูปที่อนุมัติแล้วเท่านั้น
+    // (bucket caregiver-avatars) — ห้ามส่ง storage path ดิบออก endpoint สาธารณะนี้
+    const avatarUrl = await this.avatarUrlService.resolveCaregiverAvatar(
+      caregiver.user.avatarUrl,
+      id,
+    );
+
     return {
       id: caregiver.id,
       first_name: firstName,
       last_name: lastName,
-      avatar_url: caregiver.user.avatarUrl ?? null,
+      avatar_url: avatarUrl,
       bio: caregiver.bio ?? null,
       experience_years: caregiver.experienceYears ?? null,
       // ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — ตรงกับหน้า Search

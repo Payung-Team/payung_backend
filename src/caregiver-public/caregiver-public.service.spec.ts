@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { CaregiverPublicService } from './caregiver-public.service';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService, CAREGIVER_AVATARS_BUCKET } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,8 @@ describe('CaregiverPublicService', () => {
     caregiverJobType: { findMany: jest.Mock };
     servicePriceCatalog: { findMany: jest.Mock };
   };
+  let storageFrom: jest.Mock;
+  let createSignedUrl: jest.Mock;
 
   beforeEach(async () => {
     prisma = {
@@ -80,11 +84,24 @@ describe('CaregiverPublicService', () => {
         ]),
       },
     };
+    createSignedUrl = jest.fn().mockResolvedValue({
+      data: { signedUrl: 'https://signed.example/avatar.jpg' },
+      error: null,
+    });
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrl });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CaregiverPublicService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-518: public profile ต้อง sign avatar_url กับ bucket caregiver-avatars
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
       ],
     }).compile();
 
@@ -297,5 +314,31 @@ describe('CaregiverPublicService', () => {
     expect(keys).not.toContain('phone');
     expect(keys).not.toContain('email');
     expect(keys).not.toContain('address');
+  });
+
+  // ── PYG-518: avatar signing ─────────────────────────────────────────────
+
+  it('sign storage path ดิบของ avatar_url กับ bucket caregiver-avatars — ไม่คืน path ดิบ', async () => {
+    prisma.caregiver.findUnique.mockResolvedValue(
+      makeCaregiver({ user: { avatarUrl: 'cg-1/profile-abc.jpg' } }),
+    );
+
+    const result = await service.getPublicProfile('cg-1');
+
+    expect(result.avatar_url).toBe('https://signed.example/avatar.jpg');
+    expect(result.avatar_url).not.toBe('cg-1/profile-abc.jpg');
+    expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
+    expect(createSignedUrl).toHaveBeenCalledWith('cg-1/profile-abc.jpg', 3600);
+  });
+
+  it('sign ล้ม → avatar_url เป็น null แทนที่จะเป็น path ดิบ', async () => {
+    createSignedUrl.mockResolvedValue({ data: null, error: { message: 'not found' } });
+    prisma.caregiver.findUnique.mockResolvedValue(
+      makeCaregiver({ user: { avatarUrl: 'cg-1/profile-abc.jpg' } }),
+    );
+
+    const result = await service.getPublicProfile('cg-1');
+
+    expect(result.avatar_url).toBeNull();
   });
 });
