@@ -4,7 +4,7 @@
 - Commit ที่ทดสอบ: `origin/dev` @ `27cfac3` (รวม #95/#96 ราคา catalog แล้ว)
 - รัน: 2026-10-03 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg527-booking-time.e2e-spec.ts` · harness: `test/support/pyg527-e2e.ts`
-- **ผล: ตามการ์ด 34/34 PASS · เคสเพิ่ม _X1 FAIL (ผู้ดูแลถูกจองซ้อนเวลาได้)**
+- **ผล: ตามการ์ด 34/34 PASS · เคสเพิ่ม _X1 FAIL (ผู้ดูแลถูกจองซ้อนเวลาได้) → แยกเป็นการ์ดบั๊ก PYG-544** · ในโค้ดเทสเป็น `it.failing` ชุดเทสจึงเขียว (แก้ PYG-544 แล้วต้องเปลี่ยนกลับเป็น `it`)
 
 **รันจริงแค่ไหน:** บูต FamilyGroup + Booking + Payment + Monitoring + Notification ตัวจริง จองเองผ่าน REST `POST /api/v1/bookings`, จองแทน / รับงาน / ชำระเงิน / QR ผ่าน GraphQL, เรียก `NoCheckoutSweeperService.run()` ตรง ๆ ต่อ Postgres 17 ทิ้งได้ใน Docker · mock แค่ Supabase auth / Omise / Email · **`ClockService` ปลอม** ตั้งเวลาได้ (ทุกจุดที่ตัดสินเวลา — QR, เช็คอิน, sweeper, กำหนดชำระ — อ่านจาก ClockService)
 
@@ -81,7 +81,7 @@ PYG527_DATABASE_URL=postgresql://postgres:qa@127.0.0.1:5436/qa527 npm run test:e
 
 | ตรวจ | ผล |
 |---|---|
-| ต่อ Docker DB | 34 passed · 1 failed (_X1) |
+| ต่อ Docker DB | 35 passed (รวม _X1 ที่เป็น `it.failing` — บั๊ก PYG-544 ยังอยู่) |
 | `npm run test:e2e` ไม่ตั้ง env | PYG-527 skip 35 · care-log 28 passed |
 | `CI=1` ไม่ตั้ง env | ล้ม พร้อมข้อความ `PYG527_DATABASE_URL ไม่ได้ตั้งค่าใน CI` |
 | `tsc -p tsconfig.json` | 21 error เท่า `dev` |
