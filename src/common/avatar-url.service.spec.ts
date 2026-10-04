@@ -1,18 +1,15 @@
 /**
- * Unit tests สำหรับ AvatarUrlService (PYG-518)
+ * Unit tests สำหรับ AvatarUrlService (PYG-518 / PYG-508)
  *
  * ธีมที่ทดสอบ:
  *   - path ดิบถูก sign ก่อนคืนเสมอ ไม่มีทางหลุดออกไปเป็น path ดิบ
  *   - URL เต็ม (http/https) ผ่านตรง ไม่ยิง sign ซ้ำ
- *   - resolveCaregiverAvatar() กับ resolve() sign กับคนละ bucket (caregiver-avatars / profile-photos)
+ *   - ทุก role sign กับ bucket เดียว: profile-photos (PYG-508 — ไม่ย้ายไฟล์ตอนอนุมัติ)
  *   - resolveMany() รวมหลาย path เป็น createSignedUrls ครั้งเดียว ไม่ยิงทีละรูป (dedup path ซ้ำด้วย)
  *   - sign ล้ม (ทั้งเดี่ยวและ batch) → คืน null ไม่ throw
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  AvatarUrlService,
-  CAREGIVER_AVATARS_BUCKET,
-} from './avatar-url.service';
+import { AvatarUrlService } from './avatar-url.service';
 import { SupabaseService } from './supabase.service';
 import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 
@@ -52,7 +49,7 @@ describe('AvatarUrlService (PYG-518)', () => {
     service = module.get(AvatarUrlService);
   });
 
-  // ── resolve() / resolveCaregiverAvatar() ────────────────────────────────
+  // ── resolve() ───────────────────────────────────────────────────────────
 
   it('resolve() คืน null ทันทีเมื่อไม่มีค่า — ไม่ยิง storage', async () => {
     expect(await service.resolve(null)).toBeNull();
@@ -77,12 +74,6 @@ describe('AvatarUrlService (PYG-518)', () => {
     expect(createSignedUrl).toHaveBeenCalledWith('user-1/profile-abc.jpg', 3600);
   });
 
-  it('resolveCaregiverAvatar() sign path ดิบกับ bucket caregiver-avatars — คนละ bucket จาก resolve()', async () => {
-    await service.resolveCaregiverAvatar('cg-1/avatar.jpg');
-    expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
-    expect(storageFrom).not.toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
-  });
-
   it('sign เดี่ยวล้ม → คืน null ไม่ throw', async () => {
     createSignedUrl.mockResolvedValue({ data: null, error: { message: 'nope' } });
     await expect(service.resolve('user-1/x.jpg')).resolves.toBeNull();
@@ -101,16 +92,12 @@ describe('AvatarUrlService (PYG-518)', () => {
       avatarUrl: `cg-${i}/photo.jpg`,
     }));
 
-    const result = await service.resolveMany(
-      rows,
-      (r) => r.avatarUrl,
-      CAREGIVER_AVATARS_BUCKET,
-    );
+    const result = await service.resolveMany(rows, (r) => r.avatarUrl);
 
     // ★ Done criterion: 20 รายการ sign ในการเรียกเดียว
     expect(createSignedUrls).toHaveBeenCalledTimes(1);
     expect(createSignedUrls.mock.calls[0][0]).toHaveLength(20);
-    expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
+    expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
 
     for (const row of rows) {
       expect(result.get(row)).toBe(`https://signed.example/${row.avatarUrl}`);
@@ -124,11 +111,7 @@ describe('AvatarUrlService (PYG-518)', () => {
       { id: 'c', avatarUrl: 'other/photo.jpg' },
     ];
 
-    const result = await service.resolveMany(
-      rows,
-      (r) => r.avatarUrl,
-      PROFILE_PHOTOS_BUCKET,
-    );
+    const result = await service.resolveMany(rows, (r) => r.avatarUrl);
 
     expect(createSignedUrls).toHaveBeenCalledTimes(1);
     expect(createSignedUrls.mock.calls[0][0]).toEqual(
@@ -145,11 +128,7 @@ describe('AvatarUrlService (PYG-518)', () => {
       { id: 'b', avatarUrl: 'https://cdn.example.com/b.png' },
     ];
 
-    const result = await service.resolveMany(
-      rows,
-      (r) => r.avatarUrl,
-      PROFILE_PHOTOS_BUCKET,
-    );
+    const result = await service.resolveMany(rows, (r) => r.avatarUrl);
 
     expect(createSignedUrls).not.toHaveBeenCalled();
     expect(result.get(rows[0])).toBeNull();
@@ -160,7 +139,7 @@ describe('AvatarUrlService (PYG-518)', () => {
     createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
     const rows = [{ id: 'a', avatarUrl: 'a.jpg' }, { id: 'b', avatarUrl: 'b.jpg' }];
 
-    const result = await service.resolveMany(rows, (r) => r.avatarUrl, PROFILE_PHOTOS_BUCKET);
+    const result = await service.resolveMany(rows, (r) => r.avatarUrl);
 
     expect(result.get(rows[0])).toBeNull();
     expect(result.get(rows[1])).toBeNull();
@@ -176,7 +155,7 @@ describe('AvatarUrlService (PYG-518)', () => {
     });
     const rows = [{ id: 'a', avatarUrl: 'ok.jpg' }, { id: 'b', avatarUrl: 'bad.jpg' }];
 
-    const result = await service.resolveMany(rows, (r) => r.avatarUrl, PROFILE_PHOTOS_BUCKET);
+    const result = await service.resolveMany(rows, (r) => r.avatarUrl);
 
     expect(result.get(rows[0])).toBe('https://signed.example/ok.jpg');
     expect(result.get(rows[1])).toBeNull();

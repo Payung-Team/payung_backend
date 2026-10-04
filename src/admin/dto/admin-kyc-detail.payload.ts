@@ -7,7 +7,7 @@
  * - reviews     : ประวัติการ review ทั้งหมดของ caregiver คนนี้ เรียงล่าสุดก่อน
  * - resubmitCount : จำนวนครั้งที่ resubmit หลังถูก reject
  */
-import { ObjectType, Field, Int } from '@nestjs/graphql';
+import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
 import { Caregiver } from '../../identity/kyc/entities/caregiver.entity';
 import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
@@ -48,4 +48,11 @@ export class AdminKycDetailPayload {
         description: 'Payout bank account summary (masked — never the full account number)',
     })
     payoutAccount?: AdminPayoutAccountSummary;
+
+    /** PYG-508: kyc_documents.id ของรูปโปรไฟล์ที่รออนุมัติ — null ถ้าไม่มี (FE ใช้ลิงก์ไปหน้ารีวิวรูป) */
+    @Field(() => ID, {
+        nullable: true,
+        description: 'Pending profile photo document id (null if none awaiting review)',
+    })
+    pendingProfilePhotoDocumentId?: string;
 }

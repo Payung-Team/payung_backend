@@ -44,9 +44,7 @@ export class UserResolver {
   /**
    * Field resolver สำหรับ User.avatarUrl — sign storage path ของ bucket private
    * (รายละเอียดดู AvatarUrlService) ไม่งั้น header แสดงตัวอักษรย่อแทนรูป
-   *
-   * PYG-518: ผู้ดูแล (role=2) เก็บรูปอนุมัติแล้วไว้คนละ bucket จาก role อื่น
-   * (caregiver-avatars ไม่ใช่ profile-photos) — เลือกผิด bucket ได้ 404 เงียบ ๆ
+   * ทุก role อยู่ bucket เดียว (PYG-508) · ผู้ดูแลได้ avatar_url เฉพาะรูปที่แอดมินอนุมัติแล้ว
    */
   @ResolveField(() => String, {
     nullable: true,
@@ -54,9 +52,7 @@ export class UserResolver {
       'Avatar URL — signed URL when stored as a private storage path',
   })
   avatarUrl(@Parent() user: User): Promise<string | null> {
-    return user.role === ROLE_CAREGIVER
-      ? this.avatarUrlService.resolveCaregiverAvatar(user.avatarUrl, user.id)
-      : this.avatarUrlService.resolve(user.avatarUrl, user.id);
+    return this.avatarUrlService.resolve(user.avatarUrl, user.id);
   }
 
   /**

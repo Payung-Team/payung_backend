@@ -2,7 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { CaregiverPublicService } from './caregiver-public.service';
 import { PrismaService } from '../common/prisma.service';
-import { AvatarUrlService, CAREGIVER_AVATARS_BUCKET } from '../common/avatar-url.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 import { SupabaseService } from '../common/supabase.service';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ describe('CaregiverPublicService', () => {
       providers: [
         CaregiverPublicService,
         { provide: PrismaService, useValue: prisma },
-        // PYG-518: public profile ต้อง sign avatar_url กับ bucket caregiver-avatars
+        // PYG-518: public profile ต้อง sign avatar_url กับ bucket profile-photos
         AvatarUrlService,
         {
           provide: SupabaseService,
@@ -318,7 +319,7 @@ describe('CaregiverPublicService', () => {
 
   // ── PYG-518: avatar signing ─────────────────────────────────────────────
 
-  it('sign storage path ดิบของ avatar_url กับ bucket caregiver-avatars — ไม่คืน path ดิบ', async () => {
+  it('sign storage path ดิบของ avatar_url กับ bucket profile-photos — ไม่คืน path ดิบ', async () => {
     prisma.caregiver.findUnique.mockResolvedValue(
       makeCaregiver({ user: { avatarUrl: 'cg-1/profile-abc.jpg' } }),
     );
@@ -327,7 +328,7 @@ describe('CaregiverPublicService', () => {
 
     expect(result.avatar_url).toBe('https://signed.example/avatar.jpg');
     expect(result.avatar_url).not.toBe('cg-1/profile-abc.jpg');
-    expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
+    expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
     expect(createSignedUrl).toHaveBeenCalledWith('cg-1/profile-abc.jpg', 3600);
   });
 

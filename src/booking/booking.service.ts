@@ -8,10 +8,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
-import {
-  AvatarUrlService,
-  CAREGIVER_AVATARS_BUCKET,
-} from '../common/avatar-url.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import { SettlementReason } from '../payment/settlement/booking-settlement.types';
@@ -218,7 +215,7 @@ export class BookingService {
     private readonly jobQrService: JobQrService,
     // PYG-540: ด่านความยินยอมก่อนจอง + กรองนัดหมายของกลุ่ม
     private readonly consentService: ConsentService,
-    // PYG-518: sign avatarUrl ของผู้ดูแลก่อนส่งออก (bucket caregiver-avatars)
+    // PYG-518: sign avatarUrl ของผู้ดูแลก่อนส่งออก
     private readonly avatarUrlService: AvatarUrlService,
   ) {}
 
@@ -1109,7 +1106,6 @@ export class BookingService {
     const avatarByCaregiver = await this.avatarUrlService.resolveMany(
       caregivers,
       (cg) => cg.user.avatarUrl,
-      CAREGIVER_AVATARS_BUCKET,
     );
 
     return caregivers.map((cg) => {
@@ -1477,7 +1473,6 @@ export class BookingService {
     const urlByRow = await this.avatarUrlService.resolveMany(
       withCaregiver,
       (r) => r.caregiver.user.avatarUrl,
-      CAREGIVER_AVATARS_BUCKET,
     );
     for (const r of withCaregiver) {
       r.caregiver.user.avatarUrl = urlByRow.get(r) ?? null;

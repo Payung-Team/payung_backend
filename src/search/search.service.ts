@@ -1,10 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
-import {
-  AvatarUrlService,
-  CAREGIVER_AVATARS_BUCKET,
-} from '../common/avatar-url.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { SearchCaregiverInput, SortByEnum } from './dto/search-caregiver.input';
 import { CaregiverSummary, SearchCaregiverPayload } from './dto/search-caregiver.payload';
 
@@ -147,11 +144,10 @@ export class SearchService {
     const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
 
     // PYG-518: เซ็น avatar ของทุกแถวในหน้านี้ด้วย createSignedUrls ครั้งเดียว
-    // (ไม่ใช่ยิง sign ทีละแถว) — ทุกแถวเป็นผู้ดูแล จึง sign กับ caregiver-avatars เท่านั้น
+    // (ไม่ใช่ยิง sign ทีละแถว) · avatar_url ของผู้ดูแลมีค่าเฉพาะหลังแอดมินอนุมัติรูป (PYG-508)
     const avatarByRow = await this.avatarUrlService.resolveMany(
       rows,
       (row) => row.avatar_url,
-      CAREGIVER_AVATARS_BUCKET,
     );
 
     const data: CaregiverSummary[] = rows.map((row) => ({

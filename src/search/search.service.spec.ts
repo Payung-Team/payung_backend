@@ -2,7 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { SearchService } from './search.service';
 import { PrismaService } from '../common/prisma.service';
-import { AvatarUrlService, CAREGIVER_AVATARS_BUCKET } from '../common/avatar-url.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 import { SupabaseService } from '../common/supabase.service';
 import { SortByEnum } from './dto/search-caregiver.input';
 
@@ -325,7 +326,7 @@ describe('SearchService', () => {
 
   // ── PYG-518: avatar signing ─────────────────────────────────────────────
 
-  it('sign avatar_url ของทุกแถวด้วย createSignedUrls ครั้งเดียว กับ bucket caregiver-avatars', async () => {
+  it('sign avatar_url ของทุกแถวด้วย createSignedUrls ครั้งเดียว กับ bucket profile-photos', async () => {
     const rows = Array.from({ length: 20 }, (_, i) =>
       row({ id: `cg-${i}`, avatar_url: `cg-${i}/photo.jpg`, total_count: BigInt(20) }),
     );
@@ -336,7 +337,7 @@ describe('SearchService', () => {
     // ★ Done criterion: ผลค้นหา 20 ใบเซ็นในการเรียกเดียว
     expect(createSignedUrls).toHaveBeenCalledTimes(1);
     expect(createSignedUrls.mock.calls[0][0]).toHaveLength(20);
-    expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
+    expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
     expect(result.data.every((d, i) => d.avatarUrl === `https://signed.example/cg-${i}/photo.jpg`)).toBe(true);
   });
 

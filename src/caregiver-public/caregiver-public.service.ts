@@ -92,8 +92,8 @@ export class CaregiverPublicService {
     ).map(([day, slots]) => ({ day, slots }));
 
     // PYG-518: public profile ต้องเป็น signed URL ของรูปที่อนุมัติแล้วเท่านั้น
-    // (bucket caregiver-avatars) — ห้ามส่ง storage path ดิบออก endpoint สาธารณะนี้
-    const avatarUrl = await this.avatarUrlService.resolveCaregiverAvatar(
+    // (avatar_url ของผู้ดูแลถูกตั้งเฉพาะตอนแอดมินอนุมัติ) — ห้ามส่ง storage path ดิบออก endpoint สาธารณะนี้
+    const avatarUrl = await this.avatarUrlService.resolve(
       caregiver.user.avatarUrl,
       id,
     );

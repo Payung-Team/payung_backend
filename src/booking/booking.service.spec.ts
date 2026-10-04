@@ -17,7 +17,8 @@ import {
 } from '../payment/settlement/booking-settlement.types';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { BookingStatusEnum } from './dto/booking-summary.types';
-import { AvatarUrlService, CAREGIVER_AVATARS_BUCKET } from '../common/avatar-url.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 import { SupabaseService } from '../common/supabase.service';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -561,7 +562,7 @@ describe('BookingService', () => {
   // ── PYG-518: avatar signing ─────────────────────────────────────────────
 
   describe('caregiver avatar signing', () => {
-    it('confirmBooking: sign storage path ดิบของผู้ดูแลกับ bucket caregiver-avatars', async () => {
+    it('confirmBooking: sign storage path ดิบของผู้ดูแลกับ bucket profile-photos', async () => {
       const booking = fakeBooking({
         status: 'accepted',
         caregiver: {
@@ -575,7 +576,7 @@ describe('BookingService', () => {
       const result = await service.confirmBooking(BOOKING_ID, PATIENT_ID);
 
       expect(result.caregiver?.avatarUrl).toBe('https://signed.example/cg-222/profile-abc.jpg');
-      expect(storageFrom).toHaveBeenCalledWith(CAREGIVER_AVATARS_BUCKET);
+      expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
     });
 
     it('myBookingHistory: sign avatar ของผู้ดูแลทุกใบด้วย createSignedUrls ครั้งเดียว', async () => {

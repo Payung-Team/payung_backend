@@ -32,6 +32,7 @@ import { EmailService } from '../../email/email.service';
 import { NotificationType } from '../../notification/entities/notification-type.enum';
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
+import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import {
@@ -166,9 +167,16 @@ export class KycService {
       });
 
       // Query old linked docs (id + type) BEFORE unlinking (for audit diff)
+      // PYG-508: รูปโปรไฟล์ไม่ใช่เอกสารของรอบ KYC — ห้ามปลด caregiverId ทิ้งตอน resubmit
+      //   ไม่งั้นรูปที่รออนุมัติหลุดจากคิวแอดมิน และรูปที่อนุมัติแล้วหาเจ้าของไม่เจอ
+      const kycDocsOfCaregiver = {
+        caregiverId: upserted.id,
+        documentType: { not: PROFILE_PHOTO_DOC_TYPE },
+      };
+
       const oldLinkedDocs = isResubmit
         ? await tx.kycDocument.findMany({
-            where: { caregiverId: upserted.id },
+            where: kycDocsOfCaregiver,
             select: { id: true, documentType: true },
           })
         : [];
@@ -177,7 +185,7 @@ export class KycService {
       // so queries on caregiverId only return the current submission's docs
       if (isResubmit) {
         await tx.kycDocument.updateMany({
-          where: { caregiverId: upserted.id },
+          where: kycDocsOfCaregiver,
           data: { caregiverId: null },
         });
       }

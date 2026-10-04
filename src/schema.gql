@@ -100,6 +100,9 @@ type AdminKycDetailPayload {
   """Payout bank account summary (masked — never the full account number)"""
   payoutAccount: AdminPayoutAccountSummary
 
+  """Pending profile photo document id (null if none awaiting review)"""
+  pendingProfilePhotoDocumentId: ID
+
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
 

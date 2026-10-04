@@ -12,13 +12,10 @@
  * sign ล้ม → คืน null ให้ FE ตก fallback เป็นตัวอักษรย่อ ไม่ throw ทิ้งทั้ง query
  * เพราะรูปโปรไฟล์ไม่ควรทำให้ query ล้มทั้งก้อน
  *
- * PYG-518 — สอง bucket แยกตามความหมาย ห้ามใช้สลับกัน:
- * - PROFILE_PHOTOS_BUCKET  ('profile-photos') — รูปที่อัปผ่าน backend ของ role ที่ไม่ใช่ผู้ดูแล
- *   (ตั้ง users.avatar_url ทันที ไม่ต้องรีวิว) และเป็นที่พักรูป "รอรีวิว" ของผู้ดูแลใน kyc_documents
- *   (ยังไม่อนุมัติ — ห้าม sign ฟิลด์นี้ออก resolver สาธารณะเด็ดขาด)
- * - CAREGIVER_AVATARS_BUCKET ('caregiver-avatars') — รูปโปรไฟล์ผู้ดูแลที่ "อนุมัติแล้ว" เท่านั้น
- *   users.avatar_url ของผู้ดูแลจะชี้มาที่ bucket นี้หลังแอดมินอนุมัติ (ดู subtask อนุมัติรูป — ยังไม่ทำ)
- *   ทุกจุดที่ส่ง avatarUrl ของ "ผู้ดูแล" (ผลค้นหา, ใบจอง, public profile) ต้อง sign กับ bucket นี้
+ * PYG-508 — รูปโปรไฟล์ทุก role อยู่ bucket เดียว: PROFILE_PHOTOS_BUCKET ('profile-photos')
+ * - role อื่น: อัปแล้วตั้ง users.avatar_url ทันที
+ * - ผู้ดูแล: อัปแล้วรอรีวิวใน kyc_documents · แอดมินอนุมัติ = ตั้ง users.avatar_url เป็น path ของใบนั้น
+ *   (ไม่ย้ายไฟล์) — รูปที่ยังไม่อนุมัติจึงไม่มีทางถูก sign ออกจากที่นี่ เพราะ path ไม่เคยอยู่ใน avatar_url
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
@@ -27,13 +24,6 @@ import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 /** อายุ signed URL ของรูปโปรไฟล์ — เท่ากับฝั่งอัปโหลด (profile-photo.service) */
 const AVATAR_SIGNED_URL_TTL_SEC = 3600;
 
-/** PYG-518 — bucket รูปโปรไฟล์ผู้ดูแลที่อนุมัติแล้วเท่านั้น (private, เขียนได้เฉพาะ flow อนุมัติ) */
-export const CAREGIVER_AVATARS_BUCKET = 'caregiver-avatars';
-
-export type AvatarBucket =
-  | typeof PROFILE_PHOTOS_BUCKET
-  | typeof CAREGIVER_AVATARS_BUCKET;
-
 @Injectable()
 export class AvatarUrlService {
   private readonly logger = new Logger(AvatarUrlService.name);
@@ -41,29 +31,11 @@ export class AvatarUrlService {
   constructor(private readonly supabaseService: SupabaseService) {}
 
   /**
-   * @param stored ค่าดิบจาก avatar_url (ของ role ที่ไม่ใช่ผู้ดูแล — patient/family/admin)
+   * @param stored ค่าดิบจาก users.avatar_url (ทุก role)
    * @param ownerId ใช้ใน log อย่างเดียว
    */
-  resolve(stored: string | null | undefined, ownerId?: string): Promise<string | null> {
-    return this.resolveFromBucket(stored, PROFILE_PHOTOS_BUCKET, ownerId);
-  }
-
-  /**
-   * เหมือน resolve() แต่ sign กับ bucket 'caregiver-avatars' — ใช้เฉพาะ avatarUrl
-   * ของ "ผู้ดูแล" (caregiver.user.avatarUrl) เท่านั้น ห้ามใช้กับ role อื่น
-   */
-  resolveCaregiverAvatar(
-    stored: string | null | undefined,
-    ownerId?: string,
-  ): Promise<string | null> {
-    return this.resolveFromBucket(stored, CAREGIVER_AVATARS_BUCKET, ownerId);
-  }
-
-  private async resolveFromBucket(
-    stored: string | null | undefined,
-    bucket: AvatarBucket,
-    ownerId?: string,
-  ): Promise<string | null> {
+  async resolve(stored: string | null | undefined, ownerId?: string): Promise<string | null> {
+    const bucket = PROFILE_PHOTOS_BUCKET;
     if (!stored) {
       return null;
     }
@@ -108,12 +80,12 @@ export class AvatarUrlService {
    *
    * @param items รายการต้นฉบับ (แถวจาก DB หรือ DTO ก็ได้)
    * @param getPath ดึงค่าดิบจาก avatar_url ของแต่ละ item
-   * @param bucket bucket ที่จะ sign — เลือกผิด bucket = ได้ 404 เงียบ ๆ (ดู comment หัวไฟล์)
+   * @param bucket มีค่าเดียวที่ใช้ได้ (profile-photos) — คงพารามิเตอร์ไว้ให้ผู้เรียกเดิมไม่ต้องแก้
    */
   async resolveMany<T>(
     items: readonly T[],
     getPath: (item: T) => string | null | undefined,
-    bucket: AvatarBucket,
+    bucket: typeof PROFILE_PHOTOS_BUCKET = PROFILE_PHOTOS_BUCKET,
   ): Promise<Map<T, string | null>> {
     const result = new Map<T, string | null>();
     // dedup ตาม path จริง — หลาย item อาจชี้ path เดียวกัน ไม่ควร sign ซ้ำ
