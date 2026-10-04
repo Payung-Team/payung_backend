@@ -152,6 +152,35 @@ type AdminPayoutAccountSummary {
   status: String!
 }
 
+input AdminProfilePhotoQueueInput {
+  """Items per page (default: 20, max: 100)."""
+  limit: Int
+
+  """Page number (1-based). Defaults to 1."""
+  page: Int
+
+  """Search by caregiver full name (case-insensitive partial match)"""
+  search: String
+}
+
+"""Paginated queue of pending caregiver profile photos"""
+type AdminProfilePhotoQueuePayload {
+  items: [ProfilePhotoQueueItem!]!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+"""Everything an admin needs to compare a profile photo with the ID card"""
+type AdminProfilePhotoReviewPayload {
+  """Signed URL of the currently approved photo"""
+  approvedPhotoUrl: String
+  caregiver: Caregiver!
+  idCardDocuments: [KycDocument!]!
+  pendingPhoto: ProfilePhotoDocument
+  reviews: [KycReview!]!
+}
+
 input AdminTransactionsInput {
   dateFrom: DateTime
   dateTo: DateTime
@@ -1663,6 +1692,9 @@ input KycInput {
 type KycReview {
   """Review action: approved | rejected"""
   action: String!
+
+  """Reviewed document id (null = whole KYC review)"""
+  documentId: ID
   id: ID!
 
   """Rejection reason (null if approved)"""
@@ -1817,6 +1849,11 @@ type Mutation {
   ): Caregiver!
 
   """
+  Admin only: Approve a pending caregiver profile photo. Sets it as the public avatar, records kyc_reviews (profile_photo_approved) and notifies the caregiver. Does not change kycStatus.
+  """
+  approveProfilePhoto(documentId: ID!): ProfilePhotoReviewResult!
+
+  """
   Caregiver cancels a previously accepted booking before patient confirmation, with a required reason (accepted → rejected).
   """
   cancelAcceptance(input: CancelAcceptanceInput!): CaregiverBookingSummary!
@@ -1966,6 +2003,11 @@ type Mutation {
   Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
+
+  """
+  Admin only: Reject a pending caregiver profile photo with a reason (required). The current avatar is kept. Records kyc_reviews (profile_photo_rejected) and notifies the caregiver.
+  """
+  rejectProfilePhoto(input: RejectProfilePhotoInput!): ProfilePhotoReviewResult!
 
   """
   นำโปรไฟล์ออกจากกลุ่ม (unshare — โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ) — เฉพาะเจ้าของโปรไฟล์
@@ -2144,6 +2186,8 @@ enum NotificationType {
   payment_held
   payment_transferred
   payment_voided
+  profile_photo_approved
+  profile_photo_rejected
   refund_issued
 }
 
@@ -2318,6 +2362,48 @@ type PayoutBankOption {
   nameTh: String!
 }
 
+"""A profile photo document with a short-lived signed URL"""
+type ProfilePhotoDocument {
+  documentId: ID!
+
+  """pending | approved | rejected"""
+  reviewStatus: String!
+
+  """Signed URL (1 hr) — null if signing failed"""
+  signedUrl: String
+  uploadedAt: DateTime!
+}
+
+"""A caregiver profile photo awaiting admin review"""
+type ProfilePhotoQueueItem {
+  caregiverId: ID!
+  caregiverNumber: String
+
+  """kyc_documents.id of the pending profile photo"""
+  documentId: ID!
+  email: String!
+  fullName: String!
+
+  """True if the caregiver already has an approved profile photo"""
+  hasApprovedPhoto: Boolean!
+
+  """Caregiver KYC status: none | pending | verified | rejected"""
+  kycStatus: String!
+
+  """When the pending photo was uploaded"""
+  uploadedAt: DateTime!
+}
+
+"""Result of approving or rejecting a profile photo"""
+type ProfilePhotoReviewResult {
+  caregiverId: ID!
+  documentId: ID!
+
+  """approved | rejected"""
+  reviewStatus: String!
+  reviewedAt: DateTime!
+}
+
 type ProofOfWorkSummary {
   """
   เวลาทำงานจริง (นาที) คำนวณจาก server_ts ทั้งสองฝั่ง. null เมื่อยังไม่ปิดงาน หรือเมื่อระบบปิดให้เอง
@@ -2387,6 +2473,16 @@ type Query {
   Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
   """
   adminPayments(input: AdminPaymentsInput): PaymentConnection!
+
+  """
+  Admin only: Caregiver profile photos awaiting review, oldest first. Includes verified caregivers who changed their photo.
+  """
+  adminProfilePhotoQueue(input: AdminProfilePhotoQueueInput!): AdminProfilePhotoQueuePayload!
+
+  """
+  Admin only: Pending profile photo, ID card documents and current approved photo with signed URLs, plus profile photo review history. Viewing is written to admin_audit_logs.
+  """
+  adminProfilePhotoReview(caregiverId: ID!): AdminProfilePhotoReviewPayload!
 
   """
   Admin only: รายละเอียด 1 transaction + status timeline + related links. id เป็น composite "payment:<uuid>" หรือ "payout:<uuid>" (PYG-333)
@@ -2662,6 +2758,13 @@ input RejectKycInput {
 
   """One or more rejection reasons"""
   reasons: [RejectionReasonItem!]!
+}
+
+input RejectProfilePhotoInput {
+  documentId: ID!
+
+  """Reason shown to the caregiver (required)"""
+  reason: String!
 }
 
 type RejectionReason {

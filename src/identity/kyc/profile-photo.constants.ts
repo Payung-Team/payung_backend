@@ -23,3 +23,12 @@ export const DOCUMENT_REVIEW_STATUS = {
   APPROVED: 'approved',
   REJECTED: 'rejected',
 } as const;
+
+/**
+ * kyc_reviews.action ของการรีวิวรูปโปรไฟล์ (PYG-508) — แยกจาก 'approved' / 'rejected' ของ KYC ทั้งก้อน
+ * แถวพวกนี้มี document_id เสมอ ส่วนแถวรีวิว KYC เดิม document_id = NULL
+ */
+export const PROFILE_PHOTO_REVIEW_ACTION = {
+  APPROVED: 'profile_photo_approved',
+  REJECTED: 'profile_photo_rejected',
+} as const;

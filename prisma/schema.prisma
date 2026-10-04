@@ -1120,6 +1120,8 @@ enum NotificationType {
   payment_transferred
   job_checked_in // PYG-353
   job_care_log_added // มีการบันทึก care log (Christina)
+  profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
+  profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
 }
 
 enum booking_service_type {
