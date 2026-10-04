@@ -22,6 +22,7 @@ import {
   PROFILE_PHOTO_DOC_TYPE,
   PROFILE_PHOTO_MIME,
 } from './profile-photo.constants';
+import { MyProfilePhotoReview } from './entities/my-profile-photo-review.entity';
 
 /** ไฟล์ที่ multer ส่งมา (รูปทรงเดียวกับที่ CareLogService ใช้) */
 export type UploadedProfilePhoto = Pick<
@@ -103,6 +104,52 @@ export class ProfilePhotoService {
         ? DOCUMENT_REVIEW_STATUS.PENDING
         : DOCUMENT_REVIEW_STATUS.APPROVED,
       photoUrl: await this.sign(path),
+    };
+  }
+
+  /**
+   * สถานะรูปใบล่าสุดของผู้ดูแลคนนี้ — null ถ้าไม่ใช่ผู้ดูแลหรือยังไม่เคยอัปโหลดผ่าน flow รีวิว
+   * ใบล่าสุด = uploadedAt ล่าสุด (ใบ pending เก่าถูกลบตอนอัปใบใหม่ จึงมี pending ได้ใบเดียว)
+   */
+  async myReview(userId: string): Promise<MyProfilePhotoReview | null> {
+    const caregiver = await this.prisma.caregiver.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!caregiver) return null;
+
+    const doc = await this.prisma.kycDocument.findFirst({
+      where: { caregiverId: caregiver.id, documentType: PROFILE_PHOTO_DOC_TYPE },
+      orderBy: { uploadedAt: 'desc' },
+      select: {
+        id: true,
+        fileUrl: true,
+        reviewStatus: true,
+        uploadedAt: true,
+        reviewedAt: true,
+        reviews: {
+          orderBy: { reviewedAt: 'desc' },
+          take: 1,
+          select: { reason: true },
+        },
+      },
+    });
+    if (!doc) return null;
+
+    const reviewStatus = doc.reviewStatus ?? DOCUMENT_REVIEW_STATUS.PENDING;
+    const isApproved = reviewStatus === DOCUMENT_REVIEW_STATUS.APPROVED;
+
+    return {
+      documentId: doc.id,
+      reviewStatus,
+      // approved → FE ใช้ me.avatarUrl (ชี้ไฟล์เดียวกัน) ไม่ต้อง sign ซ้ำ
+      photoUrl: isApproved ? undefined : ((await this.sign(doc.fileUrl)) ?? undefined),
+      reason:
+        reviewStatus === DOCUMENT_REVIEW_STATUS.REJECTED
+          ? (doc.reviews[0]?.reason ?? undefined)
+          : undefined,
+      uploadedAt: doc.uploadedAt,
+      reviewedAt: doc.reviewedAt ?? undefined,
     };
   }
 

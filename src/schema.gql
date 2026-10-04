@@ -2146,6 +2146,22 @@ type Mutation {
   ): ConsentStatus!
 }
 
+"""Review status of the current caregiver's latest uploaded profile photo"""
+type MyProfilePhotoReview {
+  documentId: ID!
+
+  """Signed URL of this photo (pending / rejected only)"""
+  photoUrl: String
+
+  """Rejection reason from admin"""
+  reason: String
+
+  """pending | approved | rejected"""
+  reviewStatus: String!
+  reviewedAt: DateTime
+  uploadedAt: DateTime!
+}
+
 type Notification {
   """Body / detail of the notification"""
   body: String!
@@ -2654,6 +2670,11 @@ type Query {
   กลุ่มครอบครัวทั้งหมดที่ฉันเป็นสมาชิกอยู่ (ใหม่สุดก่อน) พร้อมรายชื่อสมาชิกและบทบาทของฉันในแต่ละกลุ่ม. ไม่มีกลุ่ม = คืน array ว่าง ไม่ใช่ error.
   """
   myFamilyGroups: [FamilyGroup!]!
+
+  """
+  Caregiver only: review status of my latest uploaded profile photo (pending / approved / rejected + reason). null if none uploaded yet.
+  """
+  myProfilePhotoReview: MyProfilePhotoReview
 
   """
   Returns the current caregiver's work condition (availability + service locations + job types + service area). Verified caregivers only.
