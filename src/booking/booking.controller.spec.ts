@@ -16,6 +16,8 @@ import {
 } from '../payment/settlement/booking-settlement.types';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -158,6 +160,12 @@ describe('BookingService — new REST methods', () => {
             findWithdrawnType: jest.fn().mockResolvedValue(null),
             withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
           },
+        },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
         },
       ],
     }).compile();

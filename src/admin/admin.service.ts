@@ -72,6 +72,10 @@ import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
+import {
+  DOCUMENT_REVIEW_STATUS,
+  PROFILE_PHOTO_DOC_TYPE,
+} from '../identity/kyc/profile-photo.constants';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -157,7 +161,10 @@ export class AdminService {
           select: { email: true },
         },
         _count: {
-          select: { documents: true },
+          // PYG-508: นับเฉพาะเอกสาร KYC — รูปโปรไฟล์มีคิวของตัวเอง
+          select: {
+            documents: { where: { documentType: { not: PROFILE_PHOTO_DOC_TYPE } } },
+          },
         },
       },
       // ดึง slice ที่ถูกต้องก่อน sort (over-fetch เพื่อ sort แล้ว slice จะเสีย pagination)
@@ -253,8 +260,9 @@ export class AdminService {
     );
 
     // ─── 3. Fetch review history (newest first) + reviewer name via JOIN ──
+    // PYG-508: เฉพาะรีวิว KYC ทั้งก้อน (document_id = NULL) — รีวิวรูปโปรไฟล์แสดงในหน้ารีวิวรูป
     const rawReviews = await this.prismaService.kycReview.findMany({
-      where: { caregiverId },
+      where: { caregiverId, documentId: null },
       orderBy: { reviewedAt: 'desc' },
       include: {
         reviewer: {
@@ -393,6 +401,16 @@ export class AdminService {
         }
       : undefined;
 
+    // ─── 7. PYG-508: รูปโปรไฟล์ที่รออนุมัติ — ให้หน้า KYC ลิงก์ไปหน้ารีวิวรูปได้ ──
+    const pendingProfilePhoto = await this.prismaService.kycDocument.findFirst({
+      where: {
+        caregiverId,
+        documentType: PROFILE_PHOTO_DOC_TYPE,
+        reviewStatus: DOCUMENT_REVIEW_STATUS.PENDING,
+      },
+      select: { id: true },
+    });
+
     this.logger.log({
       event: 'admin.kyc_detail.queried',
       caregiverId,
@@ -408,6 +426,7 @@ export class AdminService {
       resubmitCount: raw.resubmitCount,
       editHistory: mergedHistory,
       payoutAccount,
+      pendingProfilePhotoDocumentId: pendingProfilePhoto?.id,
     };
   }
 
@@ -623,6 +642,8 @@ export class AdminService {
         r.reviewed_at
       FROM kyc_reviews r
       INNER JOIN caregivers c ON c.id = r.caregiver_id
+      -- PYG-508: เฉพาะรีวิว KYC ทั้งก้อน — รีวิวรูปโปรไฟล์ (document_id มีค่า) ไม่ใช่กิจกรรม KYC
+      WHERE r.document_id IS NULL
       ORDER BY r.reviewed_at DESC
       LIMIT 10
     `;

@@ -35,4 +35,11 @@ export class KycReview {
     /** วันเวลาที่ทำ review */
     @Field({ description: 'When this review was performed' })
     reviewedAt!: Date;
+
+    /**
+     * PYG-508: เอกสารที่รีวิวนี้ตัดสิน — null = รีวิว KYC ทั้งก้อน
+     * มีค่าสำหรับรีวิวรูปโปรไฟล์ (action = profile_photo_approved | profile_photo_rejected)
+     */
+    @Field(() => ID, { nullable: true, description: 'Reviewed document id (null = whole KYC review)' })
+    documentId?: string;
 }

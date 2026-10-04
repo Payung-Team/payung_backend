@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 // PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" ต้องไม่ถูกเห็นในกลุ่มอีก
 import { ConsentService } from '../consent/consent.service';
 import { CONSENT_SOURCE, CONSENT_TYPE } from '../consent/consent.constants';
@@ -180,6 +182,8 @@ export class FamilyGroupService {
     private readonly prisma: PrismaService,
     // PYG-540: กรองโปรไฟล์/ฟีดของสมาชิกที่ถอนความยินยอมเปิดเผยให้กลุ่ม
     private readonly consentService: ConsentService,
+    // PYG-518: sign avatarUrl ของสมาชิก/ผู้ลงมือในฟีดกิจกรรมแบบ batch
+    private readonly avatarUrlService: AvatarUrlService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -528,7 +532,7 @@ export class FamilyGroupService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return groups.map((group) => this.toFamilyGroup(group, userId));
+    return Promise.all(groups.map((group) => this.toFamilyGroup(group, userId)));
   }
 
   /**
@@ -1608,8 +1612,17 @@ export class FamilyGroupService {
   }
 
   /** แปลงแถวจากดีบีเป็น type ที่ GraphQL ส่งออก */
-  private toFamilyGroup(group: GroupRow, viewerId: string): FamilyGroup {
-    const members = group.members.map((m) => this.toMemberItem(m, viewerId));
+  private async toFamilyGroup(group: GroupRow, viewerId: string): Promise<FamilyGroup> {
+    // PYG-518: เซ็น avatar ของสมาชิกทุกคนในกลุ่มพร้อมกัน (createSignedUrls ครั้งเดียว
+    // ต่อกลุ่ม แทนที่จะปล่อยให้ field resolver ของแต่ละคน sign แยกทีละคน)
+    const avatarByMember = await this.avatarUrlService.resolveMany(
+      group.members,
+      (m) => m.user?.avatarUrl,
+      PROFILE_PHOTOS_BUCKET,
+    );
+    const members = group.members.map((m) =>
+      this.toMemberItem(m, viewerId, avatarByMember.get(m) ?? undefined),
+    );
 
     // เจ้าของขึ้นก่อนเสมอ ที่เหลือคงลำดับ joinedAt จากดีบีไว้
     // (ไม่ใช้ orderBy role ที่ดีบี เพราะนั่นคือการเรียงตามตัวอักษรที่บังเอิญถูก
@@ -1634,17 +1647,18 @@ export class FamilyGroupService {
     };
   }
 
-  /** แปลงแถวสมาชิก 1 คน */
+  /** แปลงแถวสมาชิก 1 คน — avatarUrl ต้อง sign มาก่อนแล้ว (ดู toFamilyGroup) */
   private toMemberItem(
     row: MemberRow,
     viewerId: string,
+    avatarUrl: string | undefined,
   ): FamilyGroupMemberItem {
     return {
       id: row.id,
       userId: row.userId,
       displayName: row.user?.displayName ?? undefined,
       email: row.user?.email ?? '',
-      avatarUrl: row.user?.avatarUrl ?? undefined,
+      avatarUrl,
       role: row.role,
       joinedAt: row.joinedAt,
       isMe: row.userId === viewerId,
@@ -1715,8 +1729,14 @@ export class FamilyGroupService {
     // PYG-540: "ปิดรายละเอียด" แทนการตัดแถวทิ้ง — ถ้าตัดทิ้ง หน้านี้จะได้แถวไม่ครบ take
     //   และ cursor/hasNextPage ที่คำนวณไว้ข้างบนจะเพี้ยน (keyset pagination พึ่งจำนวนแถวที่แน่นอน)
     const redacted = await this.redactedBookingActivityIds(pageRows, viewerId);
+    // PYG-518: เซ็น avatar ของผู้ลงมือทุกแถวในหน้านี้พร้อมกัน (createSignedUrls ครั้งเดียว)
+    const avatarByRow = await this.avatarUrlService.resolveMany(
+      pageRows,
+      (row) => row.actor?.avatarUrl,
+      PROFILE_PHOTOS_BUCKET,
+    );
     const nodes = pageRows.map((row) =>
-      this.toActivityItem(row, redacted.has(row.id)),
+      this.toActivityItem(row, redacted.has(row.id), avatarByRow.get(row) ?? undefined),
     );
 
     return {
@@ -1852,17 +1872,19 @@ export class FamilyGroupService {
   private toActivityItem(
     row: ActivityRow,
     redacted = false,
+    actorAvatarUrl?: string,
   ): FamilyGroupActivityItem {
     return {
       id: row.id,
       // actorId ยังอยู่แต่ actor เป็น null = บัญชีถูกลบไปแล้ว (FK ตั้ง ON DELETE SET NULL)
       // ทั้งก้อนเป็น undefined เพื่อให้ FE แสดง "ผู้ใช้ที่ถูกลบ" ได้ด้วยเงื่อนไขเดียว
+      // avatarUrl ต้อง sign มาก่อนแล้ว (ดู familyGroupActivity)
       actor:
         row.actorId && row.actor
           ? {
               userId: row.actorId,
               displayName: row.actor.displayName ?? undefined,
-              avatarUrl: row.actor.avatarUrl ?? undefined,
+              avatarUrl: actorAvatarUrl,
             }
           : undefined,
       action: row.action,

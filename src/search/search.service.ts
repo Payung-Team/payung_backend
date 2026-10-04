@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { SearchCaregiverInput, SortByEnum } from './dto/search-caregiver.input';
 import { CaregiverSummary, SearchCaregiverPayload } from './dto/search-caregiver.payload';
 
@@ -23,7 +24,10 @@ type RawCaregiverRow = {
 export class SearchService {
   private readonly logger = new Logger(SearchService.name);
 
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly avatarUrlService: AvatarUrlService,
+  ) {}
 
   /**
    * searchCaregivers — ค้นหา caregiver ที่ is_searchable + kyc_status = 'verified'
@@ -139,10 +143,17 @@ export class SearchService {
     const total      = rows.length > 0 ? Number(rows[0].total_count) : 0;
     const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
 
+    // PYG-518: เซ็น avatar ของทุกแถวในหน้านี้ด้วย createSignedUrls ครั้งเดียว
+    // (ไม่ใช่ยิง sign ทีละแถว) · avatar_url ของผู้ดูแลมีค่าเฉพาะหลังแอดมินอนุมัติรูป (PYG-508)
+    const avatarByRow = await this.avatarUrlService.resolveMany(
+      rows,
+      (row) => row.avatar_url,
+    );
+
     const data: CaregiverSummary[] = rows.map((row) => ({
       id:          row.id,
       fullName:    row.full_name   ?? '',
-      avatarUrl:   row.avatar_url  ?? undefined,
+      avatarUrl:   avatarByRow.get(row) ?? undefined,
       hourlyRate:  row.hourly_rate ?? 0,
       avgRating:   row.avg_rating  != null ? row.avg_rating : undefined,
       reviewCount: Number(row.review_count),
