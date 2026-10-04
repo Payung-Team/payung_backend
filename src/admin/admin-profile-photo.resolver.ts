@@ -35,7 +35,8 @@ export class AdminProfilePhotoResolver {
 
   @Query(() => AdminProfilePhotoQueuePayload, {
     description:
-      'Admin only: Caregiver profile photos awaiting review, oldest first. ' +
+      'Admin only: Caregiver profile photos by review status (default pending, oldest first; ' +
+      'approved / rejected newest decision first with reviewer and reason). ' +
       'Includes verified caregivers who changed their photo.',
   })
   async adminProfilePhotoQueue(

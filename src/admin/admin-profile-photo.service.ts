@@ -69,17 +69,23 @@ export class AdminProfilePhotoService {
   ) {}
 
   /**
-   * คิว "รูปโปรไฟล์รออนุมัติ" — อ่านจาก kyc_documents ตรง ๆ ไม่ใช่ caregivers.kyc_status
-   * จึงเห็นผู้ดูแลที่ verified แล้วแต่เปลี่ยนรูปด้วย · ใบเก่าสุดขึ้นก่อน (มาก่อนได้ก่อน)
+   * คิวรูปโปรไฟล์ — อ่านจาก kyc_documents ตรง ๆ ไม่ใช่ caregivers.kyc_status
+   * จึงเห็นผู้ดูแลที่ verified แล้วแต่เปลี่ยนรูปด้วย
+   *
+   * status (default pending):
+   *   - pending  : ใบเก่าสุดขึ้นก่อน (มาก่อนได้ก่อน)
+   *   - approved / rejected : ตัดสินล่าสุดขึ้นก่อน + ผู้ตรวจ / เหตุผลจาก kyc_reviews ล่าสุดของใบนั้น
    */
   async queue(input: AdminProfilePhotoQueueInput): Promise<AdminProfilePhotoQueuePayload> {
     const page = input.page ?? DEFAULT_PAGE;
     const limit = input.limit ?? DEFAULT_LIMIT;
     const search = input.search?.trim();
+    const status = input.status ?? DOCUMENT_REVIEW_STATUS.PENDING;
+    const isPending = status === DOCUMENT_REVIEW_STATUS.PENDING;
 
     const where: Prisma.KycDocumentWhereInput = {
       documentType: PROFILE_PHOTO_DOC_TYPE,
-      reviewStatus: DOCUMENT_REVIEW_STATUS.PENDING,
+      reviewStatus: status,
       caregiverId: { not: null },
       ...(search
         ? { caregiver: { is: { fullName: { contains: search, mode: 'insensitive' } } } }
@@ -90,12 +96,20 @@ export class AdminProfilePhotoService {
       this.prismaService.kycDocument.count({ where }),
       this.prismaService.kycDocument.findMany({
         where,
-        orderBy: { uploadedAt: 'asc' },
+        orderBy: isPending ? { uploadedAt: 'asc' } : { reviewedAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         select: {
           id: true,
           uploadedAt: true,
+          reviewStatus: true,
+          reviewedAt: true,
+          fileUrl: true,
+          reviews: {
+            orderBy: { reviewedAt: 'desc' },
+            take: 1,
+            select: { reason: true, reviewer: { select: { displayName: true } } },
+          },
           caregiver: {
             select: {
               id: true,
@@ -121,6 +135,11 @@ export class AdminProfilePhotoService {
               kycStatus: doc.caregiver.kycStatus,
               uploadedAt: doc.uploadedAt,
               hasApprovedPhoto: !!doc.caregiver.user.avatarUrl,
+              reviewStatus: doc.reviewStatus ?? status,
+              reviewedAt: doc.reviewedAt ?? undefined,
+              reviewerName: doc.reviews[0]?.reviewer?.displayName ?? undefined,
+              reason: doc.reviews[0]?.reason ?? undefined,
+              isCurrentAvatar: doc.caregiver.user.avatarUrl === doc.fileUrl,
             },
           ]
         : [],

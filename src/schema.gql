@@ -164,9 +164,12 @@ input AdminProfilePhotoQueueInput {
 
   """Search by caregiver full name (case-insensitive partial match)"""
   search: String
+
+  """Review status to list. Defaults to pending."""
+  status: ProfilePhotoReviewStatusFilter
 }
 
-"""Paginated queue of pending caregiver profile photos"""
+"""Paginated queue of caregiver profile photos"""
 type AdminProfilePhotoQueuePayload {
   items: [ProfilePhotoQueueItem!]!
   page: Int!
@@ -2377,12 +2380,14 @@ type ProfilePhotoDocument {
   uploadedAt: DateTime!
 }
 
-"""A caregiver profile photo awaiting admin review"""
+"""
+A caregiver profile photo in the review queue (pending or already decided)
+"""
 type ProfilePhotoQueueItem {
   caregiverId: ID!
   caregiverNumber: String
 
-  """kyc_documents.id of the pending profile photo"""
+  """kyc_documents.id of the profile photo"""
   documentId: ID!
   email: String!
   fullName: String!
@@ -2390,8 +2395,23 @@ type ProfilePhotoQueueItem {
   """True if the caregiver already has an approved profile photo"""
   hasApprovedPhoto: Boolean!
 
+  """True if this photo is the caregiver's current public avatar"""
+  isCurrentAvatar: Boolean!
+
   """Caregiver KYC status: none | pending | verified | rejected"""
   kycStatus: String!
+
+  """Rejection reason"""
+  reason: String
+
+  """pending | approved | rejected"""
+  reviewStatus: String!
+
+  """When the photo was approved / rejected"""
+  reviewedAt: DateTime
+
+  """Display name of the admin who decided"""
+  reviewerName: String
 
   """When the pending photo was uploaded"""
   uploadedAt: DateTime!
@@ -2405,6 +2425,13 @@ type ProfilePhotoReviewResult {
   """approved | rejected"""
   reviewStatus: String!
   reviewedAt: DateTime!
+}
+
+"""Filter the profile photo queue by review status"""
+enum ProfilePhotoReviewStatusFilter {
+  approved
+  pending
+  rejected
 }
 
 type ProofOfWorkSummary {
@@ -2478,7 +2505,7 @@ type Query {
   adminPayments(input: AdminPaymentsInput): PaymentConnection!
 
   """
-  Admin only: Caregiver profile photos awaiting review, oldest first. Includes verified caregivers who changed their photo.
+  Admin only: Caregiver profile photos by review status (default pending, oldest first; approved / rejected newest decision first with reviewer and reason). Includes verified caregivers who changed their photo.
   """
   adminProfilePhotoQueue(input: AdminProfilePhotoQueueInput!): AdminProfilePhotoQueuePayload!
 

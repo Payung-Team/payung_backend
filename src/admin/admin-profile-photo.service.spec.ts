@@ -14,6 +14,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AdminProfilePhotoService } from './admin-profile-photo.service';
+import { ProfilePhotoReviewStatusFilter } from './dto/admin-profile-photo.dto';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
@@ -263,6 +264,10 @@ describe('AdminProfilePhotoService', () => {
         {
           id: 'doc-a',
           uploadedAt: new Date('2026-10-01'),
+          reviewStatus: 'pending',
+          reviewedAt: null,
+          fileUrl: 'user-a/profile-new.jpg',
+          reviews: [],
           caregiver: {
             id: 'cg-a',
             caregiverNumber: 'CG-1',
@@ -274,6 +279,10 @@ describe('AdminProfilePhotoService', () => {
         {
           id: 'doc-b',
           uploadedAt: new Date('2026-10-02'),
+          reviewStatus: 'pending',
+          reviewedAt: null,
+          fileUrl: 'user-b/profile-1.jpg',
+          reviews: [],
           caregiver: {
             id: 'cg-b',
             caregiverNumber: null,
@@ -293,11 +302,78 @@ describe('AdminProfilePhotoService', () => {
         caregiver: { is: { fullName: { contains: 'สม', mode: 'insensitive' } } },
       });
       expect(where).not.toHaveProperty('kycStatus');
+      expect(mockPrisma.kycDocument.findMany.mock.calls[0][0].orderBy).toEqual({ uploadedAt: 'asc' });
       expect(result.total).toBe(2);
       expect(result.items).toEqual([
-        expect.objectContaining({ documentId: 'doc-a', kycStatus: 'verified', hasApprovedPhoto: true }),
+        expect.objectContaining({ documentId: 'doc-a', kycStatus: 'verified', hasApprovedPhoto: true, reviewStatus: 'pending' }),
         expect.objectContaining({ documentId: 'doc-b', fullName: '', hasApprovedPhoto: false }),
       ]);
+    });
+
+    it('status = rejected: กรองตามสถานะ, ตัดสินล่าสุดก่อน, คืนผู้ตรวจ + เหตุผล', async () => {
+      const reviewedAt = new Date('2026-10-03T08:00:00Z');
+      mockPrisma.kycDocument.count.mockResolvedValue(1);
+      mockPrisma.kycDocument.findMany.mockResolvedValue([
+        {
+          id: 'doc-r',
+          uploadedAt: new Date('2026-10-02'),
+          reviewStatus: 'rejected',
+          reviewedAt,
+          fileUrl: 'user-r/profile-x.jpg',
+          reviews: [{ reason: 'ไม่ตรงกับบัตร', reviewer: { displayName: 'Admin A' } }],
+          caregiver: {
+            id: 'cg-r',
+            caregiverNumber: 'CG-9',
+            fullName: 'มาลี',
+            kycStatus: 'verified',
+            user: { email: 'r@x.com', avatarUrl: 'user-r/profile-old.jpg' },
+          },
+        },
+      ]);
+
+      const result = await service.queue({ status: ProfilePhotoReviewStatusFilter.rejected });
+
+      const args = mockPrisma.kycDocument.findMany.mock.calls[0][0];
+      expect(args.where).toMatchObject({ reviewStatus: 'rejected' });
+      expect(args.orderBy).toEqual({ reviewedAt: 'desc' });
+      expect(result.items[0]).toMatchObject({
+        documentId: 'doc-r',
+        reviewStatus: 'rejected',
+        reviewedAt,
+        reviewerName: 'Admin A',
+        reason: 'ไม่ตรงกับบัตร',
+        isCurrentAvatar: false,
+      });
+    });
+
+    it('status = approved: ใบที่ยังเป็น avatar ปัจจุบัน → isCurrentAvatar = true', async () => {
+      mockPrisma.kycDocument.count.mockResolvedValue(1);
+      mockPrisma.kycDocument.findMany.mockResolvedValue([
+        {
+          id: 'doc-ok',
+          uploadedAt: new Date('2026-10-01'),
+          reviewStatus: 'approved',
+          reviewedAt: new Date('2026-10-02'),
+          fileUrl: 'user-ok/profile-1.jpg',
+          reviews: [{ reason: null, reviewer: { displayName: 'Admin B' } }],
+          caregiver: {
+            id: 'cg-ok',
+            caregiverNumber: null,
+            fullName: 'สมชาย',
+            kycStatus: 'verified',
+            user: { email: 'ok@x.com', avatarUrl: 'user-ok/profile-1.jpg' },
+          },
+        },
+      ]);
+
+      const result = await service.queue({ status: ProfilePhotoReviewStatusFilter.approved });
+
+      expect(result.items[0]).toMatchObject({
+        reviewStatus: 'approved',
+        reviewerName: 'Admin B',
+        isCurrentAvatar: true,
+      });
+      expect(result.items[0].reason).toBeUndefined();
     });
   });
 

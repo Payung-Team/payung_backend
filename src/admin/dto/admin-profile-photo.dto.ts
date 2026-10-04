@@ -7,8 +7,9 @@
  * - RejectProfilePhotoInput — ปฏิเสธต้องมีเหตุผลเสมอ
  * - ProfilePhotoReviewResult — ผลของ approve / reject
  */
-import { Field, ID, InputType, Int, ObjectType } from '@nestjs/graphql';
+import { Field, ID, InputType, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
 import {
+  IsEnum,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -22,8 +23,29 @@ import { Caregiver } from '../../identity/kyc/entities/caregiver.entity';
 import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
 
+/** สถานะรีวิวที่ใช้กรองคิว — ค่าตรงกับ kyc_documents.review_status */
+export enum ProfilePhotoReviewStatusFilter {
+  pending = 'pending',
+  approved = 'approved',
+  rejected = 'rejected',
+}
+
+registerEnumType(ProfilePhotoReviewStatusFilter, {
+  name: 'ProfilePhotoReviewStatusFilter',
+  description: 'Filter the profile photo queue by review status',
+});
+
 @InputType()
 export class AdminProfilePhotoQueueInput {
+  /** ไม่ส่ง = pending (คิวรออนุมัติ) */
+  @Field(() => ProfilePhotoReviewStatusFilter, {
+    nullable: true,
+    description: 'Review status to list. Defaults to pending.',
+  })
+  @IsOptional()
+  @IsEnum(ProfilePhotoReviewStatusFilter, { message: 'status ต้องเป็น pending | approved | rejected' })
+  status?: ProfilePhotoReviewStatusFilter;
+
   @Field({ nullable: true, description: 'Search by caregiver full name (case-insensitive partial match)' })
   @IsOptional()
   @IsString({ message: 'search ต้องเป็นข้อความ' })
@@ -43,9 +65,9 @@ export class AdminProfilePhotoQueueInput {
   limit?: number;
 }
 
-@ObjectType({ description: 'A caregiver profile photo awaiting admin review' })
+@ObjectType({ description: 'A caregiver profile photo in the review queue (pending or already decided)' })
 export class ProfilePhotoQueueItem {
-  @Field(() => ID, { description: 'kyc_documents.id of the pending profile photo' })
+  @Field(() => ID, { description: 'kyc_documents.id of the profile photo' })
   documentId!: string;
 
   @Field(() => ID)
@@ -67,12 +89,30 @@ export class ProfilePhotoQueueItem {
   @Field({ description: 'When the pending photo was uploaded' })
   uploadedAt!: Date;
 
-  /** มีรูปที่อนุมัติแล้วอยู่ก่อน = กำลังขอเปลี่ยนรูป */
+  /** มีรูปที่อนุมัติแล้วอยู่ก่อน = กำลังขอเปลี่ยนรูป (มีความหมายกับใบ pending) */
   @Field({ description: 'True if the caregiver already has an approved profile photo' })
   hasApprovedPhoto!: boolean;
+
+  @Field({ description: 'pending | approved | rejected' })
+  reviewStatus!: string;
+
+  /** ใบที่ตัดสินแล้วเท่านั้น */
+  @Field({ nullable: true, description: 'When the photo was approved / rejected' })
+  reviewedAt?: Date;
+
+  @Field({ nullable: true, description: 'Display name of the admin who decided' })
+  reviewerName?: string;
+
+  /** เหตุผลที่ปฏิเสธ (approved = null) */
+  @Field({ nullable: true, description: 'Rejection reason' })
+  reason?: string;
+
+  /** ใบที่ approved และยังเป็นรูปที่แสดงอยู่ (ไม่ถูกใบใหม่แทนที่) */
+  @Field({ description: 'True if this photo is the caregiver\'s current public avatar' })
+  isCurrentAvatar!: boolean;
 }
 
-@ObjectType({ description: 'Paginated queue of pending caregiver profile photos' })
+@ObjectType({ description: 'Paginated queue of caregiver profile photos' })
 export class AdminProfilePhotoQueuePayload {
   @Field(() => [ProfilePhotoQueueItem])
   items!: ProfilePhotoQueueItem[];
