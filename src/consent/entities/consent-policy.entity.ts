@@ -73,4 +73,10 @@ export class ConsentPolicy {
 
   @Field({ description: 'ประกาศความเป็นส่วนตัวฉบับเต็ม (อังกฤษ, Markdown)' })
   privacyNoticeEn!: string;
+
+  @Field({ description: 'ข้อกำหนดการใช้บริการฉบับเต็ม (ไทย, Markdown)' })
+  termsOfServiceTh!: string;
+
+  @Field({ description: 'ข้อกำหนดการใช้บริการฉบับเต็ม (อังกฤษ, Markdown)' })
+  termsOfServiceEn!: string;
 }

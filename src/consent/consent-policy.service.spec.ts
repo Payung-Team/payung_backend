@@ -97,6 +97,20 @@ describe('ConsentPolicyService (PYG-472)', () => {
     expect(items[0].required).toBe(true);
   });
 
+  it('★ ข้อมูลสุขภาพ: คำอธิบายระบุครบทุกอย่างที่ Onboarding เก็บจริง', () => {
+    // ยินยอมได้เฉพาะสิ่งที่ถูกบอก — ถ้าเพิ่มฟิลด์ใน Onboarding แต่ลืมเพิ่มที่นี่
+    // ระบบจะเก็บข้อมูลอ่อนไหวเกินกว่าที่ผู้ใช้ยินยอม โดยไม่มี error ให้เห็น
+    const item = service
+      .getPolicy(CONSENT_SOURCE.ONBOARDING)
+      .items.find((i) => i.type === CONSENT_TYPE.SENSITIVE_HEALTH_DATA)!;
+    const th = ['อายุ', 'เพศ', 'น้ำหนัก', 'ส่วนสูง', 'ระดับการช่วยเหลือตัวเอง', 'โรคประจำตัว',
+      'ยา', 'การแพ้', 'กรุ๊ปเลือด', 'คำแนะนำการดูแล', 'โรงพยาบาลประจำ', 'บันทึกการดูแล', 'รูปถ่าย'];
+    const en = ['age', 'gender', 'weight', 'height', 'mobility', 'medical conditions',
+      'medications', 'allergies', 'blood type', 'care notes', 'preferred hospital', 'care logs', 'photos'];
+    for (const word of th) expect(item.descriptionTh).toContain(word);
+    for (const word of en) expect(item.descriptionEn).toContain(word);
+  });
+
   it('หน้าจอง: ขอความยินยอมเปิดเผยข้อมูลให้ผู้ดูแล', () => {
     const items = service.getPolicy(CONSENT_SOURCE.BOOKING).items;
     expect(items.map((i) => i.type)).toEqual([CONSENT_TYPE.DISCLOSE_TO_CAREGIVER]);
@@ -132,6 +146,15 @@ describe('ConsentPolicyService (PYG-472)', () => {
     // ★ ระยะเวลาเก็บต้องอยู่ในประกาศจริง ไม่ใช่แค่ในโค้ด — เป็นข้อที่กฎหมายบังคับให้แจ้ง
     expect(policy.privacyNoticeTh).toContain('2 ปี');
     expect(policy.privacyNoticeEn).toContain('2 years');
+  });
+
+  it('ข้อกำหนดการใช้บริการฉบับเต็มถูกอ่านเข้ามาได้ทั้งสองภาษา', () => {
+    const policy = service.getPolicy();
+    expect(policy.termsOfServiceTh).toContain('ข้อกำหนดการใช้บริการ');
+    expect(policy.termsOfServiceEn).toContain('Terms of Service');
+    // ★ ตัวเลขในข้อกำหนดต้องตรงกับที่ระบบทำจริง — ถ้าแก้ CANCELLATION_POLICY ต้องแก้ไฟล์ .md ด้วย
+    expect(policy.termsOfServiceTh).toContain('24 ชั่วโมง');
+    expect(policy.termsOfServiceEn).toContain('24 hours');
   });
 
   it('ข้อความสิทธิ์เจ้าของข้อมูลมีช่องทางติดต่อ', () => {
