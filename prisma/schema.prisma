@@ -868,15 +868,24 @@ model KycDocument {
   userId       String     @map("user_id")
   /// PYG-506: สถานะรีวิว "รายเอกสาร" — ใช้กับ doc_type = 'profile_photo' (PYG-488)
   /// NULL = เอกสารที่ไม่ได้รีวิวรายใบ (เอกสาร KYC เดิมรีวิวรวมทั้งก้อนผ่าน caregivers.kyc_status)
-  /// TEXT + CHECK ('pending'|'approved'|'rejected') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  /// TEXT + CHECK ('pending'|'approved'|'rejected'|'expired') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  /// PYG-586: เพิ่ม 'expired' สำหรับเอกสารที่ถึงวันหมดอายุ (expires_at)
   reviewStatus String?     @map("review_status")
   reviewedAt   DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  /// PYG-586: เลขใบประกอบวิชาชีพ — บังคับเมื่อ doc_type = 'professional_license' (CHECK kyc_documents_license_fields_check)
+  /// ห้ามเป็นสตริงว่าง / มีแต่ช่องว่าง (CHECK kyc_documents_license_number_not_blank)
+  licenseNumber String?    @map("license_number")
+  /// PYG-586: วันหมดอายุของเอกสาร — เก็บเป็นสิ้นวันของวันหมดอายุตามเวลาไทย
+  /// ไม่ผูกกับ doc_type: ใบขับขี่ของ S06 (PYG-561) ใช้คอลัมน์นี้ร่วมกัน ห้ามเพิ่มคอลัมน์ซ้ำ
+  expiresAt    DateTime?   @map("expires_at") @db.Timestamptz(6)
   caregiver    Caregiver?  @relation(fields: [caregiverId], references: [id])
   user         User        @relation(fields: [userId], references: [id])
   reviews      KycReview[]
 
   // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
   @@index([reviewStatus], map: "idx_kyc_documents_review_status")
+  // หมายเหตุ: index จริงเป็น partial (WHERE expires_at IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([expiresAt])
   @@map("kyc_documents")
 }
 
