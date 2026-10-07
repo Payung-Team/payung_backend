@@ -994,6 +994,10 @@ model CareRecipientAssessment {
   createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   /// ไม่มี @updatedAt / trigger — service ต้องตั้งค่าเองทุกครั้งที่บันทึก
   updatedAt           DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-613: กลุ่มผู้สูงอายุจากคะแนน ADL รวม — 'social' (12–20) | 'homebound' (5–11) | 'bedridden' (0–4)
+  /// (DB มี CHECK care_recipient_assessments_care_group_check) backend เป็นผู้คำนวณใน transaction เดียวกับคะแนน
+  /// NULL ได้ชั่วคราวจนกว่า BE ของ S09 (PYG-614) ขึ้น แล้วจึงตั้ง NOT NULL ด้วย migration ถัดไป
+  careGroup           String?       @map("care_group")
   careRecipient       CareRecipient @relation(fields: [careRecipientId], references: [id], onDelete: Cascade)
   assessor            User          @relation(fields: [assessedBy], references: [id])
 
