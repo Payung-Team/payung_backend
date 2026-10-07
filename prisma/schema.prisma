@@ -57,6 +57,9 @@ model User {
   familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
   caregiver                                               Caregiver?
+  // PYG-580: ผู้ดูแลที่แอดมินคนนี้เป็นผู้กำหนดระดับล่าสุด + ประวัติการเปลี่ยนระดับที่ทำ
+  caregiversCareLevelSet                                  Caregiver[]            @relation("CaregiverCareLevelSetBy")
+  caregiver_care_level_logs                               caregiver_care_level_logs[]
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
@@ -110,9 +113,17 @@ model Caregiver {
   reviewCount         Int                        @default(0) @map("review_count")
   /// PYG-574: วิชาชีพ — 'general_caregiver' | 'nurse' | 'physiotherapist' (DB มี CHECK caregivers_profession_check)
   profession          String                     @default("general_caregiver")
+  /// PYG-580: ระดับผู้ดูแล — 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง) (DB มี CHECK caregivers_care_level_check)
+  /// NULL = ยังไม่มีระดับ (KYC ยังไม่อนุมัติ) — ไม่มี default โดยตั้งใจ แอดมินเป็นคนกำหนด
+  careLevel           String?                    @map("care_level")
+  /// NULL ทั้งที่มี careLevel = ได้ค่าจาก migration ยังไม่ผ่านการทบทวนของแอดมิน
+  careLevelSetBy      String?                    @map("care_level_set_by")
+  careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
   bookings            Booking[]
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
+  careLevelSetByUser  User?                      @relation("CaregiverCareLevelSetBy", fields: [careLevelSetBy], references: [id], onDelete: Restrict)
+  caregiver_care_level_logs caregiver_care_level_logs[] // PYG-580: ประวัติการเปลี่ยนระดับ
   care_logs           care_logs[] // PYG-361: บันทึกที่ผู้ดูแลคนนี้เขียน (FK RESTRICT — ลบ caregiver ที่ยังมีบันทึกไม่ได้)
   booking_tasks       booking_tasks[] // PYG-361: รายการงานย่อยที่ผู้ดูแลคนนี้ติ๊กว่าทำแล้ว (done_by)
   jobTypes            CaregiverJobType[]
@@ -943,6 +954,26 @@ model caregiver_edit_logs {
   created_at    DateTime  @default(now())
   caregivers    Caregiver @relation(fields: [caregiver_id], references: [id])
   users         User      @relation(fields: [edited_by], references: [id])
+}
+
+/// PYG-580: ประวัติการกำหนด / เปลี่ยนระดับผู้ดูแล (S02-AC4) — หนึ่งแถว = หนึ่งครั้งที่ระดับเปลี่ยน
+/// RLS เปิดโดยไม่มี policy: client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caregiver_care_level_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver_id String
+  /// NULL = กำหนดครั้งแรก
+  old_level    String?
+  new_level    String
+  /// NULL = ระบบตั้งให้ (backfill) ไม่ใช่แอดมิน
+  changed_by   String?
+  /// 'migration_default' = แถวจาก backfill ของ migration
+  reason       String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  caregivers   Caregiver @relation(fields: [caregiver_id], references: [id])
+  users        User?     @relation(fields: [changed_by], references: [id], onDelete: Restrict)
+
+  @@index([caregiver_id, created_at(sort: Desc)], map: "caregiver_care_level_logs_caregiver_idx")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
