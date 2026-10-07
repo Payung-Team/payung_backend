@@ -56,6 +56,8 @@ model User {
   familyGroupActivity                                     FamilyGroupActivity[]
   familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
+  /// PYG-608: แบบประเมิน ADL ที่ user คนนี้เป็นผู้ประเมิน (ญาติ)
+  careRecipientAssessments                                CareRecipientAssessment[]
   caregiver                                               Caregiver?
   // PYG-580: ผู้ดูแลที่แอดมินคนนี้เป็นผู้กำหนดระดับล่าสุด + ประวัติการเปลี่ยนระดับที่ทำ
   caregiversCareLevelSet                                  Caregiver[]            @relation("CaregiverCareLevelSetBy")
@@ -656,6 +658,8 @@ model CareRecipient {
   /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
   familyGroupId           String?         @map("family_group_id") @db.Uuid
   bookings                Booking[]
+  /// PYG-608: ผลประเมิน ADL / Flags ล่าสุด (0..1) — มีแถว = มีแบบประเมิน
+  assessment              CareRecipientAssessment?
   patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // FK จริงคือ ON DELETE SET NULL / ON UPDATE CASCADE ซึ่งเป็นค่า default ของ Prisma
   // สำหรับ relation แบบ optional อยู่แล้ว → ไม่เขียนซ้ำ เพื่อให้ db pull ไม่มี diff
@@ -963,6 +967,37 @@ model caregiver_edit_logs {
   created_at    DateTime  @default(now())
   caregivers    Caregiver @relation(fields: [caregiver_id], references: [id])
   users         User      @relation(fields: [edited_by], references: [id])
+}
+
+/// PYG-608: ผลประเมิน ADL และ Flags ของผู้สูงอายุ (S08 · PYG-563) — 1 แถวต่อผู้สูงอายุ 1 คน เก็บเฉพาะครั้งล่าสุด
+/// ข้อมูลสุขภาพ: RLS เปิดโดยไม่มี policy — client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// CHECK ใน migration SQL (Prisma เขียนไม่ได้): คะแนน 0–20 · unsure_count >= 0 ·
+///   no_special_conditions อยู่ร่วมกับ flags ไม่ได้
+/// ★ care_recipients ใช้ soft delete — onDelete: Cascade ทำงานเฉพาะตอนแถวถูกลบจริง
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareRecipientAssessment {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  careRecipientId     String        @unique(map: "care_recipient_assessments_recipient_key") @map("care_recipient_id") @db.Uuid
+  /// คำตอบ ADL รายข้อ: รหัสข้อ → ค่าคำตอบ (รายการข้อรอยืนยันกับอาจารย์)
+  adlAnswers          Json          @map("adl_answers")
+  /// backend เป็นผู้รวมคะแนน ไม่รับจาก client
+  adlTotalScore       Int           @map("adl_total_score")
+  unsureCount         Int           @default(0) @map("unsure_count")
+  /// เฉพาะ Flags ที่ญาติเลือกเอง — Flag "ไม่แน่ใจ" ที่ระบบตั้งอยู่ที่ hasUnsureFlag
+  flags               String[]      @default([])
+  noSpecialConditions Boolean       @default(false) @map("no_special_conditions")
+  hasUnsureFlag       Boolean       @default(false) @map("has_unsure_flag")
+  /// มีความหมายเฉพาะเมื่อ flags มี 'dementia'
+  dementiaSevere      Boolean?      @map("dementia_severe")
+  assessedBy          String        @map("assessed_by")
+  assessedAt          DateTime      @default(now()) @map("assessed_at") @db.Timestamptz(6)
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// ไม่มี @updatedAt / trigger — service ต้องตั้งค่าเองทุกครั้งที่บันทึก
+  updatedAt           DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  careRecipient       CareRecipient @relation(fields: [careRecipientId], references: [id], onDelete: Cascade)
+  assessor            User          @relation(fields: [assessedBy], references: [id])
+
+  @@map("care_recipient_assessments")
 }
 
 /// PYG-580: ประวัติการกำหนด / เปลี่ยนระดับผู้ดูแล (S02-AC4) — หนึ่งแถว = หนึ่งครั้งที่ระดับเปลี่ยน
