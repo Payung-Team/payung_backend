@@ -108,6 +108,8 @@ model Caregiver {
   languages           String[]                   @default([])
   averageRating       Float?                     @map("average_rating")
   reviewCount         Int                        @default(0) @map("review_count")
+  /// PYG-574: วิชาชีพ — 'general_caregiver' | 'nurse' | 'physiotherapist' (DB มี CHECK caregivers_profession_check)
+  profession          String                     @default("general_caregiver")
   bookings            Booking[]
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
