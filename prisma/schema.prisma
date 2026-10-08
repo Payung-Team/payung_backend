@@ -1068,6 +1068,7 @@ model CareActivity {
   /// NULL ได้ (กิจกรรมที่แอดมินเพิ่มเองไม่บังคับมีรหัส) · ห้ามซ้ำ · DB มี CHECK care_activities_code_not_blank
   code       String?           @unique(map: "care_activities_code_unique")
   bookingActivities BookingActivity[]
+  professions       CareActivityProfession[]
 
   @@unique([category, nameTh], map: "care_activities_category_name_unique")
   @@index([isActive, category, sortOrder], map: "care_activities_active_idx")
@@ -1077,6 +1078,19 @@ model CareActivity {
 /// PYG-633: กิจกรรมที่ booking เลือกจากรายการกลาง — เก็บ "สำเนา" ชื่อ หมวด ระดับ ณ ตอนจอง
 /// booking เดิมจึงแสดงได้เหมือนเดิมแม้กิจกรรมถูกแก้หรือปิดใช้งานภายหลัง (S15-R6)
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// PYG-651 follow-up: วิชาชีพที่ทำกิจกรรมนี้ได้ (ล็อกวิชาชีพ)
+/// กิจกรรมที่ไม่มีแถว = ไม่ล็อก · มีแถว = ผู้ดูแลต้องมี profession ตรงกับแถวใดแถวหนึ่ง
+/// DB มี CHECK care_activity_professions_profession_check — ค่าชุดเดียวกับ caregivers.profession
+model CareActivityProfession {
+  careActivityId String       @map("care_activity_id") @db.Uuid
+  profession     String
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  careActivity   CareActivity @relation(fields: [careActivityId], references: [id], onDelete: Cascade)
+
+  @@id([careActivityId, profession])
+  @@map("care_activity_professions")
+}
+
 model BookingActivity {
   id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   bookingId      String       @map("booking_id") @db.Uuid
