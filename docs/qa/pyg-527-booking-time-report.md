@@ -5,6 +5,7 @@
 - รัน: 2026-10-03 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg527-booking-time.e2e-spec.ts` · harness: `test/support/pyg527-e2e.ts`
 - **ผล: ตามการ์ด 34/34 PASS · เคสเพิ่ม _X1 FAIL (ผู้ดูแลถูกจองซ้อนเวลาได้) → แยกเป็นการ์ดบั๊ก PYG-544** · ในโค้ดเทสเป็น `it.failing` ชุดเทสจึงเขียว (แก้ PYG-544 แล้วต้องเปลี่ยนกลับเป็น `it`)
+- **รันซ้ำ 2026-10-08 หลัง PYG-544 แก้แล้ว (PR #114, `origin/dev` @ `bf9e7f1`): 35/35 PASS** · `_X1` เปลี่ยนเป็น `it` ปกติ — ใบที่สองถูกปฏิเสธตอนจอง (409) ตารางข้างล่างคือผลรอบ 2026-10-03
 
 **รันจริงแค่ไหน:** บูต FamilyGroup + Booking + Payment + Monitoring + Notification ตัวจริง จองเองผ่าน REST `POST /api/v1/bookings`, จองแทน / รับงาน / ชำระเงิน / QR ผ่าน GraphQL, เรียก `NoCheckoutSweeperService.run()` ตรง ๆ ต่อ Postgres 17 ทิ้งได้ใน Docker · mock แค่ Supabase auth / Omise / Email · **`ClockService` ปลอม** ตั้งเวลาได้ (ทุกจุดที่ตัดสินเวลา — QR, เช็คอิน, sweeper, กำหนดชำระ — อ่านจาก ClockService)
 
