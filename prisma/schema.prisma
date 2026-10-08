@@ -434,6 +434,10 @@ model Booking {
   levelFromFlags           String?           @map("level_from_flags")
   levelFromServices        String?           @map("level_from_services")
   levelCalculatedAt        DateTime?         @map("level_calculated_at") @db.Timestamptz(6)
+  /// PYG-642: รหัสทักษะที่ตัดซ้ำแล้ว — ใน DB: NULL = ยังไม่เคยคำนวณ · '{}' = คำนวณแล้วไม่มีทักษะ
+  /// ⚠ Prisma Client อ่าน NULL เป็น [] — แยกสองกรณีจากค่าที่อ่านไม่ได้ (ใช้ isEmpty / levelCalculatedAt)
+  /// ต้องเขียนพร้อมกับ booking_required_skills ใน transaction เดียว (ฐานไม่บังคับว่าตรงกัน)
+  requiredSkills           String[]          @map("required_skills")
   booking_tasks            booking_tasks[]
   // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
   care_logs                care_logs[]
@@ -451,6 +455,7 @@ model Booking {
   infectionAckCaregiver    Caregiver?        @relation("BookingInfectionAckBy", fields: [infectionAckBy], references: [id])
   // PYG-633: กิจกรรมจากรายการกลางที่ booking นี้เลือก (สำเนา ณ ตอนจอง) — งานพิมพ์เองยังอยู่ที่ booking_tasks
   activities               BookingActivity[]
+  bookingRequiredSkills    BookingRequiredSkill[]
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
   // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
@@ -1034,6 +1039,55 @@ model CareRecipientAssessment {
 /// DB มี CHECK: source IN ('flag','service') · level เป็น NULL หรือ 'basic' | 'intermediate' | 'advanced'
 /// updated_at ขยับเองด้วย trigger trg_booking_level_rules_updated_at (ไม่ใช้ @updatedAt)
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// PYG-642: รายการทักษะกลาง — รหัสอ้างอิงร่วมของ Required Skills (S17)
+/// DB มี CHECK care_skills_code_not_blank และ care_skills_locked_professions_check
+model CareSkill {
+  code              String                 @id
+  nameTh            String                 @map("name_th")
+  nameEn            String                 @map("name_en")
+  /// วิชาชีพที่ทำทักษะนี้ได้ — [] = ไม่ล็อก (ใน DB เป็น NULL หรือ '{}') · ค่าชุดเดียวกับ caregivers.profession
+  lockedProfessions String[]               @map("locked_professions")
+  isActive          Boolean                @default(true) @map("is_active")
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)
+  rules             CareSkillRule[]
+  bookingSkills     BookingRequiredSkill[]
+
+  @@map("care_skills")
+}
+
+/// PYG-642: กติกาสร้างทักษะ — source: 'adl' | 'flag' | 'service' (CHECK ใน DB)
+model CareSkillRule {
+  source     String
+  /// รหัสข้อ ADL / รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
+  sourceCode String    @map("source_code")
+  /// ช่วงคะแนนที่เข้าเงื่อนไข (รวมปลาย) — ใช้เฉพาะ source = 'adl'
+  scoreMin   Int?      @map("score_min")
+  scoreMax   Int?      @map("score_max")
+  skillCode  String    @map("skill_code")
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  skill      CareSkill @relation(fields: [skillCode], references: [code])
+
+  @@id([source, sourceCode, skillCode])
+  @@map("care_skill_rules")
+}
+
+/// PYG-642: ทักษะของ booking พร้อมแหล่งที่มา — PK กันทักษะซ้ำใน booking เดียว (S17-R5)
+model BookingRequiredSkill {
+  bookingId String    @map("booking_id") @db.Uuid
+  skillCode String    @map("skill_code")
+  /// แหล่งที่มาทุกแหล่ง: 'adl' | 'flag' | 'service' — DB บังคับอย่างน้อย 1 ค่า
+  sources   String[]
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  skill     CareSkill @relation(fields: [skillCode], references: [code])
+
+  @@id([bookingId, skillCode])
+  @@map("booking_required_skills")
+}
+
 model BookingLevelRule {
   source    String
   /// รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
