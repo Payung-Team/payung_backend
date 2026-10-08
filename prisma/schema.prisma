@@ -434,9 +434,13 @@ model Booking {
   levelFromFlags           String?           @map("level_from_flags")
   levelFromServices        String?           @map("level_from_services")
   levelCalculatedAt        DateTime?         @map("level_calculated_at") @db.Timestamptz(6)
-  /// PYG-642: รหัสทักษะที่ตัดซ้ำแล้ว — ใน DB: NULL = ยังไม่เคยคำนวณ · '{}' = คำนวณแล้วไม่มีทักษะ
-  /// ⚠ Prisma Client อ่าน NULL เป็น [] — แยกสองกรณีจากค่าที่อ่านไม่ได้ (ใช้ isEmpty / levelCalculatedAt)
-  /// ต้องเขียนพร้อมกับ booking_required_skills ใน transaction เดียว (ฐานไม่บังคับว่าตรงกัน)
+  /// PYG-642: รหัสทักษะที่ตัดซ้ำแล้ว (Required Skills ของ S17)
+  /// ★ ตัวบอกว่า "คำนวณแล้ว" คือ levelCalculatedAt ไม่ใช่ค่าของฟิลด์นี้ (เคาะ 8 ต.ค. 2026)
+  ///   Prisma Client อ่าน NULL ใน DB (ยังไม่เคยคำนวณ) เป็น [] เหมือน '{}' (คำนวณแล้วไม่มีทักษะ) จึงแยกจากค่าที่อ่านไม่ได้
+  ///   - levelCalculatedAt เป็น null     → ยังไม่เคยคำนวณ ห้ามตีความ [] ว่าไม่ต้องใช้ทักษะ
+  ///   - levelCalculatedAt มีค่า + []     → คำนวณแล้ว ไม่มีทักษะที่ต้องการ
+  /// ★ ต้องเขียนฟิลด์นี้ใน transaction เดียวกับการคำนวณระดับ (requiredLevel + levelCalculatedAt)
+  ///   และพร้อมกับ booking_required_skills (ฐานไม่บังคับว่าสองที่ตรงกัน)
   requiredSkills           String[]          @map("required_skills")
   booking_tasks            booking_tasks[]
   // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
@@ -1040,13 +1044,12 @@ model CareRecipientAssessment {
 /// updated_at ขยับเองด้วย trigger trg_booking_level_rules_updated_at (ไม่ใช้ @updatedAt)
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 /// PYG-642: รายการทักษะกลาง — รหัสอ้างอิงร่วมของ Required Skills (S17)
-/// DB มี CHECK care_skills_code_not_blank และ care_skills_locked_professions_check
+/// DB มี CHECK care_skills_code_not_blank
+/// ไม่เก็บการล็อกวิชาชีพที่นี่ — เก็บที่เดียวคือ CareActivityProfession (เคาะ 8 ต.ค. 2026)
 model CareSkill {
   code              String                 @id
   nameTh            String                 @map("name_th")
   nameEn            String                 @map("name_en")
-  /// วิชาชีพที่ทำทักษะนี้ได้ — [] = ไม่ล็อก (ใน DB เป็น NULL หรือ '{}') · ค่าชุดเดียวกับ caregivers.profession
-  lockedProfessions String[]               @map("locked_professions")
   isActive          Boolean                @default(true) @map("is_active")
   createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)

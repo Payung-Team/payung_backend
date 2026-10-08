@@ -10,8 +10,7 @@
 --   ตอนนี้ยืนยันได้ 4 จาก 14 กติกา · รหัสทักษะในการ์ดเป็นข้อเสนอ · รหัสข้อ ADL ยังไม่ถูกกำหนดโดย S08
 --
 -- สิ่งที่ไฟล์นี้ทำ:
---   1) care_skills — รายการทักษะกลาง (รหัส ชื่อไทย ชื่ออังกฤษ วิชาชีพที่ทำได้)
---      locked_professions = NULL หรือ '{}' หมายถึงทักษะนี้ไม่ล็อกวิชาชีพ
+--   1) care_skills — รายการทักษะกลาง (รหัส ชื่อไทย ชื่ออังกฤษ)
 --   2) care_skill_rules — กติกา "ข้อมูลใดให้ทักษะใด" จาก 3 แหล่ง: 'adl' / 'flag' / 'service'
 --      score_min / score_max ใช้เฉพาะแหล่ง 'adl' (รองรับทั้งแบบเท่ากับและแบบช่วง)
 --   3) bookings.required_skills TEXT[] — รหัสทักษะที่ตัดซ้ำแล้ว ไม่มี DEFAULT (booking เดิมเป็นค่าว่าง — S17-E10)
@@ -19,27 +18,29 @@
 --   5) trigger updated_at ของ care_skills / care_skill_rules + เปิด RLS ไม่มี policy ทั้ง 3 ตาราง
 --
 -- ★ ต่างจาก SQL ที่การ์ดเสนอ
---   • CHECK care_skills_locked_professions_check — ค่าในอาร์เรย์ต้องเป็นค่าที่ caregivers.profession รับ
---     NULL และ '{}' แปลว่าไม่ล็อกเหมือนกัน — Prisma Client อ่านทั้งสองแบบเป็น [] และเขียน NULL ลงอาร์เรย์ไม่ได้
+--   • ไม่มี care_skills.locked_professions (Sammy เคาะตอน gate 8 ต.ค. 2026)
+--     การล็อกวิชาชีพเก็บที่เดียวคือ care_activity_professions (ล็อกรายกิจกรรม — PYG-651 follow-up)
 --   • CHECK รหัสห้ามว่าง (care_skills.code, care_skill_rules.source_code)
 --   • CHECK care_skill_rules_score_order_check — score_min ต้องไม่เกิน score_max
 --   • FK ไป care_skills เป็น ON DELETE RESTRICT ON UPDATE CASCADE (ค่าที่ Prisma ใช้ — การ์ดไม่ได้ระบุ)
 --   • trigger updated_at (ใช้ set_updated_at() ที่มีอยู่) และ RLS ไม่มี policy — แนวเดียวกับ booking_level_rules
 --     การ์ดให้ยืนยันเรื่อง RLS กับ Sammy ตอน gate · ไม่กระทบ backend (ต่อด้วย role postgres)
 --
--- ข้อตัดสินใจตามที่การ์ดเสนอ (ยังไม่เคาะใน story — เปลี่ยนได้ก่อน deploy):
+-- เคาะแล้วตอน gate (Sammy 8 ต.ค. 2026):
+--   • ไม่เพิ่มคอลัมน์เวลาคำนวณของทักษะ — BE ใช้ bookings.level_calculated_at เป็นตัวบอกว่าคำนวณแล้ว
+--     และต้องเขียน required_skills ใน transaction เดียวกับการคำนวณระดับ (ดูข้อจำกัดของ Prisma ข้างล่าง)
+--   • ผู้ช่วยพยาบาล: ข้ามไปก่อน ไม่ทำในใบนี้
+--
+-- ข้อตัดสินใจตามที่การ์ดเสนอ:
 --   • เก็บรายการทักษะ 2 ที่ (bookings.required_skills + booking_required_skills) — ฐานไม่บังคับว่าตรงกัน
 --     BE ต้องเขียนพร้อมกันใน transaction เดียว (PYG-643)
 --   • แหล่งที่มาละเอียดระดับแหล่ง ('adl' / 'flag' / 'service') ไม่ถึงระดับรายการ
---   • ข้อมูลล็อกวิชาชีพของทักษะอยู่ที่ care_skills.locked_professions
---     ⚠ ตอนนี้มีที่เก็บการล็อกวิชาชีพอีกที่แล้ว: care_activity_professions (ล็อกรายกิจกรรม — PYG-651 follow-up)
 --   • PK ของ care_skill_rules = (source, source_code, skill_code) — ข้อ ADL เดียวให้ทักษะเดียวกันจาก 2 ช่วงคะแนนไม่ได้
 --   • ฐานไม่บังคับว่ารหัสใน bookings.required_skills มีอยู่ใน care_skills (อาร์เรย์มี FK ไม่ได้)
 --
 -- ⚠ ข้อจำกัดของ Prisma ที่กระทบ S17-E3 (ทดสอบแล้ว): Prisma Client อ่าน required_skills ที่เป็น NULL ได้เป็น []
 --   เหมือน '{}' ทุกประการ → "ยังไม่เคยคำนวณ" กับ "คำนวณแล้วไม่มีทักษะ" แยกจากค่าที่อ่านไม่ได้
---   แยกได้ด้วย filter { isEmpty: true } (ตรงเฉพาะ '{}') หรือ raw SQL หรือดู level_calculated_at ของ S16
---   (story ให้คำนวณทักษะพร้อมกับระดับในจังหวะเดียวกัน) — ต้องเคาะที่ PYG-643
+--   → ตัวบอกว่าคำนวณแล้วคือ level_calculated_at ของ S16 (เคาะแล้ว — ดูข้างบน)
 --
 -- idempotent: IF NOT EXISTS · DROP TRIGGER IF EXISTS ก่อนสร้างใหม่
 --
@@ -54,21 +55,16 @@
 
 -- ─── 1. care_skills: รายการทักษะกลาง ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "care_skills" (
-    "code"               TEXT NOT NULL,
-    "name_th"            TEXT NOT NULL,
-    "name_en"            TEXT NOT NULL,
-    -- NULL หรือ '{}' = ไม่ล็อกวิชาชีพ · มีค่า = ผู้ดูแลต้องมี profession ตรงกับค่าใดค่าหนึ่ง
-    "locked_professions" TEXT[],
-    "is_active"          BOOLEAN NOT NULL DEFAULT true,
-    "created_at"         TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
-    "updated_at"         TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+    "code"       TEXT NOT NULL,
+    "name_th"    TEXT NOT NULL,
+    "name_en"    TEXT NOT NULL,
+    "is_active"  BOOLEAN NOT NULL DEFAULT true,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+    "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
 
     CONSTRAINT "care_skills_pkey" PRIMARY KEY ("code"),
     CONSTRAINT "care_skills_code_not_blank"
-        CHECK (btrim("code") <> ''),
-    CONSTRAINT "care_skills_locked_professions_check"
-        CHECK ("locked_professions" IS NULL
-               OR "locked_professions" <@ ARRAY['general_caregiver', 'nurse', 'physiotherapist']::TEXT[])
+        CHECK (btrim("code") <> '')
 );
 
 DROP TRIGGER IF EXISTS "trg_care_skills_updated_at" ON "care_skills";
@@ -161,7 +157,7 @@ BEGIN
     SELECT count(*) INTO trg_count FROM pg_trigger
      WHERE NOT tgisinternal AND tgname IN ('trg_care_skills_updated_at', 'trg_care_skill_rules_updated_at');
 
-    IF cons <> 'booking_required_skills:c=1,f=2,p=1 care_skill_rules:c=4,f=1,p=1 care_skills:c=2,p=1'
+    IF cons <> 'booking_required_skills:c=1,f=2,p=1 care_skill_rules:c=4,f=1,p=1 care_skills:c=1,p=1'
        OR rls_count <> 3 OR col_ok <> 1 OR trg_count <> 2 THEN
         RAISE EXCEPTION 'PYG-642: ตั้งค่าไม่ครบ (constraints=[%], rls=%, required_skills_col=%, triggers=%)',
             cons, rls_count, col_ok, trg_count;
