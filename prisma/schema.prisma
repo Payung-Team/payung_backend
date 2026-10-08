@@ -122,6 +122,7 @@ model Caregiver {
   careLevelSetBy      String?                    @map("care_level_set_by")
   careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
   bookings            Booking[]
+  bookingsInfectionAcked Booking[]              @relation("BookingInfectionAckBy") // PYG-618: booking ที่ผู้ดูแลคนนี้กดรับทราบข้อมูลโรคติดเชื้อ
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
   careLevelSetByUser  User?                      @relation("CaregiverCareLevelSetBy", fields: [careLevelSetBy], references: [id], onDelete: Restrict)
@@ -418,6 +419,12 @@ model Booking {
   // PYG-411 (เตรียมไว้ให้ PYG-424): memberDetails — อาการ/รายละเอียดที่กรอกตอนจองแทน
   // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
   memberDetails            Json?             @map("member_details")
+  /// PYG-618: เวลาที่ผู้ดูแลรับทราบข้อมูลโรคติดเชื้อของผู้สูงอายุก่อนรับงาน
+  infectionAckAt           DateTime?         @map("infection_ack_at") @db.Timestamptz(6)
+  /// PYG-618: ผู้ดูแลคนที่รับทราบ — นับเป็นการรับทราบเฉพาะเมื่อตรงกับ caregiverId ปัจจุบัน
+  /// (booking ที่ถูกปฏิเสธกู้กลับไปเลือกผู้ดูแลคนใหม่ได้ — recoverBooking)
+  /// DB มี CHECK bookings_infection_ack_pair_check: มี "โดยใคร" ต้องมี "เมื่อใด"
+  infectionAckBy           String?           @map("infection_ack_by")
   booking_tasks            booking_tasks[]
   // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
   care_logs                care_logs[]
@@ -432,6 +439,7 @@ model Booking {
   statusHistory            BookingStatusHistory[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
+  infectionAckCaregiver    Caregiver?        @relation("BookingInfectionAckBy", fields: [infectionAckBy], references: [id])
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
   // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
@@ -657,6 +665,12 @@ model CareRecipient {
   /// NULL = โปรไฟล์ส่วนตัวของ patient คนนั้น (พฤติกรรมเดิมทั้งหมดก่อนมี family group)
   /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
   familyGroupId           String?         @map("family_group_id") @db.Uuid
+  /// PYG-618: โรคติดเชื้อที่ผู้ดูแลควรรู้ (ญาติเป็นผู้แจ้ง — ข้อมูลสุขภาพ)
+  /// NULL = ยังไม่ได้ระบุ · false = ญาติระบุว่าไม่มี · true = ญาติระบุว่ามี
+  /// ไม่มี default โดยตั้งใจ: ห้ามแสดง NULL ว่า "ไม่มี" · เก็บที่นี่ที่เดียว ห้ามคัดลอกไปตารางอื่น
+  has_infectious_disease  Boolean?
+  /// เวลาที่ญาติระบุ / แก้ไขล่าสุด — เทียบกับ bookings.infection_ack_at ว่าผู้ดูแลรับทราบค่าล่าสุดหรือค่าเก่า
+  infectious_disease_updated_at DateTime? @db.Timestamptz(6)
   bookings                Booking[]
   /// PYG-608: ผลประเมิน ADL / Flags ล่าสุด (0..1) — มีแถว = มีแบบประเมิน
   assessment              CareRecipientAssessment?
