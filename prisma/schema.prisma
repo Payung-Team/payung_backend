@@ -56,7 +56,12 @@ model User {
   familyGroupActivity                                     FamilyGroupActivity[]
   familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
+  /// PYG-608: แบบประเมิน ADL ที่ user คนนี้เป็นผู้ประเมิน (ญาติ)
+  careRecipientAssessments                                CareRecipientAssessment[]
   caregiver                                               Caregiver?
+  // PYG-580: ผู้ดูแลที่แอดมินคนนี้เป็นผู้กำหนดระดับล่าสุด + ประวัติการเปลี่ยนระดับที่ทำ
+  caregiversCareLevelSet                                  Caregiver[]            @relation("CaregiverCareLevelSetBy")
+  caregiver_care_level_logs                               caregiver_care_level_logs[]
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
@@ -108,9 +113,20 @@ model Caregiver {
   languages           String[]                   @default([])
   averageRating       Float?                     @map("average_rating")
   reviewCount         Int                        @default(0) @map("review_count")
+  /// PYG-574: วิชาชีพ — 'general_caregiver' | 'nurse' | 'physiotherapist' (DB มี CHECK caregivers_profession_check)
+  profession          String                     @default("general_caregiver")
+  /// PYG-580: ระดับผู้ดูแล — 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง) (DB มี CHECK caregivers_care_level_check)
+  /// NULL = ยังไม่มีระดับ (KYC ยังไม่อนุมัติ) — ไม่มี default โดยตั้งใจ แอดมินเป็นคนกำหนด
+  careLevel           String?                    @map("care_level")
+  /// NULL ทั้งที่มี careLevel = ได้ค่าจาก migration ยังไม่ผ่านการทบทวนของแอดมิน
+  careLevelSetBy      String?                    @map("care_level_set_by")
+  careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
   bookings            Booking[]
+  bookingsInfectionAcked Booking[]              @relation("BookingInfectionAckBy") // PYG-618: booking ที่ผู้ดูแลคนนี้กดรับทราบข้อมูลโรคติดเชื้อ
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
+  careLevelSetByUser  User?                      @relation("CaregiverCareLevelSetBy", fields: [careLevelSetBy], references: [id], onDelete: Restrict)
+  caregiver_care_level_logs caregiver_care_level_logs[] // PYG-580: ประวัติการเปลี่ยนระดับ
   care_logs           care_logs[] // PYG-361: บันทึกที่ผู้ดูแลคนนี้เขียน (FK RESTRICT — ลบ caregiver ที่ยังมีบันทึกไม่ได้)
   booking_tasks       booking_tasks[] // PYG-361: รายการงานย่อยที่ผู้ดูแลคนนี้ติ๊กว่าทำแล้ว (done_by)
   jobTypes            CaregiverJobType[]
@@ -403,6 +419,21 @@ model Booking {
   // PYG-411 (เตรียมไว้ให้ PYG-424): memberDetails — อาการ/รายละเอียดที่กรอกตอนจองแทน
   // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
   memberDetails            Json?             @map("member_details")
+  /// PYG-618: เวลาที่ผู้ดูแลรับทราบข้อมูลโรคติดเชื้อของผู้สูงอายุก่อนรับงาน
+  infectionAckAt           DateTime?         @map("infection_ack_at") @db.Timestamptz(6)
+  /// PYG-618: ผู้ดูแลคนที่รับทราบ — นับเป็นการรับทราบเฉพาะเมื่อตรงกับ caregiverId ปัจจุบัน
+  /// (booking ที่ถูกปฏิเสธกู้กลับไปเลือกผู้ดูแลคนใหม่ได้ — recoverBooking)
+  /// DB มี CHECK bookings_infection_ack_pair_check: มี "โดยใคร" ต้องมี "เมื่อใด"
+  infectionAckBy           String?           @map("infection_ack_by")
+  /// PYG-638: ระดับของ booking = ค่าสูงสุดของ 3 เกณฑ์ (S16) — 'basic' | 'intermediate' | 'advanced'
+  /// NULL = ยังไม่ได้คำนวณ (booking ก่อนฟีเจอร์นี้ไม่มีแบบประเมิน) · server คำนวณเท่านั้น ไม่รับจาก client
+  /// DB มี CHECK ของคอลัมน์ระดับทั้ง 4 (bookings_required_level_check, bookings_level_from_*_check)
+  requiredLevel            String?           @map("required_level")
+  /// ระดับรายเกณฑ์ — NULL = เกณฑ์นั้นไม่มีผลต่อระดับ
+  levelFromAdl             String?           @map("level_from_adl")
+  levelFromFlags           String?           @map("level_from_flags")
+  levelFromServices        String?           @map("level_from_services")
+  levelCalculatedAt        DateTime?         @map("level_calculated_at") @db.Timestamptz(6)
   booking_tasks            booking_tasks[]
   // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
   care_logs                care_logs[]
@@ -417,6 +448,9 @@ model Booking {
   statusHistory            BookingStatusHistory[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
+  infectionAckCaregiver    Caregiver?        @relation("BookingInfectionAckBy", fields: [infectionAckBy], references: [id])
+  // PYG-633: กิจกรรมจากรายการกลางที่ booking นี้เลือก (สำเนา ณ ตอนจอง) — งานพิมพ์เองยังอยู่ที่ booking_tasks
+  activities               BookingActivity[]
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
   // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
@@ -642,7 +676,15 @@ model CareRecipient {
   /// NULL = โปรไฟล์ส่วนตัวของ patient คนนั้น (พฤติกรรมเดิมทั้งหมดก่อนมี family group)
   /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
   familyGroupId           String?         @map("family_group_id") @db.Uuid
+  /// PYG-618: โรคติดเชื้อที่ผู้ดูแลควรรู้ (ญาติเป็นผู้แจ้ง — ข้อมูลสุขภาพ)
+  /// NULL = ยังไม่ได้ระบุ · false = ญาติระบุว่าไม่มี · true = ญาติระบุว่ามี
+  /// ไม่มี default โดยตั้งใจ: ห้ามแสดง NULL ว่า "ไม่มี" · เก็บที่นี่ที่เดียว ห้ามคัดลอกไปตารางอื่น
+  has_infectious_disease  Boolean?
+  /// เวลาที่ญาติระบุ / แก้ไขล่าสุด — เทียบกับ bookings.infection_ack_at ว่าผู้ดูแลรับทราบค่าล่าสุดหรือค่าเก่า
+  infectious_disease_updated_at DateTime? @db.Timestamptz(6)
   bookings                Booking[]
+  /// PYG-608: ผลประเมิน ADL / Flags ล่าสุด (0..1) — มีแถว = มีแบบประเมิน
+  assessment              CareRecipientAssessment?
   patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // FK จริงคือ ON DELETE SET NULL / ON UPDATE CASCADE ซึ่งเป็นค่า default ของ Prisma
   // สำหรับ relation แบบ optional อยู่แล้ว → ไม่เขียนซ้ำ เพื่อให้ db pull ไม่มี diff
@@ -855,15 +897,24 @@ model KycDocument {
   userId       String     @map("user_id")
   /// PYG-506: สถานะรีวิว "รายเอกสาร" — ใช้กับ doc_type = 'profile_photo' (PYG-488)
   /// NULL = เอกสารที่ไม่ได้รีวิวรายใบ (เอกสาร KYC เดิมรีวิวรวมทั้งก้อนผ่าน caregivers.kyc_status)
-  /// TEXT + CHECK ('pending'|'approved'|'rejected') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  /// TEXT + CHECK ('pending'|'approved'|'rejected'|'expired') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  /// PYG-586: เพิ่ม 'expired' สำหรับเอกสารที่ถึงวันหมดอายุ (expires_at)
   reviewStatus String?     @map("review_status")
   reviewedAt   DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  /// PYG-586: เลขใบประกอบวิชาชีพ — บังคับเมื่อ doc_type = 'professional_license' (CHECK kyc_documents_license_fields_check)
+  /// ห้ามเป็นสตริงว่าง / มีแต่ช่องว่าง (CHECK kyc_documents_license_number_not_blank)
+  licenseNumber String?    @map("license_number")
+  /// PYG-586: วันหมดอายุของเอกสาร — เก็บเป็นสิ้นวันของวันหมดอายุตามเวลาไทย
+  /// ไม่ผูกกับ doc_type: ใบขับขี่ของ S06 (PYG-561) ใช้คอลัมน์นี้ร่วมกัน ห้ามเพิ่มคอลัมน์ซ้ำ
+  expiresAt    DateTime?   @map("expires_at") @db.Timestamptz(6)
   caregiver    Caregiver?  @relation(fields: [caregiverId], references: [id])
   user         User        @relation(fields: [userId], references: [id])
   reviews      KycReview[]
 
   // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
   @@index([reviewStatus], map: "idx_kyc_documents_review_status")
+  // หมายเหตุ: index จริงเป็น partial (WHERE expires_at IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([expiresAt])
   @@map("kyc_documents")
 }
 
@@ -941,6 +992,124 @@ model caregiver_edit_logs {
   created_at    DateTime  @default(now())
   caregivers    Caregiver @relation(fields: [caregiver_id], references: [id])
   users         User      @relation(fields: [edited_by], references: [id])
+}
+
+/// PYG-608: ผลประเมิน ADL และ Flags ของผู้สูงอายุ (S08 · PYG-563) — 1 แถวต่อผู้สูงอายุ 1 คน เก็บเฉพาะครั้งล่าสุด
+/// ข้อมูลสุขภาพ: RLS เปิดโดยไม่มี policy — client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// CHECK ใน migration SQL (Prisma เขียนไม่ได้): คะแนน 0–20 · unsure_count >= 0 ·
+///   no_special_conditions อยู่ร่วมกับ flags ไม่ได้
+/// ★ care_recipients ใช้ soft delete — onDelete: Cascade ทำงานเฉพาะตอนแถวถูกลบจริง
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareRecipientAssessment {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  careRecipientId     String        @unique(map: "care_recipient_assessments_recipient_key") @map("care_recipient_id") @db.Uuid
+  /// คำตอบ ADL รายข้อ: รหัสข้อ → ค่าคำตอบ (รายการข้อรอยืนยันกับอาจารย์)
+  adlAnswers          Json          @map("adl_answers")
+  /// backend เป็นผู้รวมคะแนน ไม่รับจาก client
+  adlTotalScore       Int           @map("adl_total_score")
+  unsureCount         Int           @default(0) @map("unsure_count")
+  /// เฉพาะ Flags ที่ญาติเลือกเอง — Flag "ไม่แน่ใจ" ที่ระบบตั้งอยู่ที่ hasUnsureFlag
+  flags               String[]      @default([])
+  noSpecialConditions Boolean       @default(false) @map("no_special_conditions")
+  hasUnsureFlag       Boolean       @default(false) @map("has_unsure_flag")
+  /// มีความหมายเฉพาะเมื่อ flags มี 'dementia'
+  dementiaSevere      Boolean?      @map("dementia_severe")
+  assessedBy          String        @map("assessed_by")
+  assessedAt          DateTime      @default(now()) @map("assessed_at") @db.Timestamptz(6)
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// ไม่มี @updatedAt / trigger — service ต้องตั้งค่าเองทุกครั้งที่บันทึก
+  updatedAt           DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-613: กลุ่มผู้สูงอายุจากคะแนน ADL รวม — 'social' (12–20) | 'homebound' (5–11) | 'bedridden' (0–4)
+  /// (DB มี CHECK care_recipient_assessments_care_group_check) backend เป็นผู้คำนวณใน transaction เดียวกับคะแนน
+  /// NULL ได้ชั่วคราวจนกว่า BE ของ S09 (PYG-614) ขึ้น แล้วจึงตั้ง NOT NULL ด้วย migration ถัดไป
+  careGroup           String?       @map("care_group")
+  careRecipient       CareRecipient @relation(fields: [careRecipientId], references: [id], onDelete: Cascade)
+  assessor            User          @relation(fields: [assessedBy], references: [id])
+
+  @@map("care_recipient_assessments")
+}
+
+/// PYG-638: กติการะดับของ Flag (เกณฑ์ที่ 2) และบริการ (เกณฑ์ที่ 3) ที่ใช้คำนวณระดับ booking (S16 · PYG-569)
+/// level = NULL หมายถึงรายการนี้ไม่มีผลต่อระดับ (เช่น กายภาพบำบัด) — ต่างจาก "ไม่มีแถว" ซึ่งเป็นข้อมูลตั้งค่าผิด
+/// DB มี CHECK: source IN ('flag','service') · level เป็น NULL หรือ 'basic' | 'intermediate' | 'advanced'
+/// updated_at ขยับเองด้วย trigger trg_booking_level_rules_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model BookingLevelRule {
+  source    String
+  /// รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
+  code      String
+  /// กรณีย่อยของ Flag เดียวกัน — '' = กรณีทั่วไป
+  variant   String   @default("")
+  level     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([source, code, variant])
+  @@map("booking_level_rules")
+}
+
+/// PYG-633: รายการกิจกรรมการดูแลกลาง (S15 · PYG-568) — แอดมินเป็นผู้ดูแล ไม่ลบแถว ใช้ isActive ปิดใช้งานแทน
+/// DB มี CHECK care_activities_care_level_check: 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง)
+/// updated_at ขยับเองด้วย trigger trg_care_activities_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareActivity {
+  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nameTh     String            @map("name_th")
+  nameEn     String?           @map("name_en")
+  /// ชื่อหมวดตามตาราง T-01 — ยังไม่มี CHECK จนกว่ารายการหมวดจะนิ่ง
+  category   String
+  careLevel  String            @map("care_level")
+  isActive   Boolean           @default(true) @map("is_active")
+  sortOrder  Int               @default(0) @map("sort_order")
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-651: รหัสกิจกรรมตาม T-01 (A01…) — ตัวอ้างอิงที่ไม่เปลี่ยนแม้ชื่อถูกแก้ถ้อยคำ
+  /// NULL ได้ (กิจกรรมที่แอดมินเพิ่มเองไม่บังคับมีรหัส) · ห้ามซ้ำ · DB มี CHECK care_activities_code_not_blank
+  code       String?           @unique(map: "care_activities_code_unique")
+  bookingActivities BookingActivity[]
+
+  @@unique([category, nameTh], map: "care_activities_category_name_unique")
+  @@index([isActive, category, sortOrder], map: "care_activities_active_idx")
+  @@map("care_activities")
+}
+
+/// PYG-633: กิจกรรมที่ booking เลือกจากรายการกลาง — เก็บ "สำเนา" ชื่อ หมวด ระดับ ณ ตอนจอง
+/// booking เดิมจึงแสดงได้เหมือนเดิมแม้กิจกรรมถูกแก้หรือปิดใช้งานภายหลัง (S15-R6)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model BookingActivity {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId      String       @map("booking_id") @db.Uuid
+  careActivityId String       @map("care_activity_id") @db.Uuid
+  activityName   String       @map("activity_name")
+  category       String
+  careLevel      String       @map("care_level")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking        Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  careActivity   CareActivity @relation(fields: [careActivityId], references: [id])
+
+  @@unique([bookingId, careActivityId], map: "booking_activities_unique")
+  @@map("booking_activities")
+}
+
+/// PYG-580: ประวัติการกำหนด / เปลี่ยนระดับผู้ดูแล (S02-AC4) — หนึ่งแถว = หนึ่งครั้งที่ระดับเปลี่ยน
+/// RLS เปิดโดยไม่มี policy: client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caregiver_care_level_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver_id String
+  /// NULL = กำหนดครั้งแรก
+  old_level    String?
+  new_level    String
+  /// NULL = ระบบตั้งให้ (backfill) ไม่ใช่แอดมิน
+  changed_by   String?
+  /// 'migration_default' = แถวจาก backfill ของ migration
+  reason       String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  caregivers   Caregiver @relation(fields: [caregiver_id], references: [id])
+  users        User?     @relation(fields: [changed_by], references: [id], onDelete: Restrict)
+
+  @@index([caregiver_id, created_at(sort: Desc)], map: "caregiver_care_level_logs_caregiver_idx")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -1120,6 +1289,8 @@ enum NotificationType {
   payment_transferred
   job_checked_in // PYG-353
   job_care_log_added // มีการบันทึก care log (Christina)
+  profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
+  profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
 }
 
 enum booking_service_type {

@@ -54,6 +54,7 @@ describe('ProfilePhotoService (PYG-507)', () => {
     user: { findUnique: jest.Mock; update: jest.Mock };
     kycDocument: {
       findMany: jest.Mock;
+      findFirst: jest.Mock;
       deleteMany: jest.Mock;
       create: jest.Mock;
     };
@@ -85,6 +86,7 @@ describe('ProfilePhotoService (PYG-507)', () => {
       },
       kycDocument: {
         findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         create: jest.fn().mockResolvedValue({ id: 'doc-1' }),
       },
@@ -267,5 +269,76 @@ describe('ProfilePhotoService (PYG-507)', () => {
 
     expect(result.reviewStatus).toBe('approved');
     expect(result.photoUrl).toBeNull();
+  });
+
+  // ── myReview: หน้าแก้โปรไฟล์อ่านสถานะจาก backend (แทน localStorage) ──────────
+
+  describe('myReview', () => {
+    it('ไม่ใช่ผู้ดูแล → null', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(null);
+      await expect(service.myReview(USER_ID)).resolves.toBeNull();
+      expect(prisma.kycDocument.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('ยังไม่เคยอัปโหลด → null', async () => {
+      prisma.kycDocument.findFirst.mockResolvedValue(null);
+      await expect(service.myReview(USER_ID)).resolves.toBeNull();
+    });
+
+    it('ใบล่าสุด pending → signed URL ของใบนั้น ไม่มีเหตุผล', async () => {
+      prisma.kycDocument.findFirst.mockResolvedValue({
+        id: 'doc-p',
+        fileUrl: `${USER_ID}/profile-p.jpg`,
+        reviewStatus: 'pending',
+        uploadedAt: new Date('2026-10-04'),
+        reviewedAt: null,
+        reviews: [],
+      });
+
+      const result = await service.myReview(USER_ID);
+
+      expect(callArg<{ where: unknown }>(prisma.kycDocument.findFirst).where).toEqual({
+        caregiverId: CAREGIVER_ID,
+        documentType: 'profile_photo',
+      });
+      expect(result).toMatchObject({
+        documentId: 'doc-p',
+        reviewStatus: 'pending',
+        photoUrl: 'https://signed/p.jpg',
+      });
+      expect(result?.reason).toBeUndefined();
+    });
+
+    it('ใบล่าสุด rejected → คืนเหตุผลจาก kyc_reviews', async () => {
+      prisma.kycDocument.findFirst.mockResolvedValue({
+        id: 'doc-r',
+        fileUrl: `${USER_ID}/profile-r.jpg`,
+        reviewStatus: 'rejected',
+        uploadedAt: new Date('2026-10-03'),
+        reviewedAt: new Date('2026-10-04'),
+        reviews: [{ reason: 'ใบหน้าไม่ชัด' }],
+      });
+
+      const result = await service.myReview(USER_ID);
+
+      expect(result).toMatchObject({ reviewStatus: 'rejected', reason: 'ใบหน้าไม่ชัด' });
+    });
+
+    it('ใบล่าสุด approved → ไม่ sign ซ้ำ (FE ใช้ me.avatarUrl)', async () => {
+      prisma.kycDocument.findFirst.mockResolvedValue({
+        id: 'doc-a',
+        fileUrl: `${USER_ID}/profile-a.jpg`,
+        reviewStatus: 'approved',
+        uploadedAt: new Date('2026-10-03'),
+        reviewedAt: new Date('2026-10-04'),
+        reviews: [{ reason: null }],
+      });
+
+      const result = await service.myReview(USER_ID);
+
+      expect(result).toMatchObject({ reviewStatus: 'approved' });
+      expect(result?.photoUrl).toBeUndefined();
+      expect(createSignedUrl).not.toHaveBeenCalled();
+    });
   });
 });

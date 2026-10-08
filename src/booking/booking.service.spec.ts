@@ -17,6 +17,9 @@ import {
 } from '../payment/settlement/booking-settlement.types';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { BookingStatusEnum } from './dto/booking-summary.types';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
+import { SupabaseService } from '../common/supabase.service';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -71,8 +74,15 @@ describe('BookingService', () => {
   // พฤติกรรมของเงินเองมีเทสของตัวเองที่ booking-settlement.service.spec.ts (1,235 บรรทัด)
   let settlement: { settle: jest.Mock };
   let emitter: { emit: jest.Mock };
+  let storageFrom: jest.Mock;
+  let createSignedUrls: jest.Mock;
 
   beforeEach(async () => {
+    createSignedUrls = jest.fn().mockImplementation((paths: string[]) => ({
+      data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}`, error: null })),
+      error: null,
+    }));
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
     tx = { booking: { update: jest.fn() } };
     prisma = {
       booking: {
@@ -117,6 +127,14 @@ describe('BookingService', () => {
           useValue: {
             findWithdrawnType: jest.fn().mockResolvedValue(null),
             withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+          },
+        },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเฉพาะเรื่อง signing อยู่ท้ายไฟล์นี้
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
           },
         },
       ],
@@ -538,6 +556,68 @@ describe('BookingService', () => {
         SettlementReason.PATIENT_CANCEL,
         { id: PATIENT_ID, role: 'patient' },
       );
+    });
+  });
+
+  // ── PYG-518: avatar signing ─────────────────────────────────────────────
+
+  describe('caregiver avatar signing', () => {
+    it('confirmBooking: sign storage path ดิบของผู้ดูแลกับ bucket profile-photos', async () => {
+      const booking = fakeBooking({
+        status: 'accepted',
+        caregiver: {
+          id: CAREGIVER_ID, fullName: 'สมชาย ใจดี', hourlyRate: 350,
+          user: { avatarUrl: 'cg-222/profile-abc.jpg' },
+        },
+      });
+      prisma.booking.findUnique.mockResolvedValue(booking);
+      prisma.booking.update.mockResolvedValue({ ...booking, status: 'confirmed', confirmedAt: new Date() });
+
+      const result = await service.confirmBooking(BOOKING_ID, PATIENT_ID);
+
+      expect(result.caregiver?.avatarUrl).toBe('https://signed.example/cg-222/profile-abc.jpg');
+      expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
+    });
+
+    it('myBookingHistory: sign avatar ของผู้ดูแลทุกใบด้วย createSignedUrls ครั้งเดียว', async () => {
+      const rows = Array.from({ length: 5 }, (_, i) =>
+        fakeBooking({
+          id: `b-${i}`,
+          caregiver: {
+            id: `cg-${i}`, fullName: 'สมชาย ใจดี', hourlyRate: 350,
+            user: { avatarUrl: `cg-${i}/photo.jpg` },
+          },
+        }),
+      );
+      prisma.booking.findMany.mockResolvedValue(rows);
+      prisma.booking.count.mockResolvedValue(5);
+
+      const result = await service.myBookingHistory(PATIENT_ID, {});
+
+      // ★ Done criterion: หลายใบเซ็นในการเรียกเดียว ไม่ยิงทีละใบ
+      expect(createSignedUrls).toHaveBeenCalledTimes(1);
+      expect(createSignedUrls.mock.calls[0][0]).toHaveLength(5);
+      result.data.forEach((summary, i) => {
+        expect(summary.caregiver?.avatarUrl).toBe(`https://signed.example/cg-${i}/photo.jpg`);
+      });
+    });
+
+    it('ไม่คืน storage path ดิบเมื่อ sign ไม่สำเร็จ', async () => {
+      createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
+      prisma.booking.findMany.mockResolvedValue([
+        fakeBooking({
+          caregiver: {
+            id: CAREGIVER_ID, fullName: 'สมชาย ใจดี', hourlyRate: 350,
+            user: { avatarUrl: 'cg-222/profile-abc.jpg' },
+          },
+        }),
+      ]);
+      prisma.booking.count.mockResolvedValue(1);
+
+      const result = await service.myBookingHistory(PATIENT_ID, {});
+
+      expect(result.data[0].caregiver?.avatarUrl).toBeUndefined();
+      expect(result.data[0].caregiver?.avatarUrl).not.toBe('cg-222/profile-abc.jpg');
     });
   });
 });

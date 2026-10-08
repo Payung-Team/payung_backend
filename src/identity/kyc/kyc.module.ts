@@ -23,6 +23,7 @@ import { KycDocumentService } from './kyc-document.service';
 import { KycStorageAuditCron } from './kyc-storage-audit.cron';
 import { ProfilePhotoController } from './profile-photo.controller';
 import { ProfilePhotoService } from './profile-photo.service';
+import { ProfilePhotoResolver } from './profile-photo.resolver';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
@@ -40,6 +41,7 @@ import { PaymentModule } from '../../payment/payment.module';
   controllers: [ProfilePhotoController],
   providers: [
     ProfilePhotoService, // PYG-507: อัปโหลดรูปโปรไฟล์ผ่าน backend + เข้าคิวรีวิวถ้าเป็นผู้ดูแล
+    ProfilePhotoResolver, // PYG-488: myProfilePhotoReview — สถานะรีวิวรูปของผู้ดูแลเอง
     KycResolver,
     CaregiverResolver,
     WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition

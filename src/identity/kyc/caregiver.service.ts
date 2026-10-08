@@ -26,6 +26,7 @@ import {
   toStoragePathForSigning,
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
+import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -521,7 +522,10 @@ export class CaregiverService {
    */
   private loadDocs(caregiverId: string) {
     return this.prismaService.kycDocument.findMany({
-      where: { caregiverId },
+      // PYG-508: รูปโปรไฟล์ (PYG-507) อยู่ตารางเดียวกันแต่คนละ bucket และ path ขึ้นต้นด้วย users.id
+      //   ไม่ใช่ supabase_uid — ถ้าหลุดเข้ามา assertPathBelongsToOwner จะ throw ทั้งหน้า KYC
+      //   รูปโปรไฟล์มีเส้นของตัวเอง (AdminProfilePhotoService) ไม่ผ่านตรงนี้
+      where: { caregiverId, documentType: { not: PROFILE_PHOTO_DOC_TYPE } },
       orderBy: { uploadedAt: 'desc' },
       include: { user: { select: { supabaseUid: true } } },
     });

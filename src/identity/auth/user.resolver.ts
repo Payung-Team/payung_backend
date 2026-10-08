@@ -44,6 +44,7 @@ export class UserResolver {
   /**
    * Field resolver สำหรับ User.avatarUrl — sign storage path ของ bucket private
    * (รายละเอียดดู AvatarUrlService) ไม่งั้น header แสดงตัวอักษรย่อแทนรูป
+   * ทุก role อยู่ bucket เดียว (PYG-508) · ผู้ดูแลได้ avatar_url เฉพาะรูปที่แอดมินอนุมัติแล้ว
    */
   @ResolveField(() => String, {
     nullable: true,

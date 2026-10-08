@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { SearchService } from './search.service';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
+import { SupabaseService } from '../common/supabase.service';
 import { SortByEnum } from './dto/search-caregiver.input';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -76,14 +79,29 @@ function getValues(mockFn: jest.Mock, callIndex = 0): unknown[] {
 describe('SearchService', () => {
   let service: SearchService;
   let prisma: { $queryRaw: jest.Mock };
+  let storageFrom: jest.Mock;
+  let createSignedUrls: jest.Mock;
 
   beforeEach(async () => {
     prisma = { $queryRaw: jest.fn() };
+    createSignedUrls = jest.fn().mockImplementation((paths: string[]) => ({
+      data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}`, error: null })),
+      error: null,
+    }));
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SearchService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเฉพาะเรื่อง signing อยู่ที่ท้ายไฟล์นี้
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
       ],
     }).compile();
 
@@ -304,5 +322,32 @@ describe('SearchService', () => {
     expect(values).toContain(700);
     expect(values).toContain(4);
     expect(result.pagination).toMatchObject({ page: 2, limit: 5, total: 3, totalPages: 1 });
+  });
+
+  // ── PYG-518: avatar signing ─────────────────────────────────────────────
+
+  it('sign avatar_url ของทุกแถวด้วย createSignedUrls ครั้งเดียว กับ bucket profile-photos', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      row({ id: `cg-${i}`, avatar_url: `cg-${i}/photo.jpg`, total_count: BigInt(20) }),
+    );
+    prisma.$queryRaw.mockResolvedValue(rows);
+
+    const result = await service.searchCaregivers({ limit: 20 });
+
+    // ★ Done criterion: ผลค้นหา 20 ใบเซ็นในการเรียกเดียว
+    expect(createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(createSignedUrls.mock.calls[0][0]).toHaveLength(20);
+    expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
+    expect(result.data.every((d, i) => d.avatarUrl === `https://signed.example/cg-${i}/photo.jpg`)).toBe(true);
+  });
+
+  it('ไม่คืน storage path ดิบเมื่อ sign ไม่สำเร็จ — เป็น undefined แทน', async () => {
+    createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
+    prisma.$queryRaw.mockResolvedValue([row({ avatar_url: 'cg-1/photo.jpg' })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].avatarUrl).toBeUndefined();
+    expect(result.data[0].avatarUrl).not.toBe('cg-1/photo.jpg');
   });
 });

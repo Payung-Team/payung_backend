@@ -11,6 +11,7 @@
 import { FamilyGroupService } from './family-group.service';
 import type { PrismaService } from '../common/prisma.service';
 import type { ConsentService } from '../consent/consent.service';
+import type { AvatarUrlService } from '../common/avatar-url.service';
 import { CONSENT_TYPE } from '../consent/consent.constants';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from './family-group.constants';
 
@@ -44,9 +45,13 @@ describe('FamilyGroupService — กรองตามความยินย�
       withdrawnUserIds: jest.fn().mockResolvedValue(new Set([WITHDRAWN_OWNER])),
       grantedCurrentUserIds: jest.fn().mockResolvedValue(new Set()),
     };
+    // PYG-518: sign avatarUrl ของสมาชิก/ผู้ลงมือ — ไม่ใช่จุดโฟกัสของไฟล์นี้
+    // (fixture ทั้งหมดใช้ avatarUrl: null อยู่แล้ว) เทสเรื่อง signing อยู่ที่ family-group.service.spec.ts
+    const avatarUrlService = { resolveMany: jest.fn().mockResolvedValue(new Map()) };
     service = new FamilyGroupService(
       prisma as unknown as PrismaService,
       consent as unknown as ConsentService,
+      avatarUrlService as unknown as AvatarUrlService,
     );
   });
 

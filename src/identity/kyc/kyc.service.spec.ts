@@ -30,7 +30,6 @@ function baseKycInput(overrides: Partial<KycInput> = {}): KycInput {
     phone: '0812345678',
     skills: ['elder_care'],
     experienceYears: 3,
-    hourlyRate: 150,
     documentIds: [],
     ...overrides,
   } as KycInput;
@@ -201,6 +200,57 @@ describe('KycService — payout account (PYG-266)', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('submitKyc — hourlyRate (PYG-536)', () => {
+    const user = { id: USER_ID, email: 'x@y.com' } as AuthUser;
+    const upsertArg = () => tx.caregiver.upsert.mock.calls[0][0];
+
+    it('ไม่ส่ง hourlyRate (FE รุ่นใหม่) → ส่งผ่าน และไม่เขียน hourlyRate', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+
+      await service.submitKyc(user, baseKycInput());
+
+      expect(upsertArg().create).not.toHaveProperty('hourlyRate');
+      expect(upsertArg().update).not.toHaveProperty('hourlyRate');
+    });
+
+    it('ส่ง hourlyRate มา (FE รุ่นเก่า) → ถูกทิ้ง ไม่เขียนลงตาราง', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+
+      await service.submitKyc(user, baseKycInput({ hourlyRate: 999 }));
+
+      expect(upsertArg().create).not.toHaveProperty('hourlyRate');
+      expect(upsertArg().update).not.toHaveProperty('hourlyRate');
+    });
+    it('resubmit ของผู้ดูแลเดิม (มี rate อยู่แล้ว) → rate เดิมไม่หาย และ edit log ไม่มี hourlyRate', async () => {
+      const OLD_RATE = 350;
+      prisma.caregiver.findUnique.mockResolvedValueOnce({
+        id: CAREGIVER_ID,
+        kycStatus: 'rejected',
+        resubmitCount: 0,
+        caregiverNumber: 'CG-260101-0001',
+        fullName: 'สมชาย ใจดี',
+        idCardNumber: '1234567890123',
+        phone: '0812345678',
+        skills: ['elder_care'],
+        experienceYears: 3,
+        hourlyRate: OLD_RATE,
+      });
+      // upsert ไม่แตะ hourly_rate → DB คืนแถวที่ยังมีค่าเดิม
+      tx.caregiver.upsert.mockResolvedValueOnce({ id: CAREGIVER_ID, resubmitCount: 1, hourlyRate: OLD_RATE });
+
+      const result = await service.submitKyc(user, baseKycInput({ hourlyRate: 999 }));
+
+      // ไม่มี key hourlyRate ใน update → Prisma ไม่เขียนคอลัมน์นี้ ค่าเดิมคงอยู่ (ไม่ใช่ set null)
+      expect(upsertArg().update).not.toHaveProperty('hourlyRate');
+      expect(result.hourlyRate).toBe(OLD_RATE);
+
+      // edit log: ค่าที่ 4 ของ $executeRaw คือ field_changes (JSON)
+      const changesJson = tx.$executeRaw.mock.calls[0][4] as string;
+      const fields = (JSON.parse(changesJson) as Array<{ field: string }>).map((c) => c.field);
+      expect(fields).not.toContain('hourlyRate');
     });
   });
 

@@ -72,12 +72,16 @@ export const PATIENT_CONSENT_ITEMS: readonly ConsentItemContent[] = [
     labelTh: 'ฉันยินยอมให้ Payung เก็บข้อมูลสุขภาพของผู้รับบริการ',
     labelEn: 'I consent to Payung collecting the care recipient’s health information',
     descriptionTh:
-      'ได้แก่ อายุ เพศ ระดับการช่วยเหลือตัวเอง โรคประจำตัว ยาที่ใช้ ประวัติการแพ้ และคำแนะนำการดูแล ' +
+      // ★ รายการต้องครบตามฟิลด์ที่ Onboarding ส่งจริง (completeOnboarding → details) และตรงกับประกาศข้อ 2.2
+      //   ยินยอมได้เฉพาะสิ่งที่ถูกบอก — เก็บเกินรายการนี้ = เก็บโดยไม่มีความยินยอม
+      'ได้แก่ อายุ เพศ น้ำหนัก ส่วนสูง ระดับการช่วยเหลือตัวเอง โรคประจำตัว ยาที่ใช้ ประวัติการแพ้ ' +
+      'กรุ๊ปเลือด คำแนะนำการดูแล และโรงพยาบาลประจำ รวมถึงบันทึกการดูแลและรูปถ่ายที่ผู้ดูแลบันทึกระหว่างงาน ' +
       'เราใช้ข้อมูลนี้เพื่อจับคู่ผู้ดูแลที่เหมาะสมและให้ผู้ดูแลดูแลได้อย่างปลอดภัย ' +
       `เก็บไว้ ${RETENTION_HEALTH} ปีหลังปิดบัญชี แล้วลบทิ้ง · ` +
       'ถ้าไม่ยินยอมข้อนี้จะยังใช้บัญชีได้ แต่จะจองผู้ดูแลไม่ได้ · ถอนความยินยอมได้ทุกเมื่อ',
     descriptionEn:
-      'This includes age, gender, mobility level, medical conditions, medications, allergies and care notes. ' +
+      'This includes age, gender, weight, height, mobility level, medical conditions, medications, allergies, ' +
+      'blood type, care notes and preferred hospital, as well as care logs and photos the caregiver records during a job. ' +
       'We use it to match a suitable caregiver and to let them care for you safely. ' +
       `Kept for ${RETENTION_HEALTH} years after your account closes, then deleted. ` +
       'Without this consent you can keep your account but cannot book a caregiver. You may withdraw it at any time.',

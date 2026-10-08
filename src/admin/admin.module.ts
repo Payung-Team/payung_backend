@@ -18,6 +18,8 @@
 import { Module } from '@nestjs/common';
 import { AdminResolver } from './admin.resolver';
 import { AdminService } from './admin.service';
+import { AdminProfilePhotoResolver } from './admin-profile-photo.resolver';
+import { AdminProfilePhotoService } from './admin-profile-photo.service';
 import { AdminCleanupService } from './admin-cleanup.service';
 import { UserCleanupService } from './user-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
@@ -37,6 +39,8 @@ import { PaymentModule } from '../payment/payment.module';
   providers: [
     AdminResolver,
     AdminService,
+    AdminProfilePhotoResolver, // PYG-508: คิว + อนุมัติ/ปฏิเสธรูปโปรไฟล์ผู้ดูแล
+    AdminProfilePhotoService,
     AdminCleanupService,
     UserCleanupService,
     SupabaseAuthGuard,

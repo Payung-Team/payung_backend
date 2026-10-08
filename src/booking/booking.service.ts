@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import { SettlementReason } from '../payment/settlement/booking-settlement.types';
@@ -36,6 +37,7 @@ import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma
 // รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
+import { caregiverHasTimeConflict } from './caregiver-time-conflict';
 import { activeHourlyPrice, estimatedCostOf } from '../common/pricing/service-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
@@ -214,6 +216,8 @@ export class BookingService {
     private readonly jobQrService: JobQrService,
     // PYG-540: ด่านความยินยอมก่อนจอง + กรองนัดหมายของกลุ่ม
     private readonly consentService: ConsentService,
+    // PYG-518: sign avatarUrl ของผู้ดูแลก่อนส่งออก
+    private readonly avatarUrlService: AvatarUrlService,
   ) {}
 
   /**
@@ -259,6 +263,7 @@ export class BookingService {
     }
 
     const booking = await this.createBookingRecord(patientId, dto);
+    await this.signCaregiverAvatars([booking]);
     return this.toRestSummary(booking);
   }
 
@@ -435,6 +440,7 @@ export class BookingService {
       },
     );
 
+    await this.signCaregiverAvatars([booking]);
     return this.toSummary(booking);
   }
 
@@ -694,6 +700,23 @@ export class BookingService {
 
       if (!requiredSlots.every((slot) => coveredSlots.has(slot))) {
         throw new ConflictException('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+      }
+
+      /**
+       * PYG-544 — ตารางว่างรายสัปดาห์ข้างบนไม่รู้ว่าวันนั้นผู้ดูแลรับงานของคนอื่นไปแล้วหรือยัง
+       * → เช็คกับใบจองที่ผู้ดูแลรับไว้แล้วด้วย (ไม่นับ pending ดู CAREGIVER_BUSY_STATUSES)
+       *
+       * ไม่ล็อกแถวผู้ดูแลตรงนี้: ใบใหม่เกิดเป็น pending ซึ่งไม่กันเวลาของใคร ถ้าผู้ดูแลกดรับ
+       * อีกใบในจังหวะเดียวกัน ใบนี้จะถูกกันที่ acceptBooking ซึ่งเป็นด่านที่ล็อกจริง
+       */
+      const caregiverBusy = await caregiverHasTimeConflict(this.prisma, {
+        caregiverId: resolvedCaregiverId,
+        bookingDate: bookingDateObj,
+        startMinute: newStart,
+        endMinute: newEnd,
+      });
+      if (caregiverBusy) {
+        throw new ConflictException('ผู้ดูแลไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่นหรือผู้ดูแลท่านอื่น');
       }
     }
 
@@ -1045,6 +1068,7 @@ export class BookingService {
       });
     }
 
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return this.toRestSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -1096,6 +1120,12 @@ export class BookingService {
     const servicePrice =
       catalogRow?.isActive ? Number(catalogRow.pricePerHour) : undefined;
 
+    // PYG-518: เซ็น avatar ของ caregiver ทั้ง 20 รายในการเรียกเดียว ไม่ยิงทีละคน
+    const avatarByCaregiver = await this.avatarUrlService.resolveMany(
+      caregivers,
+      (cg) => cg.user.avatarUrl,
+    );
+
     return caregivers.map((cg) => {
       const reviewCount = cg.patientReviews.length;
       const avgRating =
@@ -1108,7 +1138,7 @@ export class BookingService {
       return {
         id:              cg.id,
         fullName:        cg.fullName        ?? undefined,
-        avatarUrl:       cg.user.avatarUrl  ?? undefined,
+        avatarUrl:       avatarByCaregiver.get(cg) ?? undefined,
         hourlyRate:      servicePrice,
         experienceYears: cg.experienceYears ?? undefined,
         skills:          cg.skills,
@@ -1173,6 +1203,7 @@ export class BookingService {
                           : String(booking.bookingDate),
     });
 
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return {
       booking: this.toRestSummary(updated as unknown as BookingWithIncludes),
       matches,
@@ -1219,6 +1250,7 @@ export class BookingService {
     });
 
     this.logger.log({ event: 'booking.confirmed', bookingId, userId });
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return this.toSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -1232,6 +1264,7 @@ export class BookingService {
     });
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
+    await this.signCaregiverAvatars([booking as unknown as BookingWithIncludes]);
     const summary = this.toSummary(booking as unknown as BookingWithIncludes);
     if (summary.caregiver && booking.caregiverId) {
       summary.caregiver.completedJobs = await this.prisma.booking.count({
@@ -1264,6 +1297,7 @@ export class BookingService {
       throw new NotFoundException('Booking not found');
     }
 
+    await this.signCaregiverAvatars([booking as unknown as BookingWithIncludes]);
     const summary = this.toSummary(booking as unknown as BookingWithIncludes);
     summary.bookedByMe = booking.bookedBy === userId || booking.patientId === userId;
     if (summary.caregiver && booking.caregiverId) {
@@ -1398,6 +1432,9 @@ export class BookingService {
       );
     });
 
+    // PYG-518: เซ็น avatar ของผู้ดูแลทุกใบในฟีดกลุ่มพร้อมกัน (createSignedUrls ครั้งเดียว)
+    await this.signCaregiverAvatars(items);
+
     return items.map((b) => ({
       id: b.id,
       bookingDate:
@@ -1436,6 +1473,29 @@ export class BookingService {
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * PYG-518 — เซ็น avatarUrl ของผู้ดูแลในหลาย booking row พร้อมกัน (createSignedUrls
+   * ครั้งเดียว ไม่ยิงทีละแถว) แล้ว mutate ค่าใน row.caregiver.user.avatarUrl ให้เป็น
+   * signed URL ตรง ๆ — เรียกก่อน toSummary/toRestSummary/groupBookings เสมอ
+   * เพื่อให้ตัว mapper ที่เหลือไม่ต้องรู้เรื่อง signing เลย แค่อ่านค่าที่มีอยู่ตามปกติ
+   */
+  private async signCaregiverAvatars(
+    rows: ReadonlyArray<{ caregiver: { user: { avatarUrl: string | null } } | null }>,
+  ): Promise<void> {
+    const withCaregiver = rows.filter(
+      (r): r is { caregiver: { user: { avatarUrl: string | null } } } => !!r.caregiver,
+    );
+    if (withCaregiver.length === 0) return;
+
+    const urlByRow = await this.avatarUrlService.resolveMany(
+      withCaregiver,
+      (r) => r.caregiver.user.avatarUrl,
+    );
+    for (const r of withCaregiver) {
+      r.caregiver.user.avatarUrl = urlByRow.get(r) ?? null;
+    }
+  }
 
   /** REST summary (caregiver may be null for unmatched bookings) */
   private toRestSummary(booking: BookingWithIncludes): BookingRest {
@@ -1531,10 +1591,11 @@ export class BookingService {
     };
   }
 
-  private toListResponse(
+  private async toListResponse(
     items: BookingWithIncludes[],
     { page, limit, total }: { page: number; limit: number; total: number },
-  ): BookingListResponse {
+  ): Promise<BookingListResponse> {
+    await this.signCaregiverAvatars(items);
     const pagination: BookingPagination = {
       page,
       limit,

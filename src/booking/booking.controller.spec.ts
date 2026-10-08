@@ -16,6 +16,8 @@ import {
 } from '../payment/settlement/booking-settlement.types';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -158,6 +160,12 @@ describe('BookingService — new REST methods', () => {
             findWithdrawnType: jest.fn().mockResolvedValue(null),
             withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
           },
+        },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
         },
       ],
     }).compile();
@@ -442,6 +450,89 @@ describe('BookingService — new REST methods', () => {
 
         expect(prisma.caregiverAvailability.findMany).not.toHaveBeenCalled();
         expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // ── PYG-544: ผู้ดูแลรับงานของคนอื่นในเวลานั้นไปแล้ว ───────────────────────────
+
+    describe('PYG-544 เช็คเวลาชนกับงานที่ผู้ดูแลรับไว้แล้วตอนจอง', () => {
+      const busyDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        caregiverId:      CAREGIVER_ID,
+        startTime:        '10:00',
+        endTime:          '11:00',
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      /** งานที่ผู้ดูแลรับไว้แล้ว (ของผู้จองคนอื่น) — นัดของผู้จองเองว่าง */
+      const caregiverJobs = (jobs: { startTime: Date; durationHours: number }[]) =>
+        prisma.booking.findMany.mockImplementation(
+          (args: { where: { caregiverId?: string } }) =>
+            Promise.resolve(args.where.caregiverId ? jobs : []),
+        );
+
+      beforeEach(() => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+          hourlyRate: 300,
+        });
+        prisma.caregiverAvailability.findMany.mockResolvedValue([{ timeSlot: 'morning' }]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+      });
+
+      it('ซ้อนกับงานที่ผู้ดูแลรับไว้แล้ว (09:00–12:00) → 409 ผู้ดูแลไม่ว่าง + ไม่สร้างใบจอง', async () => {
+        caregiverJobs([{ startTime: new Date('1970-01-01T09:00:00Z'), durationHours: 3 }]);
+
+        const err = await service.createBooking(PATIENT_ID, busyDto).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(ConflictException);
+        expect((err as Error).message).toContain('ผู้ดูแลไม่ว่างในช่วงเวลานี้');
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('นับเฉพาะ accepted / confirmed / in_progress ของผู้ดูแลคนนั้นในวันเดียวกัน — ไม่นับ pending', async () => {
+        caregiverJobs([]);
+
+        await service.createBooking(PATIENT_ID, busyDto);
+
+        expect(prisma.booking.findMany).toHaveBeenCalledWith({
+          where: {
+            caregiverId: CAREGIVER_ID,
+            bookingDate: new Date('2026-07-01T00:00:00.000Z'),
+            status: { in: ['accepted', 'confirmed', 'in_progress'] },
+          },
+          select: { startTime: true, durationHours: true },
+        });
+      });
+
+      it.each([
+        ['งานก่อนหน้าจบ 10:00 พอดี', '08:00', 2],
+        ['งานถัดไปเริ่ม 11:00 พอดี', '11:00', 1],
+      ])('ต่อกันพอดี (%s) → จองได้', async (_label, hm, hours) => {
+        caregiverJobs([{ startTime: new Date(`1970-01-01T${hm}:00Z`), durationHours: hours }]);
+
+        await service.createBooking(PATIENT_ID, busyDto);
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('ไม่ส่ง caregiverId มา (unmatched) → ไม่เช็คงานของผู้ดูแล', async () => {
+        caregiverJobs([]);
+        prisma.booking.create.mockResolvedValue(
+          fakeBooking({ caregiverId: null, status: 'unmatched' }),
+        );
+
+        await service.createBooking(PATIENT_ID, { ...busyDto, caregiverId: undefined });
+
+        const scopes = prisma.booking.findMany.mock.calls.map(
+          ([args]: [{ where: Record<string, unknown> }]) => Object.keys(args.where),
+        );
+        expect(scopes.some((keys: string[]) => keys.includes('caregiverId'))).toBe(false);
       });
     });
 

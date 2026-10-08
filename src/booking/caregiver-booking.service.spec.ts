@@ -66,6 +66,8 @@ describe('CaregiverBookingService', () => {
       updateMany: jest.Mock;
     };
     user: { findMany: jest.Mock };
+    $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
   };
   // PYG-461/462: acceptBooking มี guard เวลา — ตรึงนาฬิกา (เปลี่ยนได้รายเทส)
   // booking ใน fixture = 2026-07-01 09:00 เวลาไทย = 2026-07-01T02:00:00Z
@@ -84,6 +86,9 @@ describe('CaregiverBookingService', () => {
         groupBy: jest.fn(),
       },
       user: { findMany: jest.fn() },
+      // PYG-544: acceptBooking เช็คเวลาชน + เขียนสถานะใน $transaction — fake ส่ง client เดียวกันเข้า callback
+      $transaction: jest.fn((cb: (t: typeof prisma) => unknown) => cb(prisma)),
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
 
     // โดย default: หา caregiver เจอเสมอ (เทสต์ที่อยากให้ไม่เจอจะ override เอง)
@@ -263,6 +268,73 @@ describe('CaregiverBookingService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
       // ไม่ reload / ไม่คืนข้อมูลที่ดูเหมือนรับงานสำเร็จ
       expect(prisma.booking.findUnique).toHaveBeenCalledTimes(2);
+    });
+
+    // ── PYG-544: เวลาชนกับงานที่ผู้ดูแลรับไว้แล้ว ───────────────────────────
+
+    /** งานอื่นของผู้ดูแลในวันเดียวกัน — เวลาเป็นนาฬิกาไทยตามคอลัมน์ TIME */
+    const otherJob = (hm: string, hours: number) => ({
+      startTime: new Date(`1970-01-01T${hm}:00.000Z`),
+      durationHours: { toNumber: () => hours, valueOf: () => hours },
+    });
+
+    /** ใบที่กำลังจะรับ = 09:00–12:00 */
+    const acceptWithOtherJobs = (others: unknown[]) => {
+      prisma.booking.findUnique.mockResolvedValueOnce(guardRow({ status: 'pending' }));
+      prisma.booking.findUnique.mockResolvedValueOnce(scheduleRow());
+      prisma.booking.findMany.mockResolvedValueOnce(others);
+      prisma.booking.findUnique.mockResolvedValueOnce(fakeBooking({ status: 'accepted' }));
+      return service.acceptBooking(USER_ID, BOOKING_ID);
+    };
+
+    it('PYG-544: นับงานที่รับไว้แล้วทุกสถานะ (accepted / confirmed / in_progress) ไม่นับ pending และไม่นับตัวเอง', async () => {
+      await acceptWithOtherJobs([]);
+
+      expect(prisma.booking.findMany).toHaveBeenCalledWith({
+        where: {
+          caregiverId: CAREGIVER_ID,
+          bookingDate: new Date('2026-07-01'),
+          status: { in: ['accepted', 'confirmed', 'in_progress'] },
+          id: { not: BOOKING_ID },
+        },
+        select: { startTime: true, durationHours: true },
+      });
+    });
+
+    it.each([
+      ['อยู่ข้างใน', '10:00', 1],
+      ['คร่อมเวลาเริ่ม', '08:00', 2],
+      ['คร่อมเวลาจบ', '11:30', 2],
+      ['ครอบทั้งช่วง', '08:00', 6],
+    ])('PYG-544: ซ้อนกับงานที่รับไว้แล้ว (%s) → 409 + ไม่เขียน DB', async (_label, hm, hours) => {
+      const err = await acceptWithOtherJobs([otherJob(hm, hours)]).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as Error).message).toBe('ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณรับไว้แล้ว');
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['งานก่อนหน้าจบ 09:00 พอดี', '07:00', 2],
+      ['งานถัดไปเริ่ม 12:00 พอดี', '12:00', 2],
+    ])('PYG-544: ต่อกันพอดี (%s) → รับได้', async (_label, hm, hours) => {
+      await expect(acceptWithOtherJobs([otherJob(hm, hours)])).resolves.toBeDefined();
+      expect(prisma.booking.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('PYG-544: ล็อกแถวผู้ดูแล → เช็คเวลาชน → เขียนสถานะ ตามลำดับ ใน transaction เดียว', async () => {
+      await acceptWithOtherJobs([]);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      const [strings, ...values] = prisma.$queryRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+      expect(strings.join('?')).toBe('SELECT 1 FROM "caregivers" WHERE "id" = ? FOR UPDATE');
+      expect(values).toEqual([CAREGIVER_ID]);
+
+      const lockOrder = prisma.$queryRaw.mock.invocationCallOrder[0];
+      const checkOrder = prisma.booking.findMany.mock.invocationCallOrder[0];
+      const writeOrder = prisma.booking.updateMany.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(checkOrder);
+      expect(checkOrder).toBeLessThan(writeOrder);
     });
 
     it('throws NotFoundException when booking does not exist', async () => {
