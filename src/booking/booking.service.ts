@@ -37,6 +37,7 @@ import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma
 // รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
+import { caregiverHasTimeConflict } from './caregiver-time-conflict';
 import { activeHourlyPrice, estimatedCostOf } from '../common/pricing/service-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
@@ -699,6 +700,23 @@ export class BookingService {
 
       if (!requiredSlots.every((slot) => coveredSlots.has(slot))) {
         throw new ConflictException('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+      }
+
+      /**
+       * PYG-544 — ตารางว่างรายสัปดาห์ข้างบนไม่รู้ว่าวันนั้นผู้ดูแลรับงานของคนอื่นไปแล้วหรือยัง
+       * → เช็คกับใบจองที่ผู้ดูแลรับไว้แล้วด้วย (ไม่นับ pending ดู CAREGIVER_BUSY_STATUSES)
+       *
+       * ไม่ล็อกแถวผู้ดูแลตรงนี้: ใบใหม่เกิดเป็น pending ซึ่งไม่กันเวลาของใคร ถ้าผู้ดูแลกดรับ
+       * อีกใบในจังหวะเดียวกัน ใบนี้จะถูกกันที่ acceptBooking ซึ่งเป็นด่านที่ล็อกจริง
+       */
+      const caregiverBusy = await caregiverHasTimeConflict(this.prisma, {
+        caregiverId: resolvedCaregiverId,
+        bookingDate: bookingDateObj,
+        startMinute: newStart,
+        endMinute: newEnd,
+      });
+      if (caregiverBusy) {
+        throw new ConflictException('ผู้ดูแลไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่นหรือผู้ดูแลท่านอื่น');
       }
     }
 

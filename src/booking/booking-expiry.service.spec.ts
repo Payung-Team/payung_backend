@@ -354,7 +354,10 @@ describe('BookingExpiryService (PYG-461/462 เฟส 1)', () => {
         memberDetails: null,
       });
 
-      const acceptPrisma = {
+      const acceptPrisma: Record<string, unknown> = {
+        // PYG-544: accept เช็คเวลาชน + เขียนสถานะใน $transaction ที่ล็อกแถวผู้ดูแล — fake ใช้ client เดียวกัน
+        $transaction: jest.fn((cb: (t: unknown) => unknown) => cb(acceptPrisma)),
+        $queryRaw: jest.fn().mockResolvedValue([]),
         caregiver: { findUnique: jest.fn().mockResolvedValue({ id: 'cg-1' }) },
         booking: {
           findUnique: jest.fn((args: { select?: Record<string, boolean> }) => {

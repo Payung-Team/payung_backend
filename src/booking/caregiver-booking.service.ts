@@ -12,6 +12,7 @@ import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 // PYG-461/462: deadline รับงาน — สูตรเดียวกับ createPayment และ cron หมดอายุ
 import { acceptDeadlineOf, toBangkokText } from './booking-deadline.config';
+import { caregiverHasTimeConflict, lockCaregiverSchedule } from './caregiver-time-conflict';
 // PYG-526: เวลาสิ้นสุดของใบจอง — สูตรเดียวกับฝั่งผู้จอง/อีเมล
 import { computeEndTime } from './booking-time-display';
 import {
@@ -267,62 +268,63 @@ export class CaregiverBookingService {
       );
     }
 
-    // ตรวจสอบ time conflict กับงานที่ caregiver ยืนยันไปแล้ว
     const bookingDetail = await this.prisma.booking.findUnique({
       where: { id: bookingId },
       select: { bookingDate: true, startTime: true, durationHours: true },
     });
+    if (!bookingDetail) throw new NotFoundException('Booking not found');
 
-    if (bookingDetail) {
-      // PYG-461/462 เฟส 1: เลยเวลาเริ่มงาน (+ ACCEPT_GRACE_MINUTES) แล้ว → รับงานไม่ได้
-      // เดิมเช็คแค่ status ผู้ดูแลเลยกดรับงานที่ผ่านเวลาเริ่มไปแล้วได้
-      const acceptDeadline = acceptDeadlineOf(
-        bookingDetail.bookingDate,
-        bookingDetail.startTime,
+    // PYG-461/462 เฟส 1: เลยเวลาเริ่มงาน (+ ACCEPT_GRACE_MINUTES) แล้ว → รับงานไม่ได้
+    // เดิมเช็คแค่ status ผู้ดูแลเลยกดรับงานที่ผ่านเวลาเริ่มไปแล้วได้
+    const acceptDeadline = acceptDeadlineOf(
+      bookingDetail.bookingDate,
+      bookingDetail.startTime,
+    );
+    if (this.clock.now().getTime() > acceptDeadline.getTime()) {
+      throw new UnprocessableEntityException(
+        `เลยเวลารับงานแล้ว (ต้องรับภายใน ${toBangkokText(acceptDeadline)}) — ไม่สามารถรับงานนี้ได้`,
       );
-      if (this.clock.now().getTime() > acceptDeadline.getTime()) {
-        throw new UnprocessableEntityException(
-          `เลยเวลารับงานแล้ว (ต้องรับภายใน ${toBangkokText(acceptDeadline)}) — ไม่สามารถรับงานนี้ได้`,
+    }
+
+    const newStart = this.timeToMinutes(bookingDetail.startTime);
+    const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
+    const now = this.clock.now();
+
+    /**
+     * PYG-544 — เช็คเวลาชนกับงานที่รับไว้แล้ว + เปลี่ยนสถานะ ใน transaction เดียวที่ล็อกแถวผู้ดูแล
+     *
+     * ของเดิมเช็คแค่ 'confirmed' (จ่ายเงินแล้ว) → รับใบแรกแล้วยังไม่จ่าย กดรับใบที่ซ้อนกันได้อีก
+     * และเช็คนอก transaction → กดรับ 2 ใบพร้อมกัน ต่างฝ่ายต่างไม่เห็นกัน ผ่านทั้งคู่
+     */
+    await this.prisma.$transaction(async (tx) => {
+      await lockCaregiverSchedule(tx, caregiverId);
+
+      const busy = await caregiverHasTimeConflict(tx, {
+        caregiverId,
+        bookingDate: bookingDetail.bookingDate,
+        startMinute: newStart,
+        endMinute: newEnd,
+        excludeBookingId: bookingId,
+      });
+      if (busy) {
+        throw new ConflictException(
+          'ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณรับไว้แล้ว',
         );
       }
 
-      const newStart = this.timeToMinutes(bookingDetail.startTime);
-      const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
-
-      const conflicts = await this.prisma.booking.findMany({
-        where: {
-          caregiverId,
-          bookingDate: bookingDetail.bookingDate,
-          status: 'confirmed',
-          id: { not: bookingId },
-        },
-        select: { startTime: true, durationHours: true },
+      // PYG-461/462: conditional update — cron หมดอายุ (booking-expiry.service.ts) อาจเปลี่ยน
+      // pending → expired ในจังหวะเดียวกัน · WHERE status='pending' ทั้งสองฝั่ง → Postgres re-check
+      // หลังรอ row lock มีผู้ชนะฝั่งเดียว (เดิม update({ where: { id } }) เขียนทับ expired ได้)
+      const { count } = await tx.booking.updateMany({
+        where: { id: bookingId, status: 'pending' },
+        data: { status: 'accepted', acceptedAt: now },
       });
-
-      for (const b of conflicts) {
-        const existStart = this.timeToMinutes(b.startTime);
-        const existEnd = existStart + Math.round(this.toNumber(b.durationHours) * 60);
-        if (newStart < existEnd && existStart < newEnd) {
-          throw new ConflictException(
-            'ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณยืนยันไปแล้ว',
-          );
-        }
+      if (count === 0) {
+        throw new ConflictException(
+          'สถานะงานเปลี่ยนไปแล้ว (อาจหมดอายุหรือถูกยกเลิก) — กรุณารีเฟรชแล้วลองใหม่',
+        );
       }
-    }
-
-    // PYG-461/462: conditional update — cron หมดอายุ (booking-expiry.service.ts) อาจเปลี่ยน
-    // pending → expired ในจังหวะเดียวกัน · WHERE status='pending' ทั้งสองฝั่ง → Postgres re-check
-    // หลังรอ row lock มีผู้ชนะฝั่งเดียว (เดิม update({ where: { id } }) เขียนทับ expired ได้)
-    const now = this.clock.now();
-    const { count } = await this.prisma.booking.updateMany({
-      where: { id: bookingId, status: 'pending' },
-      data: { status: 'accepted', acceptedAt: now },
     });
-    if (count === 0) {
-      throw new ConflictException(
-        'สถานะงานเปลี่ยนไปแล้ว (อาจหมดอายุหรือถูกยกเลิก) — กรุณารีเฟรชแล้วลองใหม่',
-      );
-    }
     const updated = await this.prisma.booking.findUnique({
       where: { id: bookingId },
       include: BOOKING_INCLUDE,
