@@ -1035,6 +1035,9 @@ model CareActivity {
   sortOrder  Int               @default(0) @map("sort_order")
   createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-651: รหัสกิจกรรมตาม T-01 (A01…) — ตัวอ้างอิงที่ไม่เปลี่ยนแม้ชื่อถูกแก้ถ้อยคำ
+  /// NULL ได้ (กิจกรรมที่แอดมินเพิ่มเองไม่บังคับมีรหัส) · ห้ามซ้ำ · DB มี CHECK care_activities_code_not_blank
+  code       String?           @unique(map: "care_activities_code_unique")
   bookingActivities BookingActivity[]
 
   @@unique([category, nameTh], map: "care_activities_category_name_unique")
