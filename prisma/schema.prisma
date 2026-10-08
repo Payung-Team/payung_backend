@@ -440,6 +440,8 @@ model Booking {
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
   infectionAckCaregiver    Caregiver?        @relation("BookingInfectionAckBy", fields: [infectionAckBy], references: [id])
+  // PYG-633: กิจกรรมจากรายการกลางที่ booking นี้เลือก (สำเนา ณ ตอนจอง) — งานพิมพ์เองยังอยู่ที่ booking_tasks
+  activities               BookingActivity[]
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
   // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
@@ -1016,6 +1018,46 @@ model CareRecipientAssessment {
   assessor            User          @relation(fields: [assessedBy], references: [id])
 
   @@map("care_recipient_assessments")
+}
+
+/// PYG-633: รายการกิจกรรมการดูแลกลาง (S15 · PYG-568) — แอดมินเป็นผู้ดูแล ไม่ลบแถว ใช้ isActive ปิดใช้งานแทน
+/// DB มี CHECK care_activities_care_level_check: 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง)
+/// updated_at ขยับเองด้วย trigger trg_care_activities_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareActivity {
+  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nameTh     String            @map("name_th")
+  nameEn     String?           @map("name_en")
+  /// ชื่อหมวดตามตาราง T-01 — ยังไม่มี CHECK จนกว่ารายการหมวดจะนิ่ง
+  category   String
+  careLevel  String            @map("care_level")
+  isActive   Boolean           @default(true) @map("is_active")
+  sortOrder  Int               @default(0) @map("sort_order")
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  bookingActivities BookingActivity[]
+
+  @@unique([category, nameTh], map: "care_activities_category_name_unique")
+  @@index([isActive, category, sortOrder], map: "care_activities_active_idx")
+  @@map("care_activities")
+}
+
+/// PYG-633: กิจกรรมที่ booking เลือกจากรายการกลาง — เก็บ "สำเนา" ชื่อ หมวด ระดับ ณ ตอนจอง
+/// booking เดิมจึงแสดงได้เหมือนเดิมแม้กิจกรรมถูกแก้หรือปิดใช้งานภายหลัง (S15-R6)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model BookingActivity {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId      String       @map("booking_id") @db.Uuid
+  careActivityId String       @map("care_activity_id") @db.Uuid
+  activityName   String       @map("activity_name")
+  category       String
+  careLevel      String       @map("care_level")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking        Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  careActivity   CareActivity @relation(fields: [careActivityId], references: [id])
+
+  @@unique([bookingId, careActivityId], map: "booking_activities_unique")
+  @@map("booking_activities")
 }
 
 /// PYG-580: ประวัติการกำหนด / เปลี่ยนระดับผู้ดูแล (S02-AC4) — หนึ่งแถว = หนึ่งครั้งที่ระดับเปลี่ยน
