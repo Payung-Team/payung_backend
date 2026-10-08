@@ -425,6 +425,15 @@ model Booking {
   /// (booking ที่ถูกปฏิเสธกู้กลับไปเลือกผู้ดูแลคนใหม่ได้ — recoverBooking)
   /// DB มี CHECK bookings_infection_ack_pair_check: มี "โดยใคร" ต้องมี "เมื่อใด"
   infectionAckBy           String?           @map("infection_ack_by")
+  /// PYG-638: ระดับของ booking = ค่าสูงสุดของ 3 เกณฑ์ (S16) — 'basic' | 'intermediate' | 'advanced'
+  /// NULL = ยังไม่ได้คำนวณ (booking ก่อนฟีเจอร์นี้ไม่มีแบบประเมิน) · server คำนวณเท่านั้น ไม่รับจาก client
+  /// DB มี CHECK ของคอลัมน์ระดับทั้ง 4 (bookings_required_level_check, bookings_level_from_*_check)
+  requiredLevel            String?           @map("required_level")
+  /// ระดับรายเกณฑ์ — NULL = เกณฑ์นั้นไม่มีผลต่อระดับ
+  levelFromAdl             String?           @map("level_from_adl")
+  levelFromFlags           String?           @map("level_from_flags")
+  levelFromServices        String?           @map("level_from_services")
+  levelCalculatedAt        DateTime?         @map("level_calculated_at") @db.Timestamptz(6)
   booking_tasks            booking_tasks[]
   // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
   care_logs                care_logs[]
@@ -1018,6 +1027,26 @@ model CareRecipientAssessment {
   assessor            User          @relation(fields: [assessedBy], references: [id])
 
   @@map("care_recipient_assessments")
+}
+
+/// PYG-638: กติการะดับของ Flag (เกณฑ์ที่ 2) และบริการ (เกณฑ์ที่ 3) ที่ใช้คำนวณระดับ booking (S16 · PYG-569)
+/// level = NULL หมายถึงรายการนี้ไม่มีผลต่อระดับ (เช่น กายภาพบำบัด) — ต่างจาก "ไม่มีแถว" ซึ่งเป็นข้อมูลตั้งค่าผิด
+/// DB มี CHECK: source IN ('flag','service') · level เป็น NULL หรือ 'basic' | 'intermediate' | 'advanced'
+/// updated_at ขยับเองด้วย trigger trg_booking_level_rules_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model BookingLevelRule {
+  source    String
+  /// รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
+  code      String
+  /// กรณีย่อยของ Flag เดียวกัน — '' = กรณีทั่วไป
+  variant   String   @default("")
+  level     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([source, code, variant])
+  @@map("booking_level_rules")
 }
 
 /// PYG-633: รายการกิจกรรมการดูแลกลาง (S15 · PYG-568) — แอดมินเป็นผู้ดูแล ไม่ลบแถว ใช้ isActive ปิดใช้งานแทน
