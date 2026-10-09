@@ -172,6 +172,19 @@ type BookingWithIncludes = {
   careRecipient: { name: string } | null;
 };
 
+/** จำนวนผู้ดูแลสูงสุดที่ searchMatchesBasic คืน (PYG-489: ขยายจาก 20) */
+const MATCHES_LIMIT = 50;
+
+/** คะแนนรีวิวเฉลี่ย (ทศนิยม 2 ตำแหน่ง) — undefined เมื่อยังไม่มีรีวิว */
+function ratingOf(reviews: { rating: number }[]): { avgRating?: number; reviewCount: number } {
+  const reviewCount = reviews.length;
+  const avgRating =
+    reviewCount > 0
+      ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / reviewCount) * 100) / 100
+      : undefined;
+  return { avgRating, reviewCount };
+}
+
 // เบอร์ผู้ดูแลเปิดให้ผู้จองเห็นหลังยืนยันการจองแล้วเท่านั้น
 const CAREGIVER_PHONE_VISIBLE_STATUSES = new Set([
   'confirmed', 'in_progress', 'completed',
@@ -1081,10 +1094,17 @@ export class BookingService {
    *  - isSearchable = true
    *  - kycStatus    = 'verified'
    *  - serviceAreaProvince ตรงกับ dto.province (ถ้าส่งมา)
-   * เรียงตาม hourlyRate ASC (ถูกที่สุดก่อน)
+   *
+   * ลำดับ (PYG-489): คะแนนรีวิวเฉลี่ยจากมากไปน้อย ผู้ดูแลที่ยังไม่มีรีวิวอยู่ท้าย
+   *   คะแนนเท่ากัน (หรือไม่มีรีวิวเหมือนกัน) → สมัครก่อนอยู่ก่อน (created_at เก่าไปใหม่)
+   *   เดิมเรียงตาม caregivers.hourly_rate ASC — ผู้ดูแลตั้งราคาเองไม่ได้แล้ว คนใหม่ทุกคนเป็น null
+   *   จึงถูกเรียงไว้ท้ายสุดและหลุดจากรายการเมื่อเกินจำนวนที่ตัด ทั้งที่ราคาที่ลูกค้าจ่ายเท่ากันทุกคน
+   * ตัดที่ MATCHES_LIMIT คนหลังเรียงแล้ว
+   *
+   * ⚠ เรียงในหน่วยความจำ: Prisma เรียงตามค่าเฉลี่ยของ relation ไม่ได้ จึงดึงผู้ดูแลที่เข้าเงื่อนไขมาทั้งหมดก่อน
+   *   จำนวนยังน้อย (หลักสิบ) — ถ้าโตถึงหลักพันให้ย้ายไปเรียงใน SQL · รอ matching engine
    *
    * ราคาที่คืน = ราคา catalog ของ dto.serviceType (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — เท่ากับยอดที่จะคิดตอนจองจริง
-   * ⚠ ลำดับยังเรียงตาม caregivers.hourly_rate เดิม (placeholder ไม่แตะ ranking) รอ matching engine
    */
   async searchMatchesBasic(dto: SearchMatchesDto): Promise<MatchedCaregiverRest[]> {
     const where: Record<string, unknown> = {
@@ -1096,12 +1116,12 @@ export class BookingService {
       where.serviceAreaProvince = dto.province;
     }
 
-    const caregivers = await this.prisma.caregiver.findMany({
+    const candidates = await this.prisma.caregiver.findMany({
       where,
       select: {
         id:                   true,
         fullName:             true,
-        hourlyRate:           true,
+        createdAt:            true,
         experienceYears:      true,
         skills:               true,
         serviceAreaProvince:  true,
@@ -1109,9 +1129,19 @@ export class BookingService {
         patientReviews:       { select: { rating: true } },
         user:                 { select: { avatarUrl: true } },
       },
-      orderBy: { hourlyRate: 'asc' },
-      take:    20, // hard cap — Phase 3 will paginate properly
+      // ลำดับตั้งต้นให้ผลคงที่ — ลำดับจริงเรียงด้านล่าง
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
+
+    const caregivers = candidates
+      .map((cg) => ({ cg, ...ratingOf(cg.patientReviews) }))
+      .sort(
+        (a, b) =>
+          (b.avgRating ?? -1) - (a.avgRating ?? -1) ||
+          a.cg.createdAt.getTime() - b.cg.createdAt.getTime() ||
+          a.cg.id.localeCompare(b.cg.id),
+      )
+      .slice(0, MATCHES_LIMIT);
 
     const catalogRow = await this.prisma.servicePriceCatalog.findUnique({
       where: { serviceType: dto.serviceType },
@@ -1122,19 +1152,11 @@ export class BookingService {
 
     // PYG-518: เซ็น avatar ของ caregiver ทั้ง 20 รายในการเรียกเดียว ไม่ยิงทีละคน
     const avatarByCaregiver = await this.avatarUrlService.resolveMany(
-      caregivers,
+      caregivers.map(({ cg }) => cg),
       (cg) => cg.user.avatarUrl,
     );
 
-    return caregivers.map((cg) => {
-      const reviewCount = cg.patientReviews.length;
-      const avgRating =
-        reviewCount > 0
-          ? Math.round(
-              (cg.patientReviews.reduce((s, r) => s + r.rating, 0) / reviewCount) * 100,
-            ) / 100
-          : undefined;
-
+    return caregivers.map(({ cg, avgRating, reviewCount }) => {
       return {
         id:              cg.id,
         fullName:        cg.fullName        ?? undefined,

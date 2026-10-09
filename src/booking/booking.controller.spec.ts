@@ -53,6 +53,7 @@ function fakeCaregiver(overrides: Record<string, unknown> = {}) {
     id:                  CAREGIVER_ID,
     fullName:            'สมชาย ใจดี',
     hourlyRate:          350,
+    createdAt:           new Date('2026-01-01T00:00:00Z'),
     experienceYears:     5,
     skills:              ['elderly_care'],
     serviceAreaProvince: 'เชียงใหม่',
@@ -836,13 +837,88 @@ describe('BookingService — new REST methods', () => {
       expect(result[0].reviewCount).toBe(0);
     });
 
-    it('caps results at 20', async () => {
-      prisma.caregiver.findMany.mockResolvedValue([]);
-      await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+    // ── PYG-489: ลำดับไม่ขึ้นกับ hourly_rate ของผู้ดูแลอีกต่อไป ─────────────────
 
-      expect(prisma.caregiver.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 20 }),
+    /** ผู้ดูแลสำหรับเทสลำดับ — ratings ว่าง = ยังไม่มีรีวิว */
+    const ranked = (id: string, ratings: number[], createdAt: string, hourlyRate: number | null = 350) =>
+      fakeCaregiver({
+        id,
+        hourlyRate,
+        createdAt: new Date(createdAt),
+        patientReviews: ratings.map((rating) => ({ rating })),
+      });
+
+    const orderOf = async (rows: unknown[]) => {
+      prisma.caregiver.findMany.mockResolvedValue(rows);
+      return (await service.searchMatchesBasic({ serviceType: 'elderly_care' })).map((m) => m.id);
+    };
+
+    it('PYG-489: เรียงตามคะแนนรีวิวเฉลี่ยจากมากไปน้อย ผู้ที่ยังไม่มีรีวิวอยู่ท้าย', async () => {
+      const ids = await orderOf([
+        ranked('cg-none', [], '2026-01-01'),
+        ranked('cg-3', [3, 3], '2026-01-02'),
+        ranked('cg-5', [5], '2026-01-03'),
+        ranked('cg-4.5', [4, 5], '2026-01-04'),
+      ]);
+
+      expect(ids).toEqual(['cg-5', 'cg-4.5', 'cg-3', 'cg-none']);
+    });
+
+    it('PYG-489: คะแนนเท่ากัน → สมัครก่อนอยู่ก่อน (ทั้งกลุ่มที่มีรีวิวและกลุ่มที่ยังไม่มี)', async () => {
+      const ids = await orderOf([
+        ranked('cg-new-4', [4], '2026-03-01'),
+        ranked('cg-none-new', [], '2026-05-01'),
+        ranked('cg-old-4', [4, 4], '2026-01-01'),
+        ranked('cg-none-old', [], '2026-02-01'),
+      ]);
+
+      expect(ids).toEqual(['cg-old-4', 'cg-new-4', 'cg-none-old', 'cg-none-new']);
+    });
+
+    it('PYG-489: ★ ผู้ดูแล hourly_rate = null ไม่ถูกดันไปท้ายเพราะราคา — อยู่ตามคะแนนรีวิวของตัวเอง', async () => {
+      const ids = await orderOf([
+        ranked('cg-cheap-low', [2], '2026-01-01', 100),
+        ranked('cg-null-top', [5, 5], '2026-06-01', null),
+        ranked('cg-pricey-mid', [4], '2026-01-02', 900),
+        ranked('cg-null-none', [], '2026-01-03', null),
+        ranked('cg-rated-none', [], '2026-01-04', 200),
+      ]);
+
+      // ผู้ดูแลราคา null ที่รีวิวดีที่สุดขึ้นอันดับ 1 · ราคา null ที่ยังไม่มีรีวิวอยู่ก่อนคนมีราคาที่สมัครทีหลัง
+      expect(ids).toEqual(['cg-null-top', 'cg-pricey-mid', 'cg-cheap-low', 'cg-null-none', 'cg-rated-none']);
+    });
+
+    it('PYG-489: query ไม่อ่านและไม่เรียงตาม hourlyRate ของผู้ดูแลแล้ว', async () => {
+      await orderOf([]);
+
+      const call = prisma.caregiver.findMany.mock.calls[0][0] as {
+        select: Record<string, unknown>;
+        orderBy: unknown;
+      };
+      expect(call.select).not.toHaveProperty('hourlyRate');
+      expect(JSON.stringify(call.orderBy)).not.toContain('hourlyRate');
+    });
+
+    it('PYG-489: คืนสูงสุด 50 คน (เดิม 20) — ตัดหลังเรียงแล้ว คนที่ราคา null แต่รีวิวดีที่สุดไม่หลุด', async () => {
+      const rows = Array.from({ length: 60 }, (_, i) =>
+        ranked(`cg-${String(i).padStart(2, '0')}`, [3], `2026-01-${String((i % 28) + 1).padStart(2, '0')}T00:00:${String(i).padStart(2, '0')}Z`),
       );
+      rows.push(ranked('cg-null-best', [5], '2026-12-31', null));
+
+      const ids = await orderOf(rows);
+
+      expect(ids).toHaveLength(50);
+      expect(ids[0]).toBe('cg-null-best');
+    });
+
+    it('PYG-489: 21 คนที่เข้าเงื่อนไข (เกินเพดานเดิม 20) → ได้ครบ 21 รวมผู้ดูแลใหม่ที่ราคา null', async () => {
+      const rows = Array.from({ length: 19 }, (_, i) => ranked(`cg-${i}`, [4], '2026-01-01', 300 + i));
+      rows.push(ranked('cg-null-a', [], '2026-09-01', null), ranked('cg-null-b', [], '2026-10-01', null));
+
+      const ids = await orderOf(rows);
+
+      expect(ids).toHaveLength(21);
+      expect(ids.slice(-2)).toEqual(['cg-null-a', 'cg-null-b']);
     });
   });
 
