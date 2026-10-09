@@ -360,6 +360,56 @@ model Review {
 /// ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: เอาราคาที่ผู้ดูแลตั้งเองออก
 /// ราคาต่อชั่วโมงผูกกับ service_type (ค่าเดียวกับที่ Search ใช้กรอง jobType)
 /// CHECK price_per_hour > 0 อยู่ใน migration 20260928000000_add_service_price_catalog (Prisma เขียนไม่ได้)
+/// PYG-627: ชุดบริการ (S14) — ปิดใช้งานด้วย isActive = false ไม่ลบแถว
+model ServicePackage {
+  id            String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code          String                    @unique
+  nameTh        String                    @map("name_th")
+  nameEn        String                    @map("name_en")
+  descriptionTh String?                   @map("description_th")
+  descriptionEn String?                   @map("description_en")
+  isActive      Boolean                   @default(true) @map("is_active")
+  sortOrder     Int                       @default(0) @map("sort_order")
+  createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  items         ServicePackageItem[]
+  careGroups    CareGroupServicePackage[]
+
+  @@map("service_packages")
+}
+
+/// PYG-627: บริการในชุด — serviceType ค่าชุดเดียวกับ enum booking_service_type / service_price_catalog
+/// (DB มี CHECK service_package_items_service_type_check — เพิ่มประเภทบริการใหม่ต้องแก้ CHECK ด้วย)
+model ServicePackageItem {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  packageId   String         @map("package_id") @db.Uuid
+  serviceType String         @map("service_type")
+  sortOrder   Int            @default(0) @map("sort_order")
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  package     ServicePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, serviceType], map: "service_package_items_unique")
+  @@map("service_package_items")
+}
+
+/// PYG-627: กลุ่มผู้สูงอายุใดเห็นชุดบริการใด — careGroup: 'social' | 'homebound' | 'bedridden'
+/// ค่าชุดเดียวกับ care_recipient_assessments.care_group (DB มี CHECK care_group_service_packages_group_check)
+model CareGroupServicePackage {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  careGroup String         @map("care_group")
+  packageId String         @map("package_id") @db.Uuid
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  package   ServicePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([careGroup, packageId], map: "care_group_service_packages_unique")
+  @@index([careGroup, isActive, sortOrder], map: "care_group_service_packages_group_idx")
+  @@map("care_group_service_packages")
+}
+
 model ServicePriceCatalog {
   id           String   @id @default(uuid())
   serviceType  String   @unique @map("service_type")
