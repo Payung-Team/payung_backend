@@ -55,7 +55,7 @@ function fakeCaregiver(overrides: Record<string, unknown> = {}) {
     hourlyRate:          350,
     createdAt:           new Date('2026-01-01T00:00:00Z'),
     experienceYears:     5,
-    skills:              ['elderly_care'],
+    skills:              ['bathing'],
     serviceAreaProvince: 'เชียงใหม่',
     serviceAreaDistrict: 'เมือง',
     patientReviews:      [{ rating: 5 }, { rating: 4 }],

@@ -82,6 +82,14 @@ UPDATE caregivers c
   FROM agg a
  WHERE a.id = c.id;
 
+-- 3) skills_legacy holding only blank strings → no skills
+--    These rows never reach `agg`, so the UPDATE above would leave the blanks in skills.
+UPDATE caregivers c
+   SET skills       = '{}',
+       other_skills = '{}'
+ WHERE cardinality(c.skills_legacy) > 0
+   AND NOT EXISTS (SELECT 1 FROM unnest(c.skills_legacy) AS v(val) WHERE btrim(v.val) <> '');
+
 COMMIT;
 
 -- Post-run checks

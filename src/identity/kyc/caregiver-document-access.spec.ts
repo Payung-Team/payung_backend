@@ -15,6 +15,7 @@ import { CaregiverService } from './caregiver.service';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { KYC_BUCKET, KYC_SIGNED_URL_TTL_SECONDS } from './utils/kyc-storage-path';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 const SUPABASE_URL = 'https://evsewucpighcbnhofmug.supabase.co';
 const CAREGIVER_ID = 'cg-1';
@@ -65,6 +66,10 @@ describe('CaregiverService — การเข้าถึงเอกสาร 
         {
           provide: ConfigService,
           useValue: { getOrThrow: jest.fn().mockReturnValue(SUPABASE_URL) },
+        },
+        {
+          provide: CareSkillService,
+          useValue: { assertSkillsAllowed: jest.fn() },
         },
       ],
     }).compile();

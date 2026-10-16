@@ -57,9 +57,15 @@ export class Caregiver {
   @Field()
   phone!: string;
 
-  /** รายการทักษะของ caregiver */
-  @Field(() => [String])
+  /** รายการทักษะของ caregiver — รหัสกลางจาก care_skills (PYG-652) */
+  @Field(() => [String], { description: 'Central skill codes (care_skills)' })
   skills!: string[];
+
+  /** ทักษะอื่น ๆ ที่ไม่อยู่ในรายการกลาง — ข้อความอิสระ (PYG-652) */
+  @Field(() => [String], {
+    description: 'Free-text skills not in the central list',
+  })
+  otherSkills!: string[];
 
   /** จำนวนปีของประสบการณ์ */
   @Field(() => Int)

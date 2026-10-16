@@ -62,7 +62,8 @@ export class KycResolver {
    *     fullName: "สมชาย ใจดี"
    *     idCardNumber: "1234567890123"
    *     phone: "0812345678"
-   *     skills: ["elder_care", "first_aid"]
+   *     skills: ["transfer_assist", "bathing"]   # รหัสจาก careSkills(profession)
+   *     otherSkills: ["ทำอาหาร"]                 # optional ข้อความอิสระ ≤ 5
    *     experienceYears: 3
    *     bio: "มีประสบการณ์ดูแลผู้สูงอายุ"
    *     documentIds: ["uuid-1", "uuid-2"]
@@ -141,7 +142,7 @@ export class KycResolver {
    *     fullName: "สมชาย ใจดี"
    *     idCardNumber: "1234567890123"
    *     phone: "0812345678"
-   *     skills: ["elder_care"]
+   *     skills: ["bathing"]
    *     experienceYears: 3
    *     documentIds: ["uuid-new-1", "uuid-new-2"]
    *   }) {
