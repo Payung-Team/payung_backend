@@ -49,6 +49,8 @@ export interface MatchedCaregiverRest {
   hourlyRate?: number;
   experienceYears?: number;
   skills: string[];
+  /** PYG-652: ทักษะอื่น ๆ (ข้อความอิสระ) */
+  otherSkills: string[];
   province?: string;
   district?: string;
   avgRating?: number;

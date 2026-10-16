@@ -16,6 +16,7 @@ export interface SavedCaregiverResponse {
     avatarUrl?: string;
     hourlyRate?: number;
     skills: string[];
+    otherSkills: string[];
     province?: string;
     district?: string;
   };
@@ -39,6 +40,7 @@ export class SavedCaregiversService {
           select: {
             fullName:            true,
             skills:              true,
+            otherSkills:         true,
             serviceAreaProvince: true,
             serviceAreaDistrict: true,
             user: { select: { avatarUrl: true } },
@@ -58,6 +60,7 @@ export class SavedCaregiversService {
         avatarUrl: s.caregiver.user.avatarUrl      ?? undefined,
         hourlyRate: prices.get(s.caregiverId),
         skills:    s.caregiver.skills,
+        otherSkills: s.caregiver.otherSkills,
         province:  s.caregiver.serviceAreaProvince ?? undefined,
         district:  s.caregiver.serviceAreaDistrict ?? undefined,
       },
@@ -76,6 +79,7 @@ export class SavedCaregiversService {
         id:                  true,
         fullName:            true,
         skills:              true,
+        otherSkills:         true,
         serviceAreaProvince: true,
         serviceAreaDistrict: true,
         user: { select: { avatarUrl: true } },
@@ -99,6 +103,7 @@ export class SavedCaregiversService {
           avatarUrl: caregiver.user.avatarUrl      ?? undefined,
           hourlyRate: prices.get(caregiver.id),
           skills:    caregiver.skills,
+          otherSkills: caregiver.otherSkills,
           province:  caregiver.serviceAreaProvince ?? undefined,
           district:  caregiver.serviceAreaDistrict ?? undefined,
         },

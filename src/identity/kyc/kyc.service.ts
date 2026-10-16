@@ -39,6 +39,8 @@ import {
   normalizeAccountNumber,
   validateAccountNumberForBank,
 } from '../../common/constants/omise-banks.constant';
+import { CareSkillService } from '../../care-skill/care-skill.service';
+import { DEFAULT_PROFESSION } from '../../care-skill/care-skill.constants';
 
 /**
  * Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC
@@ -46,7 +48,8 @@ import {
  */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
-  'phone', 'skills', 'experienceYears', 'bio',
+  'phone', 'skills', 'otherSkills',
+  'experienceYears', 'bio',
 ];
 
 /**
@@ -69,6 +72,7 @@ export class KycService {
     private emailService: EmailService,
     private payoutEncryption: PayoutEncryptionService,
     private payoutAccountService: PayoutAccountService,
+    private careSkillService: CareSkillService,
   ) {}
 
   /**
@@ -97,6 +101,13 @@ export class KycService {
     }
 
     const isResubmit = currentStatus === 'rejected';
+
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    // ยื่นครั้งแรกยังไม่มีแถว → ใช้ค่า default ของคอลัมน์ profession
+    await this.careSkillService.assertSkillsAllowed(
+      input.skills,
+      existing?.profession ?? DEFAULT_PROFESSION,
+    );
 
     // ── ขั้นตอนที่ 2: Validate documentIds ───────────────────────────
     if (input.documentIds.length > 0) {
@@ -141,6 +152,7 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          otherSkills: input.otherSkills ?? [],
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -155,6 +167,10 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          // ไม่ส่งมา = คงค่าเดิม (FE รุ่นที่ยังไม่มีช่องทักษะอื่น ๆ จะได้ไม่ลบของเดิมทิ้ง)
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -634,6 +650,7 @@ export class KycService {
       dateOfBirth: caregiver.dateOfBirth ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,

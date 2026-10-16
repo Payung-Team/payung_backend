@@ -441,6 +441,20 @@ type CareLog {
   serverTs: DateTime!
 }
 
+"""Central caregiver skill (care_skills)"""
+type CareSkillItem {
+  """
+  Skill code, e.g. "transfer_assist"
+  """
+  code: String!
+
+  """English name"""
+  nameEn: String!
+
+  """Thai name"""
+  nameTh: String!
+}
+
 type Caregiver {
   address: String
   bio: String
@@ -473,11 +487,16 @@ type Caregiver {
 
   """Languages spoken by caregiver"""
   languages: [String!]!
+
+  """Free-text skills not in the central list"""
+  otherSkills: [String!]!
   phone: String!
   rejectionReasons: [RejectionReason!]
 
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
+
+  """Central skill codes (care_skills)"""
   skills: [String!]!
   updatedAt: DateTime!
 
@@ -641,13 +660,16 @@ type CaregiverSummary {
   """Caregiver UUID"""
   id: ID!
 
+  """Free-text skills not in the central list (PYG-652)"""
+  otherSkills: [String!]!
+
   """Service area province"""
   province: String
 
   """Total number of patient reviews"""
   reviewCount: Int!
 
-  """Skill tags"""
+  """Central skill codes (care_skills)"""
   skills: [String!]!
 }
 
@@ -1684,13 +1706,18 @@ input KycInput {
   """Thai national ID card number (13 digits)"""
   idCardNumber: String!
 
+  """
+  Free-text skills not in the central list (max 5; trimmed, de-duplicated)
+  """
+  otherSkills: [String!]
+
   """Payout bank account (optional)"""
   payoutAccount: PayoutAccountInput
 
   """Contact phone number (Thai format)"""
   phone: String!
 
-  """List of caregiver skills"""
+  """Central skill codes from careSkills(profession)"""
   skills: [String!]!
 }
 
@@ -2564,6 +2591,14 @@ type Query {
   careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
 
   """
+  Central caregiver skills a profession may hold: general_caregiver | nurse | physiotherapist. Basic skills first, then profession-specific ones.
+  """
+  careSkills(
+    """general_caregiver | nurse | physiotherapist"""
+    profession: String!
+  ): [CareSkillItem!]!
+
+  """
   A single booking assigned to this caregiver, by id. Null when it doesn't exist or belongs to someone else. The booking detail page polls this for the current status (e.g. confirmed → in_progress after check-in).
   """
   caregiverBooking(id: ID!): CaregiverBookingSummary
@@ -3224,10 +3259,15 @@ input UpdateCaregiverInput {
   """Languages spoken by caregiver"""
   languages: [String!]
 
+  """
+  Free-text skills not in the central list (max 5; trimmed, de-duplicated). Send [] to clear.
+  """
+  otherSkills: [String!]
+
   """Contact phone number (Thai format)"""
   phone: String
 
-  """List of caregiver skills"""
+  """Central skill codes from careSkills(profession)"""
   skills: [String!]
 }
 

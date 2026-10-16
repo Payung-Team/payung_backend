@@ -36,7 +36,7 @@ function makeCaregiver(overrides: Partial<CaregiverRow> = {}): CaregiverRow {
     bio: 'ดูแลผู้สูงอายุมา 5 ปี',
     experienceYears: 5,
     hourlyRate: 350,
-    skills: ['elderly_care', 'medication_management'],
+    skills: ['bathing', 'dementia_care'],
     kycStatus: 'verified',
     isSearchable: true,
     kycVerifiedAt: VERIFIED_AT,
@@ -124,7 +124,7 @@ describe('CaregiverPublicService', () => {
       bio: 'ดูแลผู้สูงอายุมา 5 ปี',
       experience_years: 5,
       hourly_rate: 280, // ราคาต่ำสุดใน catalog ของประเภทที่รับ ไม่ใช่ hourlyRate 350 ที่ผู้ดูแลตั้งเอง
-      skills: ['elderly_care', 'medication_management'],
+      skills: ['bathing', 'dementia_care'],
       province: 'เชียงใหม่',
       district: 'เมืองเชียงใหม่',
       verified_at: VERIFIED_AT,

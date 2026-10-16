@@ -19,6 +19,7 @@ import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.s
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { KycInput } from './dto/kyc.input';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 const USER_ID = 'user-1';
 const CAREGIVER_ID = 'cgrow-1';
@@ -28,7 +29,7 @@ function baseKycInput(overrides: Partial<KycInput> = {}): KycInput {
     fullName: 'สมชาย ใจดี',
     idCardNumber: '1234567890123',
     phone: '0812345678',
-    skills: ['elder_care'],
+    skills: ['bathing'],
     experienceYears: 3,
     documentIds: [],
     ...overrides,
@@ -92,6 +93,12 @@ describe('KycService — payout account (PYG-266)', () => {
         },
         { provide: PayoutEncryptionService, useValue: payoutEncryption },
         { provide: PayoutAccountService, useValue: payoutAccountService },
+        {
+          provide: CareSkillService,
+          useValue: {
+            assertSkillsAllowed: jest.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
@@ -234,7 +241,7 @@ describe('KycService — payout account (PYG-266)', () => {
         fullName: 'สมชาย ใจดี',
         idCardNumber: '1234567890123',
         phone: '0812345678',
-        skills: ['elder_care'],
+        skills: ['bathing'],
         experienceYears: 3,
         hourlyRate: OLD_RATE,
       });

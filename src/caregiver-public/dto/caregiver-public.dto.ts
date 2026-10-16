@@ -22,6 +22,8 @@ export class CaregiverPublicDto {
   review_count: number;
   completed_booking_count: number;
   skills: string[];
+  /** PYG-652: ทักษะอื่น ๆ (ข้อความอิสระ) */
+  other_skills: string[];
   availability: AvailabilitySlotDto[];
   province: string | null;
   district: string | null;
