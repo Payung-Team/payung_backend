@@ -3,6 +3,8 @@
 > Story แม่: **PYG-562** (S07 · ผู้ใช้ทุก role สมัครและล็อกอินด้วยเบอร์โทรศัพท์ที่ยืนยันแล้ว เพิ่มจากอีเมล)
 > ผู้ใช้ contract: **PYG-603** [BE] · **PYG-604** [FE] · **PYG-605** [QA] · อ้างอิงฝั่ง DB: **PYG-602** (PR #107)
 > สถานะ: **ร่างให้ BE/FE รีวิว** — เขียนบน branch `feature/pyg-601` วันที่ 2026-10-16
+> BE ที่ทำตาม contract นี้อยู่บน branch `feature/pyg-603` — ตรวจแล้วว่า operation ทั้ง 6 ตัวของ FE (`phoneAuth.ts`)
+> validate ผ่านกับ `schema.gql` ที่ BE สร้าง และ error ตอบ HTTP 200 + `extensions.code` จริง (เทส e2e `test/pyg603-*`)
 
 เอกสารนี้ส่งมอบ "ข้อตกลง" ไม่ใช่โค้ด — โค้ดของ BE ที่ทำตาม contract นี้อยู่ใน PYG-603
 ทุกชื่อในเอกสาร **เทียบกับโค้ดจริงแล้ว** (`payung_backend` บน `dev` @ `3eeceb8` และ `payung_frontend`
@@ -125,13 +127,17 @@ type Mutation { requestPhoneOtp(input: RequestPhoneOtpInput!): PhoneOtpRequestPa
 
 ลำดับการตรวจ (ตัวแรกที่ไม่ผ่านคือ error ที่ได้):
 
-1. รูปแบบเบอร์ → `PHONE_INVALID_FORMAT`
-2. `LINK` ไม่มี/มี token ไม่ถูกต้อง → `UNAUTHENTICATED` · บัญชีถูกระงับ → `FORBIDDEN` (ตรรกะเดียวกับ `SupabaseAuthGuard`)
+1. `LINK` ไม่มี/มี token ไม่ถูกต้อง → `UNAUTHENTICATED` · บัญชีถูกระงับ → `FORBIDDEN` (ตรรกะเดียวกับ `SupabaseAuthGuard`
+   — resolver ตรวจ token ก่อนอย่างอื่นเฉพาะ `LINK` · `SIGNUP`/`LOGIN` ไม่อ่าน header เลย)
+2. รูปแบบเบอร์ → `PHONE_INVALID_FORMAT`
 3. สถานะเบอร์ตามจุดประสงค์:
    - `SIGNUP`: เป็นเบอร์ที่ยืนยันแล้วของบัญชีที่มีอยู่ → `PHONE_ALREADY_IN_USE` (E4 — ตอบ **ตอนขอรหัส** ไม่เสียค่า SMS)
+     · เบอร์ที่เคยเริ่มสมัครแล้วทิ้งไว้ (มีใน Supabase แต่ไม่มีบัญชีในระบบเรา) → สมัครต่อได้ (E12)
    - `LOGIN`: ไม่มีบัญชีที่ยืนยันเบอร์นี้ → ถ้ามีบัญชีที่กรอกเบอร์นี้ไว้ในโปรไฟล์แต่ยังไม่ยืนยัน `PHONE_NOT_VERIFIED` (E1)
      ไม่งั้น `PHONE_NOT_REGISTERED` (E6 — บอกตรง ๆ ตาม Design PYG-600)
    - `LINK`: เป็นเบอร์ของบัญชีอื่น → `PHONE_ALREADY_IN_USE` (E5)
+     · เป็นเบอร์ที่ยืนยันแล้วของ **ผู้เรียกเอง** → `PHONE_ALREADY_IN_USE` พร้อมข้อความ "ผูกกับบัญชีของคุณอยู่แล้ว"
+       (Supabase ไม่ส่ง SMS ถ้าเบอร์ไม่เปลี่ยน — ตอบทันทีแทนให้ผู้ใช้รอ SMS ที่ไม่มีวันมา) และ BE เขียน `users.phone` ให้ตรง
 4. Rate limit (§7) → `OTP_RATE_LIMITED` + `extensions.resendAfterSeconds` (E10 — ไม่ส่ง SMS)
 5. กดซ้ำขณะคำขอเดิมของเบอร์เดียวกันยังไม่จบ → `OTP_RATE_LIMITED` (กันส่ง SMS ซ้ำจากการกดรัว)
 6. Supabase ส่ง SMS ไม่สำเร็จ / หมดเวลา / ยังไม่ได้เปิด phone provider → `SMS_SEND_FAILED` (E11 — ไม่นับเป็นการกรอกผิด และไม่กินโควตาของเบอร์)
@@ -243,7 +249,10 @@ type User {
 
 - `true` เมื่อ **เบอร์ใน `phone` คือเบอร์ที่ยืนยันแล้วและใช้ล็อกอินได้** (`auth.users.phone_confirmed_at` มีค่า และเบอร์ตรงกับ `users.phone`)
 - ผู้ใช้เดิมทุกคน = `false` (E1) จนกว่าจะผูกเบอร์
+- ผู้ใช้ที่ยืนยันเบอร์แล้วไปแก้ `phone` ในโปรไฟล์เป็นเบอร์อื่นทีหลัง (ผ่าน `updateProfile`) → `false` เพราะเบอร์ที่แสดงไม่ใช่เบอร์ที่ยืนยัน
+  (เบอร์ล็อกอินเดิมยังใช้ล็อกอินได้ — การเปลี่ยนเบอร์ล็อกอินไม่อยู่ในขอบเขตของ story)
 - resolve แบบ lazy (`@ResolveField`) — query เพิ่มเฉพาะตอน client ขอ field นี้ ไม่กระทบ query อื่น
+- อ่าน `auth.users` ไม่ได้ (เช่น DB ขัดข้องชั่วคราว) → ตอบ `false` ไม่ throw — field เป็น non-null ถ้า throw `me` ทั้งก้อนจะเป็น null
 - FE แยกไว้ใน `MyPhoneStatus` แล้ว — **หลัง BE deploy แล้วย้ายเข้า `GET_USER` ได้** (ก่อนหน้านั้นห้าม — FE ระบุเหตุผลไว้ถูกต้อง)
 
 ---
@@ -262,6 +271,8 @@ type User {
 | `ProfilePhotoQueueItem` | `email` | `String!` → `String` | คิวรีวิวรูปโปรไฟล์ |
 | `TransactionParty` | `email` | `String!` → `String` | รายการธุรกรรมแอดมิน |
 
+- `adminUserList(search:)` ค้นจากเบอร์ในโปรไฟล์ได้ด้วย (เดิมค้นแค่ชื่อแสดงและอีเมล — บัญชีที่ไม่มีอีเมลจะหาไม่เจอ)
+- ค่าที่เคยเป็นข้อความว่าง `""` เมื่อไม่มีอีเมล (`FamilyGroupMemberItem.email`, `CaregiverKycSummary.email`) เปลี่ยนเป็น `null` ให้ตรงกับ type
 - **ไม่เปลี่ยน**: input ของ `login`, `register`, `requestPasswordReset`, `inviteAdmin` (S07-AC5 — operation อีเมลเดิมไม่เปลี่ยนทั้ง input และ response)
 - E14 (client เก่า): การเปลี่ยน `String!` → `String` ไม่ทำให้ query เดิมพัง (GraphQL ยอม) แต่ client ที่ **อ่านค่า** แล้วเรียก
   method ของ string จะพังเมื่อเจอ `null` — FE แก้ทุกจุดที่แสดงอีเมลแล้วใน PR #31 (`accountContact()`) · ผู้ใช้เว็บได้ JS ชุดใหม่ทุกครั้งที่โหลดหน้า
@@ -308,6 +319,7 @@ type User {
 | `CONSENT_*` | signUpWithPhone | ชุดเดิมของ PYG-474 | ตาม `consent.errors.ts` |
 | `UNAUTHENTICATED` / `FORBIDDEN` | request(LINK) · linkPhone | ไม่ได้ล็อกอิน / บัญชีถูกระงับ | — |
 | `BAD_USER_INPUT` | verifyPhoneOtp | `purpose` ไม่ใช่ `SIGNUP` (FE ไม่เคยส่ง) | — |
+| `INTERNAL_SERVER_ERROR` | verify · login · link · signUp | Supabase ขัดข้อง/หมดเวลาระหว่างตรวจรหัสหรือออก session — ลองใหม่ **ไม่นับเป็นการกรอกผิด** (E11) · FE แสดงข้อความกลาง | — |
 
 - **code ทุกตัวตรงกับ `PHONE_AUTH_ERROR` ของ FE** (`src/graphql/phoneAuth.ts`) — ไม่มี code ใหม่ที่ FE ไม่รู้จัก
 - OTP_INVALID vs OTP_EXPIRED: Supabase ตอบ `otp_expired` เหมือนกันทั้งสองกรณี BE จึงแยกจากเวลาที่ส่งรหัสที่ BE จำไว้เอง
@@ -374,6 +386,12 @@ type User {
 6. **เบอร์ซ้ำ 13 บัญชีใน `public.users.phone`** — ไม่กระทบการล็อกอิน (ล็อกอินหาจาก `auth.users`) แต่ถ้าบัญชีเหล่านั้นมาผูกเบอร์ คนแรกที่ผูกได้เบอร์ไป คนถัดไปได้ `PHONE_ALREADY_IN_USE`
 7. **บัญชีที่สมัครด้วยเบอร์อย่างเดียวแล้วทำซิมหาย** — ไม่อยู่ในขอบเขต · ช่วง Pilot แอดมินช่วยได้โดยแก้ `auth.users.phone` ผ่าน Supabase Dashboard
 8. **ผู้ใช้เดิมที่มีเบอร์ในโปรไฟล์** — จะชวนให้ยืนยันเบอร์ที่ใด: FE เติมเบอร์เดิมให้ในหน้าตั้งค่าแล้ว (`phoneHintLinkExisting`) ส่วนการชวนเชิงรุกไม่อยู่ใน contract นี้
+9. **เบอร์ที่มีคนเริ่มสมัครแล้วทิ้งไว้ (พบตอนเขียน PYG-603)** — Supabase สร้างผู้ใช้ไว้ตั้งแต่ขอรหัสสมัคร ถ้าเจ้าของเบอร์ไม่สมัครต่อ
+   แล้วไปสมัครด้วยอีเมลแทน จะ **ผูกเบอร์นั้นไม่ได้** (`PHONE_ALREADY_IN_USE` — Supabase บังคับเบอร์ไม่ซ้ำรวมผู้ใช้ที่ทิ้งไว้)
+   แต่ **สมัครด้วยเบอร์นั้นต่อได้ตามปกติ** · ไม่ได้ให้ BE ลบผู้ใช้ Supabase ที่ทิ้งไว้เองอัตโนมัติ เพราะการลบเกิดก่อนพิสูจน์ความเป็นเจ้าของเบอร์
+   (คนอื่นสั่งลบการสมัครที่กำลังทำอยู่ของเจ้าของเบอร์ได้) · ช่วง Pilot แอดมินลบผู้ใช้ Supabase ที่ไม่มีแถวใน `public.users` ให้ได้ถ้ามีคนแจ้ง
+10. **บัญชีที่ยืนยันเบอร์แล้วเรียก `linkPhone` ด้วยเบอร์ใหม่** — Supabase เปลี่ยนเบอร์ล็อกอินให้ (contract §4.5) ไม่มี UI ใน story นี้
+    ถ้าทีมต้องการ "ห้ามเปลี่ยน" ให้เพิ่มการตรวจใน PYG-603 ได้จุดเดียว
 
 ---
 
