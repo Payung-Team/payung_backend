@@ -172,6 +172,7 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     bookingId: BOOKING_ID,
     paymentMethod: 'credit_card',
     omiseToken: 'tokn_test_1',
+    saveCard: false, // ค่า default ของ CreatePaymentInput
   };
 
   beforeEach(async () => {
@@ -387,7 +388,7 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
     ...BOOKING_SCHEDULE, // PYG-461/462: guard เวลาต้องมีวัน/เวลาเริ่มงาน (NOT NULL ในของจริง)
   };
   const patient = asUser(PATIENT_ID, ROLE_ID.PATIENT);
-  const cardInput = { bookingId: BOOKING_ID, paymentMethod: 'credit_card', omiseToken: 'tokn_1' };
+  const cardInput = { bookingId: BOOKING_ID, paymentMethod: 'credit_card', omiseToken: 'tokn_1', saveCard: false };
 
   beforeEach(async () => {
     prisma = {

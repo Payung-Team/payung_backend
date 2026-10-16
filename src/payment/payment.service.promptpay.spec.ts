@@ -167,6 +167,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         bookingId: BOOKING_ID,
         paymentMethod: 'promptpay',
         // ไม่มี omiseToken (PromptPay ไม่ต้อง)
+        saveCard: false,
       };
 
       const result = await service.createPayment(input, asUser(PATIENT_ID, ROLE_ID.PATIENT));
@@ -206,6 +207,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         bookingId: BOOKING_ID,
         paymentMethod: 'credit_card',
         // omiseToken missing — DTO @ValidateIf bypassed in unit test; service guard catches
+        saveCard: false,
       };
 
       await expect(

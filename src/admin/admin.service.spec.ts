@@ -1131,20 +1131,28 @@ describe('AdminService — toggleFieldLock', () => {
   it('unlocks an active lock and returns locked=false', async () => {
     mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
     mockPrisma.field_locks.findFirst.mockResolvedValue(lockedRecord); // active lock exists
-    mockPrisma.field_locks.update.mockResolvedValue({ ...lockedRecord, unlocked_at: new Date() });
+    mockPrisma.field_locks.upsert.mockResolvedValue({ ...lockedRecord, unlocked_at: new Date() });
 
     const result = await service.toggleFieldLock(
       { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: false },
       adminUser,
     );
 
-    expect(result.success).toBe(true);
-    expect(result.locked).toBe(false);
-    expect(mockPrisma.field_locks.update).toHaveBeenCalledWith(
+    expect(result).toEqual({ success: true, fieldName: 'phone', locked: false });
+    // unlock ใช้ upsert เสมอ (มีแถว → ปลดล็อก · ไม่มีแถว → สร้างแถวที่ปลดล็อกแล้ว)
+    expect(mockPrisma.field_locks.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ unlocked_at: expect.any(Date), unlocked_by: adminUser.id }),
+        where: {
+          entity_type_entity_id_field_name: {
+            entity_type: EntityTypeEnum.CAREGIVER_PROFILE,
+            entity_id: 'cg-uuid',
+            field_name: 'phone',
+          },
+        },
+        update: { unlocked_at: expect.any(Date), unlocked_by: adminUser.id },
       }),
     );
+    expect(mockPrisma.field_locks.update).not.toHaveBeenCalled();
   });
 
   // ─── Case 3: Duplicate lock → ConflictException ───────────────────────────
@@ -1161,25 +1169,37 @@ describe('AdminService — toggleFieldLock', () => {
     expect(mockPrisma.field_locks.upsert).not.toHaveBeenCalled();
   });
 
-  // ─── Case 4: Unlock field that is not locked → BadRequestException ────────
-  it('throws BadRequestException when unlocking a field that is not locked', async () => {
+  // ─── Case 4: Unlock field that is not locked → success (QA ยืนยัน 16 ต.ค. 2026, PYG-654) ─
+  it('unlocking a field that is not locked succeeds and records an unlocked row', async () => {
     mockPrisma.caregiver.findUnique.mockResolvedValue(caregiverRecord);
     mockPrisma.field_locks.findFirst.mockResolvedValue(null); // no active lock
+    mockPrisma.field_locks.upsert.mockResolvedValue({});
 
-    await expect(
-      service.toggleFieldLock(
-        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: false },
-        adminUser,
-      ),
-    ).rejects.toThrow(BadRequestException);
-    expect(mockPrisma.field_locks.update).not.toHaveBeenCalled();
+    const result = await service.toggleFieldLock(
+      { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'phone', lock: false },
+      adminUser,
+    );
+
+    expect(result).toEqual({ success: true, fieldName: 'phone', locked: false });
+    // ไม่มีแถว = สร้างแถวที่ปลดล็อกทันที (locked_at = unlocked_at)
+    expect(mockPrisma.field_locks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          field_name: 'phone',
+          locked_by: adminUser.id,
+          unlocked_at: expect.any(Date),
+          unlocked_by: adminUser.id,
+        }),
+      }),
+    );
   });
 
   // ─── Case 5: Invalid fieldName → BadRequestException ─────────────────────
+  // idCardNumber อยู่ใน whitelist โดยตั้งใจ (QA ยืนยัน 16 ต.ค. 2026, PYG-654) — ใช้ kycStatus ซึ่งไม่อยู่
   it('throws BadRequestException for a field not in the whitelist', async () => {
     await expect(
       service.toggleFieldLock(
-        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'idCardNumber', lock: true },
+        { entityType: EntityTypeEnum.CAREGIVER_PROFILE, entityId: 'cg-uuid', fieldName: 'kycStatus', lock: true },
         adminUser,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -1278,8 +1298,8 @@ describe('AdminService — getLockedFields', () => {
     const result = await service.getLockedFields('CAREGIVER_PROFILE', 'cg-uuid');
 
     expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({ fieldName: 'phone', lockedBy: 'Admin A', lockedAt: expect.any(Date) });
-    expect(result[1]).toEqual({ fieldName: 'bio', lockedBy: 'Admin B', lockedAt: expect.any(Date) });
+    expect(result[0]).toEqual({ fieldName: 'phone', locked: true, lockedBy: 'Admin A', lockedAt: expect.any(Date) });
+    expect(result[1]).toEqual({ fieldName: 'bio', locked: true, lockedBy: 'Admin B', lockedAt: expect.any(Date) });
     expect(mockPrisma.field_locks.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { entity_type: 'CAREGIVER_PROFILE', entity_id: 'cg-uuid', unlocked_at: null },

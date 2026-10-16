@@ -18,6 +18,7 @@ import { RefundService } from './refund.service';
 import { ClockService } from '../common/clock.service';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { AuthUser } from '../common/decorators/current-user.decorator';
+import { CreatePaymentInput } from './dto/create-payment.input';
 
 const NOW_BEFORE_START = new Date('2026-06-30T00:00:00.000Z');
 const fixedClock = {
@@ -42,11 +43,13 @@ const acceptedBooking = {
 };
 
 const patient = { id: PATIENT_ID, role: ROLE_ID.PATIENT } as AuthUser;
+// ★ ไม่ใส่ saveCard โดยตั้งใจ = จำลอง FE ปัจจุบันที่ไม่ส่ง field นี้
+//   cast เพราะ type ของ DTO บังคับ saveCard (มี default = false ตอนผ่าน ValidationPipe เท่านั้น)
 const CARD_INPUT = {
   bookingId: BOOKING_ID,
   paymentMethod: 'credit_card',
   omiseToken: 'tokn_test_1',
-};
+} as CreatePaymentInput;
 
 describe('PaymentService.createPayment — saveCard (opt-in เก็บบัตร)', () => {
   let service: PaymentService;
@@ -182,7 +185,8 @@ describe('PaymentService.createPayment — saveCard (opt-in เก็บบั�
   describe('PromptPay ไม่เกี่ยวกับ flag นี้', () => {
     it.each([undefined, false, true])('saveCard=%p → ไม่แตะ Customer API', async (flag) => {
       await service.createPayment(
-        { bookingId: BOOKING_ID, paymentMethod: 'promptpay', ...(flag === undefined ? {} : { saveCard: flag }) },
+        // flag = undefined → ไม่ส่ง saveCard เลย (cast เหตุผลเดียวกับ CARD_INPUT)
+        { bookingId: BOOKING_ID, paymentMethod: 'promptpay', ...(flag === undefined ? {} : { saveCard: flag }) } as CreatePaymentInput,
         patient,
       );
 
