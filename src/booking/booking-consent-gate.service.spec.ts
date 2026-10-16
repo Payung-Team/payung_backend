@@ -18,6 +18,7 @@ import type { PrismaService } from '../common/prisma.service';
 import type { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import type { JobQrService } from '../monitoring/qr/job-qr.service';
 import type { ConsentService } from '../consent/consent.service';
+import type { AvatarUrlService } from '../common/avatar-url.service';
 import {
   BOOKING_BLOCKING_CONSENTS,
   CONSENT_TYPE,
@@ -108,6 +109,8 @@ describe('BookingService — ด่านความยินยอม (PYG-540
       { settle: jest.fn() } as unknown as BookingSettlementService,
       { createForBooking: jest.fn() } as unknown as JobQrService,
       consent as unknown as ConsentService,
+      // PYG-518: ด่านจองไม่ได้ sign รูปผู้ดูแล — stub ไว้ให้ครบ constructor
+      { resolve: jest.fn(), resolveMany: jest.fn() } as unknown as AvatarUrlService,
     );
 
     const internals = service as unknown as BookingInternals;

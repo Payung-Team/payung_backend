@@ -240,8 +240,11 @@ describe('ConsentService (PYG-474)', () => {
 
   // ── recordMany ───────────────────────────────────────────────────────────
   describe('recordMany', () => {
+    // recordMany รับ PrismaService หรือ transaction client — mock มีแค่ user_consents
+    const writer = () => prisma as unknown as PrismaService;
+
     it('★ เขียนทุกข้อ รวมข้อที่ปฏิเสธ พร้อม source / IP / user agent', async () => {
-      await service.recordMany(prisma, USER_ID, VALID_REGISTER_ANSWERS, {
+      await service.recordMany(writer(), USER_ID, VALID_REGISTER_ANSWERS, {
         source: CONSENT_SOURCE.REGISTER,
         ipAddress: '203.0.113.9',
         userAgent: 'jest/1.0',
@@ -281,7 +284,7 @@ describe('ConsentService (PYG-474)', () => {
     });
 
     it('ไม่มีคำตอบ → ไม่ยิง DB', async () => {
-      await service.recordMany(prisma, USER_ID, [], {
+      await service.recordMany(writer(), USER_ID, [], {
         source: CONSENT_SOURCE.REGISTER,
       });
       expect(prisma.user_consents.createMany).not.toHaveBeenCalled();
@@ -289,7 +292,7 @@ describe('ConsentService (PYG-474)', () => {
 
     it('ไม่มี IP / user agent → เก็บเป็น null', async () => {
       await service.recordMany(
-        prisma,
+        writer(),
         USER_ID,
         [answer(CONSENT_TYPE.TERMS_OF_SERVICE)],
         {

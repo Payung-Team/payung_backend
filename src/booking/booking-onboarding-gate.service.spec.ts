@@ -19,6 +19,7 @@ import type { PrismaService } from '../common/prisma.service';
 import type { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import type { JobQrService } from '../monitoring/qr/job-qr.service';
 import type { ConsentService } from '../consent/consent.service';
+import type { AvatarUrlService } from '../common/avatar-url.service';
 import { CONSENT_TYPE } from '../consent/consent.constants';
 import { CONSENT_ERROR } from '../consent/consent.errors';
 import { FG_ERROR } from '../family-group/family-group.errors';
@@ -100,6 +101,8 @@ describe('BookingService — ด่าน Onboarding (PYG-499)', () => {
       { settle: jest.fn() } as unknown as BookingSettlementService,
       { createForBooking: jest.fn() } as unknown as JobQrService,
       consent as unknown as ConsentService,
+      // PYG-518: ด่านจองไม่ได้ sign รูปผู้ดูแล — stub ไว้ให้ครบ constructor
+      { resolve: jest.fn(), resolveMany: jest.fn() } as unknown as AvatarUrlService,
     );
 
     const internals = service as unknown as BookingInternals;

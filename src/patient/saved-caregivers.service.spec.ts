@@ -122,10 +122,10 @@ describe('SavedCaregiversService', () => {
   describe('save', () => {
     it('saves a caregiver successfully', async () => {
       prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiverRow());
+      // service select { caregiverId, created_at } — ตรงกับคอลัมน์จริงของ saved_caregivers
       prisma.savedCaregiver.create.mockResolvedValue({
-        id:          SAVED_ID,
         caregiverId: CAREGIVER_ID,
-        savedAt:     SAVED_AT,
+        created_at:  SAVED_AT,
       });
 
       const result = await service.save(PATIENT_ID, CAREGIVER_ID);
