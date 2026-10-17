@@ -18,6 +18,9 @@ export class GroupCareRecipientDetails {
 /** โปรไฟล์ผู้รับบริการของสมาชิกในกลุ่ม พร้อมข้อมูลที่ใช้กรอกฟอร์มจองแทน */
 @ObjectType()
 export class GroupCareRecipient {
+  @Field()
+  hasAssessment: boolean;
+
   @Field(() => ID)
   id: string;
 
