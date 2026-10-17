@@ -35,9 +35,18 @@ export class User {
   @Field(() => ID, { description: 'Unique identifier of the user' })
   id!: string;
 
-  /** Email ของ user — ใช้สำหรับ login */
-  @Field({ description: 'Email address of the user' })
-  email!: string;
+  /**
+   * Email ของ user — ใช้สำหรับ login
+   *
+   * PYG-603: เป็น null ได้ — บัญชีที่สมัครด้วยเบอร์โทร (signUpWithPhone) ไม่มีอีเมล
+   * ★ ต้องระบุ `() => String` เอง: type `string | null` ทำให้ TypeScript ส่ง metadata
+   *   เป็น Object แล้ว GraphQL เดา type ไม่ได้ (แอปบูตไม่ขึ้น)
+   */
+  @Field(() => String, {
+    nullable: true,
+    description: 'Email address of the user (null for phone-only accounts)',
+  })
+  email!: string | null;
 
   /**
    * ชื่อแสดงผล — อาจเป็น null ได้ถ้ายังไม่เคยตั้ง

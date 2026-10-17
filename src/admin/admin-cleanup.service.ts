@@ -70,7 +70,7 @@ export class AdminCleanupService {
 
   private async deleteAdmin(admin: {
     id: string;
-    email: string;
+    email: string | null; // PYG-603: null = บัญชีที่สมัครด้วยเบอร์โทร
     displayName: string | null;
     supabaseUid: string;
     scheduled_delete_at: Date | null;
@@ -114,6 +114,13 @@ export class AdminCleanupService {
     }
 
     // ─── 4. ส่ง email สุดท้าย ────────────────────────────────────────────
+    // PYG-603: บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล → ไม่มีที่ให้ส่ง ข้ามขั้นนี้ (ลบบัญชีครบแล้วด้านบน)
+    if (!admin.email) {
+      this.logger.log(
+        `Skip deletion email for ${admin.id}: account has no email`,
+      );
+      return;
+    }
     try {
       await this.emailService.sendAdminAutoDeleted(admin.email, admin.displayName);
     } catch (error) {

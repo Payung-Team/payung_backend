@@ -296,6 +296,8 @@ export class EmailService {
       });
 
       if (!user) return skip('user_not_found');
+      // PYG-603: บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล — ไม่มีที่ให้ส่ง ข้ามแบบเดียวกับไม่รับอีเมล
+      if (!user.email) return skip('no_email');
       if (user.deleted_at || !user.isActive) return skip('inactive');
       if (!user.emailPreferences) return skip('email_opt_out');
 
@@ -326,11 +328,19 @@ export class EmailService {
       this.logger.warn(`User ${userId} not found — skipping email`);
       return null;
     }
+    // PYG-603 (E13): บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล → ข้าม ไม่ throw
+    //   ผู้ใช้ยังได้แจ้งเตือนในแอป (in-app notification) ตามปกติ — ปิดเฉพาะช่องทางอีเมล
+    //   การส่งทาง SMS แทนไม่อยู่ในขอบเขตของ PYG-603 (รอผลเคาะของ story PYG-562)
+    if (!user.email) {
+      this.logger.log({ event: 'email.skipped', userId, reason: 'no_email' });
+      return null;
+    }
     if (!user.emailPreferences) {
       this.logger.log(`User ${userId} opted out of email — skipping`);
       return null;
     }
-    return user;
+    // สร้าง object ใหม่ให้ TypeScript รู้ว่า email เป็น string แน่นอนหลังผ่านการตรวจข้างบน
+    return { ...user, email: user.email };
   }
 
   private async send(to: string, tpl: EmailTemplate): Promise<void> {
