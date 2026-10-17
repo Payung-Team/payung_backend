@@ -35,6 +35,7 @@ import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
+import { evaluatePayoutReadiness } from '../../payment/payout-account-readiness';
 import {
   normalizeAccountNumber,
   validateAccountNumberForBank,
@@ -330,6 +331,7 @@ export class KycService {
       return {
         status: 'none',
         documents: [],
+        canAcceptJobs: false,
       };
     }
 
@@ -341,6 +343,9 @@ export class KycService {
       where: { caregiverId: caregiver.id },
     });
 
+    const readiness = evaluatePayoutReadiness(payoutAccountRow);
+    const kycVerified = caregiver.kycStatus === 'verified';
+
     return {
       status: caregiver.kycStatus,
       submittedAt: caregiver.kycSubmittedAt ?? undefined,
@@ -350,6 +355,8 @@ export class KycService {
       payoutAccount: payoutAccountRow
         ? this.mapPayoutAccountSummary(payoutAccountRow)
         : undefined,
+      canAcceptJobs: kycVerified && readiness.ready,
+      payoutBlockReason: kycVerified ? readiness.reason : undefined,
     };
   }
 
@@ -589,6 +596,13 @@ export class KycService {
         omiseRecipientId: null,
         verifiedAt: null,
       },
+    });
+
+    // แตะบัญชี = บัญชีกลับไปรอ Omise ตรวจใหม่ → ปิดรับงานจนกว่าจะ accept อีกครั้ง
+    // (ไม่งั้นแก้เลขบัญชีแล้วยังโผล่ในผลค้นหาด้วยบัญชีที่ยังไม่ผ่าน)
+    await tx.caregiver.updateMany({
+      where: { id: caregiverId, isSearchable: true },
+      data: { isSearchable: false },
     });
 
     const fieldChanges = computeFieldChanges(

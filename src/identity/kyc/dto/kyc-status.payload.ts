@@ -65,4 +65,21 @@ export class KycStatusPayload {
     description: 'Payout bank account summary (masked — never the full account number)',
   })
   payoutAccount?: PayoutAccountSummary;
+
+  /**
+   * เปิดรับงานได้หรือยัง = KYC verified + บัญชีรับเงินที่ Omise accept แล้ว
+   * (KYC อนุมัติแยกจากสถานะ Omise — ดู payout-account-readiness.ts)
+   */
+  @Field({
+    description:
+      'True when the caregiver may turn on job availability (KYC verified AND payout account accepted by Omise)',
+  })
+  canAcceptJobs!: boolean;
+
+  /** เหตุผลที่ยังเปิดรับงานไม่ได้ (เฉพาะ KYC verified แล้ว) — NO_ACCOUNT | PENDING | FAILED */
+  @Field({
+    nullable: true,
+    description: 'Why job availability is blocked: NO_ACCOUNT | PENDING | FAILED (null when allowed)',
+  })
+  payoutBlockReason?: string;
 }

@@ -45,6 +45,10 @@ export enum NotificationType {
   // ─── Profile photo review (PYG-508) ──────────────────────────────────────
   profile_photo_approved = 'profile_photo_approved', // แอดมินอนุมัติรูปโปรไฟล์ (→ caregiver)
   profile_photo_rejected = 'profile_photo_rejected', // แอดมินปฏิเสธรูปโปรไฟล์ + เหตุผล (→ caregiver)
+
+  // ─── Payout account (Omise recipient) ────────────────────────────────────
+  payout_account_verified = 'payout_account_verified', // Omise accept บัญชีรับเงิน → เปิดรับงานได้ (→ caregiver)
+  payout_account_failed = 'payout_account_failed',     // Omise ปฏิเสธบัญชีรับเงิน → ต้องแก้ไข (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

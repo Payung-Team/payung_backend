@@ -44,7 +44,7 @@ describe('KycService — payout account (PYG-266)', () => {
     $transaction: jest.Mock;
   };
   let tx: {
-    caregiver: { upsert: jest.Mock };
+    caregiver: { upsert: jest.Mock; updateMany: jest.Mock };
     kycDocument: { findMany: jest.Mock; updateMany: jest.Mock };
     caregiverPayoutAccount: { findUnique: jest.Mock; upsert: jest.Mock };
     $executeRaw: jest.Mock;
@@ -56,6 +56,7 @@ describe('KycService — payout account (PYG-266)', () => {
     tx = {
       caregiver: {
         upsert: jest.fn().mockResolvedValue({ id: CAREGIVER_ID, resubmitCount: 0 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       kycDocument: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn() },
       caregiverPayoutAccount: { findUnique: jest.fn(), upsert: jest.fn() },

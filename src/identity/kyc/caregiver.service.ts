@@ -27,6 +27,11 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import {
+  PAYOUT_ACCOUNT_NOT_READY,
+  PAYOUT_NOT_READY_MESSAGES,
+  evaluatePayoutReadiness,
+} from '../../payment/payout-account-readiness';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -357,6 +362,24 @@ export class CaregiverService {
       throw new ForbiddenException(
         'ต้องผ่านการยืนยันตัวตนก่อน',
       );
+    }
+
+    // ── 2.5: Guard — เปิดรับงาน (true) ต้องมีบัญชีรับเงินที่ Omise accept แล้ว ──
+    // ปิด (false) ทำได้เสมอ — caregiver ต้องหยุดรับงานได้โดยไม่ติดเงื่อนไข
+    // KYC อนุมัติแยกจากสถานะ Omise (ตัวเลือก C) จึงต้องกันที่จุดนี้แทน
+    if (isSearchable) {
+      const payoutAccount = await this.prismaService.caregiverPayoutAccount.findUnique({
+        where: { caregiverId: existing.id },
+        select: { status: true, recipientStatus: true, omiseRecipientId: true },
+      });
+      const readiness = evaluatePayoutReadiness(payoutAccount);
+      if (!readiness.ready) {
+        throw new ForbiddenException({
+          code: PAYOUT_ACCOUNT_NOT_READY,
+          reason: readiness.reason,
+          message: PAYOUT_NOT_READY_MESSAGES[readiness.reason!],
+        });
+      }
     }
 
     // ── 3: อัปเดต is_searchable ─────────────────────────────────

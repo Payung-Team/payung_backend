@@ -1412,6 +1412,8 @@ enum NotificationType {
   job_care_log_added // มีการบันทึก care log (Christina)
   profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
   profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
+  payout_account_verified // Omise accept บัญชีรับเงินแล้ว → ผู้ดูแลเปิดรับงานได้
+  payout_account_failed // Omise ปฏิเสธบัญชีรับเงิน → ผู้ดูแลต้องแก้ไขบัญชี
 }
 
 enum booking_service_type {
