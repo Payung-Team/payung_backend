@@ -24,6 +24,8 @@ import { KycStorageAuditCron } from './kyc-storage-audit.cron';
 import { ProfilePhotoController } from './profile-photo.controller';
 import { ProfilePhotoService } from './profile-photo.service';
 import { ProfilePhotoResolver } from './profile-photo.resolver';
+import { ProfessionChangeService } from './profession-change.service';
+import { ProfessionChangeResolver } from './profession-change.resolver';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
@@ -42,6 +44,8 @@ import { PaymentModule } from '../../payment/payment.module';
   providers: [
     ProfilePhotoService, // PYG-507: อัปโหลดรูปโปรไฟล์ผ่าน backend + เข้าคิวรีวิวถ้าเป็นผู้ดูแล
     ProfilePhotoResolver, // PYG-488: myProfilePhotoReview — สถานะรีวิวรูปของผู้ดูแลเอง
+    ProfessionChangeService, // PYG-575: คำขอเปลี่ยนวิชาชีพหลัง KYC อนุมัติ (เก็บใน caregiver_edit_logs)
+    ProfessionChangeResolver, // PYG-575: my/request/cancel ของผู้ดูแล
     KycResolver,
     CaregiverResolver,
     WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition
@@ -58,6 +62,7 @@ import { PaymentModule } from '../../payment/payment.module';
   ],
   // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
   // me { caregiver { ... } } (PYG-90)
-  exports: [CaregiverService],
+  // export ProfessionChangeService → AdminModule's AdminProfessionChangeResolver (คิว / อนุมัติ / ปฏิเสธ · PYG-575)
+  exports: [CaregiverService, ProfessionChangeService],
 })
 export class KycModule {}

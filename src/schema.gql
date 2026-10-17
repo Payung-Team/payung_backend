@@ -155,6 +155,44 @@ type AdminPayoutAccountSummary {
   status: String!
 }
 
+"""คำขอเปลี่ยนวิชาชีพในคิวตรวจของแอดมิน"""
+type AdminProfessionChangeRequest {
+  caregiverId: ID!
+  caregiverName: String!
+  caregiverNumber: String
+  fromProfession: CaregiverProfession!
+  id: ID!
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseDocument: KycDocument
+
+  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  licenseExpiresAt: String
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseNumber: String
+  rejectionReason: String
+  requestedAt: DateTime!
+  reviewedAt: DateTime
+  reviewerName: String
+  status: ProfessionChangeStatus!
+  toProfession: CaregiverProfession!
+}
+
+"""คิวคำขอเปลี่ยนวิชาชีพแบบแบ่งหน้า"""
+type AdminProfessionChangeRequestPage {
+  items: [AdminProfessionChangeRequest!]!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+input AdminProfessionChangeRequestsInput {
+  limit: Int = 20
+  page: Int = 1
+  status: ProfessionChangeStatus = pending
+}
+
 input AdminProfilePhotoQueueInput {
   """Items per page (default: 20, max: 100)."""
   limit: Int
@@ -474,6 +512,9 @@ type Caregiver {
   """Languages spoken by caregiver"""
   languages: [String!]!
   phone: String!
+
+  """Profession: general_caregiver | nurse | physiotherapist"""
+  profession: CaregiverProfession!
   rejectionReasons: [RejectionReason!]
 
   """Number of times KYC was resubmitted after rejection"""
@@ -603,6 +644,18 @@ type CaregiverKycSummary {
   submittedAt: DateTime
 }
 
+"""วิชาชีพของผู้ดูแล — ค่าตรงกับ CHECK caregivers_profession_check"""
+enum CaregiverProfession {
+  """ผู้ดูแลทั่วไป (General caregiver)"""
+  general_caregiver
+
+  """พยาบาล (Nurse) — ต้องมีใบประกอบวิชาชีพ (S03)"""
+  nurse
+
+  """นักกายภาพบำบัด (Physiotherapist) — ต้องมีใบประกอบวิชาชีพ (S03)"""
+  physiotherapist
+}
+
 input CaregiverReviewsInput {
   """caregiver.id ที่ต้องการดูรีวิว"""
   caregiverId: ID!
@@ -640,6 +693,9 @@ type CaregiverSummary {
 
   """Caregiver UUID"""
   id: ID!
+
+  """Profession: general_caregiver | nurse | physiotherapist"""
+  profession: CaregiverProfession!
 
   """Service area province"""
   province: String
@@ -1692,6 +1748,11 @@ input KycInput {
   """Contact phone number (Thai format)"""
   phone: String!
 
+  """
+  Required — general_caregiver | nurse | physiotherapist (missing = PROFESSION_REQUIRED)
+  """
+  profession: String
+
   """List of caregiver skills"""
   skills: [String!]!
 }
@@ -1869,6 +1930,11 @@ type Mutation {
   ): Caregiver!
 
   """
+  Admin only: approve a pending profession change — updates the caregiver's profession.
+  """
+  approveProfessionChangeRequest(id: ID!): ProfessionChangeRequest!
+
+  """
   Admin only: Approve a pending caregiver profile photo. Sets it as the public avatar, records kyc_reviews (profile_photo_approved) and notifies the caregiver. Does not change kycStatus.
   """
   approveProfilePhoto(documentId: ID!): ProfilePhotoReviewResult!
@@ -1877,6 +1943,9 @@ type Mutation {
   Caregiver cancels a previously accepted booking before patient confirmation, with a required reason (accepted → rejected).
   """
   cancelAcceptance(input: CancelAcceptanceInput!): CaregiverBookingSummary!
+
+  """Caregiver: cancel own pending profession change request"""
+  cancelProfessionChangeRequest(id: ID!): ProfessionChangeRequest!
 
   """
   Super Admin only: Cancel a scheduled deletion for an admin account. Reactivates the account and unbans Supabase Auth.
@@ -2035,6 +2104,11 @@ type Mutation {
   rejectKyc(input: RejectKycInput!): Caregiver!
 
   """
+  Admin only: reject a pending profession change with a reason (required). Profession is kept.
+  """
+  rejectProfessionChangeRequest(input: RejectProfessionChangeInput!): ProfessionChangeRequest!
+
+  """
   Admin only: Reject a pending caregiver profile photo with a reason (required). The current avatar is kept. Records kyc_reviews (profile_photo_rejected) and notifies the caregiver.
   """
   rejectProfilePhoto(input: RejectProfilePhotoInput!): ProfilePhotoReviewResult!
@@ -2063,6 +2137,11 @@ type Mutation {
   ขอรหัสยืนยันทาง SMS — SIGNUP/LOGIN ไม่ต้องล็อกอิน · LINK ต้องส่ง Authorization header · ไม่คืนรหัส · error: PHONE_INVALID_FORMAT, PHONE_ALREADY_IN_USE, PHONE_NOT_REGISTERED, PHONE_NOT_VERIFIED, OTP_RATE_LIMITED (+resendAfterSeconds), SMS_SEND_FAILED
   """
   requestPhoneOtp(input: RequestPhoneOtpInput!): PhoneOtpRequestPayload!
+
+  """
+  Caregiver (KYC verified): request a profession change. The profession stays the same until an admin approves.
+  """
+  requestProfessionChange(input: ProfessionChangeInput!): ProfessionChangeRequest!
 
   """
   Admin only: Resolve a flagged dispute (no_refund | refund_full | refund_partial). refund_partial requires refundAmount in (0, payment.amount]. refund_full / refund_partial call PaymentService.refundPayment (PYG-286).
@@ -2451,6 +2530,47 @@ type PhoneVerificationPayload {
   verificationToken: String!
 }
 
+input ProfessionChangeInput {
+  """general_caregiver | nurse | physiotherapist"""
+  profession: String!
+}
+
+"""คำขอเปลี่ยนวิชาชีพของผู้ดูแลที่ KYC อนุมัติแล้ว (รอแอดมินตรวจ)"""
+type ProfessionChangeRequest {
+  caregiverId: ID!
+  fromProfession: CaregiverProfession!
+  id: ID!
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseDocument: KycDocument
+
+  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  licenseExpiresAt: String
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseNumber: String
+  rejectionReason: String
+  requestedAt: DateTime!
+  reviewedAt: DateTime
+  status: ProfessionChangeStatus!
+  toProfession: CaregiverProfession!
+}
+
+"""สถานะของคำขอเปลี่ยนวิชาชีพ"""
+enum ProfessionChangeStatus {
+  """แอดมินอนุมัติ — วิชาชีพเปลี่ยนเป็นค่าใหม่แล้ว"""
+  approved
+
+  """ผู้ดูแลยกเลิกเอง — วิชาชีพคงเดิม"""
+  cancelled
+
+  """รอแอดมินตรวจ — วิชาชีพยังเป็นค่าเดิม"""
+  pending
+
+  """แอดมินปฏิเสธ — วิชาชีพคงเดิม (ดู rejectionReason)"""
+  rejected
+}
+
 """A profile photo document with a short-lived signed URL"""
 type ProfilePhotoDocument {
   documentId: ID!
@@ -2586,6 +2706,11 @@ type Query {
   Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
   """
   adminPayments(input: AdminPaymentsInput): PaymentConnection!
+
+  """
+  Admin only: profession change requests by status (default pending, oldest first; other statuses newest decision first).
+  """
+  adminProfessionChangeRequests(input: AdminProfessionChangeRequestsInput): AdminProfessionChangeRequestPage!
 
   """
   Admin only: Caregiver profile photos by review status (default pending, oldest first; approved / rejected newest decision first with reviewer and reason). Includes verified caregivers who changed their photo.
@@ -2739,6 +2864,11 @@ type Query {
   myFamilyGroups: [FamilyGroup!]!
 
   """
+  Caregiver: latest profession change request of the logged-in caregiver (null = never requested)
+  """
+  myProfessionChangeRequest: ProfessionChangeRequest
+
+  """
   Caregiver only: review status of my latest uploaded profile photo (pending / approved / rejected + reason). null if none uploaded yet.
   """
   myProfilePhotoReview: MyProfilePhotoReview
@@ -2876,6 +3006,13 @@ input RejectKycInput {
 
   """One or more rejection reasons"""
   reasons: [RejectionReasonItem!]!
+}
+
+input RejectProfessionChangeInput {
+  id: ID!
+
+  """เหตุผลที่แสดงให้ผู้ดูแลเห็น (บังคับ)"""
+  reason: String!
 }
 
 input RejectProfilePhotoInput {
