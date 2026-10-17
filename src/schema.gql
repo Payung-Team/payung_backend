@@ -221,8 +221,8 @@ input AdminUpdateCaregiverInfoInput {
 }
 
 type AdminUpdateCaregiverInfoPayload {
-  """Email address of the linked user"""
-  email: String!
+  """Email address of the linked user (null for phone-only accounts)"""
+  email: String
 
   """First name (extracted from fullName)"""
   firstName: String!
@@ -587,8 +587,8 @@ type CaregiverKycSummary {
   """Number of KYC documents uploaded"""
   documentCount: Int!
 
-  """Caregiver email"""
-  email: String!
+  """Caregiver email (null for phone-only accounts)"""
+  email: String
 
   """Caregiver full name"""
   fullName: String!
@@ -1248,8 +1248,10 @@ type FamilyGroupMemberItem {
   """ชื่อที่แสดง (null ได้ถ้าผู้ใช้ยังไม่ตั้งชื่อ)"""
   displayName: String
 
-  """อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้"""
-  email: String!
+  """
+  อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้ (null = บัญชีที่สมัครด้วยเบอร์โทร)
+  """
+  email: String
 
   """family_group_members.id"""
   id: ID!
@@ -1770,6 +1772,12 @@ type LeaveFamilyGroupResult {
   left: Boolean!
 }
 
+input LinkPhoneInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
+}
+
 type LockedField {
   """The locked field name (camelCase)"""
   fieldName: String!
@@ -1790,6 +1798,12 @@ input LoginInput {
 
   """Password of the user"""
   password: String!
+}
+
+input LoginWithPhoneInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
 }
 
 input MemberDetailsInput {
@@ -1985,8 +1999,18 @@ type Mutation {
   """
   leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
 
+  """
+  ผูกเบอร์กับบัญชีที่ล็อกอินอยู่ หลังยืนยันรหัส (ขอรหัสด้วย requestPhoneOtp purpose LINK) · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_ALREADY_IN_USE
+  """
+  linkPhone(input: LinkPhoneInput!): User!
+
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
+
+  """
+  ล็อกอินด้วยเบอร์และรหัส — response รูปเดียวกับ login อีเมล · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_NOT_REGISTERED
+  """
+  loginWithPhone(input: LoginWithPhoneInput!): AuthPayload!
 
   """Logout user"""
   logout: Boolean!
@@ -2036,6 +2060,11 @@ type Mutation {
   requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
 
   """
+  ขอรหัสยืนยันทาง SMS — SIGNUP/LOGIN ไม่ต้องล็อกอิน · LINK ต้องส่ง Authorization header · ไม่คืนรหัส · error: PHONE_INVALID_FORMAT, PHONE_ALREADY_IN_USE, PHONE_NOT_REGISTERED, PHONE_NOT_VERIFIED, OTP_RATE_LIMITED (+resendAfterSeconds), SMS_SEND_FAILED
+  """
+  requestPhoneOtp(input: RequestPhoneOtpInput!): PhoneOtpRequestPayload!
+
+  """
   Admin only: Resolve a flagged dispute (no_refund | refund_full | refund_partial). refund_partial requires refundAmount in (0, payment.amount]. refund_full / refund_partial call PaymentService.refundPayment (PYG-286).
   """
   resolveDispute(input: ResolveDisputeInput!): DisputeBooking!
@@ -2075,6 +2104,11 @@ type Mutation {
   PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.
   """
   setTaskDone(input: SetTaskDoneInput!): BookingTask!
+
+  """
+  สร้างบัญชีด้วยเบอร์ที่ยืนยันแล้ว (หลังยอมรับเงื่อนไข) — response รูปเดียวกับ register · error: PHONE_VERIFICATION_EXPIRED, PHONE_ALREADY_IN_USE, CONSENT_*
+  """
+  signUpWithPhone(input: SignUpWithPhoneInput!): AuthPayload!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -2136,6 +2170,11 @@ type Mutation {
 
   """Register a KYC document record after uploading to storage"""
   uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+
+  """
+  ตรวจรหัสของการสมัคร (purpose: SIGNUP) → verificationToken สำหรับ signUpWithPhone · ยังไม่สร้างบัญชี · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_ALREADY_IN_USE
+  """
+  verifyPhoneOtp(input: VerifyPhoneOtpInput!): PhoneVerificationPayload!
 
   """
   ถอนความยินยอมหนึ่งข้อ — มีผลทันที (จองใหม่ไม่ได้ / กลุ่มไม่เห็นข้อมูล / หยุดอีเมลข่าวสาร ตามข้อที่ถอน) · ไม่ลบข้อมูลย้อนหลัง
@@ -2384,6 +2423,34 @@ type PayoutBankOption {
   nameTh: String!
 }
 
+"""จุดประสงค์ของรหัสยืนยันทาง SMS"""
+enum PhoneOtpPurpose {
+  """ผูกเบอร์กับบัญชีที่ล็อกอินอยู่ — ต้องส่ง Authorization: Bearer <token>"""
+  LINK
+
+  """ล็อกอินด้วยเบอร์ที่ยืนยันแล้ว"""
+  LOGIN
+
+  """สมัครบัญชีใหม่ด้วยเบอร์โทร"""
+  SIGNUP
+}
+
+type PhoneOtpRequestPayload {
+  """รหัสหมดอายุในกี่วินาที"""
+  expiresInSeconds: Int!
+
+  """ขอรหัสใหม่ได้อีกกี่วินาที (นับจากตอนได้ response)"""
+  resendAfterSeconds: Int!
+}
+
+type PhoneVerificationPayload {
+  """ตั๋วหมดอายุในกี่วินาที"""
+  expiresInSeconds: Int!
+
+  """ตั๋วสำหรับ signUpWithPhone — ทึบ (opaque) ห้าม log"""
+  verificationToken: String!
+}
+
 """A profile photo document with a short-lived signed URL"""
 type ProfilePhotoDocument {
   documentId: ID!
@@ -2405,7 +2472,7 @@ type ProfilePhotoQueueItem {
 
   """kyc_documents.id of the profile photo"""
   documentId: ID!
-  email: String!
+  email: String
   fullName: String!
 
   """True if the caregiver already has an approved profile photo"""
@@ -2885,6 +2952,12 @@ type RequestPasswordResetResponse {
   success: Boolean!
 }
 
+input RequestPhoneOtpInput {
+  """เบอร์มือถือไทย — รับ +66812345678 / 0812345678 / มีขีดหรือช่องว่างได้"""
+  phone: String!
+  purpose: PhoneOtpPurpose!
+}
+
 input ResolveDisputeInput {
   bookingId: ID!
   decision: DisputeDecision!
@@ -3076,6 +3149,19 @@ input SetTaskDoneInput {
   taskId: ID!
 }
 
+input SignUpWithPhoneInput {
+  """
+  ความยินยอมจากหน้าสมัคร (consentPolicy source: register) — ต้องมี terms_of_service และ privacy_policy ที่ granted = true ไม่งั้นสมัครไม่ได้ (CONSENT_REQUIRED)
+  """
+  consents: [ConsentAnswerInput!]
+
+  """1 = ผู้สูงอายุ, 2 = ผู้ดูแล"""
+  role: Int!
+
+  """ตั๋วจาก verifyPhoneOtp"""
+  verificationToken: String!
+}
+
 """Caregiver search sort order"""
 enum SortByEnum {
   PRICE_ASC
@@ -3129,7 +3215,7 @@ type TransactionDetail {
 
 type TransactionParty {
   displayName: String
-  email: String!
+  email: String
   id: ID!
 }
 
@@ -3345,8 +3431,8 @@ type User {
   """District (อำเภอ/เขต)"""
   district: String
 
-  """Email address of the user"""
-  email: String!
+  """Email address of the user (null for phone-only accounts)"""
+  email: String
 
   """Whether the user receives email notifications"""
   emailPreferences: Boolean!
@@ -3375,6 +3461,11 @@ type User {
   """Phone number"""
   phone: String
 
+  """
+  เบอร์ใน phone ยืนยันแล้วและใช้ล็อกอินได้ (Supabase Auth) — ผู้ใช้เดิมเป็น false จนกว่าจะผูกเบอร์
+  """
+  phoneVerified: Boolean!
+
   """Postal code (รหัสไปรษณีย์)"""
   postalCode: String
 
@@ -3402,8 +3493,8 @@ type UserSummary {
   """Display name"""
   displayName: String
 
-  """User email"""
-  email: String!
+  """User email (null for phone-only accounts)"""
+  email: String
 
   """User UUID"""
   id: ID!
@@ -3417,11 +3508,23 @@ type UserSummary {
   """KYC status: none | pending | verified | rejected (role=2 only)"""
   kycStatus: String
 
+  """Profile phone number (0XXXXXXXXX)"""
+  phone: String
+
   """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
   role: Int!
 
   """When this account is scheduled to be permanently deleted"""
   scheduledDeleteAt: DateTime
+}
+
+input VerifyPhoneOtpInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
+
+  """ต้องเป็น SIGNUP"""
+  purpose: PhoneOtpPurpose!
 }
 
 """KYC submission and approval counts for a single week"""
