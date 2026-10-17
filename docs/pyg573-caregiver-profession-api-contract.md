@@ -3,7 +3,10 @@
 > Story แม่: **PYG-556** (S01 · ผู้ดูแลระบุวิชาชีพใน KYC และ Elder เห็นวิชาชีพในหน้า List/Profile)
 > ผู้ใช้ contract: **PYG-575** [BE] · **PYG-576** [FE] · **PYG-577** [QA] · อ้างอิงฝั่ง DB: **PYG-574** (PR #102 · deploy แล้ว 2026-10-07)
 > สถานะ: **ร่างให้ BE/FE รีวิว** — เขียนบน branch `feature/pyg-573` วันที่ 2026-10-17
-> BE ที่ทำตาม contract นี้อยู่บน branch `feature/pyg-575`
+> BE ที่ทำตาม contract นี้อยู่บน branch `feature/pyg-575` — ตรวจแล้วว่า operation ของ FE ทั้ง 9 ตัวที่เกี่ยวข้อง
+> (`professionChange.ts` 3 ตัว + query ใน `queries.ts` ที่เปิด `PROFESSION_FIELD` อีก 6 ตัว) validate ผ่านกับ `schema.gql`
+> ที่ BE สร้าง · error ตอบ HTTP 200 + `extensions.code` จริง (เทส e2e `test/pyg575-*`) · SQL ของคำขอเปลี่ยนวิชาชีพ
+> รันกับ DB จริงแบบ read-only ผ่าน (2026-10-17)
 
 เอกสารนี้ส่งมอบ "ข้อตกลง" ไม่ใช่โค้ด — โค้ดของ BE ที่ทำตาม contract นี้อยู่ใน PYG-575
 ทุกชื่อในเอกสาร **เทียบกับโค้ดจริงแล้ว** (`payung_backend` บน `dev` @ `3eeceb8` และ `payung_frontend`
@@ -129,7 +132,7 @@ mutation SubmitKyc($input: KycInput!) {
 
 ```jsonc
 // variables
-{ "input": { "fullName": "สมใจ ใจดี", "idCardNumber": "1101700230705", "phone": "0812345678",
+{ "input": { "fullName": "สมใจ ใจดี", "idCardNumber": "1234567890121", "phone": "0812345678",
              "skills": ["bathing"], "experienceYears": 3, "documentIds": ["…"], "profession": "nurse" } }
 // response
 { "data": { "submitKyc": { "id": "6f1c…", "kycStatus": "pending", "profession": "nurse" } } }
@@ -216,6 +219,9 @@ type Mutation { requestProfessionChange(input: ProfessionChangeInput!): Professi
 | เท่ากับวิชาชีพปัจจุบัน | `PROFESSION_UNCHANGED` |
 | มีคำขอ `pending` อยู่แล้ว | `PROFESSION_CHANGE_ALREADY_PENDING` + `requestId` |
 | ผ่านทั้งหมด | คืนคำขอ `status: pending` — `caregivers.profession` **ไม่เปลี่ยน** |
+
+ลำดับการตรวจ (เจอข้อแรกที่ไม่ผ่าน ตอบ code นั้น): ค่าที่ส่งมา (`REQUIRED` / `INVALID`) → สถานะ KYC (`NOT_ALLOWED`)
+→ มีคำขอค้าง (`ALREADY_PENDING`) → ซ้ำค่าเดิม (`UNCHANGED`) — เช่น มีคำขอค้างอยู่แล้วและขอค่าเดิมซ้ำ จะได้ `ALREADY_PENDING`
 
 ```jsonc
 // variables
