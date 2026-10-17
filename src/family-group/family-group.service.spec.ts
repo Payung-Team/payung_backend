@@ -687,6 +687,20 @@ describe('FamilyGroupService', () => {
 
   // ═══ PYG-385 · จัดการโปรไฟล์ผู้รับบริการในกลุ่ม ═════════════════════════
   describe('groupCareRecipients', () => {
+    it('maps stored groups for all profiles from one selection and leaves unassessed profiles null', async () => {
+      tx.familyGroupMember.findMany.mockResolvedValue([{ userId: OWNER_ID }]);
+      prisma.careRecipient.findMany.mockResolvedValue([
+        { id: 'a', patientId: OWNER_ID, name: 'A', assessment: { id: 'assessment-a', careGroup: 'social' }, mobility_level: 'bedridden' },
+        { id: 'b', patientId: OWNER_ID, name: 'B', assessment: { id: 'assessment-b', careGroup: 'homebound' } },
+        { id: 'c', patientId: OWNER_ID, name: 'C', assessment: { id: 'assessment-c', careGroup: 'bedridden' } },
+        { id: 'd', patientId: OWNER_ID, name: 'D', assessment: null, mobility_level: 'bedridden' },
+      ]);
+      const result = await service.groupCareRecipients(GROUP_ID, OWNER_ID);
+      expect(result.map((r) => r.careGroup)).toEqual(['SOCIAL', 'HOMEBOUND', 'BEDRIDDEN', null]);
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.careRecipient.findMany.mock.calls[0][0].select.assessment).toEqual({ select: { id: true, careGroup: true } });
+      expect(result[0]).not.toHaveProperty('assessment');
+    });
     it('คืนโปรไฟล์ที่แชร์เข้ากลุ่มแล้วพร้อมรายละเอียดของสมาชิก ACTIVE', async () => {
       tx.familyGroupMember.findMany.mockResolvedValue([
         { userId: OWNER_ID },
@@ -755,6 +769,10 @@ describe('FamilyGroupService', () => {
   });
 
   describe('addGroupCareRecipient', () => {
+    it('returns a nullable group for a new profile', async () => {
+      prisma.careRecipient.create.mockResolvedValue({ id: 'new', patientId: OWNER_ID, name: 'New', assessment: null });
+      expect((await service.addGroupCareRecipient(OWNER_ID, { groupId: GROUP_ID, name: 'New' })).careGroup).toBeNull();
+    });
     it('สร้างโปรไฟล์ patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ และ trim ชื่อ', async () => {
       prisma.careRecipient.create.mockResolvedValue({
         id: 'r-new',
@@ -817,6 +835,12 @@ describe('FamilyGroupService', () => {
   });
 
   describe('updateGroupCareRecipient', () => {
+    it('preserves the stored group when changing a name', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: OWNER_ID, familyGroupId: GROUP_ID });
+      prisma.careRecipient.update.mockResolvedValue({ id: 'existing', patientId: OWNER_ID, name: 'Updated', assessment: { id: 'a', careGroup: 'homebound' } });
+      expect((await service.updateGroupCareRecipient(OWNER_ID, { groupId: GROUP_ID, recipientId: 'existing', name: 'Updated' })).careGroup).toBe('HOMEBOUND');
+      expect(prisma.careRecipient.update.mock.calls[0][0].data).not.toHaveProperty('careGroup');
+    });
     const input = { groupId: GROUP_ID, recipientId: 'r1', name: 'ชื่อใหม่' };
 
     it('ไม่พบโปรไฟล์ → RECIPIENT_NOT_IN_GROUP (ไม่แก้อะไร)', async () => {

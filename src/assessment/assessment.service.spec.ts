@@ -57,6 +57,7 @@ describe('AssessmentService', () => {
     expect(call.update).toMatchObject({
       assessedBy: OWNER,
       adlTotalScore: 0,
+      careGroup: 'bedridden',
       unsureCount: 0,
       hasUnsureFlag: false,
       dementiaSevere: null,
@@ -64,7 +65,7 @@ describe('AssessmentService', () => {
     expect(call.update.assessedAt).toEqual(call.update.updatedAt);
     expect(result).not.toHaveProperty('assessedBy');
     expect(result).not.toHaveProperty('id');
-    expect(result).not.toHaveProperty('careGroup');
+    expect(result.careGroup).toBe('BEDRIDDEN');
     expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
       prisma.careRecipientAssessment.upsert.mock.invocationCallOrder[0],
     );
@@ -105,6 +106,64 @@ describe('AssessmentService', () => {
   });
   it('returns null only for an authorized profile without assessment', async () => {
     await expect(service.read(OWNER, ID)).resolves.toBeNull();
+  });
+  it('reclassifies boundary crossings in the same upsert as the new score', async () => {
+    for (const [score, dbGroup, apiGroup] of [
+      [4, 'bedridden', 'BEDRIDDEN'],
+      [5, 'homebound', 'HOMEBOUND'],
+      [11, 'homebound', 'HOMEBOUND'],
+      [12, 'social', 'SOCIAL'],
+      [20, 'social', 'SOCIAL'],
+      [0, 'bedridden', 'BEDRIDDEN'],
+    ] as const) {
+      let remaining: number = score;
+      const input = {
+        ...makeInput(),
+        answers: ADL_ITEMS.map(({ code, maxScore }) => {
+          const value = Math.min(maxScore, remaining);
+          remaining -= value;
+          return { code, value };
+        }),
+      };
+      const result = await service.submit(OWNER, input);
+      expect(result).toMatchObject({
+        adlTotalScore: score,
+        careGroup: apiGroup,
+      });
+      const call = prisma.careRecipientAssessment.upsert.mock.calls.at(-1)[0];
+      expect(call.create).toMatchObject({
+        adlTotalScore: score,
+        careGroup: dbGroup,
+      });
+      expect(call.update).toMatchObject({
+        adlTotalScore: score,
+        careGroup: dbGroup,
+      });
+    }
+  });
+  it('reads the persisted group without recomputing it from score or mobility', async () => {
+    const saved = await service.submit(OWNER, makeInput());
+    const row = prisma.careRecipientAssessment.upsert.mock.calls[0][0].create;
+    prisma.careRecipientAssessment.findUnique.mockResolvedValue({
+      ...row,
+      adlTotalScore: 20,
+      careGroup: 'homebound',
+    });
+    expect(saved.careGroup).toBe('BEDRIDDEN');
+    expect((await service.read(OWNER, ID))?.careGroup).toBe('HOMEBOUND');
+    expect(prisma.careRecipientAssessment.upsert).toHaveBeenCalledTimes(1);
+  });
+  it('does not calculate a read fallback for an unbackfilled legacy row', async () => {
+    await service.submit(OWNER, makeInput());
+    const row = prisma.careRecipientAssessment.upsert.mock.calls[0][0].create;
+    prisma.careRecipientAssessment.findUnique.mockResolvedValue({
+      ...row,
+      careGroup: null,
+    });
+    await expect(service.read(OWNER, ID)).rejects.toThrow(
+      'ไม่สามารถดำเนินการกับแบบประเมินได้ในขณะนี้',
+    );
+    expect(prisma.careRecipientAssessment.upsert).toHaveBeenCalledTimes(1);
   });
   it('allows an ACTIVE family member to read a shared profile after consent checks', async () => {
     prisma.careRecipient.findUnique.mockResolvedValue({

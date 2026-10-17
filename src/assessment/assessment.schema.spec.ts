@@ -27,7 +27,7 @@ describe('S08 GraphQL contract and global validation compatibility', () => {
   const mutation = `mutation Submit($input: SubmitCareRecipientAssessmentInput!) {
     submitCareRecipientAssessment(input: $input) {
       careRecipientId answers { code value } adlTotalScore unsureCount
-      flags noSpecialConditions hasUnsureFlag dementiaSevere assessedAt
+      flags noSpecialConditions hasUnsureFlag dementiaSevere assessedAt careGroup
     }
   }`;
   const input = () => ({
@@ -102,7 +102,8 @@ describe('S08 GraphQL contract and global validation compatibility', () => {
     expect(sdl).toContain('answers: [CareRecipientAssessmentAnswerInput!]!');
     expect(sdl).toContain('value: Int\n');
     expect(sdl).not.toContain('assessedBy');
-    expect(sdl).not.toContain('careGroup');
+    expect(sdl).toContain('careGroup: ElderCareGroup!');
+    expect(sdl).toContain('enum ElderCareGroup');
   });
   it('submit/read examples run through the generated schema and real service', async () => {
     const save = await execute(mutation, { input: input() });
@@ -110,17 +111,19 @@ describe('S08 GraphQL contract and global validation compatibility', () => {
     expect(save.data?.submitCareRecipientAssessment).toMatchObject({
       careRecipientId: id,
       adlTotalScore: 20,
+      careGroup: 'SOCIAL',
       unsureCount: 0,
       hasUnsureFlag: false,
       flags: [],
       dementiaSevere: null,
     });
     const read = await execute(
-      'query Read($id: ID!) { careRecipientAssessment(careRecipientId: $id) { adlTotalScore assessedAt } }',
+      'query Read($id: ID!) { careRecipientAssessment(careRecipientId: $id) { adlTotalScore careGroup assessedAt } }',
       { id },
     );
     expect(read.errors).toBeUndefined();
     expect(read.data?.careRecipientAssessment).toMatchObject({
+      careGroup: 'SOCIAL',
       adlTotalScore: 20,
     });
   });
@@ -152,13 +155,16 @@ describe('S08 GraphQL contract and global validation compatibility', () => {
       'ASSESSMENT_ANSWER_INVALID',
     );
   });
-  it('does not accept client-calculated score fields', async () => {
-    const result = await execute(mutation, {
-      input: { ...input(), adlTotalScore: 20 },
-    });
-    expect(result.errors).toHaveLength(1);
-    expect(stored).toBeNull();
-  });
+  it.each(['adlTotalScore', 'careGroup'])(
+    'does not accept client-derived %s in input',
+    async (field) => {
+      const result = await execute(mutation, {
+        input: { ...input(), [field]: field === 'careGroup' ? 'SOCIAL' : 20 },
+      });
+      expect(result.errors).toHaveLength(1);
+      expect(stored).toBeNull();
+    },
+  );
   it('returns nullable read + an access error without disclosing assessment state', async () => {
     actor = 'outsider';
     const result = await execute(

@@ -445,6 +445,7 @@ type CareRecipientAssessment {
   adlTotalScore: Int!
   answers: [CareRecipientAssessmentAnswer!]!
   assessedAt: DateTime!
+  careGroup: ElderCareGroup!
   careRecipientId: ID!
   dementiaSevere: Boolean
   flags: [String!]!
@@ -1138,6 +1139,12 @@ type EditAdminInfoPayload {
   user: User!
 }
 
+enum ElderCareGroup {
+  BEDRIDDEN
+  HOMEBOUND
+  SOCIAL
+}
+
 """Entity types that support field locking"""
 enum EntityTypeEnum {
   CAREGIVER_PROFILE
@@ -1423,6 +1430,7 @@ type GroupBookingSummary {
 }
 
 type GroupCareRecipient {
+  careGroup: ElderCareGroup
   details: GroupCareRecipientDetails
   hasAssessment: Boolean!
   id: ID!
