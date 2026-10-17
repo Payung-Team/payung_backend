@@ -131,3 +131,66 @@ describe('EmailService.sendMarketingEmail (PYG-540)', () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * PYG-603 (E13) — บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล
+ * ทุกทางที่ส่งอีเมลหาผู้ใช้ต้อง "ข้าม" ไม่ใช่ throw และไม่ส่งไปที่อยู่ว่าง
+ */
+describe('EmailService — บัญชีที่ไม่มีอีเมล (PYG-603)', () => {
+  let sendMail: jest.Mock;
+  let findUnique: jest.Mock;
+  let service: EmailService;
+
+  beforeEach(() => {
+    sendMail = jest.fn().mockResolvedValue({ messageId: 'm-1' });
+    (nodemailer.createTransport as jest.Mock).mockReturnValue({ sendMail });
+    findUnique = jest.fn();
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('x'),
+      get: jest.fn((_key: string, fallback: unknown) => fallback),
+    };
+    service = new EmailService(
+      config as unknown as ConfigService,
+      { user: { findUnique } } as unknown as PrismaService,
+      {
+        hasGrantedCurrent: jest.fn().mockResolvedValue(true),
+      } as unknown as ConsentService,
+    );
+  });
+
+  it('อีเมลแจ้งเตือน (ผ่าน fetchUser) → ข้าม ไม่ throw ไม่ส่ง', async () => {
+    findUnique.mockResolvedValue({
+      email: null,
+      displayName: null,
+      emailPreferences: true,
+    });
+
+    await expect(
+      service.sendKycSubmitted('user-phone-only'),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.sendBookingEmail('user-phone-only', () => TPL),
+    ).resolves.toBeUndefined();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('อีเมลข่าวสาร → คืน false ไม่ส่ง', async () => {
+    findUnique.mockResolvedValue({ ...ACTIVE_USER, email: null });
+    await expect(
+      service.sendMarketingEmail('user-phone-only', TPL),
+    ).resolves.toBe(false);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('บัญชีที่มีอีเมลยังได้รับตามเดิม (S07-AC5)', async () => {
+    findUnique.mockResolvedValue({
+      email: 'somsri@example.com',
+      displayName: 'สมศรี',
+      emailPreferences: true,
+    });
+    await service.sendKycSubmitted('user-1');
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'somsri@example.com' }),
+    );
+  });
+});

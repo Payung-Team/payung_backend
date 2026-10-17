@@ -29,11 +29,25 @@ import {
   ConsentService,
 } from '../../consent/consent.service';
 
+/**
+ * display_name ยังเป็นค่าที่ "ระบบตั้งให้ตอนสมัคร" อยู่หรือไม่ (ผู้ใช้ยังไม่เคยตั้งเอง)
+ *
+ * - สมัครด้วยอีเมล → ระบบตั้งเป็น prefix ของอีเมล ("john" จาก "john@example.com")
+ * - สมัครด้วยเบอร์ (PYG-603) → ไม่มีอีเมลให้ตัด ระบบตั้งเป็น null
+ */
+export function isSystemDefaultDisplayName(
+  displayName: string | null,
+  email: string | null,
+): boolean {
+  if (displayName === null) return true;
+  return email !== null && displayName === email.split('@')[0];
+}
+
 /** Shape ของ user ที่ Prisma คืนมา → map เป็น GraphQL User entity */
 type PrismaUser = {
   id: string;
   supabaseUid: string;
-  email: string;
+  email: string | null; // PYG-603: null = บัญชีที่สมัครด้วยเบอร์โทร
   displayName: string | null;
   avatarUrl: string | null;
   phone: string | null;
@@ -65,14 +79,20 @@ export class UserService {
     private readonly consentService: ConsentService,
   ) {}
 
-  // ─── Private helper ──────────────────────────────────────────────────────
+  // ─── Mapper ──────────────────────────────────────────────────────────────
   /**
    * แปลง Prisma User (null fields) → GraphQL User entity (undefined fields)
    * เหตุผล: GraphQL ใช้ undefined สำหรับ optional fields, Prisma ใช้ null
+   *
+   * PYG-603: เปิดเป็น public ให้ PhoneAuthService ใช้สร้าง `AuthPayload.user`
+   *   ให้รูปเดียวกับ me / updateProfile ทุก field (S07-AC5: response ของล็อกอินด้วยเบอร์
+   *   ต้องเป็นรูปเดียวกับล็อกอินด้วยอีเมล) แทนการเขียน mapping ซ้ำอีกชุด
    */
-  private mapToEntity(user: PrismaUser): User {
+  mapToEntity(user: PrismaUser): User {
     return {
       id: user.id,
+      // ★ email คงเป็น null (ไม่แปลงเป็น undefined) — GraphQL ตอบ null เหมือนกัน
+      //   แต่ type ของ entity เป็น string | null ตรงกับความหมาย "บัญชีนี้ไม่มีอีเมล"
       email: user.email,
       displayName: user.displayName ?? undefined,
       // PYG-497/498: ชื่อจริงจาก Onboarding — แยกจาก displayName ที่เป็นแค่ชื่อแสดง
@@ -423,7 +443,10 @@ export class UserService {
           lastName,
           // display_name ที่ระบบตั้งให้ตอนสมัคร = prefix ของอีเมล (createUser)
           // ทับได้เพราะผู้ใช้ไม่เคยตั้งเอง — แต่ถ้าเขาเปลี่ยนเองแล้วต้องเคารพของเขา
-          ...(user.displayName === user.email.split('@')[0]
+          // PYG-603: บัญชีที่สมัครด้วยเบอร์ไม่มีอีเมล ระบบจึงตั้ง display_name = null
+          //   null ก็คือ "ยังไม่เคยตั้งเอง" เหมือนกัน → ทับด้วยชื่อจริงได้
+          //   (เดิมเรียก user.email.split ตรง ๆ → บัญชีไม่มีอีเมลกด Onboarding แล้ว 500)
+          ...(isSystemDefaultDisplayName(user.displayName, user.email)
             ? { displayName: fullName }
             : {}),
         },

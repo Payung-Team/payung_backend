@@ -26,9 +26,12 @@ export class CaregiverKycSummary {
   @Field({ description: 'Caregiver full name' })
   fullName!: string;
 
-  /** อีเมล */
-  @Field({ description: 'Caregiver email' })
-  email!: string;
+  /** อีเมล — PYG-603: null ได้ (ผู้ดูแลที่สมัครด้วยเบอร์โทรไม่มีอีเมล) */
+  @Field(() => String, {
+    nullable: true,
+    description: 'Caregiver email (null for phone-only accounts)',
+  })
+  email!: string | null;
 
   /**
    * สถานะ KYC ปัจจุบัน

@@ -1058,7 +1058,9 @@ export class OmiseService {
    * createRecipient — PYG-266: สร้าง Omise Recipient (type=individual) สำหรับ caregiver
    *
    * @param params.name          - ชื่อบัญชี (accountName ที่ caregiver กรอก)
-   * @param params.email         - อีเมลของ caregiver (Omise ต้องการสำหรับ type=individual)
+   * @param params.email         - อีเมลของ caregiver — PYG-603: null ได้ (ผู้ดูแลที่สมัครด้วยเบอร์โทร)
+   *                               ตามเอกสาร API ของ Omise ช่อง email ของ recipient ไม่บังคับ
+   *                               ★ ยังไม่ได้ยืนยันกับ Omise test key — ดู docs/pyg601-phone-auth-api-contract.md §10
    * @param params.bankCode      - bank_account.brand (เช่น 'kbank', 'scb')
    * @param params.accountNumber - เลขบัญชี (plaintext — decrypt แล้วก่อนเรียกฟังก์ชันนี้)
    * @param params.accountName   - ชื่อเจ้าของบัญชี (bank_account.name)
@@ -1066,7 +1068,7 @@ export class OmiseService {
    */
   async createRecipient(params: {
     name: string;
-    email: string;
+    email: string | null;
     bankCode: string;
     accountNumber: string;
     accountName: string;
@@ -1089,7 +1091,8 @@ export class OmiseService {
         body: new URLSearchParams({
           type: 'individual',
           name: params.name,
-          email: params.email,
+          // PYG-603: ไม่มีอีเมล = ไม่ส่งช่องนี้เลย (ไม่ส่ง "" — Omise จะตรวจรูปแบบอีเมลว่างแล้วปฏิเสธ)
+          ...(params.email ? { email: params.email } : {}),
           'bank_account[brand]': params.bankCode,
           'bank_account[number]': params.accountNumber,
           'bank_account[name]': params.accountName,
