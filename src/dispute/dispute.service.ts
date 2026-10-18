@@ -484,9 +484,14 @@ export class DisputeService {
   private toPartyBrief(u: {
     id: string;
     displayName?: string | null;
-    email: string;
+    email: string | null; // PYG-603: null = บัญชีที่สมัครด้วยเบอร์โทร
   }): DisputePartyBrief {
-    return { id: u.id, displayName: u.displayName ?? undefined, email: u.email };
+    // DisputePartyBrief.email เป็น nullable ใน GraphQL อยู่แล้ว → null แปลงเป็น undefined ได้เลย
+    return {
+      id: u.id,
+      displayName: u.displayName ?? undefined,
+      email: u.email ?? undefined,
+    };
   }
 
   /**
