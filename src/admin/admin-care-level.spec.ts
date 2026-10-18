@@ -33,6 +33,7 @@ import { PayoutAccountService } from '../payment/payout-account.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { CareLevel } from '../common/care-level/care-level';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import {
   CARE_LEVEL_ERROR,
   CareLevelError,
@@ -125,6 +126,7 @@ class FakeDb {
       createdAt: new Date('2026-09-01'),
       updatedAt: new Date('2026-10-01'),
       rejection_reasons: null,
+      profession: 'general_caregiver', // PYG-575: แถวจริงมีค่านี้เสมอ (DEFAULT ใน DB)
       careLevel: r.care_level,
       careLevelSetBy: r.care_level_set_by,
       careLevelSetAt: r.care_level_set_at,
@@ -676,6 +678,8 @@ describe('AdminService.approveKyc — ต้องมีระดับก่อ
         { provide: NotificationService, useValue: notificationService },
         { provide: EmailService, useValue: emailService },
         { provide: PayoutAccountService, useValue: payoutAccountService },
+        // PYG-597 (#132): AdminService ต้องใช้ DrivingLicenseService — approveKyc ไม่ได้เรียก
+        { provide: DrivingLicenseService, useValue: {} },
       ],
     }).compile();
     service = mod.get(AdminService);
@@ -886,6 +890,7 @@ describe('AdminService.adminKycList — ระดับในหน้ารา�
         { provide: NotificationService, useValue: {} },
         { provide: EmailService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
+        { provide: DrivingLicenseService, useValue: {} }, // PYG-597 (#132) — adminKycList ไม่ได้เรียก
       ],
     }).compile();
     const service = mod.get(AdminService);

@@ -170,6 +170,7 @@ describe('PYG-581 care level — contract ที่ชั้น GraphQL (e2e, �
     createdAt: new Date('2026-09-01T00:00:00Z'),
     updatedAt: new Date('2026-10-01T00:00:00Z'),
     rejection_reasons: null,
+    profession: 'general_caregiver', // PYG-575: แถวจริงมีค่านี้เสมอ (DEFAULT ใน DB)
     user: { email: 'cg@x.com' },
     careLevelSetByUser: row!.careLevelSetBy
       ? { displayName: 'แอดมิน ทดสอบ' }
