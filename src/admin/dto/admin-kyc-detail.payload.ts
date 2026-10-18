@@ -13,6 +13,7 @@ import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
 import { CaregiverEditLog } from '../../identity/kyc/entities/caregiver-edit-log.entity';
 import { PayoutAccountSummary } from '../../identity/kyc/entities/payout-account.entity';
+import { LicenseInfo } from '../../identity/kyc/license/license-info.entity';
 
 /** PYG-266: payout summary สำหรับ admin — เพิ่ม hasOmiseRecipient เหนือ base summary */
 @ObjectType({ description: 'Caregiver payout bank account summary for admin review' })
@@ -55,4 +56,12 @@ export class AdminKycDetailPayload {
         description: 'Pending profile photo document id (null if none awaiting review)',
     })
     pendingProfilePhotoDocumentId?: string;
+
+    /** PYG-587: วิชาชีพของผู้ดูแล */
+    @Field({ nullable: true, description: 'Caregiver profession: general_caregiver | nurse | physiotherapist' })
+    profession?: string;
+
+    /** PYG-587: ใบประกอบฯ ล่าสุด — เลข ไฟล์ (signed URL) วันหมดอายุ สถานะ เหตุผลปฏิเสธ · null ถ้าไม่เคยแนบ */
+    @Field(() => LicenseInfo, { nullable: true, description: 'Latest professional license for review' })
+    license?: LicenseInfo;
 }

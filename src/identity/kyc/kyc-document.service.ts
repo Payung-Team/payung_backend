@@ -14,6 +14,9 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma.service';
 import { normalizeKycStoragePath } from './utils/kyc-storage-path';
 import { KycDocument } from './entities/kyc-document.entity';
+import { ClockService } from '../../common/clock.service';
+import { LICENSE_DOC_TYPE, LICENSE_STATUS } from './license/license.constants';
+import { validateLicenseFields } from './license/license-validation';
 
 /** Shape ของ KycDocument ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaKycDocument = {
@@ -26,6 +29,9 @@ type PrismaKycDocument = {
   fileSize: number;
   mimeType: string;
   uploadedAt: Date;
+  licenseNumber?: string | null;
+  expiresAt?: Date | null;
+  reviewStatus?: string | null;
 };
 
 /** ข้อมูลสำหรับสร้าง document record ใหม่ */
@@ -38,6 +44,9 @@ type CreateDocumentData = {
   fileName: string;
   fileSize: number;
   mimeType: string;
+  /** PYG-587: เฉพาะ documentType = professional_license */
+  licenseNumber?: string | null;
+  expiresAt?: Date | null;
 };
 
 @Injectable()
@@ -45,6 +54,7 @@ export class KycDocumentService {
   constructor(
     private prismaService: PrismaService,
     private readonly config: ConfigService,
+    private readonly clock: ClockService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -67,6 +77,9 @@ export class KycDocumentService {
       fileSize: doc.fileSize,
       mimeType: doc.mimeType,
       uploadedAt: doc.uploadedAt,
+      licenseNumber: doc.licenseNumber ?? undefined,
+      expiresAt: doc.expiresAt ?? undefined,
+      reviewStatus: doc.reviewStatus ?? undefined,
     };
   }
 
@@ -92,6 +105,13 @@ export class KycDocumentService {
       this.config.getOrThrow<string>('SUPABASE_URL'),
     );
 
+    // PYG-587: ใบประกอบฯ ต้องมีเลข + วันหมดอายุในอนาคต (เวลาไทย) — ตรวจที่ service เพื่อตอบ 422 + error code ตาม contract
+    //   ชนิดอื่นไม่เก็บ/ไม่ตรวจ 2 ช่องนี้ (expires_at ของ S06 ใบขับขี่ใช้คอลัมน์เดียวกัน แต่ยังไม่เปิดรับที่นี่)
+    const isLicense = data.documentType === LICENSE_DOC_TYPE;
+    const license = isLicense
+      ? validateLicenseFields(data.licenseNumber, data.expiresAt, this.clock.now())
+      : null;
+
     const doc = await this.prismaService.kycDocument.create({
       data: {
         userId: data.userId,
@@ -100,6 +120,12 @@ export class KycDocumentService {
         fileName: data.fileName,
         fileSize: data.fileSize,
         mimeType: data.mimeType,
+        // ใบประกอบฯ เข้าคิวรอแอดมินตรวจทันที (E6: ใบใหม่หลังถูกปฏิเสธ = pending ใหม่ แถวเก่ายังอยู่)
+        ...(license && {
+          licenseNumber: license.licenseNumber,
+          expiresAt: license.expiresAt,
+          reviewStatus: LICENSE_STATUS.PENDING,
+        }),
         // caregiverId = null (default) — จะถูก link ตอน submit KYC
         // uploadedAt = now() (default จาก Prisma schema)
       },

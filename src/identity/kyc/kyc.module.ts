@@ -21,6 +21,7 @@ import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { KycStorageAuditCron } from './kyc-storage-audit.cron';
+import { LicenseExpiryCron } from './license/license-expiry.cron';
 import { ProfilePhotoController } from './profile-photo.controller';
 import { ProfilePhotoService } from './profile-photo.service';
 import { ProfilePhotoResolver } from './profile-photo.resolver';
@@ -52,6 +53,7 @@ import { PaymentModule } from '../../payment/payment.module';
     // PYG-307: ตรวจ invariant ของ file_url ทุกวัน — repo นี้ยังไม่มี CI
     // ถ้าวางไว้เป็นสคริปต์ให้ CI รัน จะไม่มีใครรันจริง
     KycStorageAuditCron,
+    LicenseExpiryCron, // PYG-587: ใบประกอบฯ ถึงวันหมดอายุ → expired + แจ้งเตือน (รายวัน)
     SupabaseAuthGuard,
     RolesGuard,
     FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile

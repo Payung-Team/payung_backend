@@ -20,6 +20,8 @@ import { AdminResolver } from './admin.resolver';
 import { AdminService } from './admin.service';
 import { AdminProfilePhotoResolver } from './admin-profile-photo.resolver';
 import { AdminProfilePhotoService } from './admin-profile-photo.service';
+import { AdminLicenseResolver } from './admin-license.resolver';
+import { AdminLicenseService } from './admin-license.service';
 import { AdminCleanupService } from './admin-cleanup.service';
 import { UserCleanupService } from './user-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
@@ -41,6 +43,8 @@ import { PaymentModule } from '../payment/payment.module';
     AdminService,
     AdminProfilePhotoResolver, // PYG-508: คิว + อนุมัติ/ปฏิเสธรูปโปรไฟล์ผู้ดูแล
     AdminProfilePhotoService,
+    AdminLicenseResolver, // PYG-587: อนุมัติ/ปฏิเสธใบประกอบวิชาชีพ
+    AdminLicenseService,
     AdminCleanupService,
     UserCleanupService,
     SupabaseAuthGuard,

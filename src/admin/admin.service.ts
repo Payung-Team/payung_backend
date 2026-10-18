@@ -69,6 +69,7 @@ import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
+import { pickLatestLicense } from '../identity/kyc/license/license-info.entity';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -427,6 +428,8 @@ export class AdminService {
       editHistory: mergedHistory,
       payoutAccount,
       pendingProfilePhotoDocumentId: pendingProfilePhoto?.id,
+      profession: raw.profession,
+      license: pickLatestLicense(documents),
     };
   }
 

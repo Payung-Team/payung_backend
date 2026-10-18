@@ -15,6 +15,7 @@ import { PrismaService } from '../../common/prisma.service';
 import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
 import { EmailService } from '../../email/email.service';
+import { ClockService } from '../../common/clock.service';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
@@ -93,6 +94,7 @@ describe('KycService — payout account (PYG-266)', () => {
         },
         { provide: PayoutEncryptionService, useValue: payoutEncryption },
         { provide: PayoutAccountService, useValue: payoutAccountService },
+        ClockService,
       ],
     }).compile();
 

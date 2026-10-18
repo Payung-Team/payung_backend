@@ -49,6 +49,13 @@ export enum NotificationType {
   // ─── Payout account (Omise recipient) ────────────────────────────────────
   payout_account_verified = 'payout_account_verified', // Omise accept บัญชีรับเงิน → เปิดรับงานได้ (→ caregiver)
   payout_account_failed = 'payout_account_failed',     // Omise ปฏิเสธบัญชีรับเงิน → ต้องแก้ไข (→ caregiver)
+
+  // ─── Professional license (PYG-587) ──────────────────────────────────────
+  // ⚠ ยังไม่มีใน Prisma enum NotificationType / DB — ต้องรอทีม DB เพิ่มค่าเหล่านี้ (ดู PR description)
+  //   ระหว่างนั้น notification create จะล้ม → log เท่านั้น ไม่ทำให้การตรวจ/เปลี่ยนสถานะล้ม
+  license_approved = 'license_approved',   // แอดมินอนุมัติใบประกอบฯ (→ caregiver)
+  license_rejected = 'license_rejected',   // แอดมินปฏิเสธใบประกอบฯ + เหตุผล (→ caregiver)
+  license_expired = 'license_expired',     // ใบประกอบฯ ถึงวันหมดอายุ → อัปโหลดใหม่ (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

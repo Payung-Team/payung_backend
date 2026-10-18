@@ -33,6 +33,16 @@ import { NotificationType } from '../../notification/entities/notification-type.
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { ClockService } from '../../common/clock.service';
+import {
+  LICENSE_DOC_TYPE,
+  LICENSE_REQUIRED_PROFESSIONS,
+  LICENSE_STATUS,
+} from './license/license.constants';
+import { LICENSE_ERROR, LicenseError, LicenseErrorCode } from './license/license.errors';
+import { isBangkokDateInFuture } from './license/license-date';
+import { pickLatestLicense } from './license/license-info.entity';
+import { normalizeLicenseNumber } from './license/license-validation';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { evaluatePayoutReadiness } from '../../payment/payout-account-readiness';
@@ -70,6 +80,7 @@ export class KycService {
     private emailService: EmailService,
     private payoutEncryption: PayoutEncryptionService,
     private payoutAccountService: PayoutAccountService,
+    private clock: ClockService,
   ) {}
 
   /**
@@ -120,6 +131,14 @@ export class KycService {
         );
       }
     }
+
+    // ── ขั้นตอนที่ 2.5: ใบประกอบวิชาชีพ (PYG-587) ────────────────────
+    // ตรวจที่ชั้น service ก่อนเขียนอะไรลง DB · general_caregiver ไม่ตรวจ (E9: ถ้าแนบมาก็ไม่ถูกบังคับ/ไม่ถูกปฏิเสธ)
+    await this.assertLicenseForKyc(
+      user.id,
+      existing?.profession ?? 'general_caregiver',
+      input.documentIds,
+    );
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
@@ -263,6 +282,54 @@ export class KycService {
   }
 
   /**
+   * assertLicenseForKyc — nurse / physiotherapist ต้องมีเอกสารใบประกอบฯ ที่ใช้ได้ในรอบส่งนี้
+   * (S03-AC2, E2, E3/E4, E10)
+   *
+   * "ใช้ได้" = อยู่ใน documentIds ของรอบนี้ + เป็นของผู้ใช้คนนี้ + ไม่ใช่ rejected/expired
+   * + มีเลข + มีวันหมดอายุ + วันหมดอายุเป็นอนาคตตามเวลาไทย
+   * ใบที่ผ่านการตรวจมาก่อนแต่ไม่ได้ส่งมาในรอบนี้ไม่นับ (E2: เปลี่ยนวิชาชีพต้องมีใบใหม่ที่ส่งมาพร้อมกัน)
+   * ขาดหลายช่อง → ตอบครบในครั้งเดียว (extensions.codes) · code = ช่องแรก (FILE → NUMBER → EXPIRY)
+   */
+  private async assertLicenseForKyc(
+    userId: string,
+    profession: string,
+    documentIds: string[],
+  ): Promise<void> {
+    if (!LICENSE_REQUIRED_PROFESSIONS.has(profession)) return;
+
+    const licenseDocs =
+      documentIds.length > 0
+        ? await this.prismaService.kycDocument.findMany({
+            where: { id: { in: documentIds }, userId, documentType: LICENSE_DOC_TYPE },
+            select: {
+              id: true,
+              licenseNumber: true,
+              expiresAt: true,
+              reviewStatus: true,
+              uploadedAt: true,
+            },
+            orderBy: { uploadedAt: 'desc' },
+          })
+        : [];
+
+    // ใบที่ถูกปฏิเสธ/หมดอายุแล้วใช้ส่งซ้ำไม่ได้ — ต้องอัปโหลดใบใหม่ (E6)
+    const usable = licenseDocs.find(
+      (d) =>
+        d.reviewStatus !== LICENSE_STATUS.REJECTED && d.reviewStatus !== LICENSE_STATUS.EXPIRED,
+    );
+
+    if (!usable) throw new LicenseError(LICENSE_ERROR.FILE_REQUIRED);
+
+    const errors: LicenseErrorCode[] = [];
+    if (!normalizeLicenseNumber(usable.licenseNumber)) errors.push(LICENSE_ERROR.NUMBER_REQUIRED);
+    if (!usable.expiresAt) errors.push(LICENSE_ERROR.EXPIRY_REQUIRED);
+    else if (!isBangkokDateInFuture(usable.expiresAt, this.clock.now())) {
+      errors.push(LICENSE_ERROR.EXPIRY_NOT_FUTURE);
+    }
+    if (errors.length > 0) throw new LicenseError(errors[0], errors);
+  }
+
+  /**
    * resubmitKyc — ยื่น KYC ใหม่หลังถูก reject
    */
   async resubmitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
@@ -352,6 +419,8 @@ export class KycService {
       verifiedAt: caregiver.kycVerifiedAt ?? undefined,
       caregiver: this.mapToEntity(caregiver),
       documents,
+      profession: caregiver.profession,
+      license: pickLatestLicense(documents),
       payoutAccount: payoutAccountRow
         ? this.mapPayoutAccountSummary(payoutAccountRow)
         : undefined,

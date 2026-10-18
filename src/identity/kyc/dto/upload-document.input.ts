@@ -1,12 +1,12 @@
 import { InputType, Field, Int } from '@nestjs/graphql';
-import { IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength } from 'class-validator';
+import { IsDate, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength } from 'class-validator';
 
 @InputType()
 export class UploadDocumentInput {
-  @Field({ description: 'Document type: id_card_front | id_card_selfie | certificate' })
+  @Field({ description: 'Document type: id_card_front | id_card_selfie | certificate | professional_license' })
   @IsString()
   @IsNotEmpty()
-  @IsIn(['id_card_front', 'id_card_selfie', 'certificate'], {
+  @IsIn(['id_card_front', 'id_card_selfie', 'certificate', 'professional_license'], {
     message: 'ประเภทเอกสารไม่ถูกต้อง',
   })
   docType!: string;
@@ -42,4 +42,29 @@ export class UploadDocumentInput {
     message: 'ประเภทไฟล์ไม่รองรับ (รองรับ JPG, PNG, PDF)',
   })
   mimeType!: string;
+
+  /**
+   * PYG-587: เลขใบประกอบวิชาชีพ — บังคับเมื่อ docType = professional_license
+   * ⚠ optional ที่ชั้น schema โดยตั้งใจ และ **ไม่มี** @IsNotEmpty/@MinLength: ความครบถ้วนตรวจที่ service
+   *   เพื่อตอบ error code ของ contract (422) — decorator ตรงนี้จะตอบ BAD_REQUEST ก่อนถึง service (PYG-415)
+   */
+  @Field({
+    nullable: true,
+    description: 'Professional license number (required when docType = professional_license; trimmed, max 50)',
+  })
+  @IsOptional()
+  @IsString()
+  licenseNumber?: string;
+
+  /**
+   * PYG-587: วันหมดอายุ — บังคับเมื่อ docType = professional_license
+   * ส่ง 'YYYY-MM-DD' หรือ ISO ก็ได้ — server ใช้วันที่ตามปฏิทินไทย (Asia/Bangkok) และเก็บเป็นสิ้นวันนั้น
+   */
+  @Field({
+    nullable: true,
+    description: 'Document expiry date (Asia/Bangkok calendar day; must be after today)',
+  })
+  @IsOptional()
+  @IsDate()
+  expiresAt?: Date;
 }

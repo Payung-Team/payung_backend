@@ -14,6 +14,7 @@ import { ObjectType, Field } from '@nestjs/graphql';
 import { Caregiver } from '../entities/caregiver.entity';
 import { KycDocument } from '../entities/kyc-document.entity';
 import { PayoutAccountSummary } from '../entities/payout-account.entity';
+import { LicenseInfo } from '../license/license-info.entity';
 
 @ObjectType()
 export class KycStatusPayload {
@@ -75,6 +76,14 @@ export class KycStatusPayload {
       'True when the caregiver may turn on job availability (KYC verified AND payout account accepted by Omise)',
   })
   canAcceptJobs!: boolean;
+
+  /** PYG-587: วิชาชีพของผู้ดูแล — general_caregiver | nurse | physiotherapist */
+  @Field({ nullable: true, description: 'Caregiver profession' })
+  profession?: string;
+
+  /** PYG-587: ใบประกอบฯ ล่าสุด (สถานะ/วันหมดอายุ/เหตุผลปฏิเสธ) — null ถ้าไม่เคยแนบ */
+  @Field(() => LicenseInfo, { nullable: true, description: 'Latest professional license, if any' })
+  license?: LicenseInfo;
 
   /** เหตุผลที่ยังเปิดรับงานไม่ได้ (เฉพาะ KYC verified แล้ว) — NO_ACCOUNT | PENDING | FAILED */
   @Field({

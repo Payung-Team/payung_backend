@@ -27,6 +27,7 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
 import {
   PAYOUT_ACCOUNT_NOT_READY,
   PAYOUT_NOT_READY_MESSAGES,
@@ -580,12 +581,37 @@ export class CaregiverService {
     }
   }
 
+  /**
+   * PYG-587: เหตุผลที่ปฏิเสธใบประกอบฯ ล่าสุดของแต่ละเอกสาร (จาก kyc_reviews.document_id)
+   * เฉพาะเอกสารที่สถานะ rejected — ประวัติปฏิเสธเดิมของใบอื่นไม่ปน (E6)
+   */
+  private async loadLicenseRejectionReasons(
+    docs: Array<{ id: string; reviewStatus: string | null }>,
+  ): Promise<Map<string, string>> {
+    const rejectedIds = docs
+      .filter((d) => d.reviewStatus === LICENSE_STATUS.REJECTED)
+      .map((d) => d.id);
+    const reasons = new Map<string, string>();
+    if (rejectedIds.length === 0) return reasons;
+
+    const reviews = await this.prismaService.kycReview.findMany({
+      where: { documentId: { in: rejectedIds }, action: LICENSE_REVIEW_ACTION.REJECTED },
+      orderBy: { reviewedAt: 'desc' },
+      select: { documentId: true, reason: true },
+    });
+    for (const r of reviews) {
+      if (r.documentId && r.reason && !reasons.has(r.documentId)) reasons.set(r.documentId, r.reason);
+    }
+    return reasons;
+  }
+
   private async signDocuments(
     docs: Awaited<ReturnType<CaregiverService['loadDocs']>>,
   ): Promise<KycDocument[]> {
     if (docs.length === 0) return [];
 
     const supabase = this.supabaseService.getAdminClient();
+    const rejectionReasons = await this.loadLicenseRejectionReasons(docs);
 
     const enriched = await Promise.all(
       docs.map(async (doc) => {
@@ -601,6 +627,11 @@ export class CaregiverService {
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
           uploadedAt: doc.uploadedAt,
+          // PYG-587: field เพิ่มฝั่งอ่าน (client เก่าไม่เห็น ไม่พัง)
+          licenseNumber: doc.licenseNumber ?? undefined,
+          expiresAt: doc.expiresAt ?? undefined,
+          reviewStatus: doc.reviewStatus ?? undefined,
+          rejectionReason: rejectionReasons.get(doc.id),
         };
 
         // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก
