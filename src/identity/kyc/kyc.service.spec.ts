@@ -11,6 +11,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { KycService } from './kyc.service';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
 import { PrismaService } from '../../common/prisma.service';
 import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
@@ -95,6 +96,7 @@ describe('KycService — payout account (PYG-266)', () => {
         { provide: PayoutEncryptionService, useValue: payoutEncryption },
         { provide: PayoutAccountService, useValue: payoutAccountService },
         ClockService,
+        { provide: DrivingLicenseService, useValue: { assertForKyc: jest.fn(), getState: jest.fn().mockResolvedValue({ verified: false, status: 'none', isExpired: false }) } },
       ],
     }).compile();
 
@@ -373,6 +375,57 @@ describe('KycService — payout account (PYG-266)', () => {
         status: 'active',
         recipientStatus: 'verified',
       });
+    });
+  });
+
+  describe('getKycStatus - drivingLicense (PYG-597)', () => {
+    it('คำนวณสถานะที่จุดเดียว (DrivingLicenseService) ด้วย caregiverId + userId ของ session และประกอบไฟล์/เหตุผลจาก documents', async () => {
+      const drivingLicense = (service as unknown as { drivingLicense: { getState: jest.Mock } }).drivingLicense;
+      drivingLicense.getState.mockResolvedValue({
+        verified: false,
+        status: 'rejected',
+        documentId: 'dl-1',
+        expiresAt: new Date('2027-01-01T16:59:59.999Z'),
+        isExpired: false,
+      });
+      prisma.caregiver.findUnique.mockResolvedValueOnce({
+        id: CAREGIVER_ID,
+        kycStatus: 'verified',
+        kycSubmittedAt: new Date(),
+        kycVerifiedAt: new Date(),
+      });
+      const caregiverService = (service as unknown as { caregiverService: { getOwnDocumentsWithSignedUrls: jest.Mock } }).caregiverService;
+      caregiverService.getOwnDocumentsWithSignedUrls.mockResolvedValueOnce([
+        {
+          id: 'dl-1',
+          docType: 'driving_license',
+          fileName: 'dl.jpg',
+          signedUrl: 'https://signed/dl.jpg',
+          reviewStatus: 'rejected',
+          rejectionReason: 'รูปไม่ชัด',
+        },
+      ]);
+      prisma.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(null);
+
+      const result = await service.getKycStatus(USER_ID);
+
+      expect(drivingLicense.getState).toHaveBeenCalledWith({ caregiverId: CAREGIVER_ID, userId: USER_ID });
+      expect(result.drivingLicense).toEqual({
+        verified: false,
+        status: 'rejected',
+        documentId: 'dl-1',
+        fileName: 'dl.jpg',
+        signedUrl: 'https://signed/dl.jpg',
+        expiresAt: new Date('2027-01-01T16:59:59.999Z'),
+        isExpired: false,
+        rejectionReason: 'รูปไม่ชัด',
+      });
+    });
+
+    it('ยังไม่มีแถวผู้ดูแล -> drivingLicense = none (ไม่ throw)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+      const result = await service.getKycStatus(USER_ID);
+      expect(result.drivingLicense).toEqual({ verified: false, status: 'none', isExpired: false });
     });
   });
 });

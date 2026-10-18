@@ -41,6 +41,8 @@ import {
 } from './license/license.constants';
 import { LICENSE_ERROR, LicenseError, LicenseErrorCode } from './license/license.errors';
 import { isBangkokDateInFuture } from './license/license-date';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
+import { buildDrivingLicenseInfo } from './driving-license/driving-license-info.entity';
 import { pickLatestLicense } from './license/license-info.entity';
 import { normalizeLicenseNumber } from './license/license-validation';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
@@ -81,6 +83,7 @@ export class KycService {
     private payoutEncryption: PayoutEncryptionService,
     private payoutAccountService: PayoutAccountService,
     private clock: ClockService,
+    private drivingLicense: DrivingLicenseService,
   ) {}
 
   /**
@@ -139,6 +142,9 @@ export class KycService {
       existing?.profession ?? 'general_caregiver',
       input.documentIds,
     );
+
+    // PYG-597: ขับรถรับส่งเอง -> ต้องมีใบขับขี่ที่ใช้ได้ในรอบส่งนี้ (ตรวจที่ service ก่อนเขียนอะไรลง DB)
+    await this.drivingLicense.assertForKyc(user.id, input.selfDriveTransport, input.documentIds);
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
@@ -398,6 +404,7 @@ export class KycService {
       return {
         status: 'none',
         documents: [],
+        drivingLicense: { verified: false, status: 'none', isExpired: false },
         canAcceptJobs: false,
       };
     }
@@ -421,6 +428,10 @@ export class KycService {
       documents,
       profession: caregiver.profession,
       license: pickLatestLicense(documents),
+      drivingLicense: buildDrivingLicenseInfo(
+        await this.drivingLicense.getState({ caregiverId: caregiver.id, userId }),
+        documents,
+      ),
       payoutAccount: payoutAccountRow
         ? this.mapPayoutAccountSummary(payoutAccountRow)
         : undefined,

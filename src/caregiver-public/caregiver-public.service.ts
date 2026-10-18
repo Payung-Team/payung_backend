@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { CaregiverPublicDto, AvailabilitySlotDto } from './dto/caregiver-public.dto';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { startingHourlyPrices } from '../common/pricing/display-price';
 
 @Injectable()
@@ -9,6 +10,7 @@ export class CaregiverPublicService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly avatarUrlService: AvatarUrlService,
+    private readonly drivingLicense: DrivingLicenseService,
   ) {}
 
   /**
@@ -28,6 +30,7 @@ export class CaregiverPublicService {
       where: { id },
       select: {
         id: true,
+        userId: true,
         fullName: true,
         bio: true,
         experienceYears: true,
@@ -115,6 +118,11 @@ export class CaregiverPublicService {
       province: caregiver.serviceAreaProvince ?? null,
       district: caregiver.serviceAreaDistrict ?? null,
       verified_at: caregiver.kycVerifiedAt ?? null,
+      // PYG-597 R7: ฝั่ง Elder เห็นแค่ผ่าน/ไม่ผ่าน (คำนวณ ณ เวลาที่เรียก) — ไม่ส่งรูป เลข วันหมดอายุ หรือเหตุผล
+      driving_license_verified: await this.drivingLicense.isVerified({
+        caregiverId: caregiver.id,
+        userId: caregiver.userId,
+      }),
     };
   }
 }

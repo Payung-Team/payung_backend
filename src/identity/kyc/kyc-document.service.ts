@@ -17,6 +17,11 @@ import { KycDocument } from './entities/kyc-document.entity';
 import { ClockService } from '../../common/clock.service';
 import { LICENSE_DOC_TYPE, LICENSE_STATUS } from './license/license.constants';
 import { validateLicenseFields } from './license/license-validation';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
+import {
+  DRIVING_LICENSE_DOC_TYPE,
+  DRIVING_LICENSE_REVIEW_STATUS,
+} from './driving-license/driving-license.constants';
 
 /** Shape ของ KycDocument ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaKycDocument = {
@@ -55,6 +60,7 @@ export class KycDocumentService {
     private prismaService: PrismaService,
     private readonly config: ConfigService,
     private readonly clock: ClockService,
+    private readonly drivingLicense: DrivingLicenseService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -112,6 +118,18 @@ export class KycDocumentService {
       ? validateLicenseFields(data.licenseNumber, data.expiresAt, this.clock.now())
       : null;
 
+    // PYG-597: ใบขับขี่ต้องมีวันหมดอายุที่ยังไม่ผ่านมา (วันนี้ยังรับ) · ไม่เก็บเลขใบขับขี่ (ยังไม่เคาะ)
+    const isDriving = data.documentType === DRIVING_LICENSE_DOC_TYPE;
+    const drivingExpiresAt = isDriving ? this.drivingLicense.validateExpiry(data.expiresAt) : null;
+    // ผูกกับผู้ดูแลทันทีถ้ามีแถวผู้ดูแลอยู่แล้ว: ผู้ดูแลที่ KYC อนุมัติแล้วส่ง KYC ซ้ำไม่ได้ (E1)
+    // จึงไม่มีจังหวะ link ตอน submit · ผู้ดูแลใหม่ยังเป็น null และถูก link ตอน submit KYC ตามเดิม
+    const drivingCaregiverId = isDriving
+      ? ((await this.prismaService.caregiver.findUnique({
+          where: { userId: data.userId },
+          select: { id: true },
+        }))?.id ?? null)
+      : null;
+
     const doc = await this.prismaService.kycDocument.create({
       data: {
         userId: data.userId,
@@ -125,6 +143,12 @@ export class KycDocumentService {
           licenseNumber: license.licenseNumber,
           expiresAt: license.expiresAt,
           reviewStatus: LICENSE_STATUS.PENDING,
+        }),
+        ...(isDriving && {
+          expiresAt: drivingExpiresAt,
+          // E7: ใบใหม่เข้าคิวตรวจเสมอ · ประวัติรอบก่อนอยู่ใน kyc_reviews
+          reviewStatus: DRIVING_LICENSE_REVIEW_STATUS.PENDING,
+          ...(drivingCaregiverId && { caregiverId: drivingCaregiverId }),
         }),
         // caregiverId = null (default) — จะถูก link ตอน submit KYC
         // uploadedAt = now() (default จาก Prisma schema)

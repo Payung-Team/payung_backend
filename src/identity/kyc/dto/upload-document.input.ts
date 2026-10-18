@@ -3,10 +3,10 @@ import { IsDate, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength }
 
 @InputType()
 export class UploadDocumentInput {
-  @Field({ description: 'Document type: id_card_front | id_card_selfie | certificate | professional_license' })
+  @Field({ description: 'Document type: id_card_front | id_card_selfie | certificate | professional_license | driving_license' })
   @IsString()
   @IsNotEmpty()
-  @IsIn(['id_card_front', 'id_card_selfie', 'certificate', 'professional_license'], {
+  @IsIn(['id_card_front', 'id_card_selfie', 'certificate', 'professional_license', 'driving_license'], {
     message: 'ประเภทเอกสารไม่ถูกต้อง',
   })
   docType!: string;
@@ -57,7 +57,8 @@ export class UploadDocumentInput {
   licenseNumber?: string;
 
   /**
-   * PYG-587: วันหมดอายุ — บังคับเมื่อ docType = professional_license
+   * PYG-587/597: วันหมดอายุ — บังคับเมื่อ docType = professional_license หรือ driving_license
+   * (ใบขับขี่: วันหมดอายุเป็นวันนี้ยังรับ · ผ่านมาแล้วตอบ DRIVING_LICENSE_EXPIRED)
    * ส่ง 'YYYY-MM-DD' หรือ ISO ก็ได้ — server ใช้วันที่ตามปฏิทินไทย (Asia/Bangkok) และเก็บเป็นสิ้นวันนั้น
    */
   @Field({

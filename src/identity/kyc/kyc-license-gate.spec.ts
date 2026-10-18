@@ -3,6 +3,7 @@
  */
 import { Test } from '@nestjs/testing';
 import { KycService } from './kyc.service';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
 import { PrismaService } from '../../common/prisma.service';
 import { ClockService } from '../../common/clock.service';
 import { CaregiverService } from './caregiver.service';
@@ -89,6 +90,7 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
         { provide: PayoutEncryptionService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
         { provide: ClockService, useValue: { now: () => NOW } },
+        { provide: DrivingLicenseService, useValue: { assertForKyc: jest.fn(), getState: jest.fn().mockResolvedValue({ verified: false, status: 'none', isExpired: false }) } },
       ],
     }).compile();
     service = mod.get(KycService);
@@ -210,6 +212,34 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
     it('ผู้ดูแลใหม่ที่ยังไม่มีแถว caregivers → ถือเป็น general_caregiver (DEFAULT ของ DB)', async () => {
       caregiverFindUnique.mockResolvedValue(null);
       await expect(service.submitKyc(USER, input([]))).resolves.toBeDefined();
+    });
+  });
+
+  describe('ใบขับขี่ตอนส่ง KYC (PYG-597)', () => {
+    let drivingAssert: jest.Mock;
+    beforeEach(() => {
+      // provider ถูกสร้างใน beforeEach หลัก - ดึง mock ออกมาจาก service ผ่าน property
+      drivingAssert = (service as unknown as { drivingLicense: { assertForKyc: jest.Mock } }).drivingLicense.assertForKyc;
+      drivingAssert.mockReset();
+      caregiverFindUnique.mockResolvedValue({ kycStatus: 'none', profession: 'general_caregiver', resubmitCount: 0 });
+    });
+
+    it('ส่ง selfDriveTransport + documentIds + userId จาก session ให้ตัวตรวจ', async () => {
+      await service.submitKyc(USER, { ...input([DOC_ID]), selfDriveTransport: true } as KycInput);
+      expect(drivingAssert).toHaveBeenCalledWith('user-1', true, [DOC_ID]);
+    });
+
+    it('ตัวตรวจไม่ผ่าน -> ปฏิเสธและไม่เขียนฐานข้อมูล', async () => {
+      drivingAssert.mockRejectedValue(Object.assign(new Error('x'), { extensions: { code: 'DRIVING_LICENSE_REQUIRED' } }));
+      await expect(
+        service.submitKyc(USER, { ...input([]), selfDriveTransport: true } as KycInput),
+      ).rejects.toMatchObject({ extensions: { code: 'DRIVING_LICENSE_REQUIRED' } });
+      expect(tx.caregiver.upsert).not.toHaveBeenCalled();
+    });
+
+    it('E10: client เก่าไม่ส่ง selfDriveTransport -> ส่ง undefined ให้ตัวตรวจ (ไม่ใส่ค่าเริ่มต้นเอง)', async () => {
+      await service.submitKyc(USER, input([]));
+      expect(drivingAssert).toHaveBeenCalledWith('user-1', undefined, []);
     });
   });
 });

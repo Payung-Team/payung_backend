@@ -26,4 +26,6 @@ export class CaregiverPublicDto {
   province: string | null;
   district: string | null;
   verified_at: Date | null;
+  /** PYG-597: ผ่านการตรวจใบขับขี่ (แอดมินอนุมัติ + ยังไม่เลยวันหมดอายุ) — ไม่สื่อว่ามีรถ/รับรองความปลอดภัย (R8) */
+  driving_license_verified: boolean;
 }

@@ -13,6 +13,7 @@ import { KycDocument } from '../../identity/kyc/entities/kyc-document.entity';
 import { KycReview } from '../../identity/kyc/entities/kyc-review.entity';
 import { CaregiverEditLog } from '../../identity/kyc/entities/caregiver-edit-log.entity';
 import { PayoutAccountSummary } from '../../identity/kyc/entities/payout-account.entity';
+import { DrivingLicenseInfo } from '../../identity/kyc/driving-license/driving-license-info.entity';
 import { LicenseInfo } from '../../identity/kyc/license/license-info.entity';
 
 /** PYG-266: payout summary สำหรับ admin — เพิ่ม hasOmiseRecipient เหนือ base summary */
@@ -64,4 +65,12 @@ export class AdminKycDetailPayload {
     /** PYG-587: ใบประกอบฯ ล่าสุด — เลข ไฟล์ (signed URL) วันหมดอายุ สถานะ เหตุผลปฏิเสธ · null ถ้าไม่เคยแนบ */
     @Field(() => LicenseInfo, { nullable: true, description: 'Latest professional license for review' })
     license?: LicenseInfo;
+
+    /** PYG-597: ใบขับขี่ - ผลตรวจ ไฟล์ (signed URL) วันหมดอายุ isExpired เหตุผลปฏิเสธล่าสุด */
+    @Field(() => DrivingLicenseInfo, { description: 'Driving license review info (status none when never uploaded)' })
+    drivingLicense!: DrivingLicenseInfo;
+
+    /** PYG-597: ประวัติการตรวจใบขับขี่ทุกรอบ ใหม่สุดก่อน (อนุมัติ/ปฏิเสธ + เหตุผล) */
+    @Field(() => [KycReview], { description: 'Driving license review history, newest first' })
+    drivingLicenseReviews!: KycReview[];
 }

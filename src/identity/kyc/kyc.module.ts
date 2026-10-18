@@ -21,6 +21,7 @@ import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { KycStorageAuditCron } from './kyc-storage-audit.cron';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
 import { LicenseExpiryCron } from './license/license-expiry.cron';
 import { JobTypeEligibilityService } from './job-type/job-type-eligibility.service';
 import { JobTypeRemovalNotifier } from './job-type/job-type-removal-notifier';
@@ -57,6 +58,7 @@ import { PaymentModule } from '../../payment/payment.module';
     KycStorageAuditCron,
     JobTypeEligibilityService, // PYG-592: ตัวตรวจประเภทงาน x วิชาชีพ x ใบประกอบฯ (ตัวเดียวทั้งอ่าน/เขียน)
     JobTypeRemovalNotifier, // PYG-592 AC6: แจ้งผู้ดูแลที่ประเภทงานเดิมถูกนำออก (idempotent)
+    DrivingLicenseService, // PYG-597: คำนวณสถานะผ่านการตรวจใบขับขี่ที่จุดเดียว (แสดงผล + รับงาน)
     LicenseExpiryCron, // PYG-587: ใบประกอบฯ ถึงวันหมดอายุ → expired + แจ้งเตือน (รายวัน)
     SupabaseAuthGuard,
     RolesGuard,
@@ -64,6 +66,6 @@ import { PaymentModule } from '../../payment/payment.module';
   ],
   // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
   // me { caregiver { ... } } (PYG-90)
-  exports: [CaregiverService],
+  exports: [CaregiverService, DrivingLicenseService],
 })
 export class KycModule {}

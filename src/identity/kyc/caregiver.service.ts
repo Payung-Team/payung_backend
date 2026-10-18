@@ -28,6 +28,7 @@ import {
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
 import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
+import { DRIVING_LICENSE_REVIEW_ACTION } from './driving-license/driving-license.constants';
 import {
   PAYOUT_ACCOUNT_NOT_READY,
   PAYOUT_NOT_READY_MESSAGES,
@@ -595,7 +596,7 @@ export class CaregiverService {
     if (rejectedIds.length === 0) return reasons;
 
     const reviews = await this.prismaService.kycReview.findMany({
-      where: { documentId: { in: rejectedIds }, action: LICENSE_REVIEW_ACTION.REJECTED },
+      where: { documentId: { in: rejectedIds }, action: { in: [LICENSE_REVIEW_ACTION.REJECTED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED] } },
       orderBy: { reviewedAt: 'desc' },
       select: { documentId: true, reason: true },
     });
