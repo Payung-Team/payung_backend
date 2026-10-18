@@ -56,6 +56,10 @@ export enum NotificationType {
   license_approved = 'license_approved',   // แอดมินอนุมัติใบประกอบฯ (→ caregiver)
   license_rejected = 'license_rejected',   // แอดมินปฏิเสธใบประกอบฯ + เหตุผล (→ caregiver)
   license_expired = 'license_expired',     // ใบประกอบฯ ถึงวันหมดอายุ → อัปโหลดใหม่ (→ caregiver)
+
+  // ─── Job type restriction (PYG-592) ──────────────────────────────────────
+  // ⚠ ยังไม่มีใน Prisma enum / DB เช่นเดียวกับ license_* — รอทีม DB
+  job_type_removed = 'job_type_removed',   // ประเภทงานเดิมถูกนำออกเพราะไม่ตรงวิชาชีพ/ใบประกอบฯ (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap
