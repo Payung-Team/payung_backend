@@ -73,6 +73,7 @@ import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-l
 import { buildDrivingLicenseInfo } from '../identity/kyc/driving-license/driving-license-info.entity';
 import { DRIVING_LICENSE_REVIEW_ACTION } from '../identity/kyc/driving-license/driving-license.constants';
 import { pickLatestLicense } from '../identity/kyc/license/license-info.entity';
+import { CaregiverProfession } from '../identity/kyc/profession.constants';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -236,7 +237,8 @@ export class AdminService {
       id: c.id,
       caregiverNumber: c.caregiverNumber ?? undefined,
       fullName: c.fullName ?? '',
-      email: c.user?.email ?? '',
+      // PYG-603: ไม่มีอีเมล = null (เดิม '') — field เป็น nullable แล้ว FE แสดงเบอร์แทน (accountContact)
+      email: c.user?.email ?? null,
       kycStatus: c.kycStatus,
       submittedAt: c.kycSubmittedAt ?? undefined,
       documentCount: c._count.documents,
@@ -899,7 +901,11 @@ export class AdminService {
     });
 
     // ─── 6. Send invitation email (fire-and-forget) ───────────────────────
-    void this.emailService.sendAdminInvite(created.email, created.displayName, tempPassword).catch((err: unknown) => {
+    // PYG-603: created.email มี type เป็น string | null แล้ว — ใช้ input.email ที่เพิ่งสร้างบัญชีด้วย
+    //   (แอดมินถูกเชิญด้วยอีเมลเสมอ ค่าสองตัวนี้คือค่าเดียวกัน)
+    void this.emailService
+      .sendAdminInvite(input.email, created.displayName, tempPassword)
+      .catch((err: unknown) => {
       this.logSideEffectError('email admin_invite', created.id, err);
     });
 
@@ -950,12 +956,15 @@ export class AdminService {
       }
     }
 
-    // Search by displayName OR email (case-insensitive partial match)
+    // Search by displayName OR email OR phone (case-insensitive partial match)
+    // PYG-603: เพิ่มเบอร์โทร — บัญชีที่สมัครด้วยเบอร์ไม่มีอีเมล ถ้าไม่ค้นจากเบอร์แอดมินจะหาไม่เจอเลย
+    //   (users.phone เก็บแบบ 0XXXXXXXXX — ค้นด้วยส่วนหนึ่งของเบอร์ได้ เช่น "5678")
     if (input.search && input.search.trim() !== '') {
       const term = input.search.trim();
       where.OR = [
         { displayName: { contains: term, mode: 'insensitive' } },
         { email: { contains: term, mode: 'insensitive' } },
+        { phone: { contains: term } },
       ];
     }
 
@@ -967,6 +976,7 @@ export class AdminService {
         select: {
           id: true,
           email: true,
+          phone: true, // PYG-603: แยกบัญชีที่ไม่มีอีเมลในหน้าแอดมิน (คำขอของ FE)
           displayName: true,
           role: true,
           isActive: true,
@@ -1003,7 +1013,8 @@ export class AdminService {
       const cg = caregiverMap.get(u.id);
       return {
         id: u.id,
-        email: u.email,
+        email: u.email, // PYG-603: null ได้ (บัญชีที่สมัครด้วยเบอร์)
+        phone: u.phone ?? undefined,
         displayName: (u.role === ROLE_ID.CAREGIVER && cg?.fullName) ? cg.fullName : (u.displayName ?? undefined),
         role: u.role,
         isActive: u.isActive,
@@ -1637,12 +1648,22 @@ export class AdminService {
     }
 
     // ─── 6. Send email (fire-and-forget) ──────────────────────────────────
-    const emailMethod = input.isActive
-      ? this.emailService.sendAdminActivated(updated.email, updated.displayName)
-      : this.emailService.sendAdminDeactivated(updated.email, updated.displayName);
-    void emailMethod.catch((err: unknown) =>
-      this.logSideEffectError('email toggle_admin_status', updated.id, err),
-    );
+    // PYG-603: users.email เป็น null ได้แล้ว — แอดมินถูกเชิญด้วยอีเมลจึงมีเสมอ
+    //   แต่กันไว้: ไม่มีอีเมล = ข้ามการส่ง ไม่ใช่ส่งไปที่อยู่ว่าง
+    if (updated.email) {
+      const emailMethod = input.isActive
+        ? this.emailService.sendAdminActivated(
+            updated.email,
+            updated.displayName,
+          )
+        : this.emailService.sendAdminDeactivated(
+            updated.email,
+            updated.displayName,
+          );
+      void emailMethod.catch((err: unknown) =>
+        this.logSideEffectError('email toggle_admin_status', updated.id, err),
+      );
+    }
 
     // ─── 7. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs table insert when table is created (PYG-127)
@@ -1741,9 +1762,19 @@ export class AdminService {
     }
 
     // ─── 8. Email (fire-and-forget) ───────────────────────────────────────
-    void this.emailService
-      .sendAdminScheduleDelete(updated.email, updated.displayName, scheduledDeleteAt, gracePeriodDays)
-      .catch((err: unknown) => this.logSideEffectError('email schedule_delete', updated.id, err));
+    // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
+    if (updated.email) {
+      void this.emailService
+        .sendAdminScheduleDelete(
+          updated.email,
+          updated.displayName,
+          scheduledDeleteAt,
+          gracePeriodDays,
+        )
+        .catch((err: unknown) =>
+          this.logSideEffectError('email schedule_delete', updated.id, err),
+        );
+    }
 
     // ─── 9. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
@@ -1809,9 +1840,14 @@ export class AdminService {
     }
 
     // ─── 4. Email (fire-and-forget) ───────────────────────────────────────
-    void this.emailService
-      .sendAdminCancelDelete(updated.email, updated.displayName)
-      .catch((err: unknown) => this.logSideEffectError('email cancel_delete', updated.id, err));
+    // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
+    if (updated.email) {
+      void this.emailService
+        .sendAdminCancelDelete(updated.email, updated.displayName)
+        .catch((err: unknown) =>
+          this.logSideEffectError('email cancel_delete', updated.id, err),
+        );
+    }
 
     // ─── 5. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
@@ -2178,7 +2214,7 @@ export class AdminService {
   /** mapToUser — แปลง Prisma user record → GraphQL User entity */
   private mapToUser(u: {
     id: string;
-    email: string;
+    email: string | null; // PYG-603: null = บัญชีที่สมัครด้วยเบอร์โทร
     displayName: string | null;
     avatarUrl: string | null;
     phone: string | null;
@@ -2225,6 +2261,7 @@ export class AdminService {
     address: string | null;
     phone: string | null;
     skills: string[];
+    profession: string; // PYG-556 — หน้า KYC review ของแอดมินแสดงวิชาชีพ
     experienceYears: number | null;
     hourlyRate: number | null;
     bio: string | null;
@@ -2236,7 +2273,7 @@ export class AdminService {
     resubmitCount: number;
     createdAt: Date;
     updatedAt: Date;
-    user?: { email: string } | null;
+    user?: { email: string | null } | null; // PYG-603: email เป็น null ได้
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rejection_reasons?: any;
   }): Caregiver {
@@ -2252,6 +2289,7 @@ export class AdminService {
       address: c.address ?? undefined,
       phone: c.phone ?? '',
       skills: c.skills,
+      profession: c.profession as CaregiverProfession, // DB มี CHECK 3 ค่า — ค่าเดียวกับ enum
       experienceYears: c.experienceYears ?? 0,
       hourlyRate: c.hourlyRate ?? 0,
       bio: c.bio ?? undefined,

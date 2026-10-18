@@ -16,6 +16,7 @@ type CaregiverRow = {
   experienceYears: number | null;
   hourlyRate: number | null;
   skills: string[];
+  profession: string;
   kycStatus: string;
   isSearchable: boolean;
   kycVerifiedAt: Date | null;
@@ -38,6 +39,7 @@ function makeCaregiver(overrides: Partial<CaregiverRow> = {}): CaregiverRow {
     experienceYears: 5,
     hourlyRate: 350,
     skills: ['elderly_care', 'medication_management'],
+    profession: 'nurse',
     kycStatus: 'verified',
     isSearchable: true,
     kycVerifiedAt: VERIFIED_AT,
@@ -128,6 +130,7 @@ describe('CaregiverPublicService', () => {
       experience_years: 5,
       hourly_rate: 280, // ราคาต่ำสุดใน catalog ของประเภทที่รับ ไม่ใช่ hourlyRate 350 ที่ผู้ดูแลตั้งเอง
       skills: ['elderly_care', 'medication_management'],
+      profession: 'nurse', // PYG-556 · S01-AC4 — FE อ่าน data.profession
       province: 'เชียงใหม่',
       district: 'เมืองเชียงใหม่',
       verified_at: VERIFIED_AT,

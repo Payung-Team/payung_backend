@@ -110,7 +110,8 @@ export class PayoutAccountService {
   async createRecipientForCaregiver(
     caregiverId: string,
     fullName: string,
-    email: string,
+    // PYG-603: null = ผู้ดูแลสมัครด้วยเบอร์โทร ไม่มีอีเมล → createRecipient จะไม่ส่งช่อง email ให้ Omise
+    email: string | null,
   ): Promise<void> {
     try {
       const account = await this.prisma.caregiverPayoutAccount.findUnique({

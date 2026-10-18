@@ -18,6 +18,7 @@
  * - hourlyRate: deprecated (PYG-536) — optional และไม่ถูกบันทึก
  * - bio: optional, สูงสุด 500 ตัวอักษร
  * - documentIds: array ของ UUID
+ * - profession: บังคับตาม contract (PYG-573) แต่ตรวจที่ KycService — ดูเหตุผลที่ field
  *
  * Error messages เป็นภาษาไทย ตาม AC ของ PYG-63
  */
@@ -153,6 +154,26 @@ export class KycInput {
   @IsArray({ message: 'documentIds ต้องเป็น array' })
   @IsUUID('4', { each: true, message: 'document ID แต่ละตัวต้องเป็น UUID ที่ถูกต้อง' })
   documentIds!: string[];
+
+  /**
+   * วิชาชีพ (PYG-556 · S01-AC1) — "บังคับ" ตาม contract แต่ใน schema เป็น String nullable โดยตั้งใจ
+   *
+   * ทำไมไม่ใช่ `CaregiverProfession!`?
+   * - ถ้าบังคับที่ schema client เก่าที่ไม่ส่งค่าจะโดน GraphQL ปฏิเสธเองด้วย BAD_USER_INPUT (HTTP 400)
+   *   ก่อนถึงโค้ดของเรา → FE ไม่ได้ code PROFESSION_REQUIRED ตามที่ตกลง (S01-E3)
+   * - ถ้าเป็น enum ค่าผิดก็โดนปฏิเสธแบบเดียวกัน → ไม่ได้ PROFESSION_INVALID (S01-E4)
+   * - บทเรียนเดียวกับ PYG-415 (decorator ใน DTO ตอบ BAD_REQUEST ก่อนถึงตัวเช็คใน service)
+   * กติกาจริงอยู่ที่ parseProfessionInput() ซึ่ง KycService เรียกเป็นอย่างแรก
+   * decorator ที่เหลือมีไว้ให้ผ่าน forbidNonWhitelisted เท่านั้น
+   */
+  @Field({
+    nullable: true,
+    description:
+      'Required — general_caregiver | nurse | physiotherapist (missing = PROFESSION_REQUIRED)',
+  })
+  @IsOptional()
+  @IsString({ message: 'วิชาชีพต้องเป็นข้อความ' })
+  profession?: string;
 
   /**
    * PYG-597: ขับรถรับส่งเอง - true = ต้องมีใบขับขี่ (DRIVING_LICENSE_REQUIRED / _EXPIRY_REQUIRED / _EXPIRED)

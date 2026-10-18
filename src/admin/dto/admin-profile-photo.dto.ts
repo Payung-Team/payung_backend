@@ -79,8 +79,9 @@ export class ProfilePhotoQueueItem {
   @Field()
   fullName!: string;
 
-  @Field()
-  email!: string;
+  /** PYG-603: null ได้ — ผู้ดูแลที่สมัครด้วยเบอร์โทรไม่มีอีเมล */
+  @Field(() => String, { nullable: true })
+  email!: string | null;
 
   /** สถานะ KYC ของผู้ดูแล — 'verified' = เปลี่ยนรูปหลังผ่าน KYC แล้ว */
   @Field({ description: 'Caregiver KYC status: none | pending | verified | rejected' })

@@ -92,6 +92,32 @@ describe('OmiseService — Recipient/Transfer (PYG-266)', () => {
       });
     });
 
+    it('PYG-603: ผู้ดูแลที่สมัครด้วยเบอร์ (email = null) → ไม่ส่งช่อง email ให้ Omise เลย', async () => {
+      fetchSpy.mockResolvedValue(
+        ok({
+          object: 'recipient',
+          id: RECIPIENT_ID,
+          verified: false,
+          active: false,
+          bank_account: {},
+        }),
+      );
+
+      await service.createRecipient({
+        name: 'สมชาย ใจดี',
+        email: null,
+        bankCode: 'kbank',
+        accountNumber: '1234566789',
+        accountName: 'สมชาย ใจดี',
+      });
+
+      const body = fetchSpy.mock.calls[0][1]?.body as URLSearchParams;
+      // ★ ไม่ใช่ "email=" ว่าง ๆ — ส่งค่าว่างไป Omise จะตรวจรูปแบบอีเมลแล้วปฏิเสธทั้งคำขอ
+      expect(body.has('email')).toBe(false);
+      expect(body.get('type')).toBe('individual');
+      expect(body.get('bank_account[number]')).toBe('1234566789');
+    });
+
     it('Omise ตอบ error → throw PaymentError', async () => {
       fetchSpy.mockResolvedValue(omiseError('invalid bank account'));
 

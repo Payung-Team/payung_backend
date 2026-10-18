@@ -14,8 +14,13 @@ export class AdminUpdateCaregiverInfoPayload {
   @Field({ description: 'Thai national ID (13 digits)' })
   idCardNumber: string;
 
-  @Field({ description: 'Email address of the linked user' })
-  email: string;
+  /** PYG-603: null ได้ — ผู้ดูแลที่สมัครด้วยเบอร์โทรไม่มีอีเมล */
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'Email address of the linked user (null for phone-only accounts)',
+  })
+  email: string | null;
 
   // PYG-534: คืนราคาล่าสุดกลับไปด้วย ให้หน้าแอดมินแสดงค่าที่บันทึกจริงได้ทันที
   // nullable เพราะผู้ดูแลใหม่ (หลัง PYG-533) ยังไม่มีราคา จนกว่าแอดมินจะตั้งให้

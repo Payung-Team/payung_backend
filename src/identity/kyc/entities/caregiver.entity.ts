@@ -14,6 +14,7 @@
  */
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
 import { RejectionReason } from './rejection-reason.entity';
+import { CaregiverProfession } from '../profession.constants';
 
 @ObjectType()
 export class Caregiver {
@@ -60,6 +61,16 @@ export class Caregiver {
   /** รายการทักษะของ caregiver */
   @Field(() => [String])
   skills!: string[];
+
+  /**
+   * วิชาชีพ (PYG-556 · contract PYG-573 §3.1) — ไม่มี null: คอลัมน์ NOT NULL + ผู้ดูแลเดิม backfill เป็น general_caregiver
+   * ★ แถวที่ยังไม่เคยส่ง KYC ก็ได้ general_caregiver (DEFAULT ของคอลัมน์) — FE ห้ามเติมค่านี้ลงฟอร์ม KYC ครั้งแรก (S01-E1)
+   * หลัง KYC อนุมัติ ค่านี้เปลี่ยนได้ทางเดียว: คำขอที่แอดมินอนุมัติ (requestProfessionChange)
+   */
+  @Field(() => CaregiverProfession, {
+    description: 'Profession: general_caregiver | nurse | physiotherapist',
+  })
+  profession!: CaregiverProfession;
 
   /** จำนวนปีของประสบการณ์ */
   @Field(() => Int)

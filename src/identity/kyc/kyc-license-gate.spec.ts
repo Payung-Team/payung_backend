@@ -19,8 +19,12 @@ const USER = { id: 'user-1' } as AuthUser;
 const DOC_ID = '11111111-1111-4111-8111-111111111111';
 const FUTURE = new Date('2027-12-31T16:59:59.999Z');
 
+/** วิชาชีพที่ส่งมาใน input — PYG-575: submitKyc ตรวจใบประกอบฯ ตามค่านี้ (ไม่ใช่ค่าเดิมในแถว) */
+let submittedProfession = 'general_caregiver';
+
 const input = (documentIds: string[] = [DOC_ID]) =>
   ({
+    profession: submittedProfession,
     fullName: 'สมชาย ใจดี',
     idCardNumber: '1234567890123',
     phone: '0812345678',
@@ -55,6 +59,7 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
   }
 
   beforeEach(async () => {
+    submittedProfession = 'general_caregiver';
     tx = {
       caregiver: {
         upsert: jest.fn().mockResolvedValue({ id: 'cg-1', userId: USER.id, resubmitCount: 0 }),
@@ -96,8 +101,10 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
     service = mod.get(KycService);
   });
 
-  const asProfession = (profession: string) =>
+  const asProfession = (profession: string) => {
+    submittedProfession = profession;
     caregiverFindUnique.mockResolvedValue({ kycStatus: 'none', profession, resubmitCount: 0 });
+  };
 
   describe.each(['nurse', 'physiotherapist'])('%s', (profession) => {
     beforeEach(() => asProfession(profession));
@@ -209,9 +216,43 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
       expect(licenseQueried).toBe(false);
     });
 
-    it('ผู้ดูแลใหม่ที่ยังไม่มีแถว caregivers → ถือเป็น general_caregiver (DEFAULT ของ DB)', async () => {
+    it('ผู้ดูแลใหม่ที่ยังไม่มีแถว caregivers ส่ง general_caregiver → ไม่ตรวจใบประกอบฯ', async () => {
       caregiverFindUnique.mockResolvedValue(null);
       await expect(service.submitKyc(USER, input([]))).resolves.toBeDefined();
+    });
+  });
+
+  // PYG-575 × PYG-587: วิชาชีพมาจาก input ของรอบนี้ — ต้องตรวจตามค่าที่ส่ง ไม่ใช่ค่าเดิมในแถว
+  describe('ตรวจตามวิชาชีพที่ส่งมา ไม่ใช่ค่าเดิมในแถว', () => {
+    it.each(['nurse', 'physiotherapist'])(
+      'ผู้ดูแลใหม่ (ยังไม่มีแถว) ส่ง %s โดยไม่มีใบประกอบฯ → LICENSE_FILE_REQUIRED',
+      async (profession) => {
+        caregiverFindUnique.mockResolvedValue(null);
+        submittedProfession = profession;
+        await expect(service.submitKyc(USER, input([]))).rejects.toMatchObject({
+          extensions: { code: 'LICENSE_FILE_REQUIRED', statusCode: 422 },
+        });
+        expect(tx.caregiver.upsert).not.toHaveBeenCalled();
+      },
+    );
+
+    it('ยื่นซ้ำหลังถูกปฏิเสธ แถวเดิมเป็น general_caregiver แต่ส่ง nurse → ต้องตรวจใบประกอบฯ', async () => {
+      caregiverFindUnique.mockResolvedValue({ kycStatus: 'rejected', profession: 'general_caregiver', resubmitCount: 0 });
+      submittedProfession = 'nurse';
+      await expect(service.submitKyc(USER, input([]))).rejects.toMatchObject({
+        extensions: { code: 'LICENSE_FILE_REQUIRED' },
+      });
+      expect(tx.caregiver.upsert).not.toHaveBeenCalled();
+    });
+
+    it('แถวเดิมเป็น nurse แต่ส่ง general_caregiver → ไม่ตรวจใบประกอบฯ', async () => {
+      caregiverFindUnique.mockResolvedValue({ kycStatus: 'rejected', profession: 'nurse', resubmitCount: 0 });
+      submittedProfession = 'general_caregiver';
+      await expect(service.submitKyc(USER, input([]))).resolves.toBeDefined();
+      const licenseQueried = docFindMany.mock.calls.some(
+        ([a]: any[]) => a.where?.documentType === 'professional_license',
+      );
+      expect(licenseQueried).toBe(false);
     });
   });
 
