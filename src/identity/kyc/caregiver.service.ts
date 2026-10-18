@@ -27,6 +27,7 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
 import { DRIVING_LICENSE_REVIEW_ACTION } from './driving-license/driving-license.constants';
 import {
@@ -43,7 +44,15 @@ import { careLevelFromDb } from '../../common/care-level/care-level';
  * PYG-534: ตัด hourlyRate ออก — ถ้ายังอยู่ในนี้ edit log จะบันทึกว่า "เปลี่ยนราคา"
  * ทั้งที่ service ไม่ได้เขียนลงตารางจริง (log โกหก)
  */
-const PROFILE_TRACKED_FIELDS = ['bio', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
+const PROFILE_TRACKED_FIELDS = [
+  'bio',
+  'skills',
+  'otherSkills',
+  'experienceYears',
+  'phone',
+  'address',
+  'languages',
+];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -57,6 +66,7 @@ type PrismaCaregiver = {
   address: string | null;
   phone: string | null;
   skills: string[];
+  otherSkills: string[];
   /** PYG-556: 'general_caregiver' | 'nurse' | 'physiotherapist' (CHECK ใน DB) */
   profession: string;
   experienceYears: number | null;
@@ -92,6 +102,7 @@ export class CaregiverService {
     private readonly prismaService: PrismaService,
     private readonly supabaseService: SupabaseService,
     private readonly configService: ConfigService,
+    private readonly careSkillService: CareSkillService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -117,6 +128,7 @@ export class CaregiverService {
       address: caregiver.address ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
       // DB มี CHECK 3 ค่า → cast ได้ปลอดภัย (ค่าเดียวกับ enum)
       profession: caregiver.profession as CaregiverProfession,
       experienceYears: caregiver.experienceYears ?? 0,
@@ -260,7 +272,7 @@ export class CaregiverService {
   /**
    * updateProfile — แก้ไข profile ของ caregiver (เฉพาะ whitelist fields)
    *
-   * Whitelist: bio, skills, experienceYears, phone, address, languages
+   * Whitelist: bio, skills, otherSkills, experienceYears, phone, address, languages
    * Locked: fullName, idCardNumber, gender, dateOfBirth, caregiverNumber
    * Ignored: hourlyRate (PYG-534) — รับได้แต่ไม่เขียน ราคาเปลี่ยนไม่ได้จากทางผู้ดูแลแล้ว
    *
@@ -303,6 +315,14 @@ export class CaregiverService {
       });
     }
 
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    if (input.skills !== undefined) {
+      await this.careSkillService.assertSkillsAllowed(
+        input.skills,
+        existing.profession,
+      );
+    }
+
     // ── Compute field changes ก่อน update ────────────────────────────
     const fieldChanges = computeFieldChanges(
       existing as unknown as Record<string, unknown>,
@@ -318,6 +338,9 @@ export class CaregiverService {
           ...(input.bio !== undefined && { bio: input.bio }),
           // ไม่มี hourlyRate โดยตั้งใจ (PYG-534) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคาจะมาจาก Catalog (PYG-487)
           ...(input.skills !== undefined && { skills: input.skills }),
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
           ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
           ...(input.phone !== undefined && { phone: input.phone }),
           ...(input.address !== undefined && { address: input.address }),

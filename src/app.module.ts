@@ -25,6 +25,7 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { FamilyGroupModule } from './family-group/family-group.module';
 import { ConsentModule } from './consent/consent.module';
+import { CareSkillModule } from './care-skill/care-skill.module';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { ConsentModule } from './consent/consent.module';
     ReconciliationModule, // PYG-376: payments vs Omise vs payouts recon report + alert cron
     FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
     ConsentModule,       // PYG-472: ข้อความ PDPA consent + เวอร์ชันนโยบาย (อ่านอย่างเดียว)
+    CareSkillModule,     // PYG-652: careSkills(profession) + ตรวจทักษะผู้ดูแลก่อนบันทึก
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

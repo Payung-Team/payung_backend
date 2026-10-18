@@ -13,6 +13,7 @@ import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.s
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { KycInput } from './dto/kyc.input';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 const NOW = new Date('2026-10-18T03:00:00Z'); // 10:00 ไทย
 const USER = { id: 'user-1' } as AuthUser;
@@ -95,6 +96,8 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
         { provide: PayoutEncryptionService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
         { provide: ClockService, useValue: { now: () => NOW } },
+        // PYG-652: ด่านทักษะมีเทสของตัวเอง (caregiver-skills.spec) — ที่นี่ให้ผ่าน
+        { provide: CareSkillService, useValue: { assertSkillsAllowed: jest.fn().mockResolvedValue(undefined) } },
         { provide: DrivingLicenseService, useValue: { assertForKyc: jest.fn(), getState: jest.fn().mockResolvedValue({ verified: false, status: 'none', isExpired: false }) } },
       ],
     }).compile();

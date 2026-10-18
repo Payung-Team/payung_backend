@@ -15,6 +15,7 @@ type RawCaregiverRow = {
   // PYG-298: อ่านจากคอลัมน์ caregivers.review_count (INTEGER → number) แทนการ COUNT() สด
   review_count: number;
   skills: string[];
+  other_skills: string[] | null;
   profession: string; // PYG-556 — CHECK ใน DB 3 ค่า
   province: string | null;
   district: string | null;
@@ -126,6 +127,7 @@ export class SearchService {
           c.average_rating                          AS avg_rating,
           c.review_count                            AS review_count,
           c.skills,
+          c.other_skills,
           c.profession,                             -- PYG-556: ป้ายวิชาชีพหน้า List (S01-AC3)
           c.service_area_province                   AS province,
           c.service_area_district                   AS district,
@@ -161,6 +163,7 @@ export class SearchService {
       avgRating:   row.avg_rating  != null ? row.avg_rating : undefined,
       reviewCount: Number(row.review_count),
       skills:      row.skills      ?? [],
+      otherSkills: row.other_skills ?? [],
       profession:  row.profession as CaregiverProfession,
       province:    row.province    ?? undefined,
       district:    row.district    ?? undefined,

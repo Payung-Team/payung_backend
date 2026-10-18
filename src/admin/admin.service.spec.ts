@@ -694,7 +694,7 @@ describe('AdminService — rejectKyc', () => {
     dateOfBirth: new Date('1990-01-01'),
     address: 'Bangkok',
     phone: '0812345678',
-    skills: ['elder_care'],
+    skills: ['bathing'],
     experienceYears: 3,
     hourlyRate: 150,
     bio: null,

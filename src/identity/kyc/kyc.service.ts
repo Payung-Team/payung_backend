@@ -53,6 +53,7 @@ import {
   normalizeAccountNumber,
   validateAccountNumberForBank,
 } from '../../common/constants/omise-banks.constant';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 /**
  * Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC
@@ -61,7 +62,8 @@ import {
  */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
-  'phone', 'skills', 'experienceYears', 'bio', 'profession',
+  'phone', 'skills', 'otherSkills',
+  'experienceYears', 'bio', 'profession',
 ];
 
 /**
@@ -84,6 +86,7 @@ export class KycService {
     private emailService: EmailService,
     private payoutEncryption: PayoutEncryptionService,
     private payoutAccountService: PayoutAccountService,
+    private careSkillService: CareSkillService,
     private clock: ClockService,
     private drivingLicense: DrivingLicenseService,
   ) {}
@@ -120,6 +123,12 @@ export class KycService {
     }
 
     const isResubmit = currentStatus === 'rejected';
+
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    // ★ ใช้วิชาชีพที่ส่งมาในรอบนี้ (PYG-575) ไม่ใช่ค่าเดิมในแถว — ค่านี้คือค่าที่จะถูกเขียนลงตาราง
+    //   ถ้าอ่านจากแถวเดิม ผู้สมัครใหม่ (ยังไม่มีแถว) ที่เป็น nurse จะเลือกทักษะเฉพาะพยาบาลไม่ได้
+    //   และคนที่ยื่นซ้ำแล้วเปลี่ยนจาก nurse เป็น general_caregiver จะเก็บทักษะเฉพาะพยาบาลไว้ได้
+    await this.careSkillService.assertSkillsAllowed(input.skills, profession);
 
     // ── ขั้นตอนที่ 2: Validate documentIds ───────────────────────────
     if (input.documentIds.length > 0) {
@@ -174,6 +183,7 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          otherSkills: input.otherSkills ?? [],
           profession, // PYG-575
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
@@ -189,6 +199,10 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          // ไม่ส่งมา = คงค่าเดิม (FE รุ่นที่ยังไม่มีช่องทักษะอื่น ๆ จะได้ไม่ลบของเดิมทิ้ง)
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
           // PYG-575 · E2: ถูกปฏิเสธแล้วส่งใหม่ เปลี่ยนวิชาชีพได้ทันที (ยังไม่เคยอนุมัติ — แอดมินตรวจทั้งชุดอยู่แล้ว)
           profession,
           experienceYears: input.experienceYears,
@@ -739,6 +753,7 @@ export class KycService {
       dateOfBirth: caregiver.dateOfBirth ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
       profession: caregiver.profession, // PYG-575 — DB มี CHECK 3 ค่า
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,

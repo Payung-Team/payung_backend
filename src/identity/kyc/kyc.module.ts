@@ -36,13 +36,15 @@ import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { NotificationModule } from '../../notification/notification.module';
 import { EmailModule } from '../../email/email.module';
 import { PaymentModule } from '../../payment/payment.module';
+import { CareSkillModule } from '../../care-skill/care-skill.module';
 
 @Module({
   // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
   // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
   // PYG-266: PaymentModule exports PayoutAccountService (สร้าง Omise recipient หลัง
   // updatePayoutAccount) — PaymentModule ไม่ import KycModule/AdminModule กลับ จึงไม่ circular
-  imports: [NotificationModule, EmailModule, PaymentModule],
+  // PYG-652: CareSkillModule exports CareSkillService (ตรวจทักษะก่อนบันทึก)
+  imports: [NotificationModule, EmailModule, PaymentModule, CareSkillModule],
   // PYG-507: REST endpoint รับไฟล์รูปโปรไฟล์ (GraphQL รับไฟล์ไม่ได้ — แพตเทิร์นเดียวกับ care log)
   controllers: [ProfilePhotoController],
   providers: [

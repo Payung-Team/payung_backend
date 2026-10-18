@@ -22,6 +22,8 @@ export class CaregiverPublicDto {
   review_count: number;
   completed_booking_count: number;
   skills: string[];
+  /** PYG-652: ทักษะอื่น ๆ (ข้อความอิสระ) */
+  other_skills: string[];
   /** PYG-556 · S01-AC4 — 'general_caregiver' | 'nurse' | 'physiotherapist' (ไม่มี null) */
   profession: string;
   availability: AvailabilitySlotDto[];

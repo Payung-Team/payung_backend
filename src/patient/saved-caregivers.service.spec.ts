@@ -18,7 +18,7 @@ function fakeCaregiverRow(overrides: Record<string, unknown> = {}) {
     id:                  CAREGIVER_ID,
     fullName:            'สมชาย ใจดี',
     hourlyRate:          350,
-    skills:              ['elderly_care'],
+    skills:              ['bathing'],
     serviceAreaProvince: 'เชียงใหม่',
     serviceAreaDistrict: 'เมือง',
     user:                { avatarUrl: null },

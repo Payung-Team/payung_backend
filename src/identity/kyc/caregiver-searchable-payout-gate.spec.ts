@@ -7,6 +7,7 @@ import { CaregiverService } from './caregiver.service';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { PAYOUT_ACCOUNT_NOT_READY } from '../../payment/payout-account-readiness';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 const USER_ID = 'user-1';
 
@@ -43,6 +44,7 @@ describe('CaregiverService.setSearchableByUser — payout gate', () => {
       prisma as unknown as PrismaService,
       {} as SupabaseService,
       {} as ConfigService,
+      {} as CareSkillService, // PYG-652 — เส้น setSearchable ไม่ได้ใช้
     );
   });
 

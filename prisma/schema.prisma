@@ -93,6 +93,10 @@ model Caregiver {
   idCardNumber        String?                    @map("id_card_number")
   phone               String?
   skills              String[]
+  /// PYG-652: ทักษะที่ไม่อยู่ในรายการกลาง (care_skills) — ข้อความอิสระ
+  otherSkills         String[]                   @default([]) @map("other_skills")
+  /// PYG-652: ค่า skills เดิมก่อนแปลงเป็นรหัสกลาง เก็บไว้ตรวจทานหรือย้อนกลับ — ห้ามใช้ในโค้ดใหม่
+  skillsLegacy        String[]                   @map("skills_legacy")
   experienceYears     Int?                       @map("experience_years")
   hourlyRate          Float?                     @map("hourly_rate")
   bio                 String?

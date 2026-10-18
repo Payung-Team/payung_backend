@@ -2072,7 +2072,7 @@ export class AdminService {
    * ที่ FieldLockGuard จะเห็นใน Object.keys(input) ขณะ runtime
    */
   private readonly LOCKABLE_FIELDS: Readonly<Record<EntityTypeEnum, readonly string[]>> = {
-    [EntityTypeEnum.CAREGIVER_PROFILE]: ['firstName', 'lastName', 'idCardNumber', 'email', 'bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address'],
+    [EntityTypeEnum.CAREGIVER_PROFILE]: ['firstName', 'lastName', 'idCardNumber', 'email', 'bio', 'hourlyRate', 'skills', 'otherSkills', 'experienceYears', 'phone', 'address'],
     [EntityTypeEnum.USER]: ['displayName', 'phone', 'email', 'bio', 'address'],
   };
 
@@ -2345,6 +2345,7 @@ export class AdminService {
     address: string | null;
     phone: string | null;
     skills: string[];
+    otherSkills: string[];
     profession: string; // PYG-556 — หน้า KYC review ของแอดมินแสดงวิชาชีพ
     experienceYears: number | null;
     hourlyRate: number | null;
@@ -2375,6 +2376,7 @@ export class AdminService {
       address: c.address ?? undefined,
       phone: c.phone ?? '',
       skills: c.skills,
+      otherSkills: c.otherSkills ?? [],
       profession: c.profession as CaregiverProfession, // DB มี CHECK 3 ค่า — ค่าเดียวกับ enum
       experienceYears: c.experienceYears ?? 0,
       hourlyRate: c.hourlyRate ?? 0,

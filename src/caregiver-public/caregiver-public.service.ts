@@ -35,6 +35,7 @@ export class CaregiverPublicService {
         bio: true,
         experienceYears: true,
         skills: true,
+        otherSkills: true,
         profession: true, // PYG-556: ป้ายวิชาชีพหน้า Profile ฝั่ง Elder (S01-AC4)
         kycStatus: true,
         isSearchable: true,
@@ -115,6 +116,7 @@ export class CaregiverPublicService {
       review_count: reviewCount,
       completed_booking_count: completedBookingCount,
       skills: caregiver.skills,
+      other_skills: caregiver.otherSkills,
       // R6: ถึงบรรทัดนี้ได้เฉพาะผู้ดูแลที่ค้นหาได้ + verified (404 guard ข้างบน) — กติกาเดิมของหน้า List
       profession: caregiver.profession,
       availability,
