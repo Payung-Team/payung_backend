@@ -15,6 +15,7 @@
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
 import { RejectionReason } from './rejection-reason.entity';
 import { CaregiverProfession } from '../profession.constants';
+import { CareLevel } from '../../../common/care-level/care-level';
 
 @ObjectType()
 export class Caregiver {
@@ -128,4 +129,18 @@ export class Caregiver {
   /** ภาษาที่สื่อสารได้ */
   @Field(() => [String], { description: 'Languages spoken by caregiver' })
   languages!: string[];
+
+  /**
+   * PYG-581: ระดับผู้ดูแล (S02-AC5) — แอดมินเป็นผู้กำหนดเท่านั้น ผู้ดูแลแก้เองไม่ได้
+   * null = ยังไม่มีระดับ (KYC ยังไม่อนุมัติ) → FE แสดง "ยังไม่ได้กำหนด" ไม่ใช่ช่องว่าง (story E5)
+   *
+   * ★ ผู้กำหนด/เวลา/ประวัติ ไม่อยู่ใน type นี้ — เป็นข้อมูลของแอดมิน (adminKycDetail.careLevelInfo)
+   * ★ ยังไม่ส่งให้ฝั่งผู้สูงอายุ (REST /public, CaregiverSummary) จนกว่าทีมเคาะ (contract PYG-579 §3)
+   */
+  @Field(() => CareLevel, {
+    nullable: true,
+    description:
+      'Caregiver level set by an admin: BASIC | INTERMEDIATE | ADVANCED (null = not set yet)',
+  })
+  careLevel?: CareLevel;
 }

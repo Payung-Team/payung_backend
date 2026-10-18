@@ -25,6 +25,8 @@ import { AdminDrivingLicenseService } from './admin-driving-license.service';
 import { AdminLicenseResolver } from './admin-license.resolver';
 import { AdminLicenseService } from './admin-license.service';
 import { AdminProfessionChangeResolver } from './admin-profession-change.resolver';
+import { AdminCareLevelResolver } from './admin-care-level.resolver';
+import { AdminCareLevelService } from './admin-care-level.service';
 import { AdminCleanupService } from './admin-cleanup.service';
 import { UserCleanupService } from './user-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
@@ -51,6 +53,8 @@ import { PaymentModule } from '../payment/payment.module';
     AdminDrivingLicenseResolver, // PYG-597: อนุมัติ/ปฏิเสธใบขับขี่
     AdminDrivingLicenseService,
     AdminProfessionChangeResolver, // PYG-575: คิว + อนุมัติ/ปฏิเสธคำขอเปลี่ยนวิชาชีพ (service มาจาก KycModule)
+    AdminCareLevelResolver, // PYG-581: แอดมินแก้ระดับผู้ดูแลหลังอนุมัติ + อ่านประวัติ
+    AdminCareLevelService,
     AdminCleanupService,
     UserCleanupService,
     SupabaseAuthGuard,
