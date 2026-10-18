@@ -26,6 +26,11 @@ import { DeclineBookingInput } from './dto/decline-booking.input';
 import { CancelAcceptanceInput } from './dto/cancel-acceptance.input';
 // PYG-460: type ของ snapshot ข้อมูลสุขภาพที่คืนให้ผู้ดูแล
 import { PatientProfileType } from './dto/patient-profile.type';
+import {
+  InfectionAckRequiredError,
+  buildInfectionDisclosure,
+  needsInfectionAck,
+} from './infection-disclosure';
 
 /**
  * รูปทรงของ booking ที่ดึงมาพร้อม relation (patient + careRecipient)
@@ -69,10 +74,17 @@ type CaregiverBookingRow = {
     patientId: string;
     is_self: boolean;
     patient: { avatarUrl: string | null };
+    // PYG-619: เลือกเฉพาะ 2 คอลัมน์นี้ (ไม่ดึงทั้งแถว) · ใช้ใน buildInfectionDisclosure เท่านั้น
+    has_infectious_disease: boolean | null;
+    infectious_disease_updated_at: Date | null;
   } | null;
   // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (JSONB) — null สำหรับ booking ก่อน PYG-460
   // มาพร้อม BOOKING_INCLUDE โดยอัตโนมัติเพราะ include คืน scalar ทุกคอลัมน์อยู่แล้ว
   memberDetails: unknown;
+  // PYG-618/619: ใครรับทราบข้อมูลโรคติดเชื้อของ booking นี้ + เมื่อไร (ผู้ดูแล = caregivers.id)
+  caregiverId: string | null;
+  infectionAckAt: Date | null;
+  infectionAckBy: string | null;
 };
 
 /**
@@ -89,6 +101,9 @@ const BOOKING_INCLUDE = {
       patientId: true,
       is_self: true,
       patient: { select: { avatarUrl: true } },
+      // PYG-619: ข้อมูลสุขภาพ — ใช้เฉพาะประกอบ infectionDisclosure ของผู้ดูแลเจ้าของคำขอ
+      has_infectious_disease: true,
+      infectious_disease_updated_at: true,
     },
   },
   payout: { select: { status: true, amount: true } },
@@ -157,7 +172,7 @@ export class CaregiverBookingService {
 
     if (!booking) return null;
 
-    return this.toSummary(booking as unknown as CaregiverBookingRow);
+    return this.toSummary(booking as unknown as CaregiverBookingRow, { caregiverId, userId });
   }
 
   /**
@@ -197,6 +212,7 @@ export class CaregiverBookingService {
       page,
       limit,
       total,
+      viewer: { caregiverId, userId },
     });
   }
 
@@ -244,6 +260,7 @@ export class CaregiverBookingService {
       page,
       limit,
       total,
+      viewer: { caregiverId, userId },
     });
   }
 
@@ -258,6 +275,8 @@ export class CaregiverBookingService {
   async acceptBooking(
     userId: string,
     bookingId: string,
+    /** PYG-619: ผู้ดูแลกดรับทราบข้อมูลโรคติดเชื้อแล้ว — optional เพื่อไม่ให้ query ของ client เก่าพังที่ชั้น validation (E10) */
+    infectionAcknowledged?: boolean,
   ): Promise<CaregiverBookingSummary> {
     const caregiverId = await this.resolveCaregiverId(userId);
     const existing = await this.loadOwnedBooking(caregiverId, bookingId);
@@ -270,7 +289,12 @@ export class CaregiverBookingService {
 
     const bookingDetail = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      select: { bookingDate: true, startTime: true, durationHours: true },
+      select: {
+        bookingDate: true,
+        startTime: true,
+        durationHours: true,
+        careRecipientId: true,
+      },
     });
     if (!bookingDetail) throw new NotFoundException('Booking not found');
 
@@ -299,6 +323,22 @@ export class CaregiverBookingService {
     await this.prisma.$transaction(async (tx) => {
       await lockCaregiverSchedule(tx, caregiverId);
 
+      // PYG-619: ตรวจการรับทราบข้อมูลโรคติดเชื้อ "ใน transaction เดียวกับการรับงาน" และอ่านค่าล่าสุด ณ ตอนนี้
+      //   (กันญาติแก้ค่าระหว่างที่ผู้ดูแลกดรับ) · ไม่ผ่าน = โยนก่อนเขียนอะไร สถานะงานไม่เปลี่ยน (E4)
+      //   ห้าม log ค่านี้ · booking ที่รับไปแล้วก่อนฟีเจอร์นี้ไม่ผ่านทางนี้ (E9) จึงไม่ถูกบังคับย้อนหลัง
+      const infection = bookingDetail.careRecipientId
+        ? await tx.careRecipient.findUnique({
+            where: { id: bookingDetail.careRecipientId },
+            select: { has_infectious_disease: true },
+          })
+        : null;
+      if (
+        needsInfectionAck(infection?.has_infectious_disease ?? null) &&
+        infectionAcknowledged !== true
+      ) {
+        throw new InfectionAckRequiredError();
+      }
+
       const busy = await caregiverHasTimeConflict(tx, {
         caregiverId,
         bookingDate: bookingDetail.bookingDate,
@@ -317,7 +357,16 @@ export class CaregiverBookingService {
       // หลังรอ row lock มีผู้ชนะฝั่งเดียว (เดิม update({ where: { id } }) เขียนทับ expired ได้)
       const { count } = await tx.booking.updateMany({
         where: { id: bookingId, status: 'pending' },
-        data: { status: 'accepted', acceptedAt: now },
+        data: {
+          status: 'accepted',
+          acceptedAt: now,
+          // PYG-619: เวลารับทราบ + ใครรับทราบ เขียนพร้อมการรับงานใน statement เดียว (ไม่มีรับงานแล้วไม่มีเวลารับทราบ)
+          //   updateMany มีเงื่อนไข status='pending' → กดซ้ำ/พร้อมกันมีผู้ชนะคนเดียว เวลารับทราบจึงไม่ถูกเขียนทับ
+          ...(infectionAcknowledged === true && {
+            infectionAckAt: now,
+            infectionAckBy: caregiverId,
+          }),
+        },
       });
       if (count === 0) {
         throw new ConflictException(
@@ -341,7 +390,7 @@ export class CaregiverBookingService {
       caregiverId: userId,
     });
 
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    return this.toSummary(updated as unknown as CaregiverBookingRow, { caregiverId, userId });
   }
 
   /**
@@ -377,7 +426,7 @@ export class CaregiverBookingService {
       metadata: { reason: input.reason.trim() },
     });
 
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    return this.toSummary(updated as unknown as CaregiverBookingRow, { caregiverId, userId });
   }
 
   /**
@@ -409,7 +458,7 @@ export class CaregiverBookingService {
       bookingId: input.bookingId,
       userId,
     });
-    return this.toSummary(updated as unknown as CaregiverBookingRow);
+    return this.toSummary(updated as unknown as CaregiverBookingRow, { caregiverId, userId });
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -486,8 +535,23 @@ export class CaregiverBookingService {
   }
 
   /** แปลง 1 row → CaregiverBookingSummary (ดูแลเรื่อง null / Decimal ที่นี่) */
-  private toSummary(b: CaregiverBookingRow): CaregiverBookingSummary {
+  private toSummary(
+    b: CaregiverBookingRow,
+    viewer: { caregiverId: string; userId: string },
+  ): CaregiverBookingSummary {
+    // PYG-619: ข้อมูลโรคติดเชื้อ — null เมื่อไม่ใช่คำขอของผู้ดูแลคนนี้ หรือสถานะที่ไม่ส่งให้แล้ว (E5/E7)
+    const infectionDisclosure = buildInfectionDisclosure({
+      status: b.status,
+      bookingCaregiverId: b.caregiverId,
+      viewerCaregiverId: viewer.caregiverId,
+      hasInfectiousDisease: b.careRecipient?.has_infectious_disease,
+      infectiousDiseaseUpdatedAt: b.careRecipient?.infectious_disease_updated_at,
+      infectionAckAt: b.infectionAckAt,
+      infectionAckBy: b.infectionAckBy,
+    });
     return {
+      infectionDisclosure,
+      infectionDisclosureViewerUserId: infectionDisclosure ? viewer.userId : undefined,
       id: b.id,
       status: b.status,
       serviceType: b.serviceType,
@@ -536,7 +600,17 @@ export class CaregiverBookingService {
   /** ประกอบ list + pagination ให้เป็น response เดียว */
   private toListResponse(
     items: CaregiverBookingRow[],
-    { page, limit, total }: { page: number; limit: number; total: number },
+    {
+      page,
+      limit,
+      total,
+      viewer,
+    }: {
+      page: number;
+      limit: number;
+      total: number;
+      viewer: { caregiverId: string; userId: string };
+    },
   ): CaregiverBookingListResponse {
     const pagination: BookingPagination = {
       page,
@@ -544,7 +618,7 @@ export class CaregiverBookingService {
       total,
       totalPages: total === 0 ? 1 : Math.ceil(total / limit),
     };
-    return { data: items.map((b) => this.toSummary(b)), pagination };
+    return { data: items.map((b) => this.toSummary(b, viewer)), pagination };
   }
 
   // ── ตัวช่วยแปลงค่า ────────────────────────────────────────────────────────

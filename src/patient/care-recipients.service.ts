@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
+import { infectionNoticeNotAccepted } from '../booking/infection-disclosure';
 // import เฉพาะไฟล์ค่าคงที่ (plain object ไม่มี DI) → ไม่ผูก PatientModule กับ FamilyGroupModule
 import {
   ACTIVITY_ACTION,
@@ -38,6 +40,12 @@ export interface CareRecipientResponse {
   isSelf: boolean;
   /** PYG-460: ข้อมูลสุขภาพ — undefined เมื่อโปรไฟล์ยังไม่เคยกรอกช่องไหนเลย */
   details?: PatientProfileDto;
+  /**
+   * PYG-619: โรคติดเชื้อที่ญาติระบุ (ข้อมูลสุขภาพ) — null = ยังไม่ได้ระบุ (ไม่ใช่ "ไม่มี")
+   * ส่งเฉพาะในเส้นนี้ซึ่งกรองด้วย patientId ของผู้ใช้ที่ล็อกอิน · ไม่อยู่ใน details (details ใช้ร่วมกับ
+   * snapshot ตอนจอง/กลุ่มครอบครัว/onboarding ซึ่งต้องไม่พาค่านี้ออกไป)
+   */
+  hasInfectiousDisease: boolean | null;
 }
 
 /** select ชุดเดียวใช้ทั้ง list/create/update — กัน response สามที่หลุดรูปทรงกัน */
@@ -47,6 +55,8 @@ const RECIPIENT_SELECT = {
   nickname:  true,
   patientId: true,
   is_self:   true,
+  // PYG-619: ไม่ใส่ใน PATIENT_PROFILE_SELECT (ใช้ร่วมกับ family-group) — เลือกเฉพาะเส้นของเจ้าของโปรไฟล์นี้
+  has_infectious_disease: true,
   ...PATIENT_PROFILE_SELECT,
 } as const;
 
@@ -56,13 +66,17 @@ type RecipientRow = {
   nickname: string | null;
   patientId: string;
   is_self: boolean;
+  has_infectious_disease: boolean | null;
 } & PatientProfileRow;
 
 @Injectable()
 export class CareRecipientsService {
   private readonly logger = new Logger(CareRecipientsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clock: ClockService,
+  ) {}
 
   private toResponse(row: RecipientRow): CareRecipientResponse {
     return {
@@ -72,6 +86,28 @@ export class CareRecipientsService {
       patientId: row.patientId,
       isSelf:    row.is_self,
       details:   toPatientProfile(row),
+      hasInfectiousDisease: row.has_infectious_disease ?? null,
+    };
+  }
+
+  /**
+   * PYG-619: คอลัมน์โรคติดเชื้อที่จะเขียน (ว่าง = ไม่แตะ)
+   *
+   * - ไม่ส่ง hasInfectiousDisease -> ไม่แตะค่า (ส่งแต่ disclosureNoticeAccepted อย่างเดียวก็ไม่ทำอะไร)
+   * - ส่งมาแต่ไม่รับทราบข้อความแจ้ง -> INFECTION_NOTICE_NOT_ACCEPTED (422) ไม่เขียนอะไร (ตรวจทุกครั้งที่บันทึก R3)
+   * - ค่าเดิมเท่าเดิม -> ไม่ขยับ infectious_disease_updated_at (ไม่ทำให้การรับทราบของผู้ดูแลล้าสุดโดยไม่จำเป็น)
+   * ห้ามใส่ค่าลง log/error
+   */
+  private infectionColumns(
+    dto: { hasInfectiousDisease?: boolean; disclosureNoticeAccepted?: boolean },
+    current: boolean | null,
+  ): Record<string, unknown> {
+    if (dto.hasInfectiousDisease === undefined || dto.hasInfectiousDisease === null) return {};
+    if (dto.disclosureNoticeAccepted !== true) throw infectionNoticeNotAccepted();
+    if (dto.hasInfectiousDisease === current) return {};
+    return {
+      has_infectious_disease: dto.hasInfectiousDisease,
+      infectious_disease_updated_at: this.clock.now(),
     };
   }
 
@@ -87,15 +123,18 @@ export class CareRecipientsService {
   private async assertOwned(
     patientId: string,
     id: string,
-  ): Promise<{ familyGroupId: string | null }> {
+  ): Promise<{ familyGroupId: string | null; hasInfectiousDisease: boolean | null }> {
     const existing = await this.prisma.careRecipient.findUnique({
       where:  { id },
-      select: { patientId: true, is_deleted: true, familyGroupId: true },
+      select: { patientId: true, is_deleted: true, familyGroupId: true, has_infectious_disease: true },
     });
 
     if (!existing || existing.is_deleted) throw new NotFoundException('Care recipient not found');
     if (existing.patientId !== patientId) throw new ForbiddenException('Access denied');
-    return { familyGroupId: existing.familyGroupId };
+    return {
+      familyGroupId: existing.familyGroupId,
+      hasInfectiousDisease: existing.has_infectious_disease ?? null,
+    };
   }
 
   /**
@@ -142,12 +181,15 @@ export class CareRecipientsService {
     patientId: string,
     dto: CreateCareRecipientDto,
   ): Promise<CareRecipientResponse> {
+    // PYG-619: ตรวจก่อนเขียน — ไม่รับทราบข้อความแจ้ง = ไม่สร้างโปรไฟล์
+    const infection = this.infectionColumns(dto, null);
     const recipient = await this.prisma.careRecipient.create({
       data: {
         patientId,
         name:     dto.name,
         nickname: dto.nickname ?? null,
         ...(dto.details ? toCareRecipientColumns(dto.details) : {}),
+        ...infection,
       },
       select: RECIPIENT_SELECT,
     });
@@ -162,7 +204,8 @@ export class CareRecipientsService {
     id: string,
     dto: UpdateCareRecipientDto,
   ): Promise<CareRecipientResponse> {
-    const { familyGroupId } = await this.assertOwned(patientId, id);
+    const { familyGroupId, hasInfectiousDisease } = await this.assertOwned(patientId, id);
+    const infection = this.infectionColumns(dto, hasInfectiousDisease);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.careRecipient.update({
@@ -172,6 +215,7 @@ export class CareRecipientsService {
           ...(dto.nickname !== undefined && { nickname: dto.nickname }),
           // merge ทีละช่อง — mapper คืนเฉพาะคีย์ที่ส่งมาจริง
           ...(dto.details ? toCareRecipientColumns(dto.details) : {}),
+          ...infection,
         },
         select: RECIPIENT_SELECT,
       });
