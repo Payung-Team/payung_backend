@@ -27,6 +27,7 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { CaregiverProfession } from './profession.constants';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -48,6 +49,8 @@ type PrismaCaregiver = {
   address: string | null;
   phone: string | null;
   skills: string[];
+  /** PYG-556: 'general_caregiver' | 'nurse' | 'physiotherapist' (CHECK ใน DB) */
+  profession: string;
   experienceYears: number | null;
   hourlyRate: number | null;
   bio: string | null;
@@ -105,6 +108,8 @@ export class CaregiverService {
       address: caregiver.address ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      // DB มี CHECK 3 ค่า → cast ได้ปลอดภัย (ค่าเดียวกับ enum)
+      profession: caregiver.profession as CaregiverProfession,
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,

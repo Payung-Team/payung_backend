@@ -69,6 +69,7 @@ import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
+import { CaregiverProfession } from '../identity/kyc/profession.constants';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -2225,6 +2226,7 @@ export class AdminService {
     address: string | null;
     phone: string | null;
     skills: string[];
+    profession: string; // PYG-556 — หน้า KYC review ของแอดมินแสดงวิชาชีพ
     experienceYears: number | null;
     hourlyRate: number | null;
     bio: string | null;
@@ -2252,6 +2254,7 @@ export class AdminService {
       address: c.address ?? undefined,
       phone: c.phone ?? '',
       skills: c.skills,
+      profession: c.profession as CaregiverProfession, // DB มี CHECK 3 ค่า — ค่าเดียวกับ enum
       experienceYears: c.experienceYears ?? 0,
       hourlyRate: c.hourlyRate ?? 0,
       bio: c.bio ?? undefined,

@@ -33,6 +33,7 @@ import { NotificationType } from '../../notification/entities/notification-type.
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { parseProfessionInput } from './profession.errors';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import {
@@ -43,10 +44,11 @@ import {
 /**
  * Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC
  * ไม่มี hourlyRate (PYG-536) — submitKyc ไม่เขียนค่านี้แล้ว จึงไม่ต้อง diff
+ * PYG-575: เพิ่ม profession — resubmit ที่เปลี่ยนวิชาชีพ (E2) มีประวัติ old → new ใน caregiver_edit_logs
  */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
-  'phone', 'skills', 'experienceYears', 'bio',
+  'phone', 'skills', 'experienceYears', 'bio', 'profession',
 ];
 
 /**
@@ -84,6 +86,12 @@ export class KycService {
    * @returns Caregiver entity ที่ถูกสร้าง/อัปเดต
    */
   async submitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
+    // ── ขั้นตอนที่ 0: ตรวจวิชาชีพ (PYG-575) — ก่อนแตะ DB ────────────────
+    // ไม่ส่ง → PROFESSION_REQUIRED (client เก่า · ไม่เติมค่าเริ่มต้นให้ · S01-E3)
+    // ค่านอกรายการ → PROFESSION_INVALID (S01-E4 · DB มี CHECK กันอีกชั้น)
+    // ตรวจก่อนสถานะ KYC โดยตั้งใจ: client เก่าเห็น code เดียวกันเสมอไม่ว่าสถานะใด
+    const profession = parseProfessionInput(input.profession);
+
     // ── ขั้นตอนที่ 1: เช็ค KYC status ปัจจุบัน ────────────────────────
     const existing = await this.prismaService.caregiver.findUnique({
       where: { userId: user.id },
@@ -141,6 +149,7 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          profession, // PYG-575
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -155,6 +164,8 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          // PYG-575 · E2: ถูกปฏิเสธแล้วส่งใหม่ เปลี่ยนวิชาชีพได้ทันที (ยังไม่เคยอนุมัติ — แอดมินตรวจทั้งชุดอยู่แล้ว)
+          profession,
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -213,7 +224,8 @@ export class KycService {
       const fieldChanges = existing
         ? computeFieldChanges(
             existing as unknown as Record<string, unknown>,
-            input as unknown as Record<string, unknown>,
+            // ใส่ profession ที่ตรวจแล้ว (ค่าเดียวกับที่เขียนลงตาราง) — log ต้องตรงกับสิ่งที่บันทึกจริง
+            { ...input, profession } as unknown as Record<string, unknown>,
             KYC_TRACKED_FIELDS,
           )
         : [];
@@ -634,6 +646,7 @@ export class KycService {
       dateOfBirth: caregiver.dateOfBirth ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      profession: caregiver.profession, // PYG-575 — DB มี CHECK 3 ค่า
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,
