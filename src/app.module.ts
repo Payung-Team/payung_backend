@@ -50,6 +50,11 @@ import { ConsentModule } from './consent/consent.module';
       // sortSchema: เรียง field ใน schema ตามตัวอักษร (อ่านง่ายขึ้น)
       sortSchema: true,
 
+      // addNewlineAtEnd: ปิดไฟล์ด้วย newline — ค่าเริ่มต้นของ Nest ไม่ใส่ แต่ editor ส่วนใหญ่ใส่ให้ตอนเซฟ
+      // ไม่งั้นไฟล์ที่ commit กับไฟล์ที่ server เขียนทุกครั้งที่สตาร์ทต่างกันแค่บรรทัดสุดท้าย
+      // → src/schema.gql ขึ้น modified ค้าง และขวาง git pull ทุกครั้งที่มี commit แตะไฟล์นี้
+      buildSchemaOptions: { addNewlineAtEnd: true },
+
       // playground: เปิดหน้า UI ทดสอบ API ที่ localhost:3000/graphql
       playground: true,
 
