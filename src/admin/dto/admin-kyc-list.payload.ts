@@ -6,6 +6,7 @@
  * - AdminKycListPayload : paginated response
  */
 import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
+import { CareLevel } from '../../common/care-level/care-level';
 
 /**
  * CaregiverKycSummary — ข้อมูลสรุปของ caregiver 1 คน สำหรับแสดงใน admin KYC list
@@ -52,6 +53,23 @@ export class CaregiverKycSummary {
    */
   @Field(() => Int, { description: 'Number of KYC documents uploaded' })
   documentCount!: number;
+
+  /** PYG-581: ระดับผู้ดูแล — null = ยังไม่มีระดับ */
+  @Field(() => CareLevel, {
+    nullable: true,
+    description: 'Care level (null = not set yet)',
+  })
+  careLevel?: CareLevel;
+
+  /**
+   * PYG-581: true = ระดับมาจากค่าเริ่มต้นของ migration และยังไม่มีแอดมินทบทวน (story E3)
+   * ให้หน้ารายการแปะป้าย "รอทบทวนระดับ" ได้โดยไม่ต้องเปิดทีละคน
+   */
+  @Field({
+    description:
+      'true when the level is the migration default not yet reviewed by an admin',
+  })
+  careLevelNeedsReview!: boolean;
 }
 
 /**

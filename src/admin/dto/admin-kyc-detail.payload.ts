@@ -15,6 +15,7 @@ import { CaregiverEditLog } from '../../identity/kyc/entities/caregiver-edit-log
 import { PayoutAccountSummary } from '../../identity/kyc/entities/payout-account.entity';
 import { DrivingLicenseInfo } from '../../identity/kyc/driving-license/driving-license-info.entity';
 import { LicenseInfo } from '../../identity/kyc/license/license-info.entity';
+import { CaregiverCareLevelInfo } from './care-level.dto';
 
 /** PYG-266: payout summary สำหรับ admin — เพิ่ม hasOmiseRecipient เหนือ base summary */
 @ObjectType({ description: 'Caregiver payout bank account summary for admin review' })
@@ -73,4 +74,13 @@ export class AdminKycDetailPayload {
     /** PYG-597: ประวัติการตรวจใบขับขี่ทุกรอบ ใหม่สุดก่อน (อนุมัติ/ปฏิเสธ + เหตุผล) */
     @Field(() => [KycReview], { description: 'Driving license review history, newest first' })
     drivingLicenseReviews!: KycReview[];
+
+    /**
+     * PYG-581: ระดับปัจจุบัน + ผู้กำหนด + เวลา (S02-AC3) — ไม่เป็น null เสมอ
+     * ยังไม่มีระดับ = level เป็น null · ค่าเริ่มต้นจาก migration ที่ยังไม่ทบทวน = needsReview เป็น true (E3)
+     */
+    @Field(() => CaregiverCareLevelInfo, {
+        description: 'Current care level with who set it and when (level is null when not set yet)',
+    })
+    careLevelInfo!: CaregiverCareLevelInfo;
 }

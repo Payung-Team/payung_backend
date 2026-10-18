@@ -35,6 +35,7 @@ import {
   evaluatePayoutReadiness,
 } from '../../payment/payout-account-readiness';
 import { CaregiverProfession } from './profession.constants';
+import { careLevelFromDb } from '../../common/care-level/care-level';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -69,6 +70,7 @@ type PrismaCaregiver = {
   resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
+  careLevel?: string | null; // PYG-581: optional — ไม่ส่ง = ยังไม่มีระดับ
 };
 
 /** ข้อมูลสำหรับสร้าง caregiver ใหม่ */
@@ -128,6 +130,8 @@ export class CaregiverService {
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      // PYG-581: 'basic' → CareLevel.BASIC (GraphQL ส่งออกเป็น "BASIC") · null → undefined (= ยังไม่มีระดับ)
+      careLevel: careLevelFromDb(caregiver.careLevel) ?? undefined,
     };
   }
 

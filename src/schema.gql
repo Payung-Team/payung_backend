@@ -88,6 +88,11 @@ input AdminEditUserInput {
 
 """Full KYC detail for a single caregiver (admin only)"""
 type AdminKycDetailPayload {
+  """
+  Current care level with who set it and when (level is null when not set yet)
+  """
+  careLevelInfo: CaregiverCareLevelInfo!
+
   """Caregiver profile"""
   caregiver: Caregiver!
 
@@ -473,6 +478,41 @@ type CancelScheduledDeletePayload {
   user: User!
 }
 
+"""
+Caregiver / job level, lowest to highest: BASIC (ต้น) < INTERMEDIATE (กลาง) < ADVANCED (สูง)
+"""
+enum CareLevel {
+  """สูง (advanced)"""
+  ADVANCED
+
+  """ต้น (basic)"""
+  BASIC
+
+  """กลาง (intermediate)"""
+  INTERMEDIATE
+}
+
+"""One care level change (admin only)"""
+type CareLevelChange {
+  changedBy: ID
+  changedByName: String
+  createdAt: DateTime!
+  id: ID!
+  newLevel: CareLevel!
+
+  """null = first assignment"""
+  oldLevel: CareLevel
+  reason: String
+  source: CareLevelChangeSource!
+}
+
+"""Where a care level history row came from"""
+enum CareLevelChangeSource {
+  ADMIN_UPDATE
+  KYC_APPROVAL
+  MIGRATION_DEFAULT
+}
+
 type CareLog {
   body: String!
   bookingId: ID!
@@ -494,6 +534,11 @@ type CareLog {
 type Caregiver {
   address: String
   bio: String
+
+  """
+  Caregiver level set by an admin: BASIC | INTERMEDIATE | ADVANCED (null = not set yet)
+  """
+  careLevel: CareLevel
 
   """System-generated caregiver number e.g. CG-0001"""
   caregiverNumber: String
@@ -608,6 +653,26 @@ type CaregiverBriefDto {
   reviewCount: Int
 }
 
+"""
+Current care level of a caregiver with who set it and when (admin only)
+"""
+type CaregiverCareLevelInfo {
+  caregiverId: ID!
+
+  """null = no level yet"""
+  level: CareLevel
+
+  """
+  true when the level came from the migration default and no admin has reviewed it yet
+  """
+  needsReview: Boolean!
+  setAt: DateTime
+
+  """Admin user id who set the level — null when set by migration"""
+  setBy: ID
+  setByName: String
+}
+
 """Log entry for caregiver profile/document edits"""
 type CaregiverEditLog {
   """
@@ -634,6 +699,14 @@ type CaregiverEditLog {
 
 """Summary of a caregiver KYC submission for admin review"""
 type CaregiverKycSummary {
+  """Care level (null = not set yet)"""
+  careLevel: CareLevel
+
+  """
+  true when the level is the migration default not yet reviewed by an admin
+  """
+  careLevelNeedsReview: Boolean!
+
   """Caregiver Number (e.g. CG-12345)"""
   caregiverNumber: String
 
@@ -2056,9 +2129,14 @@ type Mutation {
   approveDrivingLicense(documentId: ID!): LicenseReviewResult!
 
   """
-  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
+  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending". PYG-581: a care level is required — pass careLevel, otherwise CARE_LEVEL_REQUIRED.
   """
   approveKyc(
+    """
+    BASIC | INTERMEDIATE | ADVANCED — the caregiver level chosen at approval. Optional in the schema so older clients get CARE_LEVEL_REQUIRED instead of a schema error.
+    """
+    careLevel: String
+
     """UUID of the caregiver to approve"""
     caregiverId: ID!
   ): Caregiver!
@@ -2324,6 +2402,11 @@ type Mutation {
   Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
   """
   scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
+
+  """
+  Admin only: set or change the care level of a VERIFIED caregiver. The first level of a new caregiver is chosen in approveKyc(careLevel). Same level already set by an admin = no-op (changed: false). Errors: CARE_LEVEL_REQUIRED, CARE_LEVEL_INVALID, CARE_LEVEL_REASON_REQUIRED, CARE_LEVEL_KYC_NOT_VERIFIED.
+  """
+  setCaregiverCareLevel(input: SetCaregiverCareLevelInput!): SetCaregiverCareLevelPayload!
 
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
@@ -2925,6 +3008,9 @@ type Query {
   """
   caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
 
+  """Admin only: care level change history of a caregiver, newest first"""
+  caregiverCareLevelHistory(caregiverId: ID!): [CareLevelChange!]!
+
   """
   รายการรีวิวที่มองเห็นได้ของ caregiver (ใหม่สุดก่อน) พร้อม pagination — public
   """
@@ -3447,6 +3533,28 @@ input ServiceAreaInput {
 
   """Service area province (จังหวัด)"""
   province: String
+}
+
+"""Admin sets or changes the care level of a verified caregiver"""
+input SetCaregiverCareLevelInput {
+  caregiverId: ID!
+
+  """
+  BASIC | INTERMEDIATE | ADVANCED (validated by the service: CARE_LEVEL_REQUIRED / CARE_LEVEL_INVALID)
+  """
+  level: String
+
+  """Required when the level actually changes (max 500 chars)"""
+  reason: String
+}
+
+type SetCaregiverCareLevelPayload {
+  careLevel: CaregiverCareLevelInfo!
+
+  """
+  false when the same level was already set by an admin (no history row written)
+  """
+  changed: Boolean!
 }
 
 input SetTaskDoneInput {
