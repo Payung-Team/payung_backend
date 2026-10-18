@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { CaregiverPublicService } from './caregiver-public.service';
 import { PrismaService } from '../common/prisma.service';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 import { SupabaseService } from '../common/supabase.service';
@@ -60,6 +61,7 @@ function makeCaregiver(overrides: Partial<CaregiverRow> = {}): CaregiverRow {
 
 describe('CaregiverPublicService', () => {
   let service: CaregiverPublicService;
+  let moduleRef: TestingModule;
   let prisma: {
     caregiver: { findUnique: jest.Mock };
     booking: { count: jest.Mock };
@@ -93,12 +95,13 @@ describe('CaregiverPublicService', () => {
     });
     storageFrom = jest.fn().mockReturnValue({ createSignedUrl });
 
-    const module: TestingModule = await Test.createTestingModule({
+    moduleRef = await Test.createTestingModule({
       providers: [
         CaregiverPublicService,
         { provide: PrismaService, useValue: prisma },
         // PYG-518: public profile ต้อง sign avatar_url กับ bucket profile-photos
         AvatarUrlService,
+        { provide: DrivingLicenseService, useValue: { isVerified: jest.fn().mockResolvedValue(false) } },
         {
           provide: SupabaseService,
           useValue: {
@@ -108,7 +111,7 @@ describe('CaregiverPublicService', () => {
       ],
     }).compile();
 
-    service = module.get<CaregiverPublicService>(CaregiverPublicService);
+    service = moduleRef.get<CaregiverPublicService>(CaregiverPublicService);
   });
 
   // ── Happy path ─────────────────────────────────────────────────────────────
@@ -344,5 +347,36 @@ describe('CaregiverPublicService', () => {
     const result = await service.getPublicProfile('cg-1');
 
     expect(result.avatar_url).toBeNull();
+  });
+
+  // ── PYG-597: ใบขับขี่ฝั่ง Elder (AC6, R7) ────────────────────────────────
+
+  describe('driving_license_verified (PYG-597)', () => {
+    it.each([[true], [false]])('ส่งค่าที่คำนวณจาก DrivingLicenseService (%s) โดยใช้ id ผู้ดูแลที่ขอ', async (verified) => {
+      const drivingLicense = moduleRef.get(DrivingLicenseService) as unknown as { isVerified: jest.Mock };
+      drivingLicense.isVerified.mockResolvedValue(verified);
+      prisma.caregiver.findUnique.mockResolvedValue(makeCaregiver({ userId: 'user-77' } as never));
+
+      const result = await service.getPublicProfile('cg-1');
+
+      expect(result.driving_license_verified).toBe(verified);
+      expect(drivingLicense.isVerified).toHaveBeenCalledWith({ caregiverId: 'cg-1', userId: 'user-77' });
+    });
+
+    it('R7: ไม่ส่งรูป เลข วันหมดอายุ หรือเหตุผลปฏิเสธออกไป - มีแค่ boolean เดียว', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(makeCaregiver());
+      const result = await service.getPublicProfile('cg-1');
+      const keys = Object.keys(result).filter((k) => /licen|driv|expir|reject/i.test(k));
+      expect(keys).toEqual(['driving_license_verified']);
+      expect(typeof result.driving_license_verified).toBe('boolean');
+    });
+
+    it('ผู้ดูแลที่ไม่ผ่านเงื่อนไขเดิม (ไม่ searchable) ยัง 404 เหมือนเดิม ไม่คำนวณใบขับขี่', async () => {
+      const drivingLicense = moduleRef.get(DrivingLicenseService) as unknown as { isVerified: jest.Mock };
+      drivingLicense.isVerified.mockClear();
+      prisma.caregiver.findUnique.mockResolvedValue(makeCaregiver({ isSearchable: false }));
+      await expect(service.getPublicProfile('cg-1')).rejects.toThrow(NotFoundException);
+      expect(drivingLicense.isVerified).not.toHaveBeenCalled();
+    });
   });
 });

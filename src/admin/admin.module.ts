@@ -20,6 +20,10 @@ import { AdminResolver } from './admin.resolver';
 import { AdminService } from './admin.service';
 import { AdminProfilePhotoResolver } from './admin-profile-photo.resolver';
 import { AdminProfilePhotoService } from './admin-profile-photo.service';
+import { AdminDrivingLicenseResolver } from './admin-driving-license.resolver';
+import { AdminDrivingLicenseService } from './admin-driving-license.service';
+import { AdminLicenseResolver } from './admin-license.resolver';
+import { AdminLicenseService } from './admin-license.service';
 import { AdminProfessionChangeResolver } from './admin-profession-change.resolver';
 import { AdminCleanupService } from './admin-cleanup.service';
 import { UserCleanupService } from './user-cleanup.service';
@@ -42,6 +46,10 @@ import { PaymentModule } from '../payment/payment.module';
     AdminService,
     AdminProfilePhotoResolver, // PYG-508: คิว + อนุมัติ/ปฏิเสธรูปโปรไฟล์ผู้ดูแล
     AdminProfilePhotoService,
+    AdminLicenseResolver, // PYG-587: อนุมัติ/ปฏิเสธใบประกอบวิชาชีพ
+    AdminLicenseService,
+    AdminDrivingLicenseResolver, // PYG-597: อนุมัติ/ปฏิเสธใบขับขี่
+    AdminDrivingLicenseService,
     AdminProfessionChangeResolver, // PYG-575: คิว + อนุมัติ/ปฏิเสธคำขอเปลี่ยนวิชาชีพ (service มาจาก KycModule)
     AdminCleanupService,
     UserCleanupService,

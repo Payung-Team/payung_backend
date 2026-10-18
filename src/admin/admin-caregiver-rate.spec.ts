@@ -22,6 +22,7 @@ import { EmailService } from '../email/email.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { PayoutAccountService } from '../payment/payout-account.service';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
 
@@ -96,6 +97,7 @@ describe('AdminService.adminUpdateCaregiverInfo — แอดมินตั้�
         { provide: NotificationService, useValue: {} },
         { provide: EmailService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
+        { provide: DrivingLicenseService, useValue: {} },
       ],
     }).compile();
 

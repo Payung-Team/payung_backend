@@ -33,9 +33,22 @@ import { NotificationType } from '../../notification/entities/notification-type.
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { ClockService } from '../../common/clock.service';
+import {
+  LICENSE_DOC_TYPE,
+  LICENSE_REQUIRED_PROFESSIONS,
+  LICENSE_STATUS,
+} from './license/license.constants';
+import { LICENSE_ERROR, LicenseError, LicenseErrorCode } from './license/license.errors';
+import { isBangkokDateInFuture } from './license/license-date';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
+import { buildDrivingLicenseInfo } from './driving-license/driving-license-info.entity';
+import { pickLatestLicense } from './license/license-info.entity';
+import { normalizeLicenseNumber } from './license/license-validation';
 import { parseProfessionInput } from './profession.errors';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
+import { evaluatePayoutReadiness } from '../../payment/payout-account-readiness';
 import {
   normalizeAccountNumber,
   validateAccountNumberForBank,
@@ -71,6 +84,8 @@ export class KycService {
     private emailService: EmailService,
     private payoutEncryption: PayoutEncryptionService,
     private payoutAccountService: PayoutAccountService,
+    private clock: ClockService,
+    private drivingLicense: DrivingLicenseService,
   ) {}
 
   /**
@@ -127,6 +142,16 @@ export class KycService {
         );
       }
     }
+
+    // ── ขั้นตอนที่ 2.5: ใบประกอบวิชาชีพ (PYG-587) ────────────────────
+    // ตรวจที่ชั้น service ก่อนเขียนอะไรลง DB · general_caregiver ไม่ตรวจ (E9: ถ้าแนบมาก็ไม่ถูกบังคับ/ไม่ถูกปฏิเสธ)
+    // ★ ใช้วิชาชีพที่ส่งมาในรอบนี้ (PYG-575) ไม่ใช่ค่าเดิมในแถว — ค่านี้คือค่าที่จะถูกเขียนลงตารางข้างล่าง
+    //   ถ้าอ่านจากแถวเดิม ผู้ดูแลใหม่ (ยังไม่มีแถว = general_caregiver) หรือคนที่ยื่นซ้ำแล้วเปลี่ยนเป็น nurse
+    //   จะข้ามการตรวจใบประกอบฯ ได้
+    await this.assertLicenseForKyc(user.id, profession, input.documentIds);
+
+    // PYG-597: ขับรถรับส่งเอง -> ต้องมีใบขับขี่ที่ใช้ได้ในรอบส่งนี้ (ตรวจที่ service ก่อนเขียนอะไรลง DB)
+    await this.drivingLicense.assertForKyc(user.id, input.selfDriveTransport, input.documentIds);
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
@@ -274,6 +299,54 @@ export class KycService {
   }
 
   /**
+   * assertLicenseForKyc — nurse / physiotherapist ต้องมีเอกสารใบประกอบฯ ที่ใช้ได้ในรอบส่งนี้
+   * (S03-AC2, E2, E3/E4, E10)
+   *
+   * "ใช้ได้" = อยู่ใน documentIds ของรอบนี้ + เป็นของผู้ใช้คนนี้ + ไม่ใช่ rejected/expired
+   * + มีเลข + มีวันหมดอายุ + วันหมดอายุเป็นอนาคตตามเวลาไทย
+   * ใบที่ผ่านการตรวจมาก่อนแต่ไม่ได้ส่งมาในรอบนี้ไม่นับ (E2: เปลี่ยนวิชาชีพต้องมีใบใหม่ที่ส่งมาพร้อมกัน)
+   * ขาดหลายช่อง → ตอบครบในครั้งเดียว (extensions.codes) · code = ช่องแรก (FILE → NUMBER → EXPIRY)
+   */
+  private async assertLicenseForKyc(
+    userId: string,
+    profession: string,
+    documentIds: string[],
+  ): Promise<void> {
+    if (!LICENSE_REQUIRED_PROFESSIONS.has(profession)) return;
+
+    const licenseDocs =
+      documentIds.length > 0
+        ? await this.prismaService.kycDocument.findMany({
+            where: { id: { in: documentIds }, userId, documentType: LICENSE_DOC_TYPE },
+            select: {
+              id: true,
+              licenseNumber: true,
+              expiresAt: true,
+              reviewStatus: true,
+              uploadedAt: true,
+            },
+            orderBy: { uploadedAt: 'desc' },
+          })
+        : [];
+
+    // ใบที่ถูกปฏิเสธ/หมดอายุแล้วใช้ส่งซ้ำไม่ได้ — ต้องอัปโหลดใบใหม่ (E6)
+    const usable = licenseDocs.find(
+      (d) =>
+        d.reviewStatus !== LICENSE_STATUS.REJECTED && d.reviewStatus !== LICENSE_STATUS.EXPIRED,
+    );
+
+    if (!usable) throw new LicenseError(LICENSE_ERROR.FILE_REQUIRED);
+
+    const errors: LicenseErrorCode[] = [];
+    if (!normalizeLicenseNumber(usable.licenseNumber)) errors.push(LICENSE_ERROR.NUMBER_REQUIRED);
+    if (!usable.expiresAt) errors.push(LICENSE_ERROR.EXPIRY_REQUIRED);
+    else if (!isBangkokDateInFuture(usable.expiresAt, this.clock.now())) {
+      errors.push(LICENSE_ERROR.EXPIRY_NOT_FUTURE);
+    }
+    if (errors.length > 0) throw new LicenseError(errors[0], errors);
+  }
+
+  /**
    * resubmitKyc — ยื่น KYC ใหม่หลังถูก reject
    */
   async resubmitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
@@ -342,6 +415,8 @@ export class KycService {
       return {
         status: 'none',
         documents: [],
+        drivingLicense: { verified: false, status: 'none', isExpired: false },
+        canAcceptJobs: false,
       };
     }
 
@@ -353,15 +428,26 @@ export class KycService {
       where: { caregiverId: caregiver.id },
     });
 
+    const readiness = evaluatePayoutReadiness(payoutAccountRow);
+    const kycVerified = caregiver.kycStatus === 'verified';
+
     return {
       status: caregiver.kycStatus,
       submittedAt: caregiver.kycSubmittedAt ?? undefined,
       verifiedAt: caregiver.kycVerifiedAt ?? undefined,
       caregiver: this.mapToEntity(caregiver),
       documents,
+      profession: caregiver.profession,
+      license: pickLatestLicense(documents),
+      drivingLicense: buildDrivingLicenseInfo(
+        await this.drivingLicense.getState({ caregiverId: caregiver.id, userId }),
+        documents,
+      ),
       payoutAccount: payoutAccountRow
         ? this.mapPayoutAccountSummary(payoutAccountRow)
         : undefined,
+      canAcceptJobs: kycVerified && readiness.ready,
+      payoutBlockReason: kycVerified ? readiness.reason : undefined,
     };
   }
 
@@ -601,6 +687,13 @@ export class KycService {
         omiseRecipientId: null,
         verifiedAt: null,
       },
+    });
+
+    // แตะบัญชี = บัญชีกลับไปรอ Omise ตรวจใหม่ → ปิดรับงานจนกว่าจะ accept อีกครั้ง
+    // (ไม่งั้นแก้เลขบัญชีแล้วยังโผล่ในผลค้นหาด้วยบัญชีที่ยังไม่ผ่าน)
+    await tx.caregiver.updateMany({
+      where: { id: caregiverId, isSearchable: true },
+      data: { isSearchable: false },
     });
 
     const fieldChanges = computeFieldChanges(

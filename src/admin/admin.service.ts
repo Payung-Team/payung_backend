@@ -69,6 +69,10 @@ import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
+import { buildDrivingLicenseInfo } from '../identity/kyc/driving-license/driving-license-info.entity';
+import { DRIVING_LICENSE_REVIEW_ACTION } from '../identity/kyc/driving-license/driving-license.constants';
+import { pickLatestLicense } from '../identity/kyc/license/license-info.entity';
 import { CaregiverProfession } from '../identity/kyc/profession.constants';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
@@ -93,7 +97,31 @@ export class AdminService {
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
     private readonly payoutAccountService: PayoutAccountService,
+    private readonly drivingLicenseService: DrivingLicenseService,
   ) { }
+
+  /** PYG-597: ประวัติการตรวจใบขับขี่ทุกรอบของผู้ดูแล ใหม่สุดก่อน (kyc_reviews ที่มี document_id) */
+  private async loadDrivingLicenseReviews(caregiverId: string): Promise<KycReview[]> {
+    const rows = await this.prismaService.kycReview.findMany({
+      where: {
+        caregiverId,
+        action: {
+          in: [DRIVING_LICENSE_REVIEW_ACTION.APPROVED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED],
+        },
+      },
+      orderBy: { reviewedAt: 'desc' },
+      include: { reviewer: { select: { displayName: true } } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      action: r.action,
+      reason: r.reason ?? undefined,
+      reviewedBy: r.reviewerId,
+      reviewerName: r.reviewer?.displayName ?? undefined,
+      reviewedAt: r.reviewedAt,
+      documentId: r.documentId ?? undefined,
+    }));
+  }
 
   /**
    * adminKycList — ดึงรายการ KYC submissions สำหรับ admin
@@ -429,6 +457,13 @@ export class AdminService {
       editHistory: mergedHistory,
       payoutAccount,
       pendingProfilePhotoDocumentId: pendingProfilePhoto?.id,
+      profession: raw.profession,
+      license: pickLatestLicense(documents),
+      drivingLicense: buildDrivingLicenseInfo(
+        await this.drivingLicenseService.getState({ caregiverId, userId: raw.userId }),
+        documents,
+      ),
+      drivingLicenseReviews: await this.loadDrivingLicenseReviews(caregiverId),
     };
   }
 

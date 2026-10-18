@@ -13,8 +13,11 @@ import { BookingSettlementService } from './settlement/booking-settlement.servic
 import { OmiseController } from './webhook/omise.controller';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
+  // PayoutAccountService แจ้ง caregiver เมื่อ Omise accept/ปฏิเสธบัญชีรับเงิน
+  imports: [NotificationModule],
   controllers: [OmiseController],
   providers: [
     PaymentStateMachine,

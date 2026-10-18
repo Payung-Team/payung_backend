@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { JobTypeEligibilityService } from './job-type/job-type-eligibility.service';
 import { WorkConditionService } from './work-condition.service';
 import { PrismaService } from '../../common/prisma.service';
 
@@ -41,7 +42,10 @@ describe('WorkConditionService', () => {
     $transaction: jest.Mock;
   };
 
+  let eligibility: { assertAllowed: jest.Mock; evaluateAll: jest.Mock };
+
   beforeEach(async () => {
+    eligibility = { assertAllowed: jest.fn().mockResolvedValue(undefined), evaluateAll: jest.fn() };
     prisma = {
       caregiver: { findUnique: jest.fn(), update: jest.fn() },
       caregiverAvailability: { deleteMany: jest.fn(), createMany: jest.fn() },
@@ -56,6 +60,8 @@ describe('WorkConditionService', () => {
       providers: [
         WorkConditionService,
         { provide: PrismaService, useValue: prisma },
+        // ตัวตรวจประเภทงาน (PYG-592) ทดสอบแยกใน job-type-eligibility.service.spec.ts และด้านล่าง
+        { provide: JobTypeEligibilityService, useValue: eligibility },
       ],
     }).compile();
 
@@ -361,6 +367,112 @@ describe('WorkConditionService', () => {
 
       expect(result.jobTypes).toEqual(['general_care', 'physiotherapy']);
       expect(result.serviceArea.province).toBe('กรุงเทพมหานคร');
+    });
+  });
+
+  // ── PYG-592: ตรวจประเภทงานทุกครั้งที่บันทึก ──────────────────────────────
+
+  describe('job type restriction (PYG-592)', () => {
+    const { JobTypeNotAllowedError } = jest.requireActual('./job-type/job-type.errors');
+
+    it('เรียกตัวตรวจด้วย tx เดียวกับการเขียน และก่อนเขียนอะไรทั้งสิ้น', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+      const order: string[] = [];
+      eligibility.assertAllowed.mockImplementation(async () => { order.push('assert'); });
+      prisma.caregiverAvailability.deleteMany.mockImplementation(async () => { order.push('write'); });
+
+      await service.updateByUserId(USER_ID, {
+        availability: [{ dayOfWeek: 1, timeSlot: 'morning' }],
+        jobTypes: ['general_care', 'medication'],
+      });
+
+      expect(eligibility.assertAllowed).toHaveBeenCalledWith(
+        CAREGIVER_ID,
+        ['general_care', 'medication'],
+        prisma, // tx (mock: prisma ตัวเดิมถูกส่งเป็น tx)
+      );
+      expect(order).toEqual(['assert', 'write']);
+    });
+
+    it('E4: มีรายการไม่ผ่าน -> โยน JOB_TYPE_NOT_ALLOWED และไม่เขียนอะไรเลย (ทุก section)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+      eligibility.assertAllowed.mockRejectedValue(
+        new JobTypeNotAllowedError([
+          { jobType: 'physiotherapy', selectable: false, blockedReason: 'PROFESSION_MISMATCH' },
+        ]),
+      );
+
+      await expect(
+        service.updateByUserId(USER_ID, {
+          availability: [{ dayOfWeek: 1, timeSlot: 'morning' }],
+          serviceLocations: ['at_home'],
+          jobTypes: ['general_care', 'physiotherapy'],
+          serviceArea: { province: 'ภูเก็ต' },
+        }),
+      ).rejects.toMatchObject({ extensions: { code: 'JOB_TYPE_NOT_ALLOWED', statusCode: 422 } });
+
+      expect(prisma.caregiverJobType.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.caregiverJobType.createMany).not.toHaveBeenCalled();
+      expect(prisma.caregiverAvailability.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.caregiverServiceLocation.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.caregiver.update).not.toHaveBeenCalled();
+    });
+
+    it('ไม่ส่ง jobTypes (แก้ section อื่น) -> ไม่ตรวจประเภทงาน ไม่แตะ caregiver_job_types', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+      await service.updateByUserId(USER_ID, { serviceArea: { province: 'ภูเก็ต' } });
+      expect(eligibility.assertAllowed).not.toHaveBeenCalled();
+      expect(prisma.caregiverJobType.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('ตรวจรายการหลัง trim/dedupe เท่านั้น', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+      await service.updateByUserId(USER_ID, { jobTypes: [' medication ', 'medication', ''] });
+      expect(eligibility.assertAllowed).toHaveBeenCalledWith(CAREGIVER_ID, ['medication'], prisma);
+    });
+
+    it('สิทธิ์: ผู้ดูแลที่ผ่านตัวตรวจคือคนจาก session (userId) ไม่มีช่องรับ id คนอื่น', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver());
+      await service.updateByUserId(USER_ID, { jobTypes: ['general_care'] });
+      expect(prisma.caregiver.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: USER_ID } }),
+      );
+      expect(eligibility.assertAllowed.mock.calls[0][0]).toBe(CAREGIVER_ID);
+    });
+
+    it('ผู้ดูแลที่ยังไม่ verified ยังถูกปฏิเสธก่อนถึงตัวตรวจ', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiver({ kycStatus: 'pending' }));
+      await expect(service.updateByUserId(USER_ID, { jobTypes: ['general_care'] })).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(eligibility.assertAllowed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getJobTypeOptions (myJobTypeOptions)', () => {
+    it('คืนตามผู้ใช้ที่ล็อกอิน (userId -> caregiver) และ map เหตุผล', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue({ id: CAREGIVER_ID });
+      eligibility.evaluateAll.mockResolvedValue([
+        { jobType: 'general_care', selectable: true, blockedReason: null },
+        { jobType: 'physiotherapy', selectable: false, blockedReason: 'LICENSE_EXPIRED' },
+      ]);
+
+      const result = await service.getJobTypeOptions(USER_ID);
+
+      expect(prisma.caregiver.findUnique).toHaveBeenCalledWith({
+        where: { userId: USER_ID },
+        select: { id: true },
+      });
+      expect(eligibility.evaluateAll).toHaveBeenCalledWith(CAREGIVER_ID);
+      expect(result).toEqual([
+        { jobType: 'general_care', selectable: true, blockedReason: null },
+        { jobType: 'physiotherapy', selectable: false, blockedReason: 'LICENSE_EXPIRED' },
+      ]);
+    });
+
+    it('ไม่พบผู้ดูแล -> NotFound', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(null);
+      await expect(service.getJobTypeOptions(USER_ID)).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

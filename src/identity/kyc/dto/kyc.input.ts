@@ -26,6 +26,7 @@ import { InputType, Field, Int, Float } from '@nestjs/graphql';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDate,
   IsIn,
   IsInt,
@@ -173,6 +174,19 @@ export class KycInput {
   @IsOptional()
   @IsString({ message: 'วิชาชีพต้องเป็นข้อความ' })
   profession?: string;
+
+  /**
+   * PYG-597: ขับรถรับส่งเอง - true = ต้องมีใบขับขี่ (DRIVING_LICENSE_REQUIRED / _EXPIRY_REQUIRED / _EXPIRED)
+   * false = ไม่บังคับ (ไม่รับส่ง / ใช้รถรับจ้าง) · ไม่ส่ง = ไม่ตรวจและ BE ไม่ตีความเป็น false (E10 รอ contract)
+   * ⚠ ยังไม่ได้บันทึกลงฐาน - caregivers ไม่มีคอลัมน์รองรับและ story S06 ไม่มีการ์ด DB
+   */
+  @Field(() => Boolean, {
+    nullable: true,
+    description: 'Caregiver drives the care recipient themselves (validated at submit; not persisted yet)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'selfDriveTransport ต้องเป็น true หรือ false' })
+  selfDriveTransport?: boolean;
 
   /**
    * บัญชีธนาคารรับเงิน (PYG-266) — optional (frontend เดิมยังไม่มีฟอร์มนี้)

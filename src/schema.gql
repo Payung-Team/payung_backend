@@ -94,14 +94,26 @@ type AdminKycDetailPayload {
   """KYC documents with signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
 
+  """Driving license review info (status none when never uploaded)"""
+  drivingLicense: DrivingLicenseInfo!
+
+  """Driving license review history, newest first"""
+  drivingLicenseReviews: [KycReview!]!
+
   """Edit history showing field changes, newest first"""
   editHistory: [CaregiverEditLog!]!
+
+  """Latest professional license for review"""
+  license: LicenseInfo
 
   """Payout bank account summary (masked — never the full account number)"""
   payoutAccount: AdminPayoutAccountSummary
 
   """Pending profile photo document id (null if none awaiting review)"""
   pendingProfilePhotoDocumentId: ID
+
+  """Caregiver profession: general_caregiver | nurse | physiotherapist"""
+  profession: String
 
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
@@ -1151,6 +1163,37 @@ type DisputeSummaryConnection {
   totalCount: Int!
 }
 
+"""Driving license review info (owner and admin only)"""
+type DrivingLicenseInfo {
+  """kyc_documents.id of the latest upload (documentId for approve/reject)"""
+  documentId: ID
+
+  """End of expiry day, Asia/Bangkok"""
+  expiresAt: DateTime
+  fileName: String
+
+  """
+  Latest upload is past its expiry day - computed by BE, FE must not compute
+  """
+  isExpired: Boolean!
+
+  """Reason of the latest rejection (when status = rejected)"""
+  rejectionReason: String
+
+  """Signed URL (1 hr) - same mechanism as other KYC files"""
+  signedUrl: String
+
+  """
+  Latest upload: none | pending | approved | rejected - clients must fall back for unknown values
+  """
+  status: String!
+
+  """
+  Passed review: approved AND not past expiry day (Asia/Bangkok), computed at call time
+  """
+  verified: Boolean!
+}
+
 input EditAdminInfoInput {
   """UUID of the admin to edit"""
   adminId: ID!
@@ -1663,6 +1706,24 @@ enum JobSessionStatus {
   PENDING
 }
 
+"""
+Why a job type cannot be selected. Precedence when several apply: PROFESSION_MISMATCH, then LICENSE_NOT_APPROVED, then LICENSE_EXPIRED. Clients must fall back for unknown values.
+"""
+enum JobTypeBlockedReason {
+  LICENSE_EXPIRED
+  LICENSE_NOT_APPROVED
+  PROFESSION_MISMATCH
+}
+
+type JobTypeOption {
+  """null when selectable"""
+  blockedReason: JobTypeBlockedReason
+
+  """general_care | bedridden_care | companion | medication | physiotherapy"""
+  jobType: String!
+  selectable: Boolean!
+}
+
 type JoinLinkPreview {
   """ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้วหรือไม่"""
   alreadyMember: Boolean!
@@ -1694,6 +1755,9 @@ type KycDocument {
   """Document type: id_card | certificate | license | photo"""
   docType: String!
 
+  """Expiry timestamp (end of Asia/Bangkok day)"""
+  expiresAt: DateTime
+
   """Original file name"""
   fileName: String!
 
@@ -1704,8 +1768,17 @@ type KycDocument {
   fileUrl: String!
   id: ID!
 
+  """Professional license number"""
+  licenseNumber: String
+
   """MIME type (e.g. image/jpeg, application/pdf)"""
   mimeType: String!
+
+  """Rejection reason (license_rejected review)"""
+  rejectionReason: String
+
+  """Per-document review status: pending | approved | rejected | expired"""
+  reviewStatus: String
 
   """Temporary signed URL (1hr expiry)"""
   signedUrl: String
@@ -1753,6 +1826,11 @@ input KycInput {
   """
   profession: String
 
+  """
+  Caregiver drives the care recipient themselves (validated at submit; not persisted yet)
+  """
+  selfDriveTransport: Boolean
+
   """List of caregiver skills"""
   skills: [String!]!
 }
@@ -1795,14 +1873,33 @@ enum KycStatusFilter {
 }
 
 type KycStatusPayload {
+  """
+  True when the caregiver may turn on job availability (KYC verified AND payout account accepted by Omise)
+  """
+  canAcceptJobs: Boolean!
+
   """Caregiver profile (null if never submitted)"""
   caregiver: Caregiver
 
   """KYC documents with temporary signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
 
+  """Own driving license review info (status none when never uploaded)"""
+  drivingLicense: DrivingLicenseInfo!
+
+  """Latest professional license, if any"""
+  license: LicenseInfo
+
   """Payout bank account summary (masked — never the full account number)"""
   payoutAccount: PayoutAccountSummary
+
+  """
+  Why job availability is blocked: NO_ACCOUNT | PENDING | FAILED (null when allowed)
+  """
+  payoutBlockReason: String
+
+  """Caregiver profession"""
+  profession: String
 
   """When KYC was rejected by admin"""
   rejectedAt: DateTime
@@ -1831,6 +1928,38 @@ type LeaveFamilyGroupResult {
 
   """true เสมอเมื่อออกสำเร็จ (ล้มเหลวจะเป็น error ไม่ใช่ false)"""
   left: Boolean!
+}
+
+"""Latest professional license of a caregiver"""
+type LicenseInfo {
+  """
+  kyc_documents.id — ใช้เป็น documentId ของ approveLicense / rejectLicense
+  """
+  documentId: ID!
+
+  """End of expiry day, Asia/Bangkok"""
+  expiresAt: DateTime
+  fileName: String!
+  licenseNumber: String
+  rejectionReason: String
+
+  """Signed URL (1 hr) — same mechanism as other KYC files"""
+  signedUrl: String
+
+  """
+  pending | approved | rejected | expired — clients must fall back for unknown values
+  """
+  status: String!
+}
+
+"""Result of approving or rejecting a professional license"""
+type LicenseReviewResult {
+  caregiverId: ID!
+  documentId: ID!
+  reviewedAt: DateTime!
+
+  """approved | rejected"""
+  status: String!
 }
 
 input LinkPhoneInput {
@@ -1922,12 +2051,22 @@ type Mutation {
   adminUpdateCaregiverInfo(input: AdminUpdateCaregiverInfoInput!): AdminUpdateCaregiverInfoPayload!
 
   """
+  Admin only: Approve a pending driving license (documentId = drivingLicense.documentId). Fails with DRIVING_LICENSE_EXPIRED if past its expiry day. Records kyc_reviews (driving_license_approved).
+  """
+  approveDrivingLicense(documentId: ID!): LicenseReviewResult!
+
+  """
   Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
   """
   approveKyc(
     """UUID of the caregiver to approve"""
     caregiverId: ID!
   ): Caregiver!
+
+  """
+  Admin only: Approve a pending professional license. Fails with LICENSE_EXPIRED if the expiry has passed. Records kyc_reviews (license_approved) and notifies the caregiver.
+  """
+  approveLicense(documentId: ID!): LicenseReviewResult!
 
   """
   Admin only: approve a pending profession change — updates the caregiver's profession.
@@ -2099,9 +2238,19 @@ type Mutation {
   register(input: RegisterInput!): AuthPayload!
 
   """
+  Admin only: Reject a pending driving license. reason is required (REJECT_REASON_REQUIRED). Records kyc_reviews (driving_license_rejected) with the reason; the caregiver sees it in kycStatus.drivingLicense.
+  """
+  rejectDrivingLicense(input: RejectLicenseInput!): LicenseReviewResult!
+
+  """
   Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
+
+  """
+  Admin only: Reject a pending professional license. reason is required (LICENSE_REJECT_REASON_REQUIRED). Records kyc_reviews (license_rejected) and notifies the caregiver.
+  """
+  rejectLicense(input: RejectLicenseInput!): LicenseReviewResult!
 
   """
   Admin only: reject a pending profession change with a reason (required). Profession is kept.
@@ -2318,14 +2467,20 @@ enum NotificationType {
   dispute_created
   dispute_resolved
   job_care_log_added
+  job_type_removed
   kyc_rejected
   kyc_resubmitted
   kyc_submitted
   kyc_verified
+  license_approved
+  license_expired
+  license_rejected
   payment_captured
   payment_held
   payment_transferred
   payment_voided
+  payout_account_failed
+  payout_account_verified
   profile_photo_approved
   profile_photo_rejected
   refund_issued
@@ -2864,6 +3019,11 @@ type Query {
   myFamilyGroups: [FamilyGroup!]!
 
   """
+  All 5 job types for the logged-in caregiver with selectable + blockedReason (PROFESSION_MISMATCH > LICENSE_NOT_APPROVED > LICENSE_EXPIRED). Takes no caregiver id.
+  """
+  myJobTypeOptions: [JobTypeOption!]!
+
+  """
   Caregiver: latest profession change request of the logged-in caregiver (null = never requested)
   """
   myProfessionChangeRequest: ProfessionChangeRequest
@@ -3006,6 +3166,14 @@ input RejectKycInput {
 
   """One or more rejection reasons"""
   reasons: [RejectionReasonItem!]!
+}
+
+input RejectLicenseInput {
+  """kyc_documents.id ของใบประกอบฯ (LicenseInfo.documentId)"""
+  documentId: ID!
+
+  """Reason shown to the caregiver (required — blank is rejected)"""
+  reason: String
 }
 
 input RejectProfessionChangeInput {
@@ -3530,8 +3698,13 @@ input UpdateWorkConditionInput {
 }
 
 input UploadDocumentInput {
-  """Document type: id_card_front | id_card_selfie | certificate"""
+  """
+  Document type: id_card_front | id_card_selfie | certificate | professional_license | driving_license
+  """
   docType: String!
+
+  """Document expiry date (Asia/Bangkok calendar day; must be after today)"""
+  expiresAt: DateTime
 
   """Original file name"""
   fileName: String!
@@ -3541,6 +3714,11 @@ input UploadDocumentInput {
 
   """Storage path (<uid>/<file>) หรือ URL เต็มของ bucket kyc-documents"""
   fileUrl: String!
+
+  """
+  Professional license number (required when docType = professional_license; trimmed, max 50)
+  """
+  licenseNumber: String
 
   """MIME type: image/jpeg | image/png | application/pdf"""
   mimeType: String!

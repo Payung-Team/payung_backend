@@ -98,7 +98,8 @@ export class NotificationService {
     const notification = await this.prismaService.notification.create({
       data: {
         userId,
-        type,
+        // cast: license_* (PYG-587) ยังไม่อยู่ใน Prisma enum จนกว่าทีม DB จะเพิ่ม — ถ้า DB ไม่รู้จัก create ล้ม (caller จับ+log)
+        type: type as PrismaNotificationType,
         title,
         body,
         // ถ้า undefined → Prisma จะส่งเป็น null ใน DB

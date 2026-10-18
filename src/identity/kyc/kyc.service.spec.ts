@@ -13,10 +13,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { KycService } from './kyc.service';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
 import { PrismaService } from '../../common/prisma.service';
 import { CaregiverService } from './caregiver.service';
 import { NotificationService } from '../../notification/notification.service';
 import { EmailService } from '../../email/email.service';
+import { ClockService } from '../../common/clock.service';
 import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
@@ -49,7 +51,7 @@ describe('KycService — payout account (PYG-266)', () => {
     $transaction: jest.Mock;
   };
   let tx: {
-    caregiver: { upsert: jest.Mock };
+    caregiver: { upsert: jest.Mock; updateMany: jest.Mock };
     kycDocument: { findMany: jest.Mock; updateMany: jest.Mock };
     caregiverPayoutAccount: { findUnique: jest.Mock; upsert: jest.Mock };
     $executeRaw: jest.Mock;
@@ -61,6 +63,7 @@ describe('KycService — payout account (PYG-266)', () => {
     tx = {
       caregiver: {
         upsert: jest.fn().mockResolvedValue({ id: CAREGIVER_ID, resubmitCount: 0 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       kycDocument: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn() },
       caregiverPayoutAccount: { findUnique: jest.fn(), upsert: jest.fn() },
@@ -97,6 +100,8 @@ describe('KycService — payout account (PYG-266)', () => {
         },
         { provide: PayoutEncryptionService, useValue: payoutEncryption },
         { provide: PayoutAccountService, useValue: payoutAccountService },
+        ClockService,
+        { provide: DrivingLicenseService, useValue: { assertForKyc: jest.fn(), getState: jest.fn().mockResolvedValue({ verified: false, status: 'none', isExpired: false }) } },
       ],
     }).compile();
 
@@ -279,6 +284,15 @@ describe('KycService — payout account (PYG-266)', () => {
       throw new Error('submitKyc ควร throw');
     }
 
+    /**
+     * nurse / physiotherapist ต้องมีใบประกอบฯ ตั้งแต่ PYG-587 — ด่านนั้นมีเทสของตัวเองใน kyc-license-gate.spec.ts
+     * เทสในกลุ่มนี้ดูแค่การรับและบันทึกวิชาชีพ จึงให้ด่านใบประกอบฯ ผ่านไป
+     */
+    const skipLicenseGate = () =>
+      jest
+        .spyOn(service as unknown as { assertLicenseForKyc: () => Promise<void> }, 'assertLicenseForKyc')
+        .mockResolvedValue(undefined);
+
     it.each([
       ['ไม่ส่ง field (client เก่า)', undefined],
       ['null', null],
@@ -326,6 +340,7 @@ describe('KycService — payout account (PYG-266)', () => {
     });
 
     it('S01-AC1: first submit ด้วย nurse → เขียนลงทั้ง create และ update ของ upsert + คืนใน entity', async () => {
+      skipLicenseGate();
       prisma.caregiver.findUnique.mockResolvedValueOnce(null);
       tx.caregiver.upsert.mockResolvedValueOnce({
         id: CAREGIVER_ID,
@@ -345,6 +360,7 @@ describe('KycService — payout account (PYG-266)', () => {
     });
 
     it('E2: ถูกปฏิเสธแล้วส่งใหม่ เปลี่ยนวิชาชีพได้ทันที + edit log มี profession เดิม → ใหม่', async () => {
+      skipLicenseGate();
       prisma.caregiver.findUnique.mockResolvedValueOnce({
         id: CAREGIVER_ID,
         kycStatus: 'rejected',
@@ -522,6 +538,57 @@ describe('KycService — payout account (PYG-266)', () => {
         status: 'active',
         recipientStatus: 'verified',
       });
+    });
+  });
+
+  describe('getKycStatus - drivingLicense (PYG-597)', () => {
+    it('คำนวณสถานะที่จุดเดียว (DrivingLicenseService) ด้วย caregiverId + userId ของ session และประกอบไฟล์/เหตุผลจาก documents', async () => {
+      const drivingLicense = (service as unknown as { drivingLicense: { getState: jest.Mock } }).drivingLicense;
+      drivingLicense.getState.mockResolvedValue({
+        verified: false,
+        status: 'rejected',
+        documentId: 'dl-1',
+        expiresAt: new Date('2027-01-01T16:59:59.999Z'),
+        isExpired: false,
+      });
+      prisma.caregiver.findUnique.mockResolvedValueOnce({
+        id: CAREGIVER_ID,
+        kycStatus: 'verified',
+        kycSubmittedAt: new Date(),
+        kycVerifiedAt: new Date(),
+      });
+      const caregiverService = (service as unknown as { caregiverService: { getOwnDocumentsWithSignedUrls: jest.Mock } }).caregiverService;
+      caregiverService.getOwnDocumentsWithSignedUrls.mockResolvedValueOnce([
+        {
+          id: 'dl-1',
+          docType: 'driving_license',
+          fileName: 'dl.jpg',
+          signedUrl: 'https://signed/dl.jpg',
+          reviewStatus: 'rejected',
+          rejectionReason: 'รูปไม่ชัด',
+        },
+      ]);
+      prisma.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(null);
+
+      const result = await service.getKycStatus(USER_ID);
+
+      expect(drivingLicense.getState).toHaveBeenCalledWith({ caregiverId: CAREGIVER_ID, userId: USER_ID });
+      expect(result.drivingLicense).toEqual({
+        verified: false,
+        status: 'rejected',
+        documentId: 'dl-1',
+        fileName: 'dl.jpg',
+        signedUrl: 'https://signed/dl.jpg',
+        expiresAt: new Date('2027-01-01T16:59:59.999Z'),
+        isExpired: false,
+        rejectionReason: 'รูปไม่ชัด',
+      });
+    });
+
+    it('ยังไม่มีแถวผู้ดูแล -> drivingLicense = none (ไม่ throw)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+      const result = await service.getKycStatus(USER_ID);
+      expect(result.drivingLicense).toEqual({ verified: false, status: 'none', isExpired: false });
     });
   });
 });
