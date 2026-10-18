@@ -209,7 +209,8 @@ export class AdminProfilePhotoService {
     }));
 
     return {
-      caregiver: { ...caregiver, email: raw.user.email },
+      // PYG-603: Caregiver.email เป็น optional (nullable) อยู่แล้ว — null ของบัญชีไม่มีอีเมลแปลงเป็น undefined
+      caregiver: { ...caregiver, email: raw.user.email ?? undefined },
       pendingPhoto: pending
         ? {
             documentId: pending.id,

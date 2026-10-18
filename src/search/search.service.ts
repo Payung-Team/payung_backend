@@ -4,6 +4,7 @@ import { PrismaService } from '../common/prisma.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { SearchCaregiverInput, SortByEnum } from './dto/search-caregiver.input';
 import { CaregiverSummary, SearchCaregiverPayload } from './dto/search-caregiver.payload';
+import { CaregiverProfession } from '../identity/kyc/profession.constants';
 
 type RawCaregiverRow = {
   id: string;
@@ -15,6 +16,7 @@ type RawCaregiverRow = {
   review_count: number;
   skills: string[];
   other_skills: string[] | null;
+  profession: string; // PYG-556 — CHECK ใน DB 3 ค่า
   province: string | null;
   district: string | null;
   gender: string | null;
@@ -126,6 +128,7 @@ export class SearchService {
           c.review_count                            AS review_count,
           c.skills,
           c.other_skills,
+          c.profession,                             -- PYG-556: ป้ายวิชาชีพหน้า List (S01-AC3)
           c.service_area_province                   AS province,
           c.service_area_district                   AS district,
           c.gender
@@ -161,6 +164,7 @@ export class SearchService {
       reviewCount: Number(row.review_count),
       skills:      row.skills      ?? [],
       otherSkills: row.other_skills ?? [],
+      profession:  row.profession as CaregiverProfession,
       province:    row.province    ?? undefined,
       district:    row.district    ?? undefined,
       gender:      row.gender      ?? undefined,

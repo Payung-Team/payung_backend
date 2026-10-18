@@ -5,7 +5,7 @@
  * - adminKycList()   — ดึงรายการ KYC submissions พร้อม filter/search/pagination
  * - adminKycDetail() — ดึงรายละเอียด KYC ครบถ้วนของ caregiver แต่ละคน
  * - adminDashboard() — สรุปภาพรวม: stats, weekly submissions, avg review time, activity
- * - approveKyc()     — admin อนุมัติ KYC: verify caregiver + บันทึก audit + notify
+ * - approveKyc()     — admin อนุมัติ KYC: [ระดับผู้ดูแล PYG-581] + verify caregiver + บันทึก audit + notify
  * - rejectKyc()      — admin ปฏิเสธ KYC: reject caregiver + บันทึก audit + notify
  *
  * Query strategy:
@@ -19,6 +19,7 @@
  * - kycStatus = 'verified' → ConflictException (อนุมัติไปแล้ว)
  * - kycStatus = 'rejected' → ConflictException (reject ไปแล้ว)
  * - kycStatus = 'pending'  → ดำเนินการได้
+ * - PYG-581: approve โดยไม่มีระดับผู้ดูแล → CARE_LEVEL_REQUIRED (reject ไม่ต้องมีระดับ)
  */
 import {
   BadRequestException,
@@ -69,6 +70,11 @@ import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
+import { buildDrivingLicenseInfo } from '../identity/kyc/driving-license/driving-license-info.entity';
+import { DRIVING_LICENSE_REVIEW_ACTION } from '../identity/kyc/driving-license/driving-license.constants';
+import { pickLatestLicense } from '../identity/kyc/license/license-info.entity';
+import { CaregiverProfession } from '../identity/kyc/profession.constants';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -76,6 +82,18 @@ import {
   DOCUMENT_REVIEW_STATUS,
   PROFILE_PHOTO_DOC_TYPE,
 } from '../identity/kyc/profile-photo.constants';
+import { careLevelFromDb } from '../common/care-level/care-level';
+import {
+  careLevelRequiredError,
+  parseOptionalCareLevelInput,
+} from '../common/care-level/care-level.errors';
+import {
+  CARE_LEVEL_LOG_REASON,
+  dbClockNow,
+  lockCaregiverForCareLevel,
+  toCareLevelInfo,
+  writeCareLevelChange,
+} from './admin-care-level.helpers';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -92,7 +110,31 @@ export class AdminService {
     private readonly notificationService: NotificationService,
     private readonly emailService: EmailService,
     private readonly payoutAccountService: PayoutAccountService,
+    private readonly drivingLicenseService: DrivingLicenseService,
   ) { }
+
+  /** PYG-597: ประวัติการตรวจใบขับขี่ทุกรอบของผู้ดูแล ใหม่สุดก่อน (kyc_reviews ที่มี document_id) */
+  private async loadDrivingLicenseReviews(caregiverId: string): Promise<KycReview[]> {
+    const rows = await this.prismaService.kycReview.findMany({
+      where: {
+        caregiverId,
+        action: {
+          in: [DRIVING_LICENSE_REVIEW_ACTION.APPROVED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED],
+        },
+      },
+      orderBy: { reviewedAt: 'desc' },
+      include: { reviewer: { select: { displayName: true } } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      action: r.action,
+      reason: r.reason ?? undefined,
+      reviewedBy: r.reviewerId,
+      reviewerName: r.reviewer?.displayName ?? undefined,
+      reviewedAt: r.reviewedAt,
+      documentId: r.documentId ?? undefined,
+    }));
+  }
 
   /**
    * adminKycList — ดึงรายการ KYC submissions สำหรับ admin
@@ -157,6 +199,9 @@ export class AdminService {
         kycStatus: true,
         kycSubmittedAt: true,
         createdAt: true,
+        // PYG-581: ระดับ + ผู้กำหนด → careLevel / careLevelNeedsReview ในแต่ละแถว
+        careLevel: true,
+        careLevelSetBy: true,
         user: {
           select: { email: true },
         },
@@ -204,15 +249,22 @@ export class AdminService {
     const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
 
     // ─── 6. Map to CaregiverKycSummary ───────────────────────────────────
-    const items: CaregiverKycSummary[] = sorted.map((c) => ({
-      id: c.id,
-      caregiverNumber: c.caregiverNumber ?? undefined,
-      fullName: c.fullName ?? '',
-      email: c.user?.email ?? '',
-      kycStatus: c.kycStatus,
-      submittedAt: c.kycSubmittedAt ?? undefined,
-      documentCount: c._count.documents,
-    }));
+    const items: CaregiverKycSummary[] = sorted.map((c) => {
+      const careLevel = careLevelFromDb(c.careLevel);
+      return {
+        id: c.id,
+        caregiverNumber: c.caregiverNumber ?? undefined,
+        fullName: c.fullName ?? '',
+        // PYG-603: ไม่มีอีเมล = null (เดิม '') — field เป็น nullable แล้ว FE แสดงเบอร์แทน (accountContact)
+        email: c.user?.email ?? null,
+        kycStatus: c.kycStatus,
+        submittedAt: c.kycSubmittedAt ?? undefined,
+        documentCount: c._count.documents,
+        careLevel: careLevel ?? undefined,
+        // กติกาเดียวกับ CaregiverCareLevelInfo.needsReview: มีระดับแต่ไม่มีแอดมินเป็นผู้กำหนด
+        careLevelNeedsReview: careLevel !== null && c.careLevelSetBy === null,
+      };
+    });
 
     this.logger.log({
       event: 'admin.kyc_list.queried',
@@ -243,7 +295,11 @@ export class AdminService {
     // ─── 1. Fetch caregiver ───────────────────────────────────────────────
     const raw = await this.prismaService.caregiver.findUnique({
       where: { id: caregiverId },
-      include: { user: true },
+      include: {
+        user: true,
+        // PYG-581: ชื่อแอดมินที่กำหนดระดับ → careLevelInfo.setByName
+        careLevelSetByUser: { select: { displayName: true } },
+      },
     });
 
     if (!raw) {
@@ -427,6 +483,15 @@ export class AdminService {
       editHistory: mergedHistory,
       payoutAccount,
       pendingProfilePhotoDocumentId: pendingProfilePhoto?.id,
+      profession: raw.profession,
+      license: pickLatestLicense(documents),
+      drivingLicense: buildDrivingLicenseInfo(
+        await this.drivingLicenseService.getState({ caregiverId, userId: raw.userId }),
+        documents,
+      ),
+      drivingLicenseReviews: await this.loadDrivingLicenseReviews(caregiverId),
+      // PYG-581: ระดับ + ผู้กำหนด + เวลา จากแถวเดียวกับที่ดึงมาข้างบน (ไม่ query เพิ่ม)
+      careLevelInfo: toCareLevelInfo(raw),
     };
   }
 
@@ -670,14 +735,36 @@ export class AdminService {
    *    - 'verified' → ConflictException (อนุมัติไปแล้ว)
    *    - 'rejected' → ConflictException (reject ไปแล้ว ต้อง resubmit ก่อน)
    *    - 'pending'  → ดำเนินการได้
-   * 3. Transaction: update kycStatus = 'verified' + INSERT kyc_review
-   * 4. Trigger notification + email (fire-and-forget — error ไม่ทำให้ fail)
-   * 5. Return updated Caregiver
+   * 3. PYG-581: ต้องมีระดับผู้ดูแล (ส่งมา หรือมีอยู่แล้ว) — ไม่มี = CARE_LEVEL_REQUIRED (story R4 / E1)
+   * 4. Transaction: [บันทึกระดับ + แถวประวัติ] + update kycStatus = 'verified' + INSERT kyc_review
+   * 5. Trigger notification + email (fire-and-forget — error ไม่ทำให้ fail)
+   * 6. Return updated Caregiver
    *
-   * @param caregiverId - UUID ของ caregiver ที่จะ approve
-   * @param admin       - admin user ที่กำลัง approve (สำหรับ audit trail)
+   * ── PYG-581: ระดับผู้ดูแล (contract PYG-579 §4.1) ──────────────────────
+   *   มติ 2026-10-18: แอดมินเลือกระดับ "พร้อมกับ" คำสั่งอนุมัติ → ระดับ ประวัติ และ kyc_status
+   *   อยู่ในทรานแซคชันเดียว ถ้าขั้นไหนพังทั้งหมด rollback (ไม่มีผู้ดูแลที่อนุมัติแล้วแต่ไม่มีระดับ)
+   *
+   *   careLevel ไม่บังคับใน schema โดยตั้งใจ: FE เวอร์ชันเก่าที่ยังไม่ส่ง field นี้
+   *   จะได้ CARE_LEVEL_REQUIRED ที่อ่านรู้เรื่อง แทน error ของ schema ที่ FE ไม่รู้จัก
+   *
+   *   - ส่ง careLevel มา       → ใช้ค่านั้น (ค่าผิด = CARE_LEVEL_INVALID ก่อนแตะ DB · E9)
+   *   - ไม่ส่ง แต่มีระดับอยู่แล้ว → คงระดับเดิม (กันไว้สำหรับการตรวจซ้ำ เช่น E8 — ทางปัจจุบันยังไม่มี)
+   *   - ไม่ส่ง และไม่มีระดับ    → CARE_LEVEL_REQUIRED และ kyc_status ไม่เปลี่ยน (E1)
+   *   - ส่งค่าเดิมที่มีอยู่แล้ว   → ไม่เขียนประวัติซ้ำ (E4)
+   *   การปฏิเสธ KYC (rejectKyc) ไม่ต้องมีระดับ (E2) — ไม่ได้แตะ method นั้น
+   *
+   * @param caregiverId    - UUID ของ caregiver ที่จะ approve
+   * @param admin          - admin user ที่กำลัง approve (สำหรับ audit trail + ผู้กำหนดระดับ)
+   * @param careLevelInput - "BASIC" | "INTERMEDIATE" | "ADVANCED" (ไม่ส่งได้ถ้ามีระดับอยู่แล้ว)
    */
-  async approveKyc(caregiverId: string, admin: AuthUser): Promise<Caregiver> {
+  async approveKyc(
+    caregiverId: string,
+    admin: AuthUser,
+    careLevelInput?: string | null,
+  ): Promise<Caregiver> {
+    // ─── 0. PYG-581: ตรวจค่าระดับที่ส่งมาก่อนแตะ DB (E9) ────────────────────
+    const requestedLevel = parseOptionalCareLevelInput(careLevelInput);
+
     // ─── 1. Fetch + guard ─────────────────────────────────────────────────
     // include user.email — PYG-266: ต้องใช้เป็น email ตอนสร้าง Omise recipient
     const existing = await this.prismaService.caregiver.findUnique({
@@ -691,8 +778,41 @@ export class AdminService {
 
     this.assertReviewable(existing.kycStatus, 'approve');
 
-    // ─── 2. Transaction: update status + INSERT audit record ──────────────
+    // ─── 2. PYG-581: ตัดจบเร็วเมื่อไม่มีระดับเลย — ไม่ต้องเปิดทรานแซคชัน ─────────
+    // (ในทรานแซคชันตรวจซ้ำอีกรอบจากแถวที่ล็อกแล้ว — ตรงนี้แค่ทางลัด)
+    if (!requestedLevel && !careLevelFromDb(existing.careLevel)) {
+      throw careLevelRequiredError();
+    }
+
+    // ─── 3. Transaction: ระดับ + ประวัติ + update status + INSERT audit record ──
     const updated = await this.prismaService.$transaction(async (tx) => {
+      // PYG-581: ล็อกแถวก่อน — กันแอดมินสองคนกดพร้อมกัน (อนุมัติ/ปฏิเสธซ้อน หรือแก้ระดับซ้อน)
+      const locked = await lockCaregiverForCareLevel(tx, caregiverId);
+      if (!locked) {
+        throw new NotFoundException(`Caregiver "${caregiverId}" not found`);
+      }
+      // สถานะอาจเปลี่ยนระหว่างข้อ 1 กับตอนได้ล็อก (อีกคนเพิ่งอนุมัติ/ปฏิเสธไป) → ตรวจซ้ำจากค่าที่ล็อกแล้ว
+      this.assertReviewable(locked.kyc_status, 'approve');
+
+      const currentLevel = careLevelFromDb(locked.care_level);
+      if (!requestedLevel && !currentLevel) {
+        // throw ในทรานแซคชัน = rollback ทั้งก้อน → kyc_status ไม่เปลี่ยน (E1)
+        throw careLevelRequiredError();
+      }
+
+      // บันทึกระดับเฉพาะเมื่อส่งมาและต่างจากค่าเดิม (ค่าเดิม = ไม่ใช่การเปลี่ยน · E4)
+      if (requestedLevel && requestedLevel !== currentLevel) {
+        await writeCareLevelChange(tx, {
+          caregiverId,
+          oldLevel: currentLevel,
+          newLevel: requestedLevel,
+          changedBy: admin.id,
+          reason: CARE_LEVEL_LOG_REASON.KYC_APPROVAL,
+          at: await dbClockNow(tx),
+        });
+      }
+
+      // update ทีหลังการเขียนระดับ → แถวที่คืนออกไปมี careLevel ใหม่แล้ว
       const caregiver = await tx.caregiver.update({
         where: { id: caregiverId },
         data: {
@@ -717,6 +837,7 @@ export class AdminService {
       event: 'admin.kyc.approved',
       caregiverId,
       adminId: admin.id,
+      careLevel: updated.careLevel, // PYG-581
     });
 
     // ─── 3. Side-effects (fire-and-forget) ───────────────────────────────
@@ -864,7 +985,11 @@ export class AdminService {
     });
 
     // ─── 6. Send invitation email (fire-and-forget) ───────────────────────
-    void this.emailService.sendAdminInvite(created.email, created.displayName, tempPassword).catch((err: unknown) => {
+    // PYG-603: created.email มี type เป็น string | null แล้ว — ใช้ input.email ที่เพิ่งสร้างบัญชีด้วย
+    //   (แอดมินถูกเชิญด้วยอีเมลเสมอ ค่าสองตัวนี้คือค่าเดียวกัน)
+    void this.emailService
+      .sendAdminInvite(input.email, created.displayName, tempPassword)
+      .catch((err: unknown) => {
       this.logSideEffectError('email admin_invite', created.id, err);
     });
 
@@ -915,12 +1040,15 @@ export class AdminService {
       }
     }
 
-    // Search by displayName OR email (case-insensitive partial match)
+    // Search by displayName OR email OR phone (case-insensitive partial match)
+    // PYG-603: เพิ่มเบอร์โทร — บัญชีที่สมัครด้วยเบอร์ไม่มีอีเมล ถ้าไม่ค้นจากเบอร์แอดมินจะหาไม่เจอเลย
+    //   (users.phone เก็บแบบ 0XXXXXXXXX — ค้นด้วยส่วนหนึ่งของเบอร์ได้ เช่น "5678")
     if (input.search && input.search.trim() !== '') {
       const term = input.search.trim();
       where.OR = [
         { displayName: { contains: term, mode: 'insensitive' } },
         { email: { contains: term, mode: 'insensitive' } },
+        { phone: { contains: term } },
       ];
     }
 
@@ -932,6 +1060,7 @@ export class AdminService {
         select: {
           id: true,
           email: true,
+          phone: true, // PYG-603: แยกบัญชีที่ไม่มีอีเมลในหน้าแอดมิน (คำขอของ FE)
           displayName: true,
           role: true,
           isActive: true,
@@ -968,7 +1097,8 @@ export class AdminService {
       const cg = caregiverMap.get(u.id);
       return {
         id: u.id,
-        email: u.email,
+        email: u.email, // PYG-603: null ได้ (บัญชีที่สมัครด้วยเบอร์)
+        phone: u.phone ?? undefined,
         displayName: (u.role === ROLE_ID.CAREGIVER && cg?.fullName) ? cg.fullName : (u.displayName ?? undefined),
         role: u.role,
         isActive: u.isActive,
@@ -1602,12 +1732,22 @@ export class AdminService {
     }
 
     // ─── 6. Send email (fire-and-forget) ──────────────────────────────────
-    const emailMethod = input.isActive
-      ? this.emailService.sendAdminActivated(updated.email, updated.displayName)
-      : this.emailService.sendAdminDeactivated(updated.email, updated.displayName);
-    void emailMethod.catch((err: unknown) =>
-      this.logSideEffectError('email toggle_admin_status', updated.id, err),
-    );
+    // PYG-603: users.email เป็น null ได้แล้ว — แอดมินถูกเชิญด้วยอีเมลจึงมีเสมอ
+    //   แต่กันไว้: ไม่มีอีเมล = ข้ามการส่ง ไม่ใช่ส่งไปที่อยู่ว่าง
+    if (updated.email) {
+      const emailMethod = input.isActive
+        ? this.emailService.sendAdminActivated(
+            updated.email,
+            updated.displayName,
+          )
+        : this.emailService.sendAdminDeactivated(
+            updated.email,
+            updated.displayName,
+          );
+      void emailMethod.catch((err: unknown) =>
+        this.logSideEffectError('email toggle_admin_status', updated.id, err),
+      );
+    }
 
     // ─── 7. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs table insert when table is created (PYG-127)
@@ -1706,9 +1846,19 @@ export class AdminService {
     }
 
     // ─── 8. Email (fire-and-forget) ───────────────────────────────────────
-    void this.emailService
-      .sendAdminScheduleDelete(updated.email, updated.displayName, scheduledDeleteAt, gracePeriodDays)
-      .catch((err: unknown) => this.logSideEffectError('email schedule_delete', updated.id, err));
+    // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
+    if (updated.email) {
+      void this.emailService
+        .sendAdminScheduleDelete(
+          updated.email,
+          updated.displayName,
+          scheduledDeleteAt,
+          gracePeriodDays,
+        )
+        .catch((err: unknown) =>
+          this.logSideEffectError('email schedule_delete', updated.id, err),
+        );
+    }
 
     // ─── 9. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
@@ -1774,9 +1924,14 @@ export class AdminService {
     }
 
     // ─── 4. Email (fire-and-forget) ───────────────────────────────────────
-    void this.emailService
-      .sendAdminCancelDelete(updated.email, updated.displayName)
-      .catch((err: unknown) => this.logSideEffectError('email cancel_delete', updated.id, err));
+    // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
+    if (updated.email) {
+      void this.emailService
+        .sendAdminCancelDelete(updated.email, updated.displayName)
+        .catch((err: unknown) =>
+          this.logSideEffectError('email cancel_delete', updated.id, err),
+        );
+    }
 
     // ─── 5. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs insert when table is created (PYG-127)
@@ -2143,7 +2298,7 @@ export class AdminService {
   /** mapToUser — แปลง Prisma user record → GraphQL User entity */
   private mapToUser(u: {
     id: string;
-    email: string;
+    email: string | null; // PYG-603: null = บัญชีที่สมัครด้วยเบอร์โทร
     displayName: string | null;
     avatarUrl: string | null;
     phone: string | null;
@@ -2191,6 +2346,7 @@ export class AdminService {
     phone: string | null;
     skills: string[];
     otherSkills: string[];
+    profession: string; // PYG-556 — หน้า KYC review ของแอดมินแสดงวิชาชีพ
     experienceYears: number | null;
     hourlyRate: number | null;
     bio: string | null;
@@ -2202,9 +2358,11 @@ export class AdminService {
     resubmitCount: number;
     createdAt: Date;
     updatedAt: Date;
-    user?: { email: string } | null;
+    user?: { email: string | null } | null; // PYG-603: email เป็น null ได้
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rejection_reasons?: any;
+    /** PYG-581 — optional เพื่อให้ผู้เรียกที่ select คอลัมน์ไม่ครบยังใช้ได้ (ไม่ส่ง = ไม่มีระดับ) */
+    careLevel?: string | null;
   }): Caregiver {
     return {
       id: c.id,
@@ -2219,6 +2377,7 @@ export class AdminService {
       phone: c.phone ?? '',
       skills: c.skills,
       otherSkills: c.otherSkills ?? [],
+      profession: c.profession as CaregiverProfession, // DB มี CHECK 3 ค่า — ค่าเดียวกับ enum
       experienceYears: c.experienceYears ?? 0,
       hourlyRate: c.hourlyRate ?? 0,
       bio: c.bio ?? undefined,
@@ -2233,6 +2392,7 @@ export class AdminService {
       rejectionReasons: Array.isArray(c.rejection_reasons)
         ? c.rejection_reasons
         : undefined,
+      careLevel: careLevelFromDb(c.careLevel) ?? undefined, // PYG-581
     };
   }
 }

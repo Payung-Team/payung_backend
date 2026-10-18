@@ -63,4 +63,20 @@ export class KycDocument {
    */
   @Field({ nullable: true, description: 'Temporary signed URL (1hr expiry)' })
   signedUrl?: string;
+
+  /** PYG-587: เลขใบประกอบวิชาชีพ — มีเฉพาะ docType = professional_license */
+  @Field({ nullable: true, description: 'Professional license number' })
+  licenseNumber?: string;
+
+  /** PYG-587: วันหมดอายุ (สิ้นวันตามเวลาไทย) */
+  @Field({ nullable: true, description: 'Expiry timestamp (end of Asia/Bangkok day)' })
+  expiresAt?: Date;
+
+  /** PYG-587: pending | approved | rejected | expired — null = ไม่ได้รีวิวรายใบ · client เก่าต้อง fallback ค่าที่ไม่รู้จัก */
+  @Field({ nullable: true, description: 'Per-document review status: pending | approved | rejected | expired' })
+  reviewStatus?: string;
+
+  /** PYG-587: เหตุผลที่แอดมินปฏิเสธใบนี้ (จาก kyc_reviews ล่าสุดของเอกสาร) */
+  @Field({ nullable: true, description: 'Rejection reason (license_rejected review)' })
+  rejectionReason?: string;
 }

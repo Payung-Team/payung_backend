@@ -88,20 +88,37 @@ input AdminEditUserInput {
 
 """Full KYC detail for a single caregiver (admin only)"""
 type AdminKycDetailPayload {
+  """
+  Current care level with who set it and when (level is null when not set yet)
+  """
+  careLevelInfo: CaregiverCareLevelInfo!
+
   """Caregiver profile"""
   caregiver: Caregiver!
 
   """KYC documents with signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
 
+  """Driving license review info (status none when never uploaded)"""
+  drivingLicense: DrivingLicenseInfo!
+
+  """Driving license review history, newest first"""
+  drivingLicenseReviews: [KycReview!]!
+
   """Edit history showing field changes, newest first"""
   editHistory: [CaregiverEditLog!]!
+
+  """Latest professional license for review"""
+  license: LicenseInfo
 
   """Payout bank account summary (masked — never the full account number)"""
   payoutAccount: AdminPayoutAccountSummary
 
   """Pending profile photo document id (null if none awaiting review)"""
   pendingProfilePhotoDocumentId: ID
+
+  """Caregiver profession: general_caregiver | nurse | physiotherapist"""
+  profession: String
 
   """Number of times KYC was resubmitted after rejection"""
   resubmitCount: Int!
@@ -153,6 +170,44 @@ type AdminPayoutAccountSummary {
   hasOmiseRecipient: Boolean!
   recipientStatus: String!
   status: String!
+}
+
+"""คำขอเปลี่ยนวิชาชีพในคิวตรวจของแอดมิน"""
+type AdminProfessionChangeRequest {
+  caregiverId: ID!
+  caregiverName: String!
+  caregiverNumber: String
+  fromProfession: CaregiverProfession!
+  id: ID!
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseDocument: KycDocument
+
+  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  licenseExpiresAt: String
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseNumber: String
+  rejectionReason: String
+  requestedAt: DateTime!
+  reviewedAt: DateTime
+  reviewerName: String
+  status: ProfessionChangeStatus!
+  toProfession: CaregiverProfession!
+}
+
+"""คิวคำขอเปลี่ยนวิชาชีพแบบแบ่งหน้า"""
+type AdminProfessionChangeRequestPage {
+  items: [AdminProfessionChangeRequest!]!
+  page: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+input AdminProfessionChangeRequestsInput {
+  limit: Int = 20
+  page: Int = 1
+  status: ProfessionChangeStatus = pending
 }
 
 input AdminProfilePhotoQueueInput {
@@ -221,8 +276,8 @@ input AdminUpdateCaregiverInfoInput {
 }
 
 type AdminUpdateCaregiverInfoPayload {
-  """Email address of the linked user"""
-  email: String!
+  """Email address of the linked user (null for phone-only accounts)"""
+  email: String
 
   """First name (extracted from fullName)"""
   firstName: String!
@@ -423,6 +478,41 @@ type CancelScheduledDeletePayload {
   user: User!
 }
 
+"""
+Caregiver / job level, lowest to highest: BASIC (ต้น) < INTERMEDIATE (กลาง) < ADVANCED (สูง)
+"""
+enum CareLevel {
+  """สูง (advanced)"""
+  ADVANCED
+
+  """ต้น (basic)"""
+  BASIC
+
+  """กลาง (intermediate)"""
+  INTERMEDIATE
+}
+
+"""One care level change (admin only)"""
+type CareLevelChange {
+  changedBy: ID
+  changedByName: String
+  createdAt: DateTime!
+  id: ID!
+  newLevel: CareLevel!
+
+  """null = first assignment"""
+  oldLevel: CareLevel
+  reason: String
+  source: CareLevelChangeSource!
+}
+
+"""Where a care level history row came from"""
+enum CareLevelChangeSource {
+  ADMIN_UPDATE
+  KYC_APPROVAL
+  MIGRATION_DEFAULT
+}
+
 type CareLog {
   body: String!
   bookingId: ID!
@@ -459,6 +549,11 @@ type Caregiver {
   address: String
   bio: String
 
+  """
+  Caregiver level set by an admin: BASIC | INTERMEDIATE | ADVANCED (null = not set yet)
+  """
+  careLevel: CareLevel
+
   """System-generated caregiver number e.g. CG-0001"""
   caregiverNumber: String
   createdAt: DateTime!
@@ -491,6 +586,9 @@ type Caregiver {
   """Free-text skills not in the central list"""
   otherSkills: [String!]!
   phone: String!
+
+  """Profession: general_caregiver | nurse | physiotherapist"""
+  profession: CaregiverProfession!
   rejectionReasons: [RejectionReason!]
 
   """Number of times KYC was resubmitted after rejection"""
@@ -574,6 +672,26 @@ type CaregiverBriefDto {
   reviewCount: Int
 }
 
+"""
+Current care level of a caregiver with who set it and when (admin only)
+"""
+type CaregiverCareLevelInfo {
+  caregiverId: ID!
+
+  """null = no level yet"""
+  level: CareLevel
+
+  """
+  true when the level came from the migration default and no admin has reviewed it yet
+  """
+  needsReview: Boolean!
+  setAt: DateTime
+
+  """Admin user id who set the level — null when set by migration"""
+  setBy: ID
+  setByName: String
+}
+
 """Log entry for caregiver profile/document edits"""
 type CaregiverEditLog {
   """
@@ -600,14 +718,22 @@ type CaregiverEditLog {
 
 """Summary of a caregiver KYC submission for admin review"""
 type CaregiverKycSummary {
+  """Care level (null = not set yet)"""
+  careLevel: CareLevel
+
+  """
+  true when the level is the migration default not yet reviewed by an admin
+  """
+  careLevelNeedsReview: Boolean!
+
   """Caregiver Number (e.g. CG-12345)"""
   caregiverNumber: String
 
   """Number of KYC documents uploaded"""
   documentCount: Int!
 
-  """Caregiver email"""
-  email: String!
+  """Caregiver email (null for phone-only accounts)"""
+  email: String
 
   """Caregiver full name"""
   fullName: String!
@@ -620,6 +746,18 @@ type CaregiverKycSummary {
 
   """When KYC was last submitted"""
   submittedAt: DateTime
+}
+
+"""วิชาชีพของผู้ดูแล — ค่าตรงกับ CHECK caregivers_profession_check"""
+enum CaregiverProfession {
+  """ผู้ดูแลทั่วไป (General caregiver)"""
+  general_caregiver
+
+  """พยาบาล (Nurse) — ต้องมีใบประกอบวิชาชีพ (S03)"""
+  nurse
+
+  """นักกายภาพบำบัด (Physiotherapist) — ต้องมีใบประกอบวิชาชีพ (S03)"""
+  physiotherapist
 }
 
 input CaregiverReviewsInput {
@@ -662,6 +800,9 @@ type CaregiverSummary {
 
   """Free-text skills not in the central list (PYG-652)"""
   otherSkills: [String!]!
+
+  """Profession: general_caregiver | nurse | physiotherapist"""
+  profession: CaregiverProfession!
 
   """Service area province"""
   province: String
@@ -1117,6 +1258,37 @@ type DisputeSummaryConnection {
   totalCount: Int!
 }
 
+"""Driving license review info (owner and admin only)"""
+type DrivingLicenseInfo {
+  """kyc_documents.id of the latest upload (documentId for approve/reject)"""
+  documentId: ID
+
+  """End of expiry day, Asia/Bangkok"""
+  expiresAt: DateTime
+  fileName: String
+
+  """
+  Latest upload is past its expiry day - computed by BE, FE must not compute
+  """
+  isExpired: Boolean!
+
+  """Reason of the latest rejection (when status = rejected)"""
+  rejectionReason: String
+
+  """Signed URL (1 hr) - same mechanism as other KYC files"""
+  signedUrl: String
+
+  """
+  Latest upload: none | pending | approved | rejected - clients must fall back for unknown values
+  """
+  status: String!
+
+  """
+  Passed review: approved AND not past expiry day (Asia/Bangkok), computed at call time
+  """
+  verified: Boolean!
+}
+
 input EditAdminInfoInput {
   """UUID of the admin to edit"""
   adminId: ID!
@@ -1270,8 +1442,10 @@ type FamilyGroupMemberItem {
   """ชื่อที่แสดง (null ได้ถ้าผู้ใช้ยังไม่ตั้งชื่อ)"""
   displayName: String
 
-  """อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้"""
-  email: String!
+  """
+  อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้ (null = บัญชีที่สมัครด้วยเบอร์โทร)
+  """
+  email: String
 
   """family_group_members.id"""
   id: ID!
@@ -1627,6 +1801,24 @@ enum JobSessionStatus {
   PENDING
 }
 
+"""
+Why a job type cannot be selected. Precedence when several apply: PROFESSION_MISMATCH, then LICENSE_NOT_APPROVED, then LICENSE_EXPIRED. Clients must fall back for unknown values.
+"""
+enum JobTypeBlockedReason {
+  LICENSE_EXPIRED
+  LICENSE_NOT_APPROVED
+  PROFESSION_MISMATCH
+}
+
+type JobTypeOption {
+  """null when selectable"""
+  blockedReason: JobTypeBlockedReason
+
+  """general_care | bedridden_care | companion | medication | physiotherapy"""
+  jobType: String!
+  selectable: Boolean!
+}
+
 type JoinLinkPreview {
   """ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้วหรือไม่"""
   alreadyMember: Boolean!
@@ -1658,6 +1850,9 @@ type KycDocument {
   """Document type: id_card | certificate | license | photo"""
   docType: String!
 
+  """Expiry timestamp (end of Asia/Bangkok day)"""
+  expiresAt: DateTime
+
   """Original file name"""
   fileName: String!
 
@@ -1668,8 +1863,17 @@ type KycDocument {
   fileUrl: String!
   id: ID!
 
+  """Professional license number"""
+  licenseNumber: String
+
   """MIME type (e.g. image/jpeg, application/pdf)"""
   mimeType: String!
+
+  """Rejection reason (license_rejected review)"""
+  rejectionReason: String
+
+  """Per-document review status: pending | approved | rejected | expired"""
+  reviewStatus: String
 
   """Temporary signed URL (1hr expiry)"""
   signedUrl: String
@@ -1717,6 +1921,16 @@ input KycInput {
   """Contact phone number (Thai format)"""
   phone: String!
 
+  """
+  Required — general_caregiver | nurse | physiotherapist (missing = PROFESSION_REQUIRED)
+  """
+  profession: String
+
+  """
+  Caregiver drives the care recipient themselves (validated at submit; not persisted yet)
+  """
+  selfDriveTransport: Boolean
+
   """Central skill codes from careSkills(profession)"""
   skills: [String!]!
 }
@@ -1759,14 +1973,33 @@ enum KycStatusFilter {
 }
 
 type KycStatusPayload {
+  """
+  True when the caregiver may turn on job availability (KYC verified AND payout account accepted by Omise)
+  """
+  canAcceptJobs: Boolean!
+
   """Caregiver profile (null if never submitted)"""
   caregiver: Caregiver
 
   """KYC documents with temporary signed URLs (1hr expiry)"""
   documents: [KycDocument!]!
 
+  """Own driving license review info (status none when never uploaded)"""
+  drivingLicense: DrivingLicenseInfo!
+
+  """Latest professional license, if any"""
+  license: LicenseInfo
+
   """Payout bank account summary (masked — never the full account number)"""
   payoutAccount: PayoutAccountSummary
+
+  """
+  Why job availability is blocked: NO_ACCOUNT | PENDING | FAILED (null when allowed)
+  """
+  payoutBlockReason: String
+
+  """Caregiver profession"""
+  profession: String
 
   """When KYC was rejected by admin"""
   rejectedAt: DateTime
@@ -1797,6 +2030,44 @@ type LeaveFamilyGroupResult {
   left: Boolean!
 }
 
+"""Latest professional license of a caregiver"""
+type LicenseInfo {
+  """
+  kyc_documents.id — ใช้เป็น documentId ของ approveLicense / rejectLicense
+  """
+  documentId: ID!
+
+  """End of expiry day, Asia/Bangkok"""
+  expiresAt: DateTime
+  fileName: String!
+  licenseNumber: String
+  rejectionReason: String
+
+  """Signed URL (1 hr) — same mechanism as other KYC files"""
+  signedUrl: String
+
+  """
+  pending | approved | rejected | expired — clients must fall back for unknown values
+  """
+  status: String!
+}
+
+"""Result of approving or rejecting a professional license"""
+type LicenseReviewResult {
+  caregiverId: ID!
+  documentId: ID!
+  reviewedAt: DateTime!
+
+  """approved | rejected"""
+  status: String!
+}
+
+input LinkPhoneInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
+}
+
 type LockedField {
   """The locked field name (camelCase)"""
   fieldName: String!
@@ -1817,6 +2088,12 @@ input LoginInput {
 
   """Password of the user"""
   password: String!
+}
+
+input LoginWithPhoneInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
 }
 
 input MemberDetailsInput {
@@ -1874,12 +2151,32 @@ type Mutation {
   adminUpdateCaregiverInfo(input: AdminUpdateCaregiverInfoInput!): AdminUpdateCaregiverInfoPayload!
 
   """
-  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending".
+  Admin only: Approve a pending driving license (documentId = drivingLicense.documentId). Fails with DRIVING_LICENSE_EXPIRED if past its expiry day. Records kyc_reviews (driving_license_approved).
+  """
+  approveDrivingLicense(documentId: ID!): LicenseReviewResult!
+
+  """
+  Admin only: Approve a caregiver KYC submission. Sets kycStatus = "verified", records audit log, sends notification + email. Requires kycStatus = "pending". PYG-581: a care level is required — pass careLevel, otherwise CARE_LEVEL_REQUIRED.
   """
   approveKyc(
+    """
+    BASIC | INTERMEDIATE | ADVANCED — the caregiver level chosen at approval. Optional in the schema so older clients get CARE_LEVEL_REQUIRED instead of a schema error.
+    """
+    careLevel: String
+
     """UUID of the caregiver to approve"""
     caregiverId: ID!
   ): Caregiver!
+
+  """
+  Admin only: Approve a pending professional license. Fails with LICENSE_EXPIRED if the expiry has passed. Records kyc_reviews (license_approved) and notifies the caregiver.
+  """
+  approveLicense(documentId: ID!): LicenseReviewResult!
+
+  """
+  Admin only: approve a pending profession change — updates the caregiver's profession.
+  """
+  approveProfessionChangeRequest(id: ID!): ProfessionChangeRequest!
 
   """
   Admin only: Approve a pending caregiver profile photo. Sets it as the public avatar, records kyc_reviews (profile_photo_approved) and notifies the caregiver. Does not change kycStatus.
@@ -1890,6 +2187,9 @@ type Mutation {
   Caregiver cancels a previously accepted booking before patient confirmation, with a required reason (accepted → rejected).
   """
   cancelAcceptance(input: CancelAcceptanceInput!): CaregiverBookingSummary!
+
+  """Caregiver: cancel own pending profession change request"""
+  cancelProfessionChangeRequest(id: ID!): ProfessionChangeRequest!
 
   """
   Super Admin only: Cancel a scheduled deletion for an admin account. Reactivates the account and unbans Supabase Auth.
@@ -2012,8 +2312,18 @@ type Mutation {
   """
   leaveFamilyGroup(groupId: ID!): LeaveFamilyGroupResult!
 
+  """
+  ผูกเบอร์กับบัญชีที่ล็อกอินอยู่ หลังยืนยันรหัส (ขอรหัสด้วย requestPhoneOtp purpose LINK) · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_ALREADY_IN_USE
+  """
+  linkPhone(input: LinkPhoneInput!): User!
+
   """Login user with email and password"""
   login(input: LoginInput!): AuthPayload!
+
+  """
+  ล็อกอินด้วยเบอร์และรหัส — response รูปเดียวกับ login อีเมล · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_NOT_REGISTERED
+  """
+  loginWithPhone(input: LoginWithPhoneInput!): AuthPayload!
 
   """Logout user"""
   logout: Boolean!
@@ -2033,9 +2343,24 @@ type Mutation {
   register(input: RegisterInput!): AuthPayload!
 
   """
+  Admin only: Reject a pending driving license. reason is required (REJECT_REASON_REQUIRED). Records kyc_reviews (driving_license_rejected) with the reason; the caregiver sees it in kycStatus.drivingLicense.
+  """
+  rejectDrivingLicense(input: RejectLicenseInput!): LicenseReviewResult!
+
+  """
   Admin only: Reject a caregiver KYC submission with one or more structured reasons. Stores reasons as JSONB, sets kycStatus = "rejected", records audit log, sends notification + email. Requires kycStatus = "pending". At least one reason with a title is required.
   """
   rejectKyc(input: RejectKycInput!): Caregiver!
+
+  """
+  Admin only: Reject a pending professional license. reason is required (LICENSE_REJECT_REASON_REQUIRED). Records kyc_reviews (license_rejected) and notifies the caregiver.
+  """
+  rejectLicense(input: RejectLicenseInput!): LicenseReviewResult!
+
+  """
+  Admin only: reject a pending profession change with a reason (required). Profession is kept.
+  """
+  rejectProfessionChangeRequest(input: RejectProfessionChangeInput!): ProfessionChangeRequest!
 
   """
   Admin only: Reject a pending caregiver profile photo with a reason (required). The current avatar is kept. Records kyc_reviews (profile_photo_rejected) and notifies the caregiver.
@@ -2061,6 +2386,16 @@ type Mutation {
   Send a password reset link to the given email address. Always returns success=true regardless of whether the email exists.
   """
   requestPasswordReset(input: RequestPasswordResetInput!): RequestPasswordResetResponse!
+
+  """
+  ขอรหัสยืนยันทาง SMS — SIGNUP/LOGIN ไม่ต้องล็อกอิน · LINK ต้องส่ง Authorization header · ไม่คืนรหัส · error: PHONE_INVALID_FORMAT, PHONE_ALREADY_IN_USE, PHONE_NOT_REGISTERED, PHONE_NOT_VERIFIED, OTP_RATE_LIMITED (+resendAfterSeconds), SMS_SEND_FAILED
+  """
+  requestPhoneOtp(input: RequestPhoneOtpInput!): PhoneOtpRequestPayload!
+
+  """
+  Caregiver (KYC verified): request a profession change. The profession stays the same until an admin approves.
+  """
+  requestProfessionChange(input: ProfessionChangeInput!): ProfessionChangeRequest!
 
   """
   Admin only: Resolve a flagged dispute (no_refund | refund_full | refund_partial). refund_partial requires refundAmount in (0, payment.amount]. refund_full / refund_partial call PaymentService.refundPayment (PYG-286).
@@ -2095,6 +2430,11 @@ type Mutation {
   """
   scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
 
+  """
+  Admin only: set or change the care level of a VERIFIED caregiver. The first level of a new caregiver is chosen in approveKyc(careLevel). Same level already set by an admin = no-op (changed: false). Errors: CARE_LEVEL_REQUIRED, CARE_LEVEL_INVALID, CARE_LEVEL_REASON_REQUIRED, CARE_LEVEL_KYC_NOT_VERIFIED.
+  """
+  setCaregiverCareLevel(input: SetCaregiverCareLevelInput!): SetCaregiverCareLevelPayload!
+
   """Toggle caregiver availability in search results (verified only)"""
   setSearchable(isSearchable: Boolean!): Caregiver!
 
@@ -2102,6 +2442,11 @@ type Mutation {
   PYG-361: ผู้ดูแลติ๊ก/ยกเลิกติ๊กว่าทำรายการงานย่อยนี้แล้ว (เฉพาะตอน booking.status = in_progress). display-only — ไม่มีผลต่อ proofOfWork.verdict หรือการปล่อยเงิน.
   """
   setTaskDone(input: SetTaskDoneInput!): BookingTask!
+
+  """
+  สร้างบัญชีด้วยเบอร์ที่ยืนยันแล้ว (หลังยอมรับเงื่อนไข) — response รูปเดียวกับ register · error: PHONE_VERIFICATION_EXPIRED, PHONE_ALREADY_IN_USE, CONSENT_*
+  """
+  signUpWithPhone(input: SignUpWithPhoneInput!): AuthPayload!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -2163,6 +2508,11 @@ type Mutation {
 
   """Register a KYC document record after uploading to storage"""
   uploadKycDocument(input: UploadDocumentInput!): KycDocument!
+
+  """
+  ตรวจรหัสของการสมัคร (purpose: SIGNUP) → verificationToken สำหรับ signUpWithPhone · ยังไม่สร้างบัญชี · error: OTP_INVALID, OTP_EXPIRED, OTP_ATTEMPTS_EXCEEDED, PHONE_ALREADY_IN_USE
+  """
+  verifyPhoneOtp(input: VerifyPhoneOtpInput!): PhoneVerificationPayload!
 
   """
   ถอนความยินยอมหนึ่งข้อ — มีผลทันที (จองใหม่ไม่ได้ / กลุ่มไม่เห็นข้อมูล / หยุดอีเมลข่าวสาร ตามข้อที่ถอน) · ไม่ลบข้อมูลย้อนหลัง
@@ -2227,14 +2577,20 @@ enum NotificationType {
   dispute_created
   dispute_resolved
   job_care_log_added
+  job_type_removed
   kyc_rejected
   kyc_resubmitted
   kyc_submitted
   kyc_verified
+  license_approved
+  license_expired
+  license_rejected
   payment_captured
   payment_held
   payment_transferred
   payment_voided
+  payout_account_failed
+  payout_account_verified
   profile_photo_approved
   profile_photo_rejected
   refund_issued
@@ -2411,6 +2767,75 @@ type PayoutBankOption {
   nameTh: String!
 }
 
+"""จุดประสงค์ของรหัสยืนยันทาง SMS"""
+enum PhoneOtpPurpose {
+  """ผูกเบอร์กับบัญชีที่ล็อกอินอยู่ — ต้องส่ง Authorization: Bearer <token>"""
+  LINK
+
+  """ล็อกอินด้วยเบอร์ที่ยืนยันแล้ว"""
+  LOGIN
+
+  """สมัครบัญชีใหม่ด้วยเบอร์โทร"""
+  SIGNUP
+}
+
+type PhoneOtpRequestPayload {
+  """รหัสหมดอายุในกี่วินาที"""
+  expiresInSeconds: Int!
+
+  """ขอรหัสใหม่ได้อีกกี่วินาที (นับจากตอนได้ response)"""
+  resendAfterSeconds: Int!
+}
+
+type PhoneVerificationPayload {
+  """ตั๋วหมดอายุในกี่วินาที"""
+  expiresInSeconds: Int!
+
+  """ตั๋วสำหรับ signUpWithPhone — ทึบ (opaque) ห้าม log"""
+  verificationToken: String!
+}
+
+input ProfessionChangeInput {
+  """general_caregiver | nurse | physiotherapist"""
+  profession: String!
+}
+
+"""คำขอเปลี่ยนวิชาชีพของผู้ดูแลที่ KYC อนุมัติแล้ว (รอแอดมินตรวจ)"""
+type ProfessionChangeRequest {
+  caregiverId: ID!
+  fromProfession: CaregiverProfession!
+  id: ID!
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseDocument: KycDocument
+
+  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  licenseExpiresAt: String
+
+  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  licenseNumber: String
+  rejectionReason: String
+  requestedAt: DateTime!
+  reviewedAt: DateTime
+  status: ProfessionChangeStatus!
+  toProfession: CaregiverProfession!
+}
+
+"""สถานะของคำขอเปลี่ยนวิชาชีพ"""
+enum ProfessionChangeStatus {
+  """แอดมินอนุมัติ — วิชาชีพเปลี่ยนเป็นค่าใหม่แล้ว"""
+  approved
+
+  """ผู้ดูแลยกเลิกเอง — วิชาชีพคงเดิม"""
+  cancelled
+
+  """รอแอดมินตรวจ — วิชาชีพยังเป็นค่าเดิม"""
+  pending
+
+  """แอดมินปฏิเสธ — วิชาชีพคงเดิม (ดู rejectionReason)"""
+  rejected
+}
+
 """A profile photo document with a short-lived signed URL"""
 type ProfilePhotoDocument {
   documentId: ID!
@@ -2432,7 +2857,7 @@ type ProfilePhotoQueueItem {
 
   """kyc_documents.id of the profile photo"""
   documentId: ID!
-  email: String!
+  email: String
   fullName: String!
 
   """True if the caregiver already has an approved profile photo"""
@@ -2548,6 +2973,11 @@ type Query {
   adminPayments(input: AdminPaymentsInput): PaymentConnection!
 
   """
+  Admin only: profession change requests by status (default pending, oldest first; other statuses newest decision first).
+  """
+  adminProfessionChangeRequests(input: AdminProfessionChangeRequestsInput): AdminProfessionChangeRequestPage!
+
+  """
   Admin only: Caregiver profile photos by review status (default pending, oldest first; approved / rejected newest decision first with reviewer and reason). Includes verified caregivers who changed their photo.
   """
   adminProfilePhotoQueue(input: AdminProfilePhotoQueueInput!): AdminProfilePhotoQueuePayload!
@@ -2612,6 +3042,9 @@ type Query {
   Caregiver bookings filtered by status (pending=new requests, accepted=awaiting patient, confirmed+upcoming=active jobs).
   """
   caregiverBookings(input: CaregiverBookingsInput!): CaregiverBookingListResponse!
+
+  """Admin only: care level change history of a caregiver, newest first"""
+  caregiverCareLevelHistory(caregiverId: ID!): [CareLevelChange!]!
 
   """
   รายการรีวิวที่มองเห็นได้ของ caregiver (ใหม่สุดก่อน) พร้อม pagination — public
@@ -2705,6 +3138,16 @@ type Query {
   กลุ่มครอบครัวทั้งหมดที่ฉันเป็นสมาชิกอยู่ (ใหม่สุดก่อน) พร้อมรายชื่อสมาชิกและบทบาทของฉันในแต่ละกลุ่ม. ไม่มีกลุ่ม = คืน array ว่าง ไม่ใช่ error.
   """
   myFamilyGroups: [FamilyGroup!]!
+
+  """
+  All 5 job types for the logged-in caregiver with selectable + blockedReason (PROFESSION_MISMATCH > LICENSE_NOT_APPROVED > LICENSE_EXPIRED). Takes no caregiver id.
+  """
+  myJobTypeOptions: [JobTypeOption!]!
+
+  """
+  Caregiver: latest profession change request of the logged-in caregiver (null = never requested)
+  """
+  myProfessionChangeRequest: ProfessionChangeRequest
 
   """
   Caregiver only: review status of my latest uploaded profile photo (pending / approved / rejected + reason). null if none uploaded yet.
@@ -2846,6 +3289,21 @@ input RejectKycInput {
   reasons: [RejectionReasonItem!]!
 }
 
+input RejectLicenseInput {
+  """kyc_documents.id ของใบประกอบฯ (LicenseInfo.documentId)"""
+  documentId: ID!
+
+  """Reason shown to the caregiver (required — blank is rejected)"""
+  reason: String
+}
+
+input RejectProfessionChangeInput {
+  id: ID!
+
+  """เหตุผลที่แสดงให้ผู้ดูแลเห็น (บังคับ)"""
+  reason: String!
+}
+
 input RejectProfilePhotoInput {
   documentId: ID!
 
@@ -2918,6 +3376,12 @@ type RequestPasswordResetResponse {
 
   """Always true — does not reveal whether the email exists"""
   success: Boolean!
+}
+
+input RequestPhoneOtpInput {
+  """เบอร์มือถือไทย — รับ +66812345678 / 0812345678 / มีขีดหรือช่องว่างได้"""
+  phone: String!
+  purpose: PhoneOtpPurpose!
 }
 
 input ResolveDisputeInput {
@@ -3106,9 +3570,44 @@ input ServiceAreaInput {
   province: String
 }
 
+"""Admin sets or changes the care level of a verified caregiver"""
+input SetCaregiverCareLevelInput {
+  caregiverId: ID!
+
+  """
+  BASIC | INTERMEDIATE | ADVANCED (validated by the service: CARE_LEVEL_REQUIRED / CARE_LEVEL_INVALID)
+  """
+  level: String
+
+  """Required when the level actually changes (max 500 chars)"""
+  reason: String
+}
+
+type SetCaregiverCareLevelPayload {
+  careLevel: CaregiverCareLevelInfo!
+
+  """
+  false when the same level was already set by an admin (no history row written)
+  """
+  changed: Boolean!
+}
+
 input SetTaskDoneInput {
   done: Boolean!
   taskId: ID!
+}
+
+input SignUpWithPhoneInput {
+  """
+  ความยินยอมจากหน้าสมัคร (consentPolicy source: register) — ต้องมี terms_of_service และ privacy_policy ที่ granted = true ไม่งั้นสมัครไม่ได้ (CONSENT_REQUIRED)
+  """
+  consents: [ConsentAnswerInput!]
+
+  """1 = ผู้สูงอายุ, 2 = ผู้ดูแล"""
+  role: Int!
+
+  """ตั๋วจาก verifyPhoneOtp"""
+  verificationToken: String!
 }
 
 """Caregiver search sort order"""
@@ -3164,7 +3663,7 @@ type TransactionDetail {
 
 type TransactionParty {
   displayName: String
-  email: String!
+  email: String
   id: ID!
 }
 
@@ -3347,8 +3846,13 @@ input UpdateWorkConditionInput {
 }
 
 input UploadDocumentInput {
-  """Document type: id_card_front | id_card_selfie | certificate"""
+  """
+  Document type: id_card_front | id_card_selfie | certificate | professional_license | driving_license
+  """
   docType: String!
+
+  """Document expiry date (Asia/Bangkok calendar day; must be after today)"""
+  expiresAt: DateTime
 
   """Original file name"""
   fileName: String!
@@ -3358,6 +3862,11 @@ input UploadDocumentInput {
 
   """Storage path (<uid>/<file>) หรือ URL เต็มของ bucket kyc-documents"""
   fileUrl: String!
+
+  """
+  Professional license number (required when docType = professional_license; trimmed, max 50)
+  """
+  licenseNumber: String
 
   """MIME type: image/jpeg | image/png | application/pdf"""
   mimeType: String!
@@ -3385,8 +3894,8 @@ type User {
   """District (อำเภอ/เขต)"""
   district: String
 
-  """Email address of the user"""
-  email: String!
+  """Email address of the user (null for phone-only accounts)"""
+  email: String
 
   """Whether the user receives email notifications"""
   emailPreferences: Boolean!
@@ -3415,6 +3924,11 @@ type User {
   """Phone number"""
   phone: String
 
+  """
+  เบอร์ใน phone ยืนยันแล้วและใช้ล็อกอินได้ (Supabase Auth) — ผู้ใช้เดิมเป็น false จนกว่าจะผูกเบอร์
+  """
+  phoneVerified: Boolean!
+
   """Postal code (รหัสไปรษณีย์)"""
   postalCode: String
 
@@ -3442,8 +3956,8 @@ type UserSummary {
   """Display name"""
   displayName: String
 
-  """User email"""
-  email: String!
+  """User email (null for phone-only accounts)"""
+  email: String
 
   """User UUID"""
   id: ID!
@@ -3457,11 +3971,23 @@ type UserSummary {
   """KYC status: none | pending | verified | rejected (role=2 only)"""
   kycStatus: String
 
+  """Profile phone number (0XXXXXXXXX)"""
+  phone: String
+
   """Role ID: 1=patient, 2=caregiver, 3=admin, 4=super_admin"""
   role: Int!
 
   """When this account is scheduled to be permanently deleted"""
   scheduledDeleteAt: DateTime
+}
+
+input VerifyPhoneOtpInput {
+  """รหัสยืนยันจาก SMS"""
+  code: String!
+  phone: String!
+
+  """ต้องเป็น SIGNUP"""
+  purpose: PhoneOtpPurpose!
 }
 
 """KYC submission and approval counts for a single week"""

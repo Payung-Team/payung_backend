@@ -31,6 +31,9 @@ import {
   AvailabilitySlot,
   WorkCondition,
 } from './entities/work-condition.entity';
+import { JobTypeEligibilityService } from './job-type/job-type-eligibility.service';
+import { JobTypeOption } from './job-type/job-type-option.entity';
+import { JobTypeBlockedReasonEnum } from './job-type/job-type-option.entity';
 
 /**
  * Shape ของ caregiver + relation ที่เราต้องใช้ map เป็น WorkCondition
@@ -50,7 +53,10 @@ type CaregiverWithWorkCondition = {
 export class WorkConditionService {
   private readonly logger = new Logger(WorkConditionService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jobTypeEligibility: JobTypeEligibilityService,
+  ) {}
 
   // ─── READ ─────────────────────────────────────────────────────────────────
 
@@ -71,6 +77,25 @@ export class WorkConditionService {
     this.assertVerifiedCaregiver(caregiver);
 
     return this.toEntity(caregiver as unknown as CaregiverWithWorkCondition);
+  }
+
+  /**
+   * myJobTypeOptions — รายการประเภทงานครบ 5 ค่าของผู้ดูแลที่ login อยู่ พร้อมเลือกได้/เหตุผล (PYG-592)
+   * ตอบตามผู้ใช้จาก session เท่านั้น ไม่รับ id ของผู้ดูแลคนอื่น · ไม่บังคับ KYC verified (อ่านอย่างเดียว)
+   */
+  async getJobTypeOptions(userId: string): Promise<JobTypeOption[]> {
+    const caregiver = await this.prisma.caregiver.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!caregiver) throw new NotFoundException('Caregiver not found');
+
+    const evaluations = await this.jobTypeEligibility.evaluateAll(caregiver.id);
+    return evaluations.map((e) => ({
+      jobType: e.jobType,
+      selectable: e.selectable,
+      blockedReason: (e.blockedReason as JobTypeBlockedReasonEnum | null) ?? null,
+    }));
   }
 
   // ─── WRITE (upsert) ─────────────────────────────────────────────────────────
@@ -104,6 +129,17 @@ export class WorkConditionService {
     const caregiverId = existing!.id;
 
     await this.prisma.$transaction(async (tx) => {
+      // PYG-592: ตรวจประเภทงาน "ก่อนเขียนอะไรทั้งสิ้น" ใน tx เดียวกับการเขียน — ไม่ผ่านแม้รายการเดียว = โยน 422 ทั้งคำขอ
+      //   ไม่มี section ไหนถูกเขียน (E4) · ตรวจรายการทั้งหมดที่ส่งมา รวมที่มีอยู่เดิม
+      //   (E5: ประเภทไม่ผ่านที่ค้างอยู่ต้องเอาออกจากรายการก่อนจึงบันทึกได้)
+      const dedupedJobTypes =
+        input.jobTypes !== undefined
+          ? [...new Set(input.jobTypes.map((t) => t.trim()).filter(Boolean))]
+          : undefined;
+      if (dedupedJobTypes !== undefined) {
+        await this.jobTypeEligibility.assertAllowed(caregiverId, dedupedJobTypes, tx);
+      }
+
       // ── 1) availability: replace-all ──────────────────────────────────────
       if (input.availability !== undefined) {
         await tx.caregiverAvailability.deleteMany({ where: { caregiverId } });
@@ -146,13 +182,8 @@ export class WorkConditionService {
       }
 
       // ── 3) jobTypes: replace-all ──────────────────────────────────────────
-      if (input.jobTypes !== undefined) {
+      if (dedupedJobTypes !== undefined) {
         await tx.caregiverJobType.deleteMany({ where: { caregiverId } });
-
-        // dedupe + ตัดค่าว่าง → กันชน unique [caregiverId, jobType]
-        const dedupedJobTypes = [
-          ...new Set(input.jobTypes.map((t) => t.trim()).filter(Boolean)),
-        ];
 
         if (dedupedJobTypes.length > 0) {
           await tx.caregiverJobType.createMany({

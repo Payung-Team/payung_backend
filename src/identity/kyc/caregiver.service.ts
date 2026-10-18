@@ -28,6 +28,15 @@ import {
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
 import { CareSkillService } from '../../care-skill/care-skill.service';
+import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
+import { DRIVING_LICENSE_REVIEW_ACTION } from './driving-license/driving-license.constants';
+import {
+  PAYOUT_ACCOUNT_NOT_READY,
+  PAYOUT_NOT_READY_MESSAGES,
+  evaluatePayoutReadiness,
+} from '../../payment/payout-account-readiness';
+import { CaregiverProfession } from './profession.constants';
+import { careLevelFromDb } from '../../common/care-level/care-level';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -58,6 +67,8 @@ type PrismaCaregiver = {
   phone: string | null;
   skills: string[];
   otherSkills: string[];
+  /** PYG-556: 'general_caregiver' | 'nurse' | 'physiotherapist' (CHECK ใน DB) */
+  profession: string;
   experienceYears: number | null;
   hourlyRate: number | null;
   bio: string | null;
@@ -69,6 +80,7 @@ type PrismaCaregiver = {
   resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
+  careLevel?: string | null; // PYG-581: optional — ไม่ส่ง = ยังไม่มีระดับ
 };
 
 /** ข้อมูลสำหรับสร้าง caregiver ใหม่ */
@@ -117,6 +129,8 @@ export class CaregiverService {
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
       otherSkills: caregiver.otherSkills ?? [],
+      // DB มี CHECK 3 ค่า → cast ได้ปลอดภัย (ค่าเดียวกับ enum)
+      profession: caregiver.profession as CaregiverProfession,
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,
@@ -128,6 +142,8 @@ export class CaregiverService {
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      // PYG-581: 'basic' → CareLevel.BASIC (GraphQL ส่งออกเป็น "BASIC") · null → undefined (= ยังไม่มีระดับ)
+      careLevel: careLevelFromDb(caregiver.careLevel) ?? undefined,
     };
   }
 
@@ -382,6 +398,24 @@ export class CaregiverService {
       );
     }
 
+    // ── 2.5: Guard — เปิดรับงาน (true) ต้องมีบัญชีรับเงินที่ Omise accept แล้ว ──
+    // ปิด (false) ทำได้เสมอ — caregiver ต้องหยุดรับงานได้โดยไม่ติดเงื่อนไข
+    // KYC อนุมัติแยกจากสถานะ Omise (ตัวเลือก C) จึงต้องกันที่จุดนี้แทน
+    if (isSearchable) {
+      const payoutAccount = await this.prismaService.caregiverPayoutAccount.findUnique({
+        where: { caregiverId: existing.id },
+        select: { status: true, recipientStatus: true, omiseRecipientId: true },
+      });
+      const readiness = evaluatePayoutReadiness(payoutAccount);
+      if (!readiness.ready) {
+        throw new ForbiddenException({
+          code: PAYOUT_ACCOUNT_NOT_READY,
+          reason: readiness.reason,
+          message: PAYOUT_NOT_READY_MESSAGES[readiness.reason!],
+        });
+      }
+    }
+
     // ── 3: อัปเดต is_searchable ─────────────────────────────────
     const caregiver = await this.prismaService.caregiver.update({
       where: { userId },
@@ -580,12 +614,37 @@ export class CaregiverService {
     }
   }
 
+  /**
+   * PYG-587: เหตุผลที่ปฏิเสธใบประกอบฯ ล่าสุดของแต่ละเอกสาร (จาก kyc_reviews.document_id)
+   * เฉพาะเอกสารที่สถานะ rejected — ประวัติปฏิเสธเดิมของใบอื่นไม่ปน (E6)
+   */
+  private async loadLicenseRejectionReasons(
+    docs: Array<{ id: string; reviewStatus: string | null }>,
+  ): Promise<Map<string, string>> {
+    const rejectedIds = docs
+      .filter((d) => d.reviewStatus === LICENSE_STATUS.REJECTED)
+      .map((d) => d.id);
+    const reasons = new Map<string, string>();
+    if (rejectedIds.length === 0) return reasons;
+
+    const reviews = await this.prismaService.kycReview.findMany({
+      where: { documentId: { in: rejectedIds }, action: { in: [LICENSE_REVIEW_ACTION.REJECTED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED] } },
+      orderBy: { reviewedAt: 'desc' },
+      select: { documentId: true, reason: true },
+    });
+    for (const r of reviews) {
+      if (r.documentId && r.reason && !reasons.has(r.documentId)) reasons.set(r.documentId, r.reason);
+    }
+    return reasons;
+  }
+
   private async signDocuments(
     docs: Awaited<ReturnType<CaregiverService['loadDocs']>>,
   ): Promise<KycDocument[]> {
     if (docs.length === 0) return [];
 
     const supabase = this.supabaseService.getAdminClient();
+    const rejectionReasons = await this.loadLicenseRejectionReasons(docs);
 
     const enriched = await Promise.all(
       docs.map(async (doc) => {
@@ -601,6 +660,11 @@ export class CaregiverService {
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
           uploadedAt: doc.uploadedAt,
+          // PYG-587: field เพิ่มฝั่งอ่าน (client เก่าไม่เห็น ไม่พัง)
+          licenseNumber: doc.licenseNumber ?? undefined,
+          expiresAt: doc.expiresAt ?? undefined,
+          reviewStatus: doc.reviewStatus ?? undefined,
+          rejectionReason: rejectionReasons.get(doc.id),
         };
 
         // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก

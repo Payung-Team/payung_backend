@@ -15,6 +15,8 @@ import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.s
 import { PayoutAccountService } from '../../payment/payout-account.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CareSkillService } from '../../care-skill/care-skill.service';
+import { ClockService } from '../../common/clock.service';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
 import {
   CARE_SKILL_ERROR,
   CareSkillError,
@@ -123,6 +125,8 @@ describe('ทักษะผู้ดูแลตอนบันทึก (PYG-6
         { provide: PayoutEncryptionService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
         { provide: CareSkillService, useValue: careSkill },
+        ClockService,
+        { provide: DrivingLicenseService, useValue: { assertForKyc: jest.fn() } },
       ],
     }).compile();
 
@@ -188,6 +192,7 @@ describe('ทักษะผู้ดูแลตอนบันทึก (PYG-6
     const user = { id: USER_ID } as AuthUser;
     const input = (overrides: Partial<KycInput> = {}) =>
       ({
+        profession: 'general_caregiver', // PYG-575: บังคับส่ง
         fullName: 'สมศรี ใจดี',
         idCardNumber: '1234567890123',
         phone: '0812345678',
@@ -197,7 +202,14 @@ describe('ทักษะผู้ดูแลตอนบันทึก (PYG-6
         ...overrides,
       }) as KycInput;
 
-    it('ยื่นครั้งแรก (ยังไม่มีแถว) → ตรวจด้วยวิชาชีพ default general_caregiver · otherSkills = []', async () => {
+    beforeEach(() => {
+      // nurse / physiotherapist ต้องมีใบประกอบฯ ตั้งแต่ PYG-587 — ด่านนั้นมีเทสของตัวเอง (kyc-license-gate.spec)
+      jest
+        .spyOn(kycService as unknown as { assertLicenseForKyc: () => Promise<void> }, 'assertLicenseForKyc')
+        .mockResolvedValue(undefined);
+    });
+
+    it('ยื่นครั้งแรก (ยังไม่มีแถว) → ตรวจด้วยวิชาชีพที่ส่งมา · otherSkills = []', async () => {
       prisma.caregiver.findUnique.mockResolvedValueOnce(null);
       await kycService.submitKyc(user, input());
       expect(careSkill.assertSkillsAllowed).toHaveBeenCalledWith(
@@ -207,16 +219,33 @@ describe('ทักษะผู้ดูแลตอนบันทึก (PYG-6
       expect(upsertArg().create.otherSkills).toEqual([]);
     });
 
-    it('ยื่นซ้ำ → ตรวจด้วยวิชาชีพของแถวเดิม · ไม่ส่ง otherSkills = คงค่าเดิม', async () => {
+    it('ยื่นครั้งแรกเป็น nurse (ยังไม่มีแถว) → ตรวจด้วย nurse ไม่ใช่ค่า default ของคอลัมน์', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(null);
+      await kycService.submitKyc(user, input({ profession: 'nurse', skills: ['injection'] }));
+      expect(careSkill.assertSkillsAllowed).toHaveBeenCalledWith(['injection'], 'nurse');
+    });
+
+    it('ยื่นซ้ำ → ตรวจด้วยวิชาชีพที่ส่งมาในรอบนี้ · ไม่ส่ง otherSkills = คงค่าเดิม', async () => {
       prisma.caregiver.findUnique.mockResolvedValueOnce(
         row({ kycStatus: 'rejected', profession: 'physiotherapist' }),
       );
-      await kycService.submitKyc(user, input({ skills: ['physiotherapy'] }));
+      await kycService.submitKyc(
+        user,
+        input({ profession: 'physiotherapist', skills: ['physiotherapy'] }),
+      );
       expect(careSkill.assertSkillsAllowed).toHaveBeenCalledWith(
         ['physiotherapy'],
         'physiotherapist',
       );
       expect(upsertArg().update).not.toHaveProperty('otherSkills');
+    });
+
+    it('ยื่นซ้ำแล้วเปลี่ยนจาก nurse เป็น general_caregiver → ตรวจด้วย general_caregiver (ทักษะเฉพาะพยาบาลถูกปฏิเสธ)', async () => {
+      prisma.caregiver.findUnique.mockResolvedValueOnce(
+        row({ kycStatus: 'rejected', profession: 'nurse' }),
+      );
+      await kycService.submitKyc(user, input({ skills: ['injection'] }));
+      expect(careSkill.assertSkillsAllowed).toHaveBeenCalledWith(['injection'], 'general_caregiver');
     });
 
     it('ส่ง otherSkills มา → เขียนทั้งตอนสร้างและตอนยื่นซ้ำ', async () => {

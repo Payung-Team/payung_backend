@@ -210,6 +210,8 @@ export class KycResolver {
       fileName: input.fileName,
       fileSize: input.fileSize,
       mimeType: input.mimeType,
+      licenseNumber: input.licenseNumber,
+      expiresAt: input.expiresAt,
     });
   }
 

@@ -12,7 +12,7 @@ import { SortByEnum } from './dto/search-caregiver.input';
 type RawRow = {
   id: string; full_name: string | null; avatar_url: string | null;
   hourly_rate: number | null; avg_rating: number | null; review_count: bigint;
-  skills: string[]; province: string | null; district: string | null;
+  skills: string[]; profession: string; province: string | null; district: string | null;
   gender: string | null; total_count: bigint;
 };
 
@@ -20,7 +20,7 @@ function row(overrides: Partial<RawRow> = {}): RawRow {
   return {
     id: 'cg-1', full_name: 'สมชาย ใจดี', avatar_url: null,
     hourly_rate: 350, avg_rating: 4.5, review_count: BigInt(12),
-    skills: ['bathing'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+    skills: ['bathing'], profession: 'general_caregiver', province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
     gender: 'male', total_count: BigInt(1),
     ...overrides,
   };
@@ -124,6 +124,18 @@ describe('SearchService', () => {
       gender: 'male',
     });
     expect(result.pagination).toMatchObject({ page: 1, limit: 10, total: 1, totalPages: 1 });
+  });
+
+  // PYG-556 · S01-AC3: ป้ายวิชาชีพบนการ์ดหน้า List
+  it('selects c.profession and maps it to CaregiverSummary.profession', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      row({ profession: 'physiotherapist' }),
+    ]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(getSql(prisma.$queryRaw)).toContain('c.profession');
+    expect(result.data[0].profession).toBe('physiotherapist');
   });
 
   it('maps gender to undefined when the caregiver never filled it in', async () => {

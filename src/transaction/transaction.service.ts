@@ -43,7 +43,7 @@ type PaymentRow = {
   paymentMethod: string;
   paymentStatus: string;
   createdAt: Date;
-  patient: { id: string; displayName: string | null; email: string };
+  patient: { id: string; displayName: string | null; email: string | null }; // PYG-603: email null ได้
 };
 
 type PaymentDetailRow = PaymentRow & {
@@ -60,7 +60,7 @@ type PayoutRow = {
   createdAt: Date;
   caregiver: {
     id: string;
-    user: { id: string; displayName: string | null; email: string };
+    user: { id: string; displayName: string | null; email: string | null }; // PYG-603: email null ได้
   };
 };
 
