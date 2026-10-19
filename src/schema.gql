@@ -180,13 +180,17 @@ type AdminProfessionChangeRequest {
   fromProfession: CaregiverProfession!
   id: ID!
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """
+  Attached professional license (no signedUrl here — view it via kycStatus / adminKycDetail)
+  """
   licenseDocument: KycDocument
 
-  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  """
+  Expiry of the attached license 'YYYY-MM-DD' (Asia/Bangkok) · null when none
+  """
   licenseExpiresAt: String
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """License number of the attached professional license (null when none)"""
   licenseNumber: String
   rejectionReason: String
   requestedAt: DateTime!
@@ -2796,6 +2800,11 @@ type PhoneVerificationPayload {
 }
 
 input ProfessionChangeInput {
+  """
+  kyc_documents.id of an uploaded professional_license. Required when the new profession needs a license (nurse, physiotherapist).
+  """
+  licenseDocumentId: ID
+
   """general_caregiver | nurse | physiotherapist"""
   profession: String!
 }
@@ -2806,13 +2815,17 @@ type ProfessionChangeRequest {
   fromProfession: CaregiverProfession!
   id: ID!
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """
+  Attached professional license (no signedUrl here — view it via kycStatus / adminKycDetail)
+  """
   licenseDocument: KycDocument
 
-  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  """
+  Expiry of the attached license 'YYYY-MM-DD' (Asia/Bangkok) · null when none
+  """
   licenseExpiresAt: String
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """License number of the attached professional license (null when none)"""
   licenseNumber: String
   rejectionReason: String
   requestedAt: DateTime!
