@@ -8,6 +8,9 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { assertBookingAssessment } from '../assessment/assessment-booking-gate';
+import { lockRequiredSkillRecipient, recalculateBookingRequiredSkills } from './required-skills/required-skills.persistence';
+import { readSavedRequiredSkills } from './required-skills/required-skills.read';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
@@ -54,8 +57,6 @@ import {
 } from '../family-group/family-group.errors';
 import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-behalf.input';
 import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
-// PYG-460: แปลงข้อความไทยจากฟอร์ม → คอลัมน์/enum ของ care_recipients (ตาราง mapping ที่เดียว)
-import { toCareRecipientColumns } from '../patient/patient-profile.mapper';
 // PYG-516/517: ชื่อตามบัญชี — ฟังก์ชันเดียวที่ทั้งระบบใช้
 import {
   ACCOUNT_NAME_SELECT,
@@ -208,11 +209,7 @@ export interface OnBehalfContext {
    * undefined = ไม่ได้กรอก → คอลัมน์เป็น NULL (พฤติกรรมเดิม)
    */
   memberDetails?: MemberDetailsInput;
-  /**
-   * PYG-500: สมาชิกยังไม่มีโปรไฟล์ในกลุ่ม → ข้อมูลใบใหม่ที่ต้องสร้าง "ใน transaction เดียวกับ booking"
-   * undefined = มีโปรไฟล์อยู่แล้ว (dto.careRecipientId ถูกเซ็ตมาแล้ว)
-   */
-  newRecipient?: Prisma.CareRecipientUncheckedCreateInput;
+
 }
 
 @Injectable()
@@ -332,15 +329,14 @@ export class BookingService {
   ): Promise<BookingSummary> {
     // PYG-516 (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 / PYG-495)
     //   ชื่อ-นามสกุลของผู้รับบริการเป็น "ตัวตน" ของเจ้าของบัญชี คนจองแทนพิมพ์ทับไม่ได้
-    //   ★ ด่านอยู่ก่อนทุกเส้นทาง เพราะช่องโหว่เกิดได้ทั้งตอนสร้างโปรไฟล์ใหม่ (สาขา ③)
-    //     และตอนเขียน bookings.patient_name (createBookingRecord) — กันที่เดียวจบ
+    // Apply before every recipient path and before writing bookings.patient_name.
     if (input.patientName !== undefined) {
       throw new PatientNameNotAllowedError();
     }
 
     // PYG-499: คนกดจอง (ผู้เรียก) เป็นผู้สูงอายุที่ยังไม่ผ่าน Onboarding → ONBOARDING_REQUIRED
     //   ★ ตรวจ "คนกดจอง" ไม่ใช่สมาชิกที่ถูกจองให้ — การ์ดกันผู้เรียกที่ข้ามหน้า Onboarding
-    //     สมาชิกที่ยังไม่มีข้อมูลยังถูกจองแทนได้ตามสาขา ③ ของ resolveGroupPatientProfile
+    //     S08 additionally requires a persisted, assessed recipient profile.
     //   ★ อยู่ก่อนอ่านข้อมูลกลุ่ม/โปรไฟล์ใด ๆ — ไม่ผ่านด่านก็ไม่มีเหตุให้ไปอ่านข้อมูลสุขภาพของใคร
     //   ★ GraphQL ต้องโยน GraphQLError (extensions.code) — ดู onboarding-gate.ts
     if (await this.needsOnboarding(bookerId)) {
@@ -356,7 +352,6 @@ export class BookingService {
     // ที่นี่เหลือการ resolve ว่า booking ใบนี้ผูกกับโปรไฟล์ผู้รับบริการใบไหน (careRecipientId)
     let recipientId: string | undefined;
     let recipientName: string;
-    let newRecipient: Prisma.CareRecipientUncheckedCreateInput | undefined;
 
     if (input.memberUserId && input.careRecipientId) {
       const membership = await this.prisma.familyGroupMember.findFirst({
@@ -382,16 +377,14 @@ export class BookingService {
       recipientId = recipient.id;
       recipientName = recipient.name;
     } else if (input.memberUserId) {
-      // PYG-500 — โมเดลใหม่: patient คือ "สมาชิกในกลุ่ม" ระบบหา/สร้างโปรไฟล์ให้อัตโนมัติ
+      // Resolve the existing profile for this member; S08 blocks provisioning during booking.
       const resolved = await this.resolveGroupPatientProfile(
         input.groupId,
         input.memberUserId,
         bookerId,
-        input.memberDetails,
       );
       recipientId = resolved.id;
       recipientName = resolved.name;
-      newRecipient = resolved.create;
     } else if (input.careRecipientId) {
       // เส้นทางเดิม (PYG-424): อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
       // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
@@ -449,7 +442,6 @@ export class BookingService {
         recipientName,
         // PYG-385: undefined เมื่อไม่ได้กรอก — createBookingRecord จะไม่แตะคอลัมน์ให้ (คง NULL)
         memberDetails: input.memberDetails,
-        newRecipient,
       },
     );
 
@@ -457,39 +449,15 @@ export class BookingService {
     return this.toSummary(booking);
   }
 
-  /**
-   * PYG-500 — หา/สร้าง "โปรไฟล์ผู้รับบริการในกลุ่ม" ของสมาชิกที่ถูกจองแทน (โมเดลสมาชิก = patient)
-   *
-   * ลำดับความสำคัญ (ตามที่เจ้าของสรุปไว้):
-   *   ① มีโปรไฟล์ในกลุ่มของสมาชิกคนนี้อยู่แล้ว → ใช้ใบนั้น (ไม่แตะ self_reported เดิม)
-   *   ② ยังไม่มี แต่สมาชิกมี "โปรไฟล์ส่วนตัว" อยู่ → คัดลอกข้อมูลนั้นเข้ากลุ่ม, self_reported = true
-   *      (= ข้อมูลจากเจ้าตัว) เก็บเป็น snapshot ไม่ผูกกับโปรไฟล์ส่วนตัวเดิม เพื่อไม่ให้แก้ทีหลังย้อนกระทบ
-   *   ③ ไม่มีข้อมูลเลย → สร้างใบใหม่ด้วย **ชื่อจากบัญชีของสมาชิก** (PYG-516)
-   *      ข้อมูลสุขภาพยังให้คนจองกรอกได้, self_reported = false (= คนอื่นกรอกให้)
-   *
-   * PYG-516 — ทำไมไม่ rename ใบเดิมในสาขา ① ให้ตรงกับบัญชี:
-   *   `care_recipients.patient_id` มีความหมายปนกันสองแบบในข้อมูลจริง — เส้นทางใหม่เก็บ
-   *   "ตัวผู้รับบริการ" แต่แถวเก่าจาก addGroupCareRecipient เก็บ "คนที่สร้างใบ"
-   *   rename ตามบัญชีของ patient_id จะทำให้ใบ "คุณยาย" ที่ลูกสร้างไว้กลายเป็นชื่อลูกทันที
-   *   → การ์ดนี้ล็อกแค่ "ชื่อที่ไหลเข้า booking" การแยกความหมายของคอลัมน์เป็นอีกตั๋ว
-   *
-   * patientId ของโปรไฟล์ที่สร้าง = memberUserId (subject) เสมอ — เพื่อให้ลิสต์/ฟีดของกลุ่ม
-   * อ้างกลับได้ว่า "โปรไฟล์นี้คือของสมาชิกคนไหน" (FE ก็ key ด้วย patientId อยู่แล้ว)
-   *
-   * ★ ที่นี่ "อ่านอย่างเดียว" — สาขา ②/③ คืนข้อมูลใบใหม่ (`create`) ไปให้ createBookingRecord
-   *   สร้างใน transaction เดียวกับ booking (ขั้น ⓪ ในนั้น) ซึ่งแก้สองอาการของ PYG-427:
-   *   - _34(b) booking ล้ม → เดิมโปรไฟล์ค้างพร้อมข้อมูลสุขภาพที่คนจองกรอกให้โดยไม่มี booking รองรับ
-   *   - _31 จองแทนคนเดียวกันพร้อมกัน → เดิมทั้งคู่ไม่เจอใบเดิม แล้วต่างคนต่างสร้าง ได้โปรไฟล์ซ้ำ
-   */
+  /** Resolve an existing shared profile; S08 requires it to be assessed before
+   * booking. A missing profile is never provisioned or copied by booking now. */
   private async resolveGroupPatientProfile(
     groupId: string,
     memberUserId: string,
     bookerId: string,
-    memberDetails?: MemberDetailsInput,
   ): Promise<{
     id?: string;
     name: string;
-    create?: Prisma.CareRecipientUncheckedCreateInput;
   }> {
     // subject ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้ (guard ตรวจแค่ "ผู้เรียก" ไม่ได้ตรวจ "คนที่ถูกจองให้")
     const membership = await this.prisma.familyGroupMember.findFirst({
@@ -498,8 +466,7 @@ export class BookingService {
     });
     if (!membership) throw new MemberNotFoundError();
 
-    // PYG-540: เจ้าของข้อมูลถอนความยินยอมไว้ → หยุดก่อนแตะ care_recipients ทุกอย่าง
-    // (ขั้น ②/③ ข้างล่าง "สร้าง/คัดลอก" ข้อมูลสุขภาพเข้ากลุ่ม ซึ่งคือสิ่งที่เขาถอนไปแล้ว)
+    // Preserve existing consent checks before looking up a shared profile.
     // ★ อยู่หลังเช็คสมาชิก — คนนอกกลุ่มจะใช้ error นี้แอบดูความยินยอมของใครไม่ได้
     await this.assertOnBehalfConsents(memberUserId, bookerId, groupId);
 
@@ -511,54 +478,7 @@ export class BookingService {
     });
     if (existing) return existing;
 
-    // ② คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก (familyGroupId = null) — เอาใบที่เป็น is_self ก่อน แล้วใบล่าสุด
-    const personal = await this.prisma.careRecipient.findFirst({
-      where: { patientId: memberUserId, familyGroupId: null, is_deleted: false },
-      orderBy: [{ is_self: 'desc' }, { updated_at: 'desc' }],
-    });
-    if (personal) {
-      return {
-        name: personal.name,
-        create: {
-          patientId:               memberUserId,
-          familyGroupId:           groupId,
-          self_reported:           true,
-          name:                    personal.name,
-          nickname:                personal.nickname,
-          date_of_birth:           personal.date_of_birth,
-          gender:                  personal.gender,
-          weight_kg:               personal.weight_kg,
-          height_cm:               personal.height_cm,
-          mobility_level:          personal.mobility_level,
-          medical_conditions:      personal.medical_conditions,
-          current_medications:     personal.current_medications,
-          allergies:               personal.allergies,
-          blood_type:              personal.blood_type,
-          address_line:            personal.address_line,
-          province:                personal.province,
-          district:                personal.district,
-          emergency_contact_name:  personal.emergency_contact_name,
-          emergency_contact_phone: personal.emergency_contact_phone,
-          emergency_contact_rel:   personal.emergency_contact_rel,
-          preferred_hospital:      personal.preferred_hospital,
-          care_notes:              personal.care_notes,
-        },
-      };
-    }
-
-    // ③ สมาชิกยังไม่มีข้อมูลเลย → คนจองกรอก "ข้อมูลสุขภาพ" ให้ได้
-    //    แต่ชื่อมาจากบัญชีของสมาชิกเสมอ (PYG-516)
-    const name = await this.resolveMemberAccountName(memberUserId);
-    return {
-      name,
-      create: {
-        patientId:           memberUserId,
-        familyGroupId:       groupId,
-        self_reported:       false,
-        name,
-        ...(memberDetails ? toCareRecipientColumns(memberDetails) : {}),
-      },
-    };
+    return { name: await this.resolveMemberAccountName(memberUserId) };
   }
 
 
@@ -652,9 +572,9 @@ export class BookingService {
     if (dto.careRecipientId && !onBehalf) {
       const recipient = await this.prisma.careRecipient.findUnique({
         where: { id: dto.careRecipientId },
-        select: { patientId: true },
+        select: { patientId: true, is_deleted: true },
       });
-      if (!recipient) throw new NotFoundException('Care recipient not found');
+      if (!recipient || recipient.is_deleted) throw new NotFoundException('Care recipient not found');
       if (recipient.patientId !== patientId)
         throw new ForbiddenException('Care recipient does not belong to this patient');
     }
@@ -747,14 +667,14 @@ export class BookingService {
      * ไม่มี careRecipientId (จองให้ตัวเอง) = ผู้รับบริการคือ patient เอง
      * → กลับไปใช้ patientId เหมือนเดิมทุกประการ พฤติกรรมเดิมไม่เปลี่ยน
      *
-     * PYG-500: จองแทนสมาชิกที่ยังไม่มีโปรไฟล์ (newRecipient) → ข้าม โปรไฟล์ที่ยังไม่เกิดไม่มีนัดให้ชน
+     * S08: จองแทนที่ยังไม่มีโปรไฟล์ → ข้ามเช็คเวลาชน แล้วปฏิเสธที่ assessment gate
      *   และถ้าปล่อยไหลลง { patientId } จะกลายเป็นเช็คนัดของ "คนกดจอง" แทนผู้รับบริการ
      */
     const conflictScope = dto.careRecipientId
       ? { careRecipientId: dto.careRecipientId }
       : { patientId };
 
-    const conflicts = onBehalf?.newRecipient
+    const conflicts = onBehalf && !dto.careRecipientId
       ? []
       : await this.prisma.booking.findMany({
           where: {
@@ -862,78 +782,11 @@ export class BookingService {
      *   และไม่มีอะไรในระบบคอยตามซ่อมให้ — ค่า transaction หนึ่งครั้งถูกกว่ามาก
      */
     const booking = await this.prisma.$transaction(async (tx) => {
-      /**
-       * ⓪ PYG-460 — ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" → สร้างโปรไฟล์ก่อน แล้วผูกกับ booking
-       *
-       * อยู่ใน transaction เดียวกันเพราะถ้าแยกกันแล้ว booking พังทีหลัง จะเหลือ
-       * โปรไฟล์ค้างในลิสต์ที่ผู้ใช้ไม่ได้ตั้งใจสร้าง และกดจองใหม่จะได้ซ้ำอีกใบ
-       *
-       * ข้ามเมื่อ:
-       *   - ส่ง careRecipientId มาแล้ว = เลือกโปรไฟล์เดิมอยู่ ไม่ต้องสร้างซ้ำ
-       *   - จองแทน (onBehalf) = โปรไฟล์เป็นของสมาชิกในกลุ่ม ถ้ายังไม่มีจะสร้างที่ ⓪ʹ ข้างล่าง
-       *   - ไม่มีชื่อคนไข้ = ไม่มีอะไรจะตั้งเป็น name ซึ่งเป็นคอลัมน์ NOT NULL
-       */
-      if (dto.saveAsProfile && !dto.careRecipientId && !onBehalf && dto.patientName) {
-        const savedProfile = await tx.careRecipient.create({
-          data: {
-            patientId,
-            name: dto.patientName,
-            ...(dto.patientProfile ? toCareRecipientColumns(dto.patientProfile) : {}),
-          },
-          select: { id: true },
-        });
-        data.careRecipientId = savedProfile.id;
-
-        this.logger.log({
-          event: 'care_recipient.created_from_booking',
-          careRecipientId: savedProfile.id,
-          patientId,
-        });
-      }
-
-      /**
-       * ⓪ʹ PYG-500 — จองแทนสมาชิกที่ยังไม่มีโปรไฟล์ในกลุ่ม → สร้างที่นี่ ไม่ใช่ก่อนเข้า transaction
-       *
-       * - booking ล้ม → โปรไฟล์ rollback ไปด้วย ไม่ค้าง (PYG-427_34b)
-       * - จองแทนคนเดียวกันพร้อมกัน → FOR UPDATE บนแถวสมาชิกทำให้ต่อคิว คนที่มาทีหลัง
-       *   เจอใบที่คนแรกเพิ่งสร้างแล้วใช้ใบนั้น ไม่สร้างซ้ำ (PYG-427_31)
-       *   ได้ตรวจ ACTIVE ซ้ำใน tx ไปด้วย — ถูกเตะระหว่างทางก็ไม่จอง
-       *
-       * ★ ไม่ใช้ unique index (patient_id, family_group_id) กัน: แถวจาก addGroupCareRecipient
-       *   เก็บ patient_id = คนสร้างใบ สมาชิกคนเดียวมีหลายใบในกลุ่มเดียวได้โดยถูกต้อง (ยาย + ตา)
-       */
-      if (onBehalf?.newRecipient) {
-        const profile = onBehalf.newRecipient;
-        const member = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM family_group_members
-          WHERE group_id = ${onBehalf.familyGroupId}::uuid
-            AND user_id = ${profile.patientId}
-            AND status = 'ACTIVE'
-          FOR UPDATE`;
-        if (member.length === 0) throw new MemberNotFoundError();
-
-        const existing = await tx.careRecipient.findFirst({
-          where: { patientId: profile.patientId, familyGroupId: onBehalf.familyGroupId, is_deleted: false },
-          select: { id: true },
-          orderBy: { updated_at: 'desc' },
-        });
-        if (existing) {
-          data.careRecipientId = existing.id;
-        } else {
-          const provisioned = await tx.careRecipient.create({ data: profile, select: { id: true } });
-          data.careRecipientId = provisioned.id;
-
-          this.logger.log({
-            event: 'group_care_recipient.provisioned',
-            groupId: onBehalf.familyGroupId,
-            memberUserId: profile.patientId,
-            careRecipientId: provisioned.id,
-            source: profile.self_reported ? 'personal_profile' : 'booker_filled',
-          });
-        }
-      }
-
+      // S08: legacy name-only/new-profile flows must assess a persisted profile
+      // first. Do not create one here or copy another profile's assessment.
+      await assertBookingAssessment(tx, data.careRecipientId, onBehalf ? 'graphql' : 'rest');
       const created = await tx.booking.create({ data, include });
+      await recalculateBookingRequiredSkills(tx, created.id, onBehalf ? 'graphql' : 'rest');
 
       // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
       // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
@@ -1229,7 +1082,7 @@ export class BookingService {
 
     await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return {
-      booking: this.toRestSummary(updated as unknown as BookingWithIncludes),
+      booking: await this.toRestSummary(updated as unknown as BookingWithIncludes),
       matches,
     };
   }
@@ -1264,13 +1117,23 @@ export class BookingService {
       );
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: 'confirmed', confirmedAt: new Date() },
-      include: {
-        caregiver: { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (booking.careRecipientId) await lockRequiredSkillRecipient(tx, booking.careRecipientId);
+      await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${bookingId}::uuid FOR UPDATE`;
+      const current = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (!current) throw new NotFoundException('Booking not found');
+      if (current.patientId !== userId) throw new ForbiddenException('Access denied');
+      if (current.status !== 'accepted') throw new UnprocessableEntityException('Only bookings with status "accepted" can be confirmed');
+      // Legacy bookings without a recipient keep their unknown skill snapshot.
+      if (current.careRecipientId) await recalculateBookingRequiredSkills(tx, bookingId);
+      return tx.booking.update({
+        where: { id: bookingId },
+        data: { status: 'confirmed', confirmedAt: new Date() },
+        include: {
+          caregiver: { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+      });
     });
 
     this.logger.log({ event: 'booking.confirmed', bookingId, userId });
@@ -1522,7 +1385,9 @@ export class BookingService {
   }
 
   /** REST summary (caregiver may be null for unmatched bookings) */
-  private toRestSummary(booking: BookingWithIncludes): BookingRest {
+  private async toRestSummary(booking: BookingWithIncludes): Promise<BookingRest> {
+    const saved = await readSavedRequiredSkills(this.prisma, [booking.id]);
+    if (!saved.has(booking.id)) throw new NotFoundException('Booking not found');
     const caregiver: CaregiverBriefRest | undefined = booking.caregiver
       ? {
           id:         booking.caregiver.id,
@@ -1535,6 +1400,7 @@ export class BookingService {
 
     return {
       id:               booking.id,
+      requiredSkills:   saved.get(booking.id)!,
       bookingDate:      booking.bookingDate instanceof Date
                           ? booking.bookingDate.toISOString().slice(0, 10)
                           : String(booking.bookingDate),

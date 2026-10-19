@@ -83,6 +83,7 @@ describe('BookingService — new REST methods', () => {
     user:          { findUnique: jest.Mock };
     caregiverAvailability: { findMany: jest.Mock };
     servicePriceCatalog: { findUnique: jest.Mock };
+    $queryRaw: jest.Mock;
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -95,7 +96,13 @@ describe('BookingService — new REST methods', () => {
     //   → ต่อ tx.booking.create ให้วิ่งกลับไปที่ prisma.booking.create ตัวเดิม
     //     เทสด้านล่างทั้งหมดจึงยัง assert ผ่าน prisma.booking.create ได้เหมือนเดิม ไม่ต้องแก้
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'recipient' }]),
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, flags: [], hasUnsureFlag: false }) },
+      careSkillRule: { findMany: jest.fn().mockResolvedValue([]) },
+      bookingRequiredSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
       booking: {
+        findUnique: jest.fn().mockResolvedValue({ careRecipientId: 'recipient' }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ careRecipientId: 'recipient', status: 'unmatched', confirmedAt: null, activities: [] }),
         update: jest.fn((args) => prisma.booking.update(args)),
         create: jest.fn((args) => prisma.booking.create(args)),
       },
@@ -107,6 +114,7 @@ describe('BookingService — new REST methods', () => {
       booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma = {
+      $queryRaw: jest.fn((sql) => Promise.resolve(sql.values.map((id) => ({ id, codes: [], items: [] })))),
       booking: {
         findUnique:        jest.fn(),
         findUniqueOrThrow: jest.fn(),
@@ -115,7 +123,7 @@ describe('BookingService — new REST methods', () => {
         findMany:          jest.fn(),
         count:             jest.fn(),
       },
-      careRecipient: { findUnique: jest.fn(), create: jest.fn() },
+      careRecipient: { findUnique: jest.fn().mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false }), create: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
       // PYG-499: ค่าเริ่มต้น = ผู้สูงอายุที่ผ่าน Onboarding แล้ว (เทสด่านอยู่ที่ booking-onboarding-gate.service.spec.ts)
       user: {
@@ -178,6 +186,7 @@ describe('BookingService — new REST methods', () => {
 
   describe('createBooking', () => {
     const dto: CreateBookingDto = {
+      careRecipientId: '22222222-2222-4222-8222-222222222222',
       tasks:            ['อาบน้ำ'],
       serviceLocations: ['บ้าน'],
       serviceType:      'elderly_care',
@@ -230,6 +239,7 @@ describe('BookingService — new REST methods', () => {
 
     describe('PYG-523 เวลาเริ่ม–สิ้นสุด', () => {
       const newDto: CreateBookingDto = {
+        careRecipientId: '22222222-2222-4222-8222-222222222222',
         tasks:            ['อาบน้ำ'],
         serviceLocations: ['บ้าน'],
         serviceType:      'elderly_care',
@@ -379,6 +389,7 @@ describe('BookingService — new REST methods', () => {
     describe('PYG-524 เช็ค caregiver_availability ตอนจอง', () => {
       // 2026-07-01 = วันพุธ (dayOfWeek = 3)
       const availDto: CreateBookingDto = {
+        careRecipientId: '22222222-2222-4222-8222-222222222222',
         tasks:            ['อาบน้ำ'],
         serviceLocations: ['บ้าน'],
         serviceType:      'elderly_care',
@@ -458,6 +469,7 @@ describe('BookingService — new REST methods', () => {
 
     describe('PYG-544 เช็คเวลาชนกับงานที่ผู้ดูแลรับไว้แล้วตอนจอง', () => {
       const busyDto: CreateBookingDto = {
+        careRecipientId: '22222222-2222-4222-8222-222222222222',
         tasks:            ['อาบน้ำ'],
         serviceLocations: ['บ้าน'],
         serviceType:      'elderly_care',
@@ -589,34 +601,13 @@ describe('BookingService — new REST methods', () => {
       expect(call.data.memberDetails).toBeUndefined();
     });
 
-    it('saveAsProfile → สร้าง care_recipient แล้วผูกกับ booking ใบเดียวกัน', async () => {
+    it('saveAsProfile without an assessed profile is blocked before creating anything (S08)', async () => {
       prisma.booking.findMany.mockResolvedValue([]);
-      prisma.booking.create.mockResolvedValue(fakeBooking());
-      prisma.careRecipient.create.mockResolvedValue({ id: 'new-recipient-id' });
-
-      await service.createBooking(PATIENT_ID, {
-        ...dto,
-        patientName:    'คุณย่า',
-        saveAsProfile:  true,
-        patientProfile: { supportLevel: 'ช่วยเหลือตัวเองไม่ได้ / ติดเตียง' },
-      });
-
-      // โปรไฟล์เขียนลงคอลัมน์จริง (แปลงเป็น enum) ไม่ใช่เก็บเป็นข้อความไทย
-      const profileCall = prisma.careRecipient.create.mock.calls[0][0] as {
-        data: Record<string, unknown>;
-      };
-      expect(profileCall.data.name).toBe('คุณย่า');
-      expect(profileCall.data.mobility_level).toBe('bedridden');
-
-      // ★ หัวใจของเรื่อง: booking ที่เพิ่งสร้างต้องผูกกับโปรไฟล์ที่เพิ่งสร้าง
-      //   ก่อน PYG-460 คอลัมน์นี้ว่างทั้งตาราง (dry-run: 0 จาก 101 ใบ)
-      const bookingCall = prisma.booking.create.mock.calls[0][0] as {
-        data: Record<string, unknown>;
-      };
-      expect(bookingCall.data.careRecipientId).toBe('new-recipient-id');
-
-      // ทั้งคู่ต้องอยู่ใน transaction เดียว ไม่งั้น booking พังแล้วเหลือโปรไฟล์ค้าง
-      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      await expect(service.createBooking(PATIENT_ID, {
+        ...dto, careRecipientId: undefined, patientName: 'คุณย่า', saveAsProfile: true,
+      })).rejects.toMatchObject({ response: { code: 'ASSESSMENT_REQUIRED', statusCode: 422 } });
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+      expect(prisma.booking.create).not.toHaveBeenCalled();
     });
 
     it('saveAsProfile ไม่สร้างซ้ำเมื่อเลือกโปรไฟล์เดิมอยู่แล้ว', async () => {

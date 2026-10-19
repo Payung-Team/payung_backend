@@ -1,5 +1,7 @@
 import { UseGuards } from '@nestjs/common';
-import { Args, Query, Resolver } from '@nestjs/graphql';
+import { Args, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
+import { CaregiverProfession } from '../identity/kyc/profession.constants';
+import { PROFESSION_LOCKED_SKILLS } from './care-skill.constants';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { CareSkillService } from './care-skill.service';
 import { CareSkillItem } from './entities/care-skill.entity';
@@ -19,6 +21,12 @@ import { CareSkillItem } from './entities/care-skill.entity';
 @UseGuards(SupabaseAuthGuard)
 export class CareSkillResolver {
   constructor(private readonly careSkillService: CareSkillService) {}
+
+  @ResolveField(() => [CaregiverProfession])
+  lockedProfessions(@Parent() skill: CareSkillItem): CaregiverProfession[] {
+    const locked = PROFESSION_LOCKED_SKILLS[skill.code];
+    return locked ? [locked as CaregiverProfession] : [];
+  }
 
   @Query(() => [CareSkillItem], {
     description:

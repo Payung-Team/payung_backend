@@ -1,0 +1,45 @@
+name: S08, S09 and S17 database tests
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  assessment-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pyg609
+          POSTGRES_PASSWORD: pyg609-local-test
+          POSTGRES_DB: pyg609_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pyg609 -d pyg609_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://pyg609:pyg609-local-test@127.0.0.1:5432/pyg609_test
+      PYG609_DATABASE_URL: postgresql://pyg609:pyg609-local-test@127.0.0.1:5432/pyg609_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      # Disposable test schema only. Never replay migrations on a remote DB.
+      - name: Create disposable test schema
+        run: |
+          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > /tmp/pyg609-schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/pyg609-schema.sql
+      - name: Check real transactions and concurrent saves
+        run: npm run test:e2e -- --runInBand --runTestsByPath test/pyg609-assessment.e2e-spec.ts test/pyg614-care-group.e2e-spec.ts test/pyg643-required-skills.e2e-spec.ts

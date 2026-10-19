@@ -25,6 +25,7 @@ import {
   FamilyGroupActivityItem,
 } from './entities/family-group-activity.entity';
 import { GroupCareRecipient } from './entities/care-recipient.entity';
+import { storedCareGroupToApi } from '../common/care-group';
 import {
   FamilyGroupJoinLink,
   JoinLinkPreview,
@@ -608,6 +609,7 @@ export class FamilyGroupService {
         patientId: true,
         self_reported: true,
         ...PATIENT_PROFILE_SELECT,
+        assessment: { select: { id: true, careGroup: true } },
       },
     });
 
@@ -627,6 +629,8 @@ export class FamilyGroupService {
       ownerUserId: r.patientId,
       selfReported: r.self_reported,
       details: toPatientProfile(r),
+      hasAssessment: Boolean(r.assessment),
+      careGroup: r.assessment ? storedCareGroupToApi(r.assessment.careGroup) : null,
     }));
   }
 
@@ -805,6 +809,7 @@ export class FamilyGroupService {
           nickname: true,
           patientId: true,
           self_reported: true,
+          assessment: { select: { id: true, careGroup: true } },
         },
       });
       await this.writeActivity(tx, {
@@ -829,6 +834,8 @@ export class FamilyGroupService {
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
       selfReported: r.self_reported,
+      hasAssessment: Boolean(r.assessment),
+      careGroup: r.assessment ? storedCareGroupToApi(r.assessment.careGroup) : null,
     };
   }
 
@@ -862,6 +869,7 @@ export class FamilyGroupService {
           nickname: true,
           patientId: true,
           self_reported: true,
+          assessment: { select: { id: true, careGroup: true } },
         },
       });
       await this.writeActivity(tx, {
@@ -886,6 +894,8 @@ export class FamilyGroupService {
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
       selfReported: r.self_reported,
+      hasAssessment: Boolean(r.assessment),
+      careGroup: r.assessment ? storedCareGroupToApi(r.assessment.careGroup) : null,
     };
   }
 

@@ -1,3 +1,4 @@
+import { BookingRequiredSkill } from '../../booking/required-skills/required-skills.types';
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 import { CaregiverBriefDto } from '../../booking/dto/booking-summary.types';
 
@@ -10,6 +11,8 @@ import { CaregiverBriefDto } from '../../booking/dto/booking-summary.types';
  */
 @ObjectType()
 export class GroupBookingSummary {
+  @Field(() => [BookingRequiredSkill], { nullable: true })
+  requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID) id: string;
   @Field({ description: 'วันที่ให้บริการ ISO "2026-09-15"' }) bookingDate: string;
   @Field({ nullable: true, description: 'เวลาเริ่ม "09:00"' }) startTime?: string;

@@ -400,6 +400,11 @@ type BookingPagination {
   totalPages: Int!
 }
 
+type BookingRequiredSkill {
+  skill: CareSkillItem!
+  sources: [RequiredSkillSource!]!
+}
+
 enum BookingStatus {
   ACCEPTED
   CANCELLED
@@ -447,6 +452,7 @@ type BookingSummary {
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
   """
   payment: Payment
+  requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
 
@@ -535,12 +541,38 @@ type CareLog {
   serverTs: DateTime!
 }
 
+type CareRecipientAssessment {
+  adlTotalScore: Int!
+  answers: [CareRecipientAssessmentAnswer!]!
+  assessedAt: DateTime!
+  careGroup: ElderCareGroup!
+  careRecipientId: ID!
+  dementiaSevere: Boolean
+  flags: [String!]!
+  hasUnsureFlag: Boolean!
+  noSpecialConditions: Boolean!
+  unsureCount: Int!
+}
+
+type CareRecipientAssessmentAnswer {
+  code: String!
+  value: Int
+}
+
+input CareRecipientAssessmentAnswerInput {
+  code: String!
+  value: Int
+}
+
 """Central caregiver skill (care_skills)"""
 type CareSkillItem {
   """
   Skill code, e.g. "transfer_assist"
   """
   code: String!
+
+  """Allowed professions; empty means unrestricted"""
+  lockedProfessions: [CaregiverProfession!]!
 
   """English name"""
   nameEn: String!
@@ -635,10 +667,6 @@ type CaregiverBookingSummary {
   endTime: String
   estimatedCost: Float
   id: ID!
-
-  """
-  Relative-reported infectious disease info (health data). Only for the caregiver who owns the request and only while it is active; null otherwise.
-  """
   infectionDisclosure: InfectionDisclosure
   locationAddress: String
   locationLat: Float
@@ -654,6 +682,7 @@ type CaregiverBookingSummary {
   """
   recipientAvatarUrl: String
   rejectionReason: String
+  requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String!
@@ -1319,6 +1348,12 @@ type EditAdminInfoPayload {
   user: User!
 }
 
+enum ElderCareGroup {
+  BEDRIDDEN
+  HOMEBOUND
+  SOCIAL
+}
+
 """Entity types that support field locking"""
 enum EntityTypeEnum {
   CAREGIVER_PROFILE
@@ -1593,6 +1628,7 @@ type GroupBookingSummary {
 
   """สถานะการชำระเงิน เช่น 'held' = พักเงินไว้ (escrow)"""
   paymentStatus: String
+  requiredSkills: [BookingRequiredSkill!]
 
   """รูปแบบบริการ เช่น at_home / accompany_outside"""
   serviceLocations: [String!]!
@@ -1606,7 +1642,9 @@ type GroupBookingSummary {
 }
 
 type GroupCareRecipient {
+  careGroup: ElderCareGroup
   details: GroupCareRecipientDetails
+  hasAssessment: Boolean!
   id: ID!
 
   """ชื่อ-นามสกุลของผู้รับบริการ"""
@@ -2482,6 +2520,7 @@ type Mutation {
   สร้างบัญชีด้วยเบอร์ที่ยืนยันแล้ว (หลังยอมรับเงื่อนไข) — response รูปเดียวกับ register · error: PHONE_VERIFICATION_EXPIRED, PHONE_ALREADY_IN_USE, CONSENT_*
   """
   signUpWithPhone(input: SignUpWithPhoneInput!): AuthPayload!
+  submitCareRecipientAssessment(input: SubmitCareRecipientAssessmentInput!): CareRecipientAssessment!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -3068,6 +3107,7 @@ type Query {
   PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
   """
   careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
+  careRecipientAssessment(careRecipientId: ID!): CareRecipientAssessment
 
   """
   Central caregiver skills a profession may hold: general_caregiver | nurse | physiotherapist. Basic skills first, then profession-specific ones.
@@ -3433,6 +3473,12 @@ input RequestPhoneOtpInput {
   purpose: PhoneOtpPurpose!
 }
 
+enum RequiredSkillSource {
+  ADL
+  FLAG
+  SERVICE
+}
+
 input ResolveDisputeInput {
   bookingId: ID!
   decision: DisputeDecision!
@@ -3664,6 +3710,14 @@ enum SortByEnum {
   PRICE_ASC
   PRICE_DESC
   RATING_DESC
+}
+
+input SubmitCareRecipientAssessmentInput {
+  answers: [CareRecipientAssessmentAnswerInput!]!
+  careRecipientId: ID!
+  dementiaSevere: Boolean
+  flags: [String!]!
+  noSpecialConditions: Boolean!
 }
 
 input ToggleAdminStatusInput {
