@@ -17,11 +17,24 @@
  *   → ยื่นคำขอซ้อนจากสองแท็บ / แอดมินสองคนกดพร้อมกัน ถูกต่อคิว ไม่ได้ pending สองใบหรือตัดสินซ้ำ
  *   created_at ใช้ clock_timestamp() (เวลาหลังได้ล็อก) ไม่ใช่ NOW() (เวลาเริ่มทรานแซคชัน)
  *   เพื่อให้ลำดับเวลาของแถวตรงกับลำดับที่ได้ล็อกเสมอ
+ *
+ * ── ใบประกอบฯ (PYG-663 · แทนมติชั่วคราว PYG-573 §1/E5) ──
+ *   วิชาชีพใหม่ที่ต้องมีใบ (nurse / physiotherapist) ต้องแนบใบที่อัปโหลดไว้แล้ว (licenseDocumentId)
+ *   กติกาใบเดียวกับ KYC (assertUsableLicenseDoc) · id ใบเก็บใน field_changes ของแถว request (ไม่ต้อง migrate)
+ *   ยื่นคำขอ = ผูกใบกับผู้ดูแล (caregiver_id) → ใบเข้าคิว/หน้าตรวจใบของแอดมิน + งานหมดอายุรายวันเห็น
+ *   แอดมินอนุมัติคำขอ = อนุมัติใบในทรานแซคชันเดียวกัน · ปฏิเสธคำขอ = ปฏิเสธใบที่ยังรอตรวจด้วยเหตุผลเดียวกัน
  */
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { isUUID } from 'class-validator';
 import { PrismaService } from '../../common/prisma.service';
+import { ClockService } from '../../common/clock.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import {
   CaregiverProfession,
@@ -45,6 +58,16 @@ import {
   ProfessionChangeInput,
   RejectProfessionChangeInput,
 } from './dto/profession-change.input';
+import {
+  LICENSE_DOC_TYPE,
+  LICENSE_REQUIRED_PROFESSIONS,
+  LICENSE_REVIEW_ACTION,
+  LICENSE_STATUS,
+} from './license/license.constants';
+import { LICENSE_ERROR, LicenseError } from './license/license.errors';
+import { assertUsableLicenseDoc } from './license/license-validation';
+import { bangkokDateString } from './license/license-date';
+import { KycDocument } from './entities/kyc-document.entity';
 
 /** client ที่ใช้ query ได้ทั้งนอกและในทรานแซคชัน */
 type Db = PrismaService | Prisma.TransactionClient;
@@ -73,6 +96,8 @@ type ProfessionLogEntry = {
   newValue: string;
   requestId: string;
   reason?: string;
+  /** PYG-663: ใบประกอบฯ ที่แนบ (เฉพาะแถว request ของวิชาชีพที่ต้องมีใบ) */
+  licenseDocumentId?: string;
 };
 
 /** ตัวเลือกของ findRequests — ทุกตัว optional ประกอบเป็น WHERE */
@@ -106,7 +131,10 @@ const STATUS_TO_DECISION_ACTION: Partial<
 export class ProfessionChangeService {
   private readonly logger = new Logger(ProfessionChangeService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clock: ClockService,
+  ) {}
 
   // ─── ฝั่งผู้ดูแล ────────────────────────────────────────────────────────
 
@@ -125,7 +153,11 @@ export class ProfessionChangeService {
       order: 'latest',
       limit: 1,
     });
-    return row ? this.toEntity(row) : null;
+    if (!row) return null;
+    const [request] = await this.withLicenses(this.prisma, [
+      this.toEntity(row),
+    ]);
+    return request;
   }
 
   /**
@@ -181,6 +213,16 @@ export class ProfessionChangeService {
         );
       }
 
+      // PYG-663: วิชาชีพที่ต้องมีใบ → ตรวจใบที่แนบ + ผูกกับผู้ดูแล (ตรวจหลังเงื่อนไขของคำขอ — ใบผิดไม่ควรบังคำตอบเรื่องคำขอซ้อน)
+      const licenseDocumentId = LICENSE_REQUIRED_PROFESSIONS.has(toProfession)
+        ? await this.attachLicense(
+            tx,
+            user.id,
+            caregiver.id,
+            input.licenseDocumentId,
+          )
+        : undefined;
+
       // id สร้างที่แอป (ไม่ใช่ gen_random_uuid) เพราะต้องใส่ค่าเดียวกันลง requestId ของแถวตัวเองด้วย
       const requestId = randomUUID();
       await this.insertLog(tx, {
@@ -188,7 +230,10 @@ export class ProfessionChangeService {
         caregiverId: caregiver.id,
         editedBy: user.id,
         action: PROFESSION_CHANGE_ACTION.REQUEST,
-        entry: this.entry(caregiver.profession, toProfession, requestId),
+        entry: {
+          ...this.entry(caregiver.profession, toProfession, requestId),
+          ...(licenseDocumentId && { licenseDocumentId }),
+        },
       });
 
       return this.reload(tx, requestId);
@@ -269,7 +314,10 @@ export class ProfessionChangeService {
     ]);
 
     return {
-      items: rows.map((row) => this.toAdminEntity(row)),
+      items: await this.withLicenses(
+        this.prisma,
+        rows.map((row) => this.toAdminEntity(row)),
+      ),
       total,
       page,
       totalPages: total === 0 ? 1 : Math.ceil(total / limit),
@@ -289,6 +337,9 @@ export class ProfessionChangeService {
         tx,
         requestId,
       );
+
+      // PYG-663: วิชาชีพที่ต้องมีใบ → ใบต้องใช้ได้ และอนุมัติไปพร้อมกัน (ล้ม = วิชาชีพไม่เปลี่ยน)
+      await this.approveLicense(tx, admin, caregiver.id, current);
 
       await tx.caregiver.update({
         where: { id: caregiver.id },
@@ -335,6 +386,9 @@ export class ProfessionChangeService {
         tx,
         input.id,
       );
+
+      // PYG-663: ใบที่ยังรอตรวจถูกปฏิเสธด้วยเหตุผลเดียวกัน (ผู้ดูแลเห็นเหตุผลที่หน้าสถานะ KYC ด้วย)
+      await this.rejectLicense(tx, admin, caregiver.id, current, reason);
 
       await this.insertLog(tx, {
         id: randomUUID(),
@@ -436,6 +490,186 @@ export class ProfessionChangeService {
     );
   }
 
+  // ─── Private: ใบประกอบฯ ของคำขอ (PYG-663) ─────────────────────────────
+
+  /**
+   * attachLicense — ตรวจใบที่แนบมากับคำขอ แล้วผูกกับผู้ดูแล
+   * ใบต้องเป็นของผู้ใช้ที่ล็อกอิน (user_id) — id ของคนอื่น/ไม่มีอยู่/ไม่ใช่ uuid ตอบเหมือน "ไม่ได้แนบ"
+   * ผูก caregiver_id เพราะใบที่อัปโหลดหลัง KYC อนุมัติยังไม่ถูกผูก (ผูกตอน submit KYC เท่านั้น)
+   * → AdminLicenseService / LicenseExpiryCron / adminKycDetail หาเจอ
+   */
+  private async attachLicense(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    caregiverId: string,
+    rawDocumentId: string | null | undefined,
+  ): Promise<string> {
+    const documentId = rawDocumentId?.trim() ?? '';
+    const doc = isUUID(documentId)
+      ? await tx.kycDocument.findFirst({
+          where: { id: documentId, userId, documentType: LICENSE_DOC_TYPE },
+          select: {
+            id: true,
+            caregiverId: true,
+            licenseNumber: true,
+            expiresAt: true,
+            reviewStatus: true,
+          },
+        })
+      : null;
+
+    assertUsableLicenseDoc(doc, this.clock.now());
+
+    if (doc!.caregiverId !== caregiverId) {
+      await tx.kycDocument.update({
+        where: { id: doc!.id },
+        data: { caregiverId },
+      });
+    }
+    return doc!.id;
+  }
+
+  /**
+   * approveLicense — ใช้ใน approve (ในทรานแซคชันเดียวกัน)
+   * pending → approved + kyc_reviews license_approved · approved อยู่แล้ว (แอดมินตรวจใบแยกมาก่อน) → ผ่าน
+   * ไม่มีใบ (คำขอเก่าก่อน PYG-663) / ถูกปฏิเสธ / หมดอายุ → อนุมัติไม่ได้ ต้องปฏิเสธคำขอ
+   */
+  private async approveLicense(
+    tx: Prisma.TransactionClient,
+    admin: AuthUser,
+    caregiverId: string,
+    request: ProfessionChangeRequest,
+  ): Promise<void> {
+    if (!LICENSE_REQUIRED_PROFESSIONS.has(request.toProfession)) return;
+
+    const doc = request.licenseDocumentId
+      ? await tx.kycDocument.findUnique({
+          where: { id: request.licenseDocumentId },
+          select: { id: true, reviewStatus: true, expiresAt: true },
+        })
+      : null;
+    if (!doc) throw this.licenseUnusable('missing');
+
+    const now = this.clock.now();
+    if (!doc.expiresAt || doc.expiresAt.getTime() <= now.getTime()) {
+      throw new LicenseError(LICENSE_ERROR.EXPIRED);
+    }
+    if (doc.reviewStatus === LICENSE_STATUS.APPROVED) return;
+    if (doc.reviewStatus !== LICENSE_STATUS.PENDING) {
+      throw this.licenseUnusable(doc.reviewStatus ?? 'unknown');
+    }
+
+    // เงื่อนไข pending ใน WHERE — แอดมินอีกคนตรวจใบเดียวกันจากหน้าใบประกอบฯ พร้อมกัน = 409
+    const claimed = await tx.kycDocument.updateMany({
+      where: { id: doc.id, reviewStatus: LICENSE_STATUS.PENDING },
+      data: { reviewStatus: LICENSE_STATUS.APPROVED, reviewedAt: now },
+    });
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'ใบประกอบวิชาชีพนี้ถูกตัดสินไปแล้ว — กรุณารีเฟรช',
+      );
+    }
+    await tx.kycReview.create({
+      data: {
+        caregiverId,
+        reviewerId: admin.id,
+        action: LICENSE_REVIEW_ACTION.APPROVED,
+        documentId: doc.id,
+        reviewedAt: now,
+      },
+    });
+  }
+
+  /** rejectLicense — ใบที่ยังรอตรวจถูกปฏิเสธพร้อมคำขอ · ใบที่ตัดสินแล้ว (หรือไม่มีใบ) ไม่แตะ */
+  private async rejectLicense(
+    tx: Prisma.TransactionClient,
+    admin: AuthUser,
+    caregiverId: string,
+    request: ProfessionChangeRequest,
+    reason: string,
+  ): Promise<void> {
+    if (!request.licenseDocumentId) return;
+
+    const now = this.clock.now();
+    const claimed = await tx.kycDocument.updateMany({
+      where: {
+        id: request.licenseDocumentId,
+        reviewStatus: LICENSE_STATUS.PENDING,
+      },
+      data: { reviewStatus: LICENSE_STATUS.REJECTED, reviewedAt: now },
+    });
+    if (claimed.count === 0) return;
+
+    await tx.kycReview.create({
+      data: {
+        caregiverId,
+        reviewerId: admin.id,
+        action: LICENSE_REVIEW_ACTION.REJECTED,
+        reason,
+        documentId: request.licenseDocumentId,
+        reviewedAt: now,
+      },
+    });
+  }
+
+  private licenseUnusable(licenseStatus: string): ProfessionError {
+    return new ProfessionError(
+      'ใบประกอบวิชาชีพของคำขอนี้ใช้ไม่ได้แล้ว (ไม่มีใบ / ถูกปฏิเสธ / หมดอายุ) — ปฏิเสธคำขอนี้ แล้วให้ผู้ดูแลยื่นใหม่พร้อมใบใหม่',
+      PROFESSION_ERROR.CHANGE_LICENSE_UNUSABLE,
+      { licenseStatus },
+    );
+  }
+
+  /**
+   * withLicenses — เติมเลข / วันหมดอายุ / เอกสารของใบที่แนบ (โหลดทีเดียวทุกคำขอ)
+   * ไม่ออก signedUrl ที่นี่: เจ้าของดูไฟล์ที่ kycStatus · แอดมินดูที่ adminKycDetail (มี audit log)
+   */
+  private async withLicenses<T extends ProfessionChangeRequest>(
+    db: Db,
+    requests: T[],
+  ): Promise<T[]> {
+    const ids = [
+      ...new Set(
+        requests
+          .map((r) => r.licenseDocumentId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (ids.length === 0) return requests;
+
+    const docs = await db.kycDocument.findMany({ where: { id: { in: ids } } });
+    const byId = new Map(docs.map((d) => [d.id, d]));
+
+    return requests.map((r) => {
+      const doc = r.licenseDocumentId
+        ? byId.get(r.licenseDocumentId)
+        : undefined;
+      if (!doc) return r;
+      const licenseDocument: KycDocument = {
+        id: doc.id,
+        caregiverId: doc.caregiverId ?? undefined,
+        userId: doc.userId,
+        docType: doc.documentType,
+        fileUrl: '', // ไม่คืน storage path ดิบ (เหมือน CaregiverService.signDocuments)
+        fileName: doc.fileName,
+        fileSize: doc.fileSize,
+        mimeType: doc.mimeType,
+        uploadedAt: doc.uploadedAt,
+        licenseNumber: doc.licenseNumber ?? undefined,
+        expiresAt: doc.expiresAt ?? undefined,
+        reviewStatus: doc.reviewStatus ?? undefined,
+      };
+      return {
+        ...r,
+        licenseNumber: doc.licenseNumber,
+        licenseExpiresAt: doc.expiresAt
+          ? bangkokDateString(doc.expiresAt)
+          : null,
+        licenseDocument,
+      };
+    });
+  }
+
   // ─── Private: อ่าน/เขียน caregiver_edit_logs ────────────────────────────
 
   /** element ของ field_changes — oldValue/newValue เป็น JSON string แบบเดียวกับ computeFieldChanges */
@@ -477,7 +711,8 @@ export class ProfessionChangeService {
   ): Promise<ProfessionChangeRequest> {
     const [row] = await this.findRequests(tx, { requestId, limit: 1 });
     if (!row) throw this.notFound(); // ไม่ควรเกิด — เพิ่งเขียนในทรานแซคชันนี้
-    return this.toEntity(row);
+    const [request] = await this.withLicenses(tx, [this.toEntity(row)]);
+    return request;
   }
 
   /**
@@ -590,10 +825,11 @@ export class ProfessionChangeService {
       fromProfession: requested.from,
       toProfession: requested.to,
       status,
-      // S03 (PYG-558) ยังไม่มา — null ทุกตัว
+      // PYG-663: เติมจากใบจริงใน withLicenses · ไม่มีใบ = null
       licenseNumber: null,
       licenseExpiresAt: null,
       licenseDocument: null,
+      licenseDocumentId: requested.licenseDocumentId ?? null,
       rejectionReason: decision?.reason ?? null,
       requestedAt: row.requested_at,
       reviewedAt: reviewed ? row.decided_at : null,
@@ -617,7 +853,12 @@ export class ProfessionChangeService {
   private readEntry(
     fieldChanges: unknown,
     requestId: string,
-  ): { from: CaregiverProfession; to: CaregiverProfession; reason?: string } {
+  ): {
+    from: CaregiverProfession;
+    to: CaregiverProfession;
+    reason?: string;
+    licenseDocumentId?: string;
+  } {
     const entries = Array.isArray(fieldChanges)
       ? (fieldChanges as Array<Partial<ProfessionLogEntry>>)
       : [];
@@ -637,6 +878,10 @@ export class ProfessionChangeService {
       from,
       to,
       reason: typeof entry?.reason === 'string' ? entry.reason : undefined,
+      licenseDocumentId:
+        typeof entry?.licenseDocumentId === 'string'
+          ? entry.licenseDocumentId
+          : undefined,
     };
   }
 

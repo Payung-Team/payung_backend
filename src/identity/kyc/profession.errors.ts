@@ -17,6 +17,7 @@
  *   { code: 'PROFESSION_CHANGE_ALREADY_PENDING', requestId: 'uuid' }
  *   { code: 'PROFESSION_CHANGE_NOT_FOUND' }
  *   { code: 'PROFESSION_CHANGE_NOT_PENDING', status: 'approved' }
+ *   { code: 'PROFESSION_CHANGE_LICENSE_UNUSABLE', licenseStatus: 'rejected' | 'missing' }  (PYG-663 · แอดมินอนุมัติไม่ได้)
  */
 import { GraphQLError } from 'graphql';
 import {
@@ -40,6 +41,11 @@ export const PROFESSION_ERROR = {
   CHANGE_NOT_FOUND: 'PROFESSION_CHANGE_NOT_FOUND',
   /** คำขอจบไปแล้ว (ยกเลิก / อนุมัติ / ปฏิเสธ) ทำซ้ำไม่ได้ */
   CHANGE_NOT_PENDING: 'PROFESSION_CHANGE_NOT_PENDING',
+  /**
+   * PYG-663: แอดมินอนุมัติคำขอที่ใบประกอบฯ ใช้ไม่ได้แล้ว (ถูกปฏิเสธ/หมดอายุ/หาย) หรือคำขอเก่าที่ไม่มีใบ
+   * → ต้องปฏิเสธคำขอ ให้ผู้ดูแลยื่นใหม่พร้อมใบใหม่
+   */
+  CHANGE_LICENSE_UNUSABLE: 'PROFESSION_CHANGE_LICENSE_UNUSABLE',
 } as const;
 
 export type ProfessionErrorCode =
