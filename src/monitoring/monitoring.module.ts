@@ -6,8 +6,12 @@ import { JobQrService } from './qr/job-qr.service';
 import { JobQrResolver } from './qr/job-qr.resolver';
 import { JobScanService } from './qr/job-scan.service';
 import { JobScanResolver } from './qr/job-scan.resolver';
+import { JobEvidenceService } from './job-evidence.service';
+import { CareLogService } from './care-log.service';
+import { CareLogController } from './care-log.controller';
 import { CommonModule } from '../common/common.module';
 import { NotificationModule } from '../notification/notification.module';
+import { PaymentModule } from '../payment/payment.module';
 
 /**
  * MonitoringModule — proof-of-work: เช็คอิน / เช็คเอาท์ / หลักฐานการทำงาน (PYG-352)
@@ -34,11 +38,13 @@ import { NotificationModule } from '../notification/notification.module';
  *     (ต่างจาก JobQrService ที่ BookingModule ต้องใช้จริง ๆ ตอนสร้าง booking)
  */
 @Module({
-  imports: [CommonModule, NotificationModule],
+  imports: [CommonModule, NotificationModule, PaymentModule],
+  // PYG-466: อัปโหลดรูป care log ผ่าน backend (multipart) — REST เพราะ GraphQL ไม่ได้เปิดรับไฟล์
+  controllers: [CareLogController],
   providers: [
     MonitoringResolver,
     MonitoringService,
-    // PYG-359: cron ปิดงานที่ลืมเช็คเอาท์ → บังคับ needs_review
+    // PYG-359: cron ปิดงานที่ลืมเช็คเอาท์ → completed พร้อมธง no_checkout
     NoCheckoutSweeperService,
     // PYG-434: สร้าง/อ่านใบ QR ของงาน
     JobQrResolver,
@@ -46,6 +52,8 @@ import { NotificationModule } from '../notification/notification.module';
     // PYG-435: สแกน QR → เช็คอิน/เช็คเอาท์
     JobScanResolver,
     JobScanService,
+    JobEvidenceService,
+    CareLogService,
   ],
   exports: [MonitoringService, JobQrService],
 })

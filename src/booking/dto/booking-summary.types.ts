@@ -1,4 +1,5 @@
 import { Field, Float, ID, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
+import { PatientProfileType } from './patient-profile.type';
 
 export enum BookingStatusEnum {
   UNMATCHED = 'unmatched', // booking created, no caregiver assigned yet
@@ -10,11 +11,13 @@ export enum BookingStatusEnum {
   // writes these; this enum just never caught up, so caregiverBookings(status: IN_PROGRESS) etc.
   // failed GraphQL validation and a checked-in job had no query that could ever fetch it again.
   IN_PROGRESS      = 'in_progress',
-  AWAITING_RELEASE = 'awaiting_release',
-  NEEDS_REVIEW     = 'needs_review',
   REJECTED  = 'rejected',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled', // patient cancelled
+  // PYG-461/462: ระบบปิดให้เพราะเลยเวลา (ไม่มีผู้ดูแลรับ / ไม่ได้ชำระ) — ค่าเดียว สาเหตุย่อยอยู่ใน
+  // booking_status_history.reason · แยกจาก CANCELLED เพราะเฟส 3 นโยบายคืนเงินต่างกัน
+  // ⚠ breaking change ของ GraphQL enum ฝั่ง FE — cron ที่เขียนค่านี้ปิดไว้ (BOOKING_EXPIRY_CRON_ENABLED)
+  EXPIRED   = 'expired',
 }
 registerEnumType(BookingStatusEnum, { name: 'BookingStatus' });
 
@@ -25,18 +28,34 @@ export class CaregiverBriefDto {
   @Field({ nullable: true })          fullName?: string;
   @Field({ nullable: true })          avatarUrl?: string;
   @Field(() => Float, { nullable: true }) hourlyRate?: number;
+  @Field(() => Float, { nullable: true }) averageRating?: number;
+  @Field(() => Int, { nullable: true })   reviewCount?: number;
+  // นับเฉพาะใน myBooking (ต้อง query เพิ่ม) — list อื่นคืน null
+  @Field(() => Int, { nullable: true })   completedJobs?: number;
+  @Field(() => Int, { nullable: true })   experienceYears?: number;
+  // เปิดให้เห็นเฉพาะหลังผู้จองยืนยันแล้ว (ดู BookingService.toSummary)
+  @Field({ nullable: true })              phone?: string;
 }
 
 @ObjectType()
 export class BookingSummary {
   @Field(() => ID)                                    id: string;
+  @Field({ nullable: true, description: 'true เมื่อผู้เรียกเป็นผู้สร้างคำจองในนามกลุ่ม' })
+  bookedByMe?: boolean;
   @Field()                                            bookingDate: string;
   @Field()                                            status: string;
   @Field({ nullable: true })                          disputeStatus?: string;
   @Field({ nullable: true })                          disputeReason?: string;
   @Field()                                            serviceType: string;
-  @Field()                                            timeSlot: string;
-  @Field({ nullable: true })                          startTime?: string;
+  // PYG-526: ผู้ใช้ไม่ได้เลือก slot เองแล้ว (BE อนุมานจากเวลาเริ่ม — PYG-523) → ห้ามแสดงชื่อ slot
+  //   ยังคืนค่าอยู่เพราะเป็นข้อมูลภายในของการจับคู่ผู้ดูแล (work_conditions) ไม่ได้ลบ field
+  @Field({ deprecationReason: 'PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน' })
+  timeSlot: string;
+  @Field({ nullable: true, description: 'เวลาเริ่ม "HH:mm" (เวลาไทย)' })
+  startTime?: string;
+  // PYG-526: คำนวณจาก startTime + durationHours ทุกครั้งที่อ่าน (ไม่ได้เก็บในดีบี) → ใบจองเก่าก็มีค่า
+  @Field({ nullable: true, description: 'เวลาสิ้นสุด "HH:mm" (เวลาไทย) = startTime + durationHours' })
+  endTime?: string;
   @Field(() => Float, { nullable: true })             durationHours?: number;
   @Field(() => [String])                              tasks: string[];
   @Field(() => [String])                              serviceLocations: string[];
@@ -49,6 +68,13 @@ export class BookingSummary {
   @Field(() => Float, { nullable: true })             estimatedCost?: number;
   @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
   @Field({ nullable: true })                          careRecipientName?: string;
+  // ข้อมูลผู้รับบริการที่กรอกตอนจอง — หน้ารายละเอียดฝั่งผู้จองแสดงครบ
+  @Field({ nullable: true })                          patientName?: string;
+  @Field({ nullable: true })                          dayOfContactName?: string;
+  @Field({ nullable: true })                          dayOfContactPhone?: string;
+  @Field({ nullable: true })                          dayOfContactRelationship?: string;
+  // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (bookings.member_details) — null = booking ก่อน PYG-460
+  @Field(() => PatientProfileType, { nullable: true }) patientProfile?: PatientProfileType;
   @Field({ nullable: true })                          confirmedAt?: Date;
   @Field()                                            createdAt: Date;
 }

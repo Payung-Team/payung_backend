@@ -27,6 +27,9 @@ export const BOOKING_EVENTS = {
   JOB_CHECKED_OUT: 'job.checked_out',
   // PYG-359: ผู้ดูแลลืมเช็คเอาท์ → ระบบปิดงานให้ (system row) แล้วส่งเข้าคิว admin
   JOB_NO_CHECKOUT: 'job.no_checkout',
+  // PYG-361: ผู้ดูแลโพสต์ "บันทึกจากผู้ดูแล" รายการแรกของงาน (PO ตัดสินใจ 2026-09-06:
+  // แจ้งเฉพาะรายการแรกเท่านั้น — CareLogService เป็นคนกรองว่าใช่รายการแรกก่อนยิง event นี้)
+  JOB_CARE_LOG_ADDED: 'job.care_log_added',
   PAYMENT_HELD: 'payment.held',
   PAYMENT_CAPTURED: 'payment.captured',
   // PYG-286: hold ถูกยกเลิก (auto-void on cancel) — แจ้ง patient ว่า hold ถูกปล่อย
@@ -34,6 +37,8 @@ export const BOOKING_EVENTS = {
   REFUND_ISSUED: 'refund.issued',
   DISPUTE_CREATED: 'dispute.created',
   DISPUTE_RESOLVED: 'dispute.resolved',
+  // PYG-266: admin โอนเงินให้ caregiver ผ่าน Omise Transfer สำเร็จ
+  PAYMENT_TRANSFERRED: 'payment.transferred',
 } as const;
 
 /** union ของชื่อ event (derive จาก BOOKING_EVENTS — เพิ่มที่เดียวพอ) */

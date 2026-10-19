@@ -1,9 +1,10 @@
-import { Field, Float, ID, InputType } from '@nestjs/graphql';
+import { Field, Float, ID, InputType, Int } from '@nestjs/graphql';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
@@ -13,7 +14,98 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import {
+  GENDER_LABELS,
+  SUPPORT_LEVEL_LABELS,
+} from '../../patient/dto/patient-profile.dto';
+import type {
+  GenderLabel,
+  SupportLevelLabel,
+} from '../../patient/dto/patient-profile.dto';
+import {
+  ALLERGIES_MAX_LENGTH,
+  MEDICINES_MAX_LENGTH,
+} from '../../patient/dto/patient-profile.constants';
+
+/**
+ * PYG-385 — อาการ/รายละเอียดที่สมาชิกกรอกตอน "จองแทน" (memberDetails)
+ *
+ * ทำไมเป็น input type ที่มีฟิลด์ชัด แทนที่จะเป็น JSON scalar:
+ *   repo จงใจไม่พึ่ง graphql-type-json (ดูคอมเมนต์เดียวกันใน notification/payment entity)
+ *   → ประกาศฟิลด์ตรง ๆ ได้ type-safe และ FE อ่าน schema รู้ทันทีว่ากรอกอะไรได้บ้าง
+ *   ทุกฟิลด์ optional เพราะเป็น "รายละเอียดเสริมถึงผู้ดูแล" ไม่ใช่ข้อมูลบังคับของ booking
+ *   ทั้งก้อนถูกเก็บลงคอลัมน์ bookings.member_details (JSONB, nullable) ตามเดิม — ไม่แตะ migration
+ */
+@InputType()
+export class MemberDetailsInput {
+  @Field(() => Int, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  age?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsIn(GENDER_LABELS as unknown as string[])
+  gender?: GenderLabel;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  weight?: number;
+
+  @Field(() => Float, { nullable: true })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  height?: number;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsIn(SUPPORT_LEVEL_LABELS as unknown as string[])
+  supportLevel?: SupportLevelLabel;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsString()
+  bloodGroup?: string;
+
+  @Field(() => [String], {
+    nullable: true,
+    description: 'อาการ/โรคประจำตัวที่ผู้ดูแลควรรู้ เช่น ["เบาหวาน", "ความดัน"]',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  conditions?: string[];
+
+  @Field({ nullable: true, description: 'ยาประจำที่ใช้อยู่' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MEDICINES_MAX_LENGTH)
+  medicines?: string;
+
+  @Field({ nullable: true, description: 'ประวัติแพ้ยา/อาหาร' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(ALLERGIES_MAX_LENGTH)
+  allergies?: string;
+
+  @Field({ nullable: true, description: 'ข้อควรระวัง/วิธีดูแลเฉพาะของผู้รับบริการคนนี้' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  careInstructions?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  regularHospital?: string;
+}
 
 /**
  * PYG-424 — input ของ mutation createBookingOnBehalf
@@ -23,10 +115,11 @@ import {
  *   ทุกฟิลด์ที่ REST เพิ่มในอนาคตจะโผล่ใน GraphQL schema เองแบบเงียบ ๆ
  *   รวมถึงฟิลด์ที่ไม่ควรให้คนจองแทนกรอก → แยกไฟล์ชัดเจนกว่า และ FE อ่าน schema แล้วเข้าใจตรง
  *
- * ★ ฟิลด์ที่ "จงใจไม่มี" ในนี้:
- *   - patientName    ชื่อคนไข้มาจากโปรไฟล์ผู้รับบริการอยู่แล้ว ให้กรอกซ้ำจะขัดกันเอง
- *   - memberDetails  รอ PYG-426 (ดีไซน์ฟอร์ม FG-4) + repo ยังไม่มี graphql-type-json
- *                    คอลัมน์ member_details เป็น nullable → เติมทีหลังได้ ไม่ต้องแก้ migration
+ * ★ patientName มีใน schema แต่ส่งมาไม่ได้ (PYG-516) — ชื่อมาจากบัญชีของสมาชิก ดูที่ฟิลด์
+ *
+ * ── memberDetails (PYG-385) ────────────────────────────────────────────────
+ *   รับแล้วผ่าน MemberDetailsInput ด้านบน → เก็บลง bookings.member_details (JSONB)
+ *   คอลัมน์ nullable มาตั้งแต่ PYG-411 จึงไม่ต้องแก้ migration
  */
 @InputType()
 export class CreateBookingOnBehalfInput {
@@ -36,12 +129,45 @@ export class CreateBookingOnBehalfInput {
   @IsUUID()
   groupId: string;
 
+  /**
+   * PYG-500 — โมเดลใหม่ "สมาชิก = patient": ส่ง memberUserId (สมาชิกในกลุ่มที่เป็นผู้รับบริการ)
+   * แล้วระบบจะหา/สร้างโปรไฟล์ของสมาชิกคนนั้นในกลุ่มให้เอง (ดู createBookingOnBehalf)
+   *
+   * เส้นทางเดิม (ส่ง careRecipientId ตรง ๆ) ยังใช้ได้เพื่อ backward-compat แต่ต้องส่งมา
+   * "อย่างใดอย่างหนึ่ง" ระหว่าง memberUserId กับ careRecipientId (service เป็นคนตรวจ เพราะ
+   * class-validator ไม่มี rule "exactly one of" ในตัว)
+   */
   @Field(() => ID, {
-    description:
-      'โปรไฟล์ผู้รับบริการที่จองให้ — ต้องถูกแชร์อยู่ในกลุ่มนี้ ไม่งั้นได้ RECIPIENT_NOT_IN_GROUP. ★ บังคับกรอก ต่างจากการจองปกติ เพราะ "จองแทน" แปลว่าต้องมีคนที่ถูกจองให้เสมอ',
+    nullable: true,
+    description: 'สมาชิกในกลุ่มที่เป็นผู้รับบริการ (patient) — ระบบจะหา/สร้างโปรไฟล์ในกลุ่มให้อัตโนมัติ',
   })
+  @IsOptional()
   @IsUUID()
-  careRecipientId: string;
+  memberUserId?: string;
+
+  @Field(() => ID, {
+    nullable: true,
+    description:
+      'โปรไฟล์ผู้รับบริการที่สมาชิกเป้าหมายเคยบันทึก หรือโปรไฟล์ในกลุ่มนี้',
+  })
+  @IsOptional()
+  @IsUUID()
+  careRecipientId?: string;
+
+  /**
+   * PYG-516 — ห้ามส่ง: ส่งมา = 400 PATIENT_NAME_NOT_ALLOWED (ชื่อมาจากบัญชีของสมาชิกเท่านั้น)
+   *
+   * ★ ที่ยังคงฟิลด์ไว้ใน schema: ถ้าลบออก client ที่ยังส่งมาจะได้ GraphQL validation error ทั่วไป
+   *   แทน code ที่บอกตรง ๆ ว่าผิดเพราะอะไร
+   */
+  @Field({
+    nullable: true,
+    deprecationReason: 'PYG-516: ห้ามส่ง — ชื่อผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น ส่งมา = PATIENT_NAME_NOT_ALLOWED',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  patientName?: string;
 
   @Field(() => ID, {
     nullable: true,
@@ -70,21 +196,44 @@ export class CreateBookingOnBehalfInput {
   @IsNotEmpty()
   serviceType: string;
 
-  @Field({ description: 'ช่วงเวลา: "morning" | "afternoon" | "evening"' })
-  @IsString()
-  @IsNotEmpty()
-  timeSlot: string;
-
-  @Field({ description: 'เวลาเริ่ม รูปแบบ "09:00:00"' })
+  @Field({
+    description:
+      'เวลาเริ่ม รูปแบบ "HH:mm" เช่น "09:00" (รับ "09:00:00" แบบเดิมด้วย)',
+  })
   @IsString()
   @IsNotEmpty()
   startTime: string;
 
-  @Field(() => Float, { description: 'จำนวนชั่วโมง (ขั้นต่ำ 0.5)' })
+  /** PYG-523 — ส่งมา = BE คำนวณ durationHours + timeSlot เอง (กฎอยู่ที่ booking/booking-time.ts) */
+  @Field({
+    nullable: true,
+    description:
+      'เวลาสิ้นสุด "HH:mm" — ส่งมาแล้ว BE คำนวณจำนวนชั่วโมงและช่วงเวลาเอง ' +
+      '(ขั้นละ 30 นาที, 1–12 ชม., ไม่ข้ามเที่ยงคืน, เริ่ม 06:00–21:30)',
+  })
+  @IsOptional()
+  @IsString()
+  endTime?: string;
+
+  @Field({
+    nullable: true,
+    deprecationReason:
+      'PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)',
+  })
+  @IsOptional()
+  @IsString()
+  timeSlot?: string;
+
+  @Field(() => Float, {
+    nullable: true,
+    deprecationReason:
+      'PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)',
+  })
+  @IsOptional()
   @IsNumber()
   @Min(0.5)
   @Type(() => Number)
-  durationHours: number;
+  durationHours?: number;
 
   @Field({ description: 'ที่อยู่จุดให้บริการ' })
   @IsString()
@@ -137,4 +286,14 @@ export class CreateBookingOnBehalfInput {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  @Field(() => MemberDetailsInput, {
+    nullable: true,
+    description:
+      'PYG-385: อาการ/รายละเอียดของผู้รับบริการที่กรอกตอนจองแทน — เก็บลง bookings.member_details (JSONB)',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MemberDetailsInput)
+  memberDetails?: MemberDetailsInput;
 }

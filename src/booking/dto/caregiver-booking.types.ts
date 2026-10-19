@@ -1,6 +1,7 @@
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
 import { BookingPagination } from './booking-summary.types';
+import { PatientProfileType } from './patient-profile.type';
 
 /**
  * PatientBriefDto — ข้อมูล "ผู้ป่วย/ลูกค้า" แบบย่อ ที่ caregiver เห็นบนการ์ดงาน
@@ -35,13 +36,23 @@ export class CaregiverBookingSummary {
   @Field() serviceType: string; // ประเภทบริการ เช่น "ดูแลผู้สูงอายุที่บ้านผู้ป่วย"
   @Field(() => [String]) serviceLocations: string[]; // รูปแบบ/สถานที่ให้บริการ
   @Field(() => [String]) tasks: string[]; // รายการงานที่ต้องปฏิบัติ
-  @Field() timeSlot: string; // ช่วงเวลา เช่น "morning"
+  // ช่วงเวลา เช่น "morning" — PYG-526: BE อนุมานจากเวลาเริ่มแล้ว (PYG-523) ห้ามแสดงชื่อ slot
+  @Field({ deprecationReason: 'PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน' })
+  timeSlot: string;
 
   @Field() bookingDate: string; // วันที่นัด รูปแบบ YYYY-MM-DD (string เพื่อเลี่ยงปัญหา timezone)
   @Field() startTime: string; // เวลาเริ่ม รูปแบบ HH:mm
+  // PYG-526: เวลาสิ้นสุด HH:mm = startTime + durationHours (คำนวณตอนอ่าน ไม่ได้เก็บในดีบี)
+  // nullable กันกรณี durationHours ผิดปกติ (≤ 0) — ถ้าเป็น non-null แล้วคืน null ทั้งลิสต์จะ error
+  @Field({ nullable: true }) endTime?: string;
   @Field(() => Float) durationHours: number; // ระยะเวลา (ชั่วโมง)
 
   @Field(() => Float, { nullable: true }) estimatedCost?: number; // ราคาประมาณการ (฿)
+
+  // สถานะและยอดโอนให้ผู้ดูแล แยกจาก Booking.status โดยตั้งใจ
+  // (งานเสร็จแล้วไม่ได้แปลว่าเงินเข้าบัญชีแล้วเสมอไป)
+  @Field({ nullable: true }) payoutStatus?: string;
+  @Field(() => Float, { nullable: true }) payoutAmount?: number;
 
   @Field({ nullable: true }) locationAddress?: string;
 
@@ -57,6 +68,22 @@ export class CaregiverBookingSummary {
 
   // ชื่อผู้รับการดูแล — ถ้า null แปลว่าจองให้ "ตัวเอง" (สำหรับตัวเอง)
   @Field({ nullable: true }) careRecipientName?: string;
+
+  /**
+   * ค่าดิบของรูปผู้รับบริการ (ไม่ใช่ GraphQL field) — ออกสู่ client ผ่าน
+   * @ResolveField recipientAvatarUrl ที่ sign storage path ให้ก่อน (ดู recipientAvatarPath)
+   */
+  recipientAvatarPath?: string;
+  /**
+   * PYG-460 — ข้อมูลสุขภาพที่ผู้จองกรอกไว้ ณ วันจอง
+   *
+   * ก่อนหน้านี้ฟอร์มให้กรอก 15 ช่องแต่เก็บลง DB แค่ 4 และไม่มี response ไหน
+   * คืนข้อมูลสุขภาพให้ผู้ดูแลเลย ทั้งที่หน้าจอฝั่งลูกค้าเขียนว่า
+   * "ผู้ดูแลเห็นข้อมูลนี้ก่อนเริ่มงาน" — ฟิลด์นี้คือสิ่งที่ทำให้ประโยคนั้นเป็นจริง
+   *
+   * undefined = booking ที่สร้างก่อน PYG-460 (ไม่มี snapshot ให้แสดง)
+   */
+  @Field(() => PatientProfileType, { nullable: true }) patientProfile?: PatientProfileType;
 
   // ผู้ติดต่อในวันนัดหมาย — หน้ารายละเอียดงาน/หน้าปฏิบัติงานของผู้ดูแลต้องใช้
   // (การ์ด "ผู้ติดต่อในวันนัดหมาย" และ EmergencyContactCard)

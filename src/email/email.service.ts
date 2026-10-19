@@ -12,6 +12,7 @@
  * - sendAdminScheduleDelete(...)     — แจ้งกำหนดลบบัญชีถาวร
  * - sendAdminCancelDelete(...)       — แจ้งยกเลิกการลบ
  * - sendAdminAutoDeleted(...)        — แจ้งลบบัญชีถาวรแล้ว (cron)
+ * - sendMarketingEmail(userId, tpl)  — อีเมลข่าวสาร/โปรโมชัน (PYG-540 — ต้องยินยอม marketing)
  *
  * Behaviors:
  * - ถ้า user.emailPreferences = false → skip + log (ไม่ throw)
@@ -21,6 +22,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../common/prisma.service';
+import { ConsentService } from '../consent/consent.service';
+import { CONSENT_TYPE } from '../consent/consent.constants';
 import {
   kycSubmittedTemplate,
   kycVerifiedTemplate,
@@ -59,6 +62,8 @@ export class EmailService {
   constructor(
     private readonly configService: ConfigService,
     private readonly prismaService: PrismaService,
+    // PYG-540: เช็คความยินยอม marketing ก่อนส่งอีเมลข่าวสารทุกฉบับ
+    private readonly consentService: ConsentService,
   ) {
     this.fromAddress = this.configService.getOrThrow<string>('EMAIL_FROM');
     this.frontendUrl = this.configService.get<string>(
@@ -216,6 +221,7 @@ export class EmailService {
       intro: params.intro,
       caregiverName: params.caregiverName,
       dateText: params.dateText,
+      timeText: params.timeText, // PYG-526: แถว "เวลา" แบบ "09:00 – 13:00 (4 ชม.)"
       serviceText: params.serviceText,
       amountText: params.amountText,
       ctaUrl: params.ctaPath ? `${this.frontendUrl}${params.ctaPath}` : undefined,
@@ -250,6 +256,66 @@ export class EmailService {
     await this.send(user.email, tpl);
   }
 
+  /**
+   * อีเมลข่าวสาร / โปรโมชัน — ทางเดียวที่ใช้ส่งอีเมลการตลาด (PYG-540)
+   *
+   * ★ ทำไมต้องมีทางเดียว: ถ้าแต่ละฟีเจอร์ส่งเองผ่าน sendBookingEmail / send ตรง ๆ
+   *   จะมีสักวันที่ลืมเช็คความยินยอม — รวมไว้ที่เดียวแล้วทุกฉบับผ่านด่านเดียวกันแน่นอน
+   *
+   * ด่านที่ต้องผ่านทั้งหมด (ไม่ผ่านข้อใด = ไม่ส่ง + log `email.marketing_skipped`):
+   *   1. มีผู้ใช้จริง · ยังไม่ถูกลบ · บัญชียังใช้งานอยู่
+   *   2. emailPreferences = true (สวิตช์รับอีเมลเดิมของระบบ)
+   *   3. ความยินยอม marketing แถวล่าสุด = ยินยอม และเป็นนโยบายเวอร์ชันปัจจุบัน
+   *
+   * ★ ข้อ 3 เข้มกว่าด่านจอง (ที่ "ไม่เคยตอบ = ผ่าน"): marketing เป็นความยินยอมแบบ
+   *   "เลือกเข้าร่วม" — ไม่เคยตอบ / ถอน / ยินยอมนโยบายเก่า = ห้ามส่ง
+   *
+   * ★ ไม่ throw เลย (รวมถึงตอนอ่าน DB พัง) — ผู้เรียกส่งเป็นชุด ฉบับหนึ่งพังต้องไม่ทำให้ทั้งชุดหยุด
+   *
+   * @returns true = ส่งแล้ว (ส่งเข้า SMTP สำเร็จหรือพังตอน SMTP ก็ตาม) · false = ข้ามเพราะไม่ผ่านด่าน
+   */
+  async sendMarketingEmail(
+    userId: string,
+    tpl: EmailTemplate,
+  ): Promise<boolean> {
+    // ★ log แค่ userId + เหตุผล — ไม่ log อีเมล (ข้อมูลส่วนบุคคล)
+    const skip = (reason: string): false => {
+      this.logger.log({ event: 'email.marketing_skipped', userId, reason });
+      return false;
+    };
+
+    try {
+      const user = await this.prismaService.user.findUnique({
+        where: { id: userId },
+        select: {
+          email: true,
+          emailPreferences: true,
+          isActive: true,
+          deleted_at: true,
+        },
+      });
+
+      if (!user) return skip('user_not_found');
+      // PYG-603: บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล — ไม่มีที่ให้ส่ง ข้ามแบบเดียวกับไม่รับอีเมล
+      if (!user.email) return skip('no_email');
+      if (user.deleted_at || !user.isActive) return skip('inactive');
+      if (!user.emailPreferences) return skip('email_opt_out');
+
+      const consented = await this.consentService.hasGrantedCurrent(
+        userId,
+        CONSENT_TYPE.MARKETING,
+      );
+      if (!consented) return skip('no_marketing_consent');
+
+      await this.send(user.email, tpl);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error({ event: 'email.marketing_failed', userId, error: msg });
+      return false;
+    }
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────
 
   private async fetchUser(userId: string): Promise<EmailUser | null> {
@@ -262,11 +328,19 @@ export class EmailService {
       this.logger.warn(`User ${userId} not found — skipping email`);
       return null;
     }
+    // PYG-603 (E13): บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล → ข้าม ไม่ throw
+    //   ผู้ใช้ยังได้แจ้งเตือนในแอป (in-app notification) ตามปกติ — ปิดเฉพาะช่องทางอีเมล
+    //   การส่งทาง SMS แทนไม่อยู่ในขอบเขตของ PYG-603 (รอผลเคาะของ story PYG-562)
+    if (!user.email) {
+      this.logger.log({ event: 'email.skipped', userId, reason: 'no_email' });
+      return null;
+    }
     if (!user.emailPreferences) {
       this.logger.log(`User ${userId} opted out of email — skipping`);
       return null;
     }
-    return user;
+    // สร้าง object ใหม่ให้ TypeScript รู้ว่า email เป็น string แน่นอนหลังผ่านการตรวจข้างบน
+    return { ...user, email: user.email };
   }
 
   private async send(to: string, tpl: EmailTemplate): Promise<void> {

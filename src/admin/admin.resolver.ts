@@ -10,8 +10,8 @@
  *   → สรุปภาพรวม: stats, weekly submissions, avg review time, recent activity
  *
  * Mutations:
- * - approveKyc(caregiverId: ID!): Caregiver
- *   → อนุมัติ KYC: set verified + INSERT audit + notify
+ * - approveKyc(caregiverId: ID!, careLevel: String): Caregiver
+ *   → อนุมัติ KYC: [บันทึกระดับผู้ดูแล — PYG-581] + set verified + INSERT audit + notify
  * - rejectKyc(input: RejectKycInput!): Caregiver
  *   → ปฏิเสธ KYC: set rejected + INSERT audit (พร้อม reason) + notify
  *
@@ -106,12 +106,14 @@ export class AdminResolver {
   @Query(() => AdminKycDetailPayload, {
     description:
       'Admin only: Get full KYC detail for a single caregiver. ' +
-      'Includes profile, documents with signed URLs (1hr), and review history.',
+      'Includes profile, documents with signed URLs (15 min), and review history. ' +
+      'การเปิดดูถูกบันทึกลง admin_audit_logs ทุกครั้ง (action=kyc_documents_viewed).',
   })
   async adminKycDetail(
     @Args('caregiverId', { type: () => ID }) caregiverId: string,
+    @CurrentUser() admin: AuthUser,
   ): Promise<AdminKycDetailPayload> {
-    return this.adminService.adminKycDetail(caregiverId);
+    return this.adminService.adminKycDetail(caregiverId, admin.id);
   }
 
   /**
@@ -148,28 +150,40 @@ export class AdminResolver {
    * - 'verified' → 409 Conflict
    * - 'rejected' → 409 Conflict
    *
+   * PYG-581: ต้องเลือกระดับผู้ดูแลมาด้วย (careLevel) — ไม่มีระดับ = CARE_LEVEL_REQUIRED, ค่าผิด = CARE_LEVEL_INVALID
+   *
    * @example
    * mutation {
-   *   approveKyc(caregiverId: "uuid-here") {
-   *     id fullName kycStatus kycVerifiedAt
+   *   approveKyc(caregiverId: "uuid-here", careLevel: "INTERMEDIATE") {
+   *     id fullName kycStatus kycVerifiedAt careLevel
    *   }
    * }
    *
    * @param caregiverId - UUID ของ caregiver ที่ต้องการ approve
+   * @param careLevel   - "BASIC" | "INTERMEDIATE" | "ADVANCED" (String ไม่ใช่ enum — service ตรวจเองเพื่อให้ได้ error code ตาม contract)
    * @param admin       - admin user ที่ทำการ approve (จาก JWT)
    */
   @Mutation(() => Caregiver, {
     description:
       'Admin only: Approve a caregiver KYC submission. ' +
       'Sets kycStatus = "verified", records audit log, sends notification + email. ' +
-      'Requires kycStatus = "pending".',
+      'Requires kycStatus = "pending". ' +
+      'PYG-581: a care level is required — pass careLevel, otherwise CARE_LEVEL_REQUIRED.',
   })
   async approveKyc(
     @Args('caregiverId', { type: () => ID, description: 'UUID of the caregiver to approve' })
     caregiverId: string,
+    @Args('careLevel', {
+      type: () => String,
+      nullable: true,
+      description:
+        'BASIC | INTERMEDIATE | ADVANCED — the caregiver level chosen at approval. ' +
+        'Optional in the schema so older clients get CARE_LEVEL_REQUIRED instead of a schema error.',
+    })
+    careLevel: string | null | undefined,
     @CurrentUser() admin: AuthUser,
   ): Promise<Caregiver> {
-    return this.adminService.approveKyc(caregiverId, admin);
+    return this.adminService.approveKyc(caregiverId, admin, careLevel);
   }
 
   /**
@@ -500,7 +514,9 @@ export class AdminResolver {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email ของ caregiver
+   * adminUpdateCaregiverInfo — Admin แก้ไข firstName/lastName/idCardNumber/email/hourlyRate ของ caregiver
+   *
+   * hourlyRate (PYG-534): ทางเดียวที่เหลือสำหรับตั้งราคาผู้ดูแล (ผู้ดูแลตั้งเองไม่ได้แล้ว)
    *
    * @example
    * mutation {
@@ -510,15 +526,17 @@ export class AdminResolver {
    *     lastName: "ใจดี"
    *     idCardNumber: "1234567890123"
    *     email: "new@example.com"
+   *     hourlyRate: 250
    *   }) {
-   *     id firstName lastName idCardNumber email
+   *     id firstName lastName idCardNumber email hourlyRate
    *   }
    * }
    */
   @Mutation(() => AdminUpdateCaregiverInfoPayload, {
     description:
-      'Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email). ' +
+      'Admin only: Edit caregiver personal info (firstName, lastName, idCardNumber, email) and hourlyRate. ' +
       'Email change syncs to Supabase Auth. idCardNumber must be exactly 13 digits. ' +
+      'hourlyRate must be > 0 (caregivers cannot set it themselves since PYG-534). ' +
       'Records audit log.',
   })
   async adminUpdateCaregiverInfo(

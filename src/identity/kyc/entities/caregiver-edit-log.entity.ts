@@ -3,7 +3,8 @@
  *
  * บันทึกทุกครั้งที่ caregiver แก้ไขข้อมูลหรือเอกสาร:
  * - "resubmit"        = ส่ง KYC ใหม่หลังถูก reject (เปรียบเทียบ field ก่อน/หลัง)
- * - "profile_edit"    = แก้ไข profile fields (bio, hourlyRate, skills, etc.)
+ * - "profile_edit"    = แก้ไข profile fields (bio, skills, etc.)
+ *                       hourlyRate มีเฉพาะใน log เก่าก่อน PYG-534 (ตอนนี้ผู้ดูแลแก้ราคาเองไม่ได้แล้ว)
  * - "document_upload" = อัปโหลดเอกสาร KYC ใหม่
  * - "document_delete" = ลบเอกสาร KYC
  *

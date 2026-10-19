@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { startingHourlyPrices } from '../common/pricing/display-price';
 
 export interface SavedCaregiverResponse {
   caregiverId: string;
@@ -15,6 +16,7 @@ export interface SavedCaregiverResponse {
     avatarUrl?: string;
     hourlyRate?: number;
     skills: string[];
+    otherSkills: string[];
     province?: string;
     district?: string;
   };
@@ -37,8 +39,8 @@ export class SavedCaregiversService {
         caregiver: {
           select: {
             fullName:            true,
-            hourlyRate:          true,
             skills:              true,
+            otherSkills:         true,
             serviceAreaProvince: true,
             serviceAreaDistrict: true,
             user: { select: { avatarUrl: true } },
@@ -47,14 +49,18 @@ export class SavedCaregiversService {
       },
     });
 
+    // ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — ตรงกับหน้า Search
+    const prices = await startingHourlyPrices(this.prisma, saved.map((s) => s.caregiverId));
+
     return saved.map((s) => ({
       caregiverId: s.caregiverId,
       savedAt:     s.created_at,
       caregiver: {
         fullName:  s.caregiver.fullName            ?? undefined,
         avatarUrl: s.caregiver.user.avatarUrl      ?? undefined,
-        hourlyRate: s.caregiver.hourlyRate          ?? undefined,
+        hourlyRate: prices.get(s.caregiverId),
         skills:    s.caregiver.skills,
+        otherSkills: s.caregiver.otherSkills,
         province:  s.caregiver.serviceAreaProvince ?? undefined,
         district:  s.caregiver.serviceAreaDistrict ?? undefined,
       },
@@ -72,14 +78,15 @@ export class SavedCaregiversService {
       select: {
         id:                  true,
         fullName:            true,
-        hourlyRate:          true,
         skills:              true,
+        otherSkills:         true,
         serviceAreaProvince: true,
         serviceAreaDistrict: true,
         user: { select: { avatarUrl: true } },
       },
     });
     if (!caregiver) throw new NotFoundException('Caregiver not found');
+    const prices = await startingHourlyPrices(this.prisma, [caregiver.id]);
 
     try {
       const saved = await this.prisma.savedCaregiver.create({
@@ -94,8 +101,9 @@ export class SavedCaregiversService {
         caregiver: {
           fullName:  caregiver.fullName            ?? undefined,
           avatarUrl: caregiver.user.avatarUrl      ?? undefined,
-          hourlyRate: caregiver.hourlyRate          ?? undefined,
+          hourlyRate: prices.get(caregiver.id),
           skills:    caregiver.skills,
+          otherSkills: caregiver.otherSkills,
           province:  caregiver.serviceAreaProvince ?? undefined,
           district:  caregiver.serviceAreaDistrict ?? undefined,
         },

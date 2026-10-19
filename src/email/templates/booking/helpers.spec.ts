@@ -1,6 +1,6 @@
 /**
  * Unit tests สำหรับ booking email template helpers (PYG-293)
- * - formatThaiDate / formatTimeSlot / formatRating / formatPriceBreakdown
+ * - formatThaiDate / formatTimeRange / formatRating / formatPriceBreakdown
  * - greeting + escape behaviour (กัน XSS)
  */
 import {
@@ -9,7 +9,7 @@ import {
   formatRating,
   formatServiceType,
   formatThaiDate,
-  formatTimeSlot,
+  formatTimeRange,
   greeting,
 } from './helpers';
 
@@ -27,24 +27,25 @@ describe('booking template helpers', () => {
     });
   });
 
-  describe('formatTimeSlot', () => {
+  // PYG-526: รูปแบบใหม่ "เริ่ม – สิ้นสุด (N ชม.)" ตรงกับหน้าเว็บ (เดิม "09:00 - 13:00 น. (4 ชม.)")
+  describe('formatTimeRange', () => {
     it('คำนวณ end time จาก startTime + durationHours', () => {
       const start = new Date(Date.UTC(1970, 0, 1, 9, 0, 0)); // 09:00 UTC
-      expect(formatTimeSlot(start, 4)).toBe('09:00 - 13:00 น. (4 ชม.)');
+      expect(formatTimeRange(start, 4)).toBe('09:00 – 13:00 (4 ชม.)');
     });
 
     it('รองรับครึ่งชั่วโมง (Decimal-ish)', () => {
       const start = new Date(Date.UTC(1970, 0, 1, 8, 30, 0));
-      expect(formatTimeSlot(start, 1.5)).toBe('08:30 - 10:00 น. (1.5 ชม.)');
+      expect(formatTimeRange(start, 1.5)).toBe('08:30 – 10:00 (1.5 ชม.)');
     });
 
     it('คืน "-" ถ้า startTime null', () => {
-      expect(formatTimeSlot(null, 4)).toBe('-');
+      expect(formatTimeRange(null, 4)).toBe('-');
     });
 
     it('แสดงเฉพาะ start ถ้า duration ไม่ valid', () => {
       const start = new Date(Date.UTC(1970, 0, 1, 9, 0, 0));
-      expect(formatTimeSlot(start, null)).toBe('09:00 น.');
+      expect(formatTimeRange(start, null)).toBe('09:00');
     });
   });
 

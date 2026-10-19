@@ -34,10 +34,32 @@ export enum NotificationType {
   refund_issued = 'refund_issued',              // คืนเงินเรียบร้อย (→ patient)
   dispute_created = 'dispute_created',           // แจ้งปัญหาใหม่ (→ admin)
   dispute_resolved = 'dispute_resolved',        // ผลตรวจสอบปัญหา (→ patient + caregiver)
-
   // ─── Payout lifecycle (PYG-330 ก้อน B) ────────────────────────────────
   // ⚠️ Prisma enum มีมาตั้งแต่ PYG-306 แต่ TS enum พึ่ง sync ที่นี่ (ก่อนหน้านี้ไม่มีใครใช้)
-  payment_transferred = 'payment_transferred',  // ค่าตอบแทนโอนสำเร็จ (→ caregiver)
+  payment_transferred = 'payment_transferred',  // PYG-266: admin โอนเงินให้ caregiver แล้ว (→ caregiver)
+
+  // ─── Job / care log ──────────────────────────────────────────────────────
+  // ⚠️ job_checked_in (PYG-353) มีใน Prisma enum + DB แล้วแต่ยังไม่ได้ sync มาที่นี่ — แยกการ์ด
+  job_care_log_added = 'job_care_log_added',    // มีการบันทึก care log (→ patient)
+
+  // ─── Profile photo review (PYG-508) ──────────────────────────────────────
+  profile_photo_approved = 'profile_photo_approved', // แอดมินอนุมัติรูปโปรไฟล์ (→ caregiver)
+  profile_photo_rejected = 'profile_photo_rejected', // แอดมินปฏิเสธรูปโปรไฟล์ + เหตุผล (→ caregiver)
+
+  // ─── Payout account (Omise recipient) ────────────────────────────────────
+  payout_account_verified = 'payout_account_verified', // Omise accept บัญชีรับเงิน → เปิดรับงานได้ (→ caregiver)
+  payout_account_failed = 'payout_account_failed',     // Omise ปฏิเสธบัญชีรับเงิน → ต้องแก้ไข (→ caregiver)
+
+  // ─── Professional license (PYG-587) ──────────────────────────────────────
+  // ⚠ ยังไม่มีใน Prisma enum NotificationType / DB — ต้องรอทีม DB เพิ่มค่าเหล่านี้ (ดู PR description)
+  //   ระหว่างนั้น notification create จะล้ม → log เท่านั้น ไม่ทำให้การตรวจ/เปลี่ยนสถานะล้ม
+  license_approved = 'license_approved',   // แอดมินอนุมัติใบประกอบฯ (→ caregiver)
+  license_rejected = 'license_rejected',   // แอดมินปฏิเสธใบประกอบฯ + เหตุผล (→ caregiver)
+  license_expired = 'license_expired',     // ใบประกอบฯ ถึงวันหมดอายุ → อัปโหลดใหม่ (→ caregiver)
+
+  // ─── Job type restriction (PYG-592) ──────────────────────────────────────
+  // ⚠ ยังไม่มีใน Prisma enum / DB เช่นเดียวกับ license_* — รอทีม DB
+  job_type_removed = 'job_type_removed',   // ประเภทงานเดิมถูกนำออกเพราะไม่ตรงวิชาชีพ/ใบประกอบฯ (→ caregiver)
 }
 
 // register ให้ GraphQL schema รู้จัก — ต้องเรียกครั้งเดียวตอน app bootstrap

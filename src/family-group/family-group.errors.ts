@@ -42,6 +42,14 @@ export const FG_ERROR = {
    *   ซึ่งเป็นข้อมูลสุขภาพของคนอื่น (PDPA) → ตอบเหมือนกันหมดปลอดภัยกว่า
    */
   RECIPIENT_NOT_IN_GROUP: 'RECIPIENT_NOT_IN_GROUP',
+  /**
+   * PYG-385 — แก้ไข/นำออกโปรไฟล์ที่ "สมาชิกคนอื่น" เป็นคนเพิ่ม
+   *
+   * ★ ต่างจาก RECIPIENT_NOT_IN_GROUP: ตัวนี้ยอมรับว่าโปรไฟล์มีอยู่ในกลุ่มจริง — ไม่ใช่การรั่ว
+   *   ข้อมูล เพราะสมาชิกทุกคนเห็นโปรไฟล์นั้นในลิสต์อยู่แล้ว (groupCareRecipients คืน ownerUserId)
+   *   สิ่งที่ห้ามคือ "แก้ของคนอื่น" เท่านั้น → เจ้าของโปรไฟล์เท่านั้นที่แก้/ลบได้
+   */
+  RECIPIENT_NOT_OWNER: 'RECIPIENT_NOT_OWNER',
 
   // ── PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม ─────────────────────────
   /**
@@ -60,10 +68,47 @@ export const FG_ERROR = {
   JOIN_LINK_EXHAUSTED: 'JOIN_LINK_EXHAUSTED',
   /** สมาชิก ACTIVE ในกลุ่มถึงเพดาน FAMILY_GROUP_MAX_MEMBERS แล้ว */
   GROUP_MEMBER_LIMIT_REACHED: 'GROUP_MEMBER_LIMIT_REACHED',
-  /** กลุ่มยังไม่มีลิงก์ที่ใช้งานได้ — เจ้าของต้องกดสร้างก่อน */
+  /**
+   * กลุ่มยังไม่มีลิงก์ที่ใช้งานได้ — เจ้าของต้องกดสร้างก่อน
+   * (สมาชิกธรรมดาก็ได้ code นี้ได้ตั้งแต่ PYG-478 — FE ต้องบอกให้ไปขอเจ้าของ ไม่ใช่โชว์ปุ่มสร้าง)
+   */
   JOIN_LINK_NOT_FOUND: 'JOIN_LINK_NOT_FOUND',
+  /**
+   * PYG-500 — จองแทนสมาชิกที่ "ยังไม่เคยมีข้อมูล" แต่คนจองไม่ได้กรอกชื่อผู้รับบริการมาให้
+   * (โมเดลสมาชิก=patient: ถ้าสมาชิกมีโปรไฟล์/ข้อมูลเดิมอยู่แล้วจะไม่เจอ error นี้เลย)
+   */
+  PATIENT_NAME_REQUIRED: 'PATIENT_NAME_REQUIRED',
+  /**
+   * PYG-516 — คนจองส่งชื่อผู้รับบริการมาเอง ทั้งที่จองแทนสมาชิกในกลุ่ม
+   *
+   * ชื่อ-นามสกุลเป็น "ตัวตน" ของเจ้าของบัญชี คนอื่นตั้งชื่อแทนไม่ได้
+   * (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 → PYG-495)
+   */
+  PATIENT_NAME_NOT_ALLOWED: 'PATIENT_NAME_NOT_ALLOWED',
+  /**
+   * PYG-516 — สมาชิกที่ถูกจองแทนยังไม่มีชื่อในบัญชีเลย (ทั้ง first/last name และ display name ว่าง)
+   * คนจองกรอกชื่อแทนไม่ได้แล้ว → เจ้าตัวต้องผ่าน Onboarding ก่อน (PYG-496)
+   */
+  MEMBER_NAME_MISSING: 'MEMBER_NAME_MISSING',
   /** ตั้งค่า APP_PUBLIC_BASE_URL ไว้ไม่ครบ ประกอบ URL ของลิงก์ไม่ได้ */
   JOIN_LINK_CONFIG_MISSING: 'JOIN_LINK_CONFIG_MISSING',
+  /**
+   * PYG-479 — เรียก joinLinkPreview / joinGroupByLink ถี่เกินเพดาน (ต่อผู้ใช้ หรือต่อ IP)
+   *
+   * ★ ไม่บอกว่าชนเพดานตัวไหน (ผู้ใช้ หรือ IP) — คนที่พยายามหลบการจำกัด
+   *   ไม่ควรได้ข้อมูลว่าต้องเปลี่ยนอะไรถึงจะผ่าน บอกแค่ว่าต้องรออีกกี่วินาทีก็พอ
+   */
+  JOIN_LINK_RATE_LIMITED: 'JOIN_LINK_RATE_LIMITED',
+
+  // ── PYG-421 — ฟีดกิจกรรม ───────────────────────────────────────────────
+  /**
+   * cursor ที่ส่งมาใน after ไม่ใช่ค่าที่เราเคยออกให้ (decode ไม่ออก / รูปทรงผิด)
+   *
+   * ★ เป็น error ไม่ใช่ "เริ่มจากหน้าแรกให้เงียบ ๆ" โดยตั้งใจ
+   *   ถ้า fallback เงียบ ๆ หน้าจอ infinite scroll จะวนซ้ำหน้าแรกไม่รู้จบ
+   *   โดยที่ไม่มีใครรู้ว่าเกิดอะไรขึ้น — ล้มดังกว่าให้ FE เห็นตอนพัฒนาเลยดีกว่า
+   */
+  ACTIVITY_CURSOR_INVALID: 'ACTIVITY_CURSOR_INVALID',
 } as const;
 
 export type FgErrorCode = (typeof FG_ERROR)[keyof typeof FG_ERROR];
@@ -156,6 +201,59 @@ export class RecipientNotInGroupError extends FamilyGroupError {
   }
 }
 
+/**
+ * PYG-516 — ส่ง patientName มาตอนจองแทนสมาชิกในกลุ่ม
+ *
+ * ★ ตอบ error ไม่ใช่ "รับแล้วเงียบ ๆ ไม่ใช้": ถ้าเงียบ FE จะคิดว่าชื่อที่พิมพ์ถูกบันทึกแล้ว
+ *   แต่ผู้ดูแลเห็นอีกชื่อหนึ่ง — สับสนกว่าการบอกตรง ๆ ว่าส่งมาไม่ได้
+ *   (ทีมเลือกทางนี้ตามข้อเสนอในการ์ด PYG-516)
+ */
+export class PatientNameNotAllowedError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ชื่อ-นามสกุลผู้รับบริการมาจากบัญชีของสมาชิกเท่านั้น แก้ไขจากหน้าจองไม่ได้',
+      FG_ERROR.PATIENT_NAME_NOT_ALLOWED,
+    );
+  }
+}
+
+/** PYG-516 — สมาชิกที่ถูกจองแทนยังไม่มีชื่อในบัญชี (เจ้าตัวต้องผ่าน Onboarding ก่อน) */
+export class MemberNameMissingError extends FamilyGroupError {
+  constructor() {
+    super(
+      'สมาชิกคนนี้ยังไม่ได้กรอกชื่อในบัญชี — ขอให้เจ้าตัวกรอกข้อมูลก่อนจึงจะจองแทนได้',
+      FG_ERROR.MEMBER_NAME_MISSING,
+    );
+  }
+}
+
+/**
+ * PYG-500 — จองแทนสมาชิกที่ยังไม่เคยมีข้อมูล แต่ไม่ได้ส่งชื่อผู้รับบริการมา
+ *
+ * @deprecated PYG-516 — ไม่มีโค้ดโยนแล้ว: คนจองส่งชื่อไม่ได้อีก ชื่อมาจากบัญชีเสมอ
+ *   กรณีที่เคยตกมาที่นี่ตอนนี้ได้ MemberNameMissingError แทน
+ *   คงคลาสกับ code ไว้ให้ FE รุ่นเก่าที่ยัง map code นี้อยู่ไม่พัง
+ * (ปกติ FE จะบังคับกรอกชื่อในฟอร์ม "กรอกข้อมูลให้สมาชิก" อยู่แล้ว — เป็นด่านกันพลาดฝั่ง BE)
+ */
+export class PatientNameRequiredError extends FamilyGroupError {
+  constructor() {
+    super(
+      'กรุณากรอกชื่อผู้รับบริการ เนื่องจากสมาชิกคนนี้ยังไม่มีข้อมูลในระบบ',
+      FG_ERROR.PATIENT_NAME_REQUIRED,
+    );
+  }
+}
+
+/** PYG-385 — เฉพาะเจ้าของโปรไฟล์เท่านั้นที่แก้ไข/นำออกได้ (สมาชิกอื่นแก้ของคนอื่นไม่ได้) */
+export class RecipientNotOwnerError extends FamilyGroupError {
+  constructor() {
+    super(
+      'แก้ไขหรือนำออกได้เฉพาะโปรไฟล์ที่คุณเป็นคนเพิ่มเท่านั้น',
+      FG_ERROR.RECIPIENT_NOT_OWNER,
+    );
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม
 // ═══════════════════════════════════════════════════════════════════════════
@@ -217,10 +315,24 @@ export class GroupMemberLimitReachedError extends FamilyGroupError {
   }
 }
 
+/**
+ * กลุ่มยังไม่มีลิงก์ ACTIVE — code เดียวกันเสมอ ต่างกันแค่ "ข้อความ" ตามคนที่เรียก
+ *
+ * ★ PYG-478 (Amendment 1 · B10): สมาชิกธรรมดาเปิดดูลิงก์ได้แล้ว แต่ "สร้างลิงก์" ไม่ได้
+ *   ถ้าส่งข้อความเดิม "กรุณากดสร้างลิงก์ก่อน" ไปให้สมาชิก = บอกให้เขาทำสิ่งที่ระบบ
+ *   จะปฏิเสธด้วย NOT_GROUP_OWNER ทันที → สมาชิกต้องได้ข้อความ "ให้ไปขอเจ้าของกลุ่ม" แทน
+ *
+ * @param askOwner true  = ผู้เรียกเป็นสมาชิกธรรมดา → บอกให้ไปขอเจ้าของกลุ่มสร้างลิงก์
+ *                 false = ผู้เรียกเป็นเจ้าของ (ค่าเดิม) → บอกให้กดสร้างลิงก์เอง
+ *                 ค่า default เป็น false เพื่อให้จุดที่เรียกอยู่เดิม (revokeJoinLink ที่
+ *                 เจ้าของเท่านั้นเรียกได้) ได้ข้อความเหมือนเดิมทุกตัวอักษร
+ */
 export class JoinLinkNotFoundError extends FamilyGroupError {
-  constructor() {
+  constructor(askOwner = false) {
     super(
-      'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณากดสร้างลิงก์ก่อน',
+      askOwner
+        ? 'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณาขอให้เจ้าของกลุ่มสร้างลิงก์'
+        : 'กลุ่มนี้ยังไม่มีลิงก์เข้าร่วม กรุณากดสร้างลิงก์ก่อน',
       FG_ERROR.JOIN_LINK_NOT_FOUND,
     );
   }
@@ -236,6 +348,46 @@ export class JoinLinkConfigMissingError extends FamilyGroupError {
     super(
       'ระบบยังตั้งค่าลิงก์เข้าร่วมกลุ่มไม่ครบ กรุณาแจ้งผู้ดูแลระบบ',
       FG_ERROR.JOIN_LINK_CONFIG_MISSING,
+    );
+  }
+}
+
+/**
+ * PYG-479 — เรียกลิงก์เข้าร่วมถี่เกินไป
+ *
+ * ส่ง retryAfterSeconds กลับไปด้วย เพื่อให้ FE นับถอยหลัง / ปิดปุ่มชั่วคราวได้
+ * โดยไม่ต้องเดาเวลาเอง (แพตเทิร์นเดียวกับ maxUses ของ JoinLinkExhaustedError)
+ *
+ * ★ ตอบเป็น GraphQL error ปกติ (HTTP 200 + extensions.code) ไม่ใช่ HTTP 429
+ *   เพราะ error อื่นทุกตัวของโมดูลนี้เป็นแบบนี้ และ FE อ่าน extensions.code อยู่แล้ว
+ *   (AC ของการ์ด: "error รูปแบบเดียวกับ error อื่นของ family group ไม่ใช่ 500")
+ */
+export class JoinLinkRateLimitedError extends FamilyGroupError {
+  constructor(retryAfterSeconds: number) {
+    super(
+      `มีการเปิดหรือเข้าร่วมลิงก์กลุ่มถี่เกินไป กรุณารอ ${retryAfterSeconds} วินาทีแล้วลองใหม่`,
+      FG_ERROR.JOIN_LINK_RATE_LIMITED,
+      { retryAfterSeconds },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PYG-421 — ฟีดกิจกรรม
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * cursor พัง — ไม่แนบค่าที่ส่งมากลับไปใน extensions
+ *
+ * ค่าที่ client ส่งมาอาจเป็นอะไรก็ได้ ถ้าสะท้อนกลับไปตรง ๆ มันจะไปโผล่ใน
+ * error log และหน้าจอ error ของ FE = ช่องทาง XSS/log injection ฟรี ๆ
+ * โดยที่ไม่ได้ช่วย debug อะไรเลย (cursor ที่ผิดก็คือผิด ดูค่าแล้วก็ทำอะไรต่อไม่ได้)
+ */
+export class ActivityCursorInvalidError extends FamilyGroupError {
+  constructor() {
+    super(
+      'ตำแหน่งหน้าที่ขอมาไม่ถูกต้อง กรุณาโหลดฟีดใหม่อีกครั้ง',
+      FG_ERROR.ACTIVITY_CURSOR_INVALID,
     );
   }
 }

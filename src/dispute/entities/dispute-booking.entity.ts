@@ -27,7 +27,12 @@ export class DisputeBooking {
   @Field() bookingDate: string;
   @Field() status: string;
   @Field() serviceType: string;
-  @Field() timeSlot: string;
+  @Field({ deprecationReason: 'PYG-526: อย่าแสดงชื่อ slot — ใช้ startTime / endTime / durationHours แทน' })
+  timeSlot: string;
+  // PYG-526: เวลาจริงของใบจอง ให้แอดมินเห็นเหมือนหน้าอื่น — endTime คำนวณตอนอ่าน (ไม่ได้เก็บในดีบี)
+  @Field({ nullable: true, description: 'เวลาเริ่ม "HH:mm" (เวลาไทย)' }) startTime?: string;
+  @Field({ nullable: true, description: 'เวลาสิ้นสุด "HH:mm" = startTime + durationHours' }) endTime?: string;
+  @Field(() => Float, { nullable: true }) durationHours?: number;
   @Field() locationAddress: string;
   @Field(() => Float, { nullable: true }) estimatedCost?: number;
 

@@ -94,6 +94,12 @@ describe('JobScanService (PYG-435)', () => {
     jobScanEvent: { create: jest.Mock };
   };
   let monitoring: { checkInBooking: jest.Mock; checkOutBooking: jest.Mock };
+  // PYG-437: ต้องตรวจได้ว่า scan เรียก tokenHashFor ด้วย argument อะไร
+  // จึงยก mock ออกมาเป็นตัวแปร แทนที่จะฝังไว้ใน providers เฉย ๆ
+  let jobQr: {
+    hashToken: (t: string) => string;
+    tokenHashFor: jest.Mock;
+  };
 
   beforeEach(async () => {
     prisma = {
@@ -116,19 +122,31 @@ describe('JobScanService (PYG-435)', () => {
         .mockResolvedValue(fakeJobEvent({ eventType: 'check_out' })),
     };
 
+    // ใช้ตัวจริงของ hashToken เพื่อให้เทสพิสูจน์ "สูตรเดียวกัน" ได้จริง ๆ
+    jobQr = {
+      hashToken: (t: string) =>
+        createHash('sha256').update(t, 'utf8').digest('hex'),
+
+      // PYG-437: ตอนเช็คอินสำเร็จ scan ต้องเขียน hash ของ token ใบ "จบงาน"
+      // ทับลงไป ไม่งั้น QR ของตอนเริ่มงานจะเอาไปกดปิดงานเองได้
+      //
+      // ★ ตัวปลอมนี้ไม่ต้องเหมือนสูตรจริง ขอแค่ "ต่างกันตาม input"
+      //   เพราะสิ่งที่ไฟล์นี้ต้องพิสูจน์คือ scan เรียกด้วย argument ที่ถูก
+      //   ส่วนสูตรจริงมีเทสของตัวเองอยู่ที่ job-qr.service.spec.ts แล้ว
+      tokenHashFor: jest.fn(
+        (sessionId: string, action: string, revisionAt: Date) =>
+          createHash('sha256')
+            .update(`${sessionId}|${action}|${revisionAt.getTime()}`)
+            .digest('hex'),
+      ),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         JobScanService,
         { provide: PrismaService, useValue: prisma },
         { provide: ClockService, useValue: { now: () => NOW } },
-        // ใช้ตัวจริงของ hashToken เพื่อให้เทสพิสูจน์ "สูตรเดียวกัน" ได้จริง ๆ
-        {
-          provide: JobQrService,
-          useValue: {
-            hashToken: (t: string) =>
-              createHash('sha256').update(t, 'utf8').digest('hex'),
-          },
-        },
+        { provide: JobQrService, useValue: jobQr },
         { provide: MonitoringService, useValue: monitoring },
       ],
     }).compile();
@@ -478,6 +496,69 @@ describe('JobScanService (PYG-435)', () => {
       ];
       // ถ้าสองตารางใช้คนละเวลา รายงานของแอดมินจะขัดกันเองในวันที่มีข้อพิพาท
       expect(call[0].data.checkedInAt).toBe(eventTs);
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════
+  // C2. PYG-437 — เช็คอินสำเร็จแล้ว QR ใบเดิมต้อง "ตาย" ทันที
+  //
+  // ก่อนหน้านี้ QR ใบเดียวใช้ได้ทั้งเช็คอินและเช็คเอาท์ ใครถ่ายรูป QR ตอนเริ่มงาน
+  // เก็บไว้ ก็เอาไปกดปิดงานเองได้ทีหลัง — บล็อกนี้คือสิ่งที่ปิดช่องนั้น
+  // ════════════════════════════════════════════════════════════════════
+  describe('PYG-437 — token คนละใบต่อ action', () => {
+    it('★ เช็คอินสำเร็จ → เขียน tokenHash ของ CHECK_OUT ทับในคำสั่งเดียวกัน', async () => {
+      await service.scanJobQr(USER_ID, { token: TOKEN });
+
+      const call = prisma.jobSession.updateMany.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+
+      // ① ต้องเขียน tokenHash ไปด้วย ไม่ใช่แค่ขยับ status
+      //    ถ้าลืมบรรทัดนี้ QR ใบที่เพิ่งสแกนไปจะยังใช้ปิดงานได้ = ช่องโหว่ที่การ์ดนี้ปิด
+      expect(call[0].data.tokenHash).toEqual(expect.any(String));
+
+      // ② ค่าที่เขียนต้องเป็นของ CHECK_OUT และต้องต่างจาก hash ของ token ที่เพิ่งสแกนมา
+      expect(call[0].data.tokenHash).not.toBe(
+        createHash('sha256').update(TOKEN, 'utf8').digest('hex'),
+      );
+    });
+
+    it('★ ใช้ now ตัวเดียวกับที่เขียนลง updatedAt (เลขรอบของ token)', async () => {
+      await service.scanJobQr(USER_ID, { token: TOKEN });
+
+      const call = prisma.jobSession.updateMany.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+
+      // updated_at คือ "เลขรอบ" ที่อยู่ในสูตรคำนวณ token (ดู JobQrService)
+      // ถ้าเขียน tokenHash ด้วยเวลาหนึ่ง แต่ updatedAt ด้วยอีกเวลาหนึ่ง
+      // ดีบีจะเก็บ hash ของ token ที่ไม่มีใครคำนวณออกมาได้เลย = สแกนไม่ผ่านตลอดไป
+      expect(call[0].data.updatedAt).toEqual(NOW);
+      expect(jobQr.tokenHashFor).toHaveBeenCalledWith(
+        SESSION_ID,
+        ScanAction.CHECK_OUT,
+        NOW,
+      );
+    });
+
+    it('★ เช็คเอาท์สำเร็จ → "ไม่" เขียน tokenHash ใหม่', async () => {
+      prisma.jobSession.findUnique.mockResolvedValue(
+        fakeSession({
+          status: JOB_SESSION_STATUS.CHECKED_IN,
+          checkedInAt: new Date(NOW.getTime() - 3_600_000), // 1 ชม.ที่แล้ว
+        }),
+      );
+      prisma.jobEvent.findFirst.mockResolvedValue({ id: 'evt-checkin' });
+
+      await service.scanJobQr(USER_ID, { token: TOKEN });
+
+      const call = prisma.jobSession.updateMany.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+
+      // ปล่อยใบสุดท้ายค้างไว้โดยตั้งใจ: ผู้ดูแลที่เผลอสแกนซ้ำจะยังหาแถวเจอ
+      // แล้วได้ข้อความ "งานนี้ปิดเรียบร้อยแล้ว" แทน "QR นี้ใช้ไม่ได้" ที่ชวนสับสน
+      expect(call[0].data).not.toHaveProperty('tokenHash');
     });
   });
 

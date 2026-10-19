@@ -15,9 +15,14 @@ datasource db {
 model User {
   id                                                      String                 @id @default(uuid())
   supabaseUid                                             String                 @unique @map("supabase_uid")
-  email                                                   String                 @unique
+  /// PYG-602: NULL ได้ — บัญชีที่สมัครด้วยเบอร์โทร (Supabase Auth) ไม่มีอีเมล
+  /// DB มี CHECK users_email_or_phone_check: ต้องมี email หรือ phone ที่ไม่ว่างอย่างน้อยหนึ่งอย่าง
+  email                                                   String?                @unique
   displayName                                             String?                @map("display_name")
-  avatarUrl                                               String?                @map("avatar_url")
+  /// PYG-497: ชื่อ-นามสกุลจริง กรอกตอน Onboarding (PYG-496) — NULL = ยังไม่ onboard / บัญชีเดิม
+  firstName                                               String?                @map("first_name") @db.VarChar(100)
+  lastName                                                String?                @map("last_name") @db.VarChar(100)
+  avatarUrl                                              String?                @map("avatar_url")
   isActive                                                Boolean                @default(true) @map("is_active")
   createdAt                                               DateTime               @default(now()) @map("created_at")
   updatedAt                                               DateTime               @updatedAt @map("updated_at")
@@ -53,10 +58,17 @@ model User {
   familyGroupActivity                                     FamilyGroupActivity[]
   familyGroupJoinLinksCreated                             FamilyGroupJoinLink[]  @relation("FamilyGroupJoinLinkCreatedBy")
   caregiver_edit_logs                                     caregiver_edit_logs[]
+  /// PYG-608: แบบประเมิน ADL ที่ user คนนี้เป็นผู้ประเมิน (ญาติ)
+  careRecipientAssessments                                CareRecipientAssessment[]
   caregiver                                               Caregiver?
+  // PYG-580: ผู้ดูแลที่แอดมินคนนี้เป็นผู้กำหนดระดับล่าสุด + ประวัติการเปลี่ยนระดับที่ทำ
+  caregiversCareLevelSet                                  Caregiver[]            @relation("CaregiverCareLevelSetBy")
+  caregiver_care_level_logs                               caregiver_care_level_logs[]
   field_locks_field_locks_locked_byTousers                field_locks[]          @relation("field_locks_locked_byTousers")
   field_locks_field_locks_unlocked_byTousers              field_locks[]          @relation("field_locks_unlocked_byTousers")
   documents                                               KycDocument[]
+  /// PYG-473: ประวัติการให้/ถอนความยินยอมตาม PDPA — append-only
+  consents                                                user_consents[]
   kycReviews                                              KycReview[]
   notifications                                           Notification[]
   paymentStatusChanges                                    PaymentStatusHistory[] @relation("PaymentStatusChanges")
@@ -81,6 +93,10 @@ model Caregiver {
   idCardNumber        String?                    @map("id_card_number")
   phone               String?
   skills              String[]
+  /// PYG-652: ทักษะที่ไม่อยู่ในรายการกลาง (care_skills) — ข้อความอิสระ
+  otherSkills         String[]                   @default([]) @map("other_skills")
+  /// PYG-652: ค่า skills เดิมก่อนแปลงเป็นรหัสกลาง เก็บไว้ตรวจทานหรือย้อนกลับ — ห้ามใช้ในโค้ดใหม่
+  skillsLegacy        String[]                   @map("skills_legacy")
   experienceYears     Int?                       @map("experience_years")
   hourlyRate          Float?                     @map("hourly_rate")
   bio                 String?
@@ -103,9 +119,25 @@ model Caregiver {
   languages           String[]                   @default([])
   averageRating       Float?                     @map("average_rating")
   reviewCount         Int                        @default(0) @map("review_count")
+  /// PYG-574: วิชาชีพ — 'general_caregiver' | 'nurse' | 'physiotherapist' (DB มี CHECK caregivers_profession_check)
+  profession          String                     @default("general_caregiver")
+  /// PYG-580: ระดับผู้ดูแล — 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง) (DB มี CHECK caregivers_care_level_check)
+  /// NULL = ยังไม่มีระดับ (KYC ยังไม่อนุมัติ) — ไม่มี default โดยตั้งใจ แอดมินเป็นคนกำหนด
+  careLevel           String?                    @map("care_level")
+  /// NULL ทั้งที่มี careLevel = ได้ค่าจาก migration ยังไม่ผ่านการทบทวนของแอดมิน
+  careLevelSetBy      String?                    @map("care_level_set_by")
+  careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
+  /// PYG-660 (S06 · PYG-561): วิธีเดินทางรับส่งผู้รับการดูแล — 'self_drive' | 'hired_ride' | 'none'
+  /// (DB มี CHECK caregivers_transport_mode_check) · NULL = ยังไม่เคยตอบ (E11) ห้ามตีความว่า 'none'
+  transportMode       String?                    @map("transport_mode")
   bookings            Booking[]
+  bookingsInfectionAcked Booking[]              @relation("BookingInfectionAckBy") // PYG-618: booking ที่ผู้ดูแลคนนี้กดรับทราบข้อมูลโรคติดเชื้อ
   availability        CaregiverAvailability[]
   caregiver_edit_logs caregiver_edit_logs[]
+  careLevelSetByUser  User?                      @relation("CaregiverCareLevelSetBy", fields: [careLevelSetBy], references: [id], onDelete: Restrict)
+  caregiver_care_level_logs caregiver_care_level_logs[] // PYG-580: ประวัติการเปลี่ยนระดับ
+  care_logs           care_logs[] // PYG-361: บันทึกที่ผู้ดูแลคนนี้เขียน (FK RESTRICT — ลบ caregiver ที่ยังมีบันทึกไม่ได้)
+  booking_tasks       booking_tasks[] // PYG-361: รายการงานย่อยที่ผู้ดูแลคนนี้ติ๊กว่าทำแล้ว (done_by)
   jobTypes            CaregiverJobType[]
   serviceLocations    CaregiverServiceLocation[]
   user                User                       @relation(fields: [userId], references: [id])
@@ -123,7 +155,21 @@ model Caregiver {
 
 /// PYG-306 — Payout bank account 1:1 กับ Caregiver (foundation ของ Auto-Payout epic PYG-329)
 /// account_number_enc = ciphertext เข้ารหัสที่ app layer; แสดงผลใช้ account_number_last4 เท่านั้น
-/// omise_recipient_id + recipient_status จะถูกกรอกโดย webhook PYG-304 (ยังไม่ implement)
+/// omise_recipient_id + recipient_status ถูกกรอกโดย PayoutAccountService (PYG-307)
+///
+/// ⚠️ DB มี CHECK constraint 4 ตัว (Prisma ไม่ support declare) — PYG-307 TASK 4:
+///    `caregiver_payout_accounts_bank_code_check`
+///        bank_code ต้องอยู่ในชุด 18 รหัสที่ Omise รองรับ (lowercase)
+///        ★ ต้องตรงกับ src/common/constants/omise-banks.constant.ts เป๊ะ แก้ที่ไหนแก้ทั้งคู่
+///    `caregiver_payout_accounts_status_check`
+///        status IN ('pending','active','inactive')
+///    `caregiver_payout_accounts_recipient_status_check`
+///        recipient_status IN ('unverified','pending','verified','failed')
+///    `caregiver_payout_accounts_last4_check`
+///        account_number_last4 ~ '^[0-9]{4}$' — ด่านสุดท้ายกันเลขบัญชีเต็มรั่วลงช่องนี้
+///
+/// state machine ของสองคอลัมน์สถานะอยู่ที่ PayoutAccountService (ห้าม set ตรงจาก resolver):
+///   status='active' ตั้งได้จาก webhook recipient.verified เท่านั้น
 model CaregiverPayoutAccount {
   id                 String    @id @default(uuid())
   caregiverId        String    @unique @map("caregiver_id")
@@ -273,6 +319,19 @@ model CaregiverJobType {
   @@map("caregiver_job_types")
 }
 
+/// PYG-591 (S04-AC6): สำเนาแถว caregiver_job_types ที่ data migration นำออกเพราะวิชาชีพ/ใบประกอบฯ ไม่ตรง
+/// ใช้เป็นทั้งรายชื่อแจ้งเตือน (JobTypeRemovalNotifier อ่านด้วย SQL ตรง) และข้อมูลกู้คืน · ห้ามเขียนจากโค้ด
+/// ลบทิ้งด้วย migration แยกหลัง story PYG-559 ปิด
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caregiver_job_types_removed_pyg559 {
+  id                    String    @id @db.Uuid
+  caregiver_id          String?
+  job_type              job_type?
+  created_at            DateTime? @db.Timestamptz(6)
+  profession_at_removal String?
+  removed_at            DateTime? @db.Timestamptz(6)
+}
+
 model CaregiverServiceLocation {
   id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   caregiverId     String           @map("caregiver_id")
@@ -318,6 +377,70 @@ model Review {
   @@index([caregiverId], map: "idx_reviews_caregiver")
   @@index([patientId], map: "idx_reviews_patient")
   @@map("reviews")
+}
+
+/// ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: เอาราคาที่ผู้ดูแลตั้งเองออก
+/// ราคาต่อชั่วโมงผูกกับ service_type (ค่าเดียวกับที่ Search ใช้กรอง jobType)
+/// CHECK price_per_hour > 0 อยู่ใน migration 20260928000000_add_service_price_catalog (Prisma เขียนไม่ได้)
+/// PYG-627: ชุดบริการ (S14) — ปิดใช้งานด้วย isActive = false ไม่ลบแถว
+model ServicePackage {
+  id            String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code          String                    @unique
+  nameTh        String                    @map("name_th")
+  nameEn        String                    @map("name_en")
+  descriptionTh String?                   @map("description_th")
+  descriptionEn String?                   @map("description_en")
+  isActive      Boolean                   @default(true) @map("is_active")
+  sortOrder     Int                       @default(0) @map("sort_order")
+  createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  items         ServicePackageItem[]
+  careGroups    CareGroupServicePackage[]
+
+  @@map("service_packages")
+}
+
+/// PYG-627: บริการในชุด — serviceType ค่าชุดเดียวกับ enum booking_service_type / service_price_catalog
+/// (DB มี CHECK service_package_items_service_type_check — เพิ่มประเภทบริการใหม่ต้องแก้ CHECK ด้วย)
+model ServicePackageItem {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  packageId   String         @map("package_id") @db.Uuid
+  serviceType String         @map("service_type")
+  sortOrder   Int            @default(0) @map("sort_order")
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  package     ServicePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, serviceType], map: "service_package_items_unique")
+  @@map("service_package_items")
+}
+
+/// PYG-627: กลุ่มผู้สูงอายุใดเห็นชุดบริการใด — careGroup: 'social' | 'homebound' | 'bedridden'
+/// ค่าชุดเดียวกับ care_recipient_assessments.care_group (DB มี CHECK care_group_service_packages_group_check)
+model CareGroupServicePackage {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  careGroup String         @map("care_group")
+  packageId String         @map("package_id") @db.Uuid
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  package   ServicePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([careGroup, packageId], map: "care_group_service_packages_unique")
+  @@index([careGroup, isActive, sortOrder], map: "care_group_service_packages_group_idx")
+  @@map("care_group_service_packages")
+}
+
+model ServicePriceCatalog {
+  id           String   @id @default(uuid())
+  serviceType  String   @unique @map("service_type")
+  pricePerHour Decimal  @map("price_per_hour") @db.Decimal(10, 2)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("service_price_catalog")
 }
 
 model Booking {
@@ -368,7 +491,32 @@ model Booking {
   // PYG-411 (เตรียมไว้ให้ PYG-424): memberDetails — อาการ/รายละเอียดที่กรอกตอนจองแทน
   // ใช้ JSONB เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ พอฟิลด์นิ่งค่อยแตกเป็นคอลัมน์
   memberDetails            Json?             @map("member_details")
+  /// PYG-618: เวลาที่ผู้ดูแลรับทราบข้อมูลโรคติดเชื้อของผู้สูงอายุก่อนรับงาน
+  infectionAckAt           DateTime?         @map("infection_ack_at") @db.Timestamptz(6)
+  /// PYG-618: ผู้ดูแลคนที่รับทราบ — นับเป็นการรับทราบเฉพาะเมื่อตรงกับ caregiverId ปัจจุบัน
+  /// (booking ที่ถูกปฏิเสธกู้กลับไปเลือกผู้ดูแลคนใหม่ได้ — recoverBooking)
+  /// DB มี CHECK bookings_infection_ack_pair_check: มี "โดยใคร" ต้องมี "เมื่อใด"
+  infectionAckBy           String?           @map("infection_ack_by")
+  /// PYG-638: ระดับของ booking = ค่าสูงสุดของ 3 เกณฑ์ (S16) — 'basic' | 'intermediate' | 'advanced'
+  /// NULL = ยังไม่ได้คำนวณ (booking ก่อนฟีเจอร์นี้ไม่มีแบบประเมิน) · server คำนวณเท่านั้น ไม่รับจาก client
+  /// DB มี CHECK ของคอลัมน์ระดับทั้ง 4 (bookings_required_level_check, bookings_level_from_*_check)
+  requiredLevel            String?           @map("required_level")
+  /// ระดับรายเกณฑ์ — NULL = เกณฑ์นั้นไม่มีผลต่อระดับ
+  levelFromAdl             String?           @map("level_from_adl")
+  levelFromFlags           String?           @map("level_from_flags")
+  levelFromServices        String?           @map("level_from_services")
+  levelCalculatedAt        DateTime?         @map("level_calculated_at") @db.Timestamptz(6)
+  /// PYG-642: รหัสทักษะที่ตัดซ้ำแล้ว (Required Skills ของ S17)
+  /// ★ ตัวบอกว่า "คำนวณแล้ว" คือ levelCalculatedAt ไม่ใช่ค่าของฟิลด์นี้ (เคาะ 8 ต.ค. 2026)
+  ///   Prisma Client อ่าน NULL ใน DB (ยังไม่เคยคำนวณ) เป็น [] เหมือน '{}' (คำนวณแล้วไม่มีทักษะ) จึงแยกจากค่าที่อ่านไม่ได้
+  ///   - levelCalculatedAt เป็น null     → ยังไม่เคยคำนวณ ห้ามตีความ [] ว่าไม่ต้องใช้ทักษะ
+  ///   - levelCalculatedAt มีค่า + []     → คำนวณแล้ว ไม่มีทักษะที่ต้องการ
+  /// ★ ต้องเขียนฟิลด์นี้ใน transaction เดียวกับการคำนวณระดับ (requiredLevel + levelCalculatedAt)
+  ///   และพร้อมกับ booking_required_skills (ฐานไม่บังคับว่าสองที่ตรงกัน)
+  requiredSkills           String[]          @map("required_skills")
   booking_tasks            booking_tasks[]
+  // PYG-361: บันทึกจากผู้ดูแลระหว่างงาน (display-only, append-only)
+  care_logs                care_logs[]
   // PYG-352: หลักฐานเช็คอิน/เช็คเอาท์ (สูงสุด 2 แถวต่อ booking)
   jobEvents                JobEvent[]
   // PYG-434: QR ใบเดียวต่อ booking — สร้างใน transaction เดียวกับตัว booking
@@ -376,8 +524,14 @@ model Booking {
   jobSession               JobSession?
   // PYG-435: บันทึกการสแกน QR ทุกครั้ง (สำเร็จและล้มเหลว) — ไม่จำกัดจำนวนแถว
   jobScanEvents            JobScanEvent[]
+  // PYG-461/462: audit trail ของการเปลี่ยน status (append-only) — back-relation เฉย ๆ ไม่มีคอลัมน์ใหม่ใน bookings
+  statusHistory            BookingStatusHistory[]
   careRecipient            CareRecipient?    @relation(fields: [careRecipientId], references: [id], onUpdate: NoAction)
   caregiver                Caregiver?        @relation(fields: [caregiverId], references: [id])
+  infectionAckCaregiver    Caregiver?        @relation("BookingInfectionAckBy", fields: [infectionAckBy], references: [id])
+  // PYG-633: กิจกรรมจากรายการกลางที่ booking นี้เลือก (สำเนา ณ ตอนจอง) — งานพิมพ์เองยังอยู่ที่ booking_tasks
+  activities               BookingActivity[]
+  bookingRequiredSkills    BookingRequiredSkill[]
   patient                  User              @relation("BookingPatient", fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // PYG-411: พอมี relation ที่สองจาก Booking → User แล้ว Prisma บังคับให้ตั้งชื่อทั้งคู่
   // ชื่อ "ฟิลด์" ยังเป็น patient เหมือนเดิม → โค้ดที่ include: { patient: true } ไม่ต้องแก้
@@ -582,20 +736,44 @@ model CareRecipient {
   emergency_contact_phone String?
   emergency_contact_rel   String?
   preferred_hospital      String?
+  /// PYG-460: "คำแนะนำการดูแล" จากฟอร์มตอนจอง — ช่องเดียวในฟอร์มที่ไม่มีคอลัมน์รองรับมาก่อน
+  /// TEXT ไม่ใช่ VARCHAR เพราะเป็นความเรียงที่ไม่มีเพดานตามธรรมชาติ
+  care_notes              String?
   is_self                 Boolean         @default(false)
+  /// PYG-500: provenance ของข้อมูลสุขภาพในโปรไฟล์กลุ่ม (โมเดล "สมาชิก = patient")
+  /// true  = ข้อมูลมาจากเจ้าตัว (คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิกคนนั้น) → ป้าย "ข้อมูลจากเจ้าตัว"
+  /// false = คนอื่นในกลุ่มกรอกให้ตอนจองแทน (สมาชิกยังไม่เคยมีข้อมูล)   → ป้าย "กรอกโดย [คนจอง]"
+  /// default true เพื่อไม่เปลี่ยนความหมายของโปรไฟล์เดิมทุกใบที่มีอยู่ (ล้วนเป็นข้อมูลเจ้าตัว)
+  self_reported           Boolean         @default(true)
+  /// PYG-460: soft delete — FE มีปุ่มลบโปรไฟล์อยู่แล้วแต่ยังลบแค่ใน state
+  /// ห้ามลบจริง เพราะ bookings.care_recipient_id เป็น ON DELETE SET NULL
+  /// → ลบทีเดียวประวัติการจองทุกใบของคนไข้คนนั้นขาดการเชื่อมโยงถาวรแบบเงียบ ๆ
+  /// ใช้ชื่อคอลัมน์ชุดเดียวกับ users เพื่อให้ admin cleanup อ่านรูปแบบเดียวกันทั้งระบบ
+  is_deleted              Boolean         @default(false)
+  deleted_at              DateTime?       @db.Timestamptz(6)
   created_at              DateTime        @default(now()) @db.Timestamptz(6)
   updated_at              DateTime        @default(now()) @db.Timestamptz(6)
   /// PYG-411: กลุ่มครอบครัวที่โปรไฟล์นี้ถูกแชร์เข้าไป
   /// NULL = โปรไฟล์ส่วนตัวของ patient คนนั้น (พฤติกรรมเดิมทั้งหมดก่อนมี family group)
   /// FK เป็น ON DELETE SET NULL ไม่ใช่ CASCADE — ลบกลุ่มแล้วโปรไฟล์คนไข้ต้องอยู่ต่อ
   familyGroupId           String?         @map("family_group_id") @db.Uuid
+  /// PYG-618: โรคติดเชื้อที่ผู้ดูแลควรรู้ (ญาติเป็นผู้แจ้ง — ข้อมูลสุขภาพ)
+  /// NULL = ยังไม่ได้ระบุ · false = ญาติระบุว่าไม่มี · true = ญาติระบุว่ามี
+  /// ไม่มี default โดยตั้งใจ: ห้ามแสดง NULL ว่า "ไม่มี" · เก็บที่นี่ที่เดียว ห้ามคัดลอกไปตารางอื่น
+  has_infectious_disease  Boolean?
+  /// เวลาที่ญาติระบุ / แก้ไขล่าสุด — เทียบกับ bookings.infection_ack_at ว่าผู้ดูแลรับทราบค่าล่าสุดหรือค่าเก่า
+  infectious_disease_updated_at DateTime? @db.Timestamptz(6)
   bookings                Booking[]
+  /// PYG-608: ผลประเมิน ADL / Flags ล่าสุด (0..1) — มีแถว = มีแบบประเมิน
+  assessment              CareRecipientAssessment?
   patient                 User            @relation(fields: [patientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // FK จริงคือ ON DELETE SET NULL / ON UPDATE CASCADE ซึ่งเป็นค่า default ของ Prisma
   // สำหรับ relation แบบ optional อยู่แล้ว → ไม่เขียนซ้ำ เพื่อให้ db pull ไม่มี diff
   familyGroup             FamilyGroup?    @relation(fields: [familyGroupId], references: [id])
 
   @@index([patientId], map: "idx_care_recipients_patient")
+  // PYG-460: index "idx_care_recipients_active" เป็น partial index เช่นกัน
+  // (patient_id WHERE is_deleted = FALSE) → เขียนใน Prisma ไม่ได้ มีเฉพาะใน migration SQL
   // หมายเหตุ: index "care_recipients_family_group_id_idx" เป็น partial index
   // (WHERE family_group_id IS NOT NULL) ซึ่ง Prisma เขียนไม่ได้ → มีเฉพาะใน migration SQL
   @@map("care_recipients")
@@ -798,9 +976,26 @@ model KycDocument {
   mimeType     String     @map("mime_type")
   uploadedAt   DateTime   @default(now()) @map("uploaded_at")
   userId       String     @map("user_id")
-  caregiver    Caregiver? @relation(fields: [caregiverId], references: [id])
-  user         User       @relation(fields: [userId], references: [id])
+  /// PYG-506: สถานะรีวิว "รายเอกสาร" — ใช้กับ doc_type = 'profile_photo' (PYG-488)
+  /// NULL = เอกสารที่ไม่ได้รีวิวรายใบ (เอกสาร KYC เดิมรีวิวรวมทั้งก้อนผ่าน caregivers.kyc_status)
+  /// TEXT + CHECK ('pending'|'approved'|'rejected'|'expired') — CHECK เขียนใน migration SQL (Prisma เขียนไม่ได้)
+  /// PYG-586: เพิ่ม 'expired' สำหรับเอกสารที่ถึงวันหมดอายุ (expires_at)
+  reviewStatus String?     @map("review_status")
+  reviewedAt   DateTime?   @map("reviewed_at") @db.Timestamptz(6)
+  /// PYG-586: เลขใบประกอบวิชาชีพ — บังคับเมื่อ doc_type = 'professional_license' (CHECK kyc_documents_license_fields_check)
+  /// ห้ามเป็นสตริงว่าง / มีแต่ช่องว่าง (CHECK kyc_documents_license_number_not_blank)
+  licenseNumber String?    @map("license_number")
+  /// PYG-586: วันหมดอายุของเอกสาร — เก็บเป็นสิ้นวันของวันหมดอายุตามเวลาไทย
+  /// ไม่ผูกกับ doc_type: ใบขับขี่ของ S06 (PYG-561) ใช้คอลัมน์นี้ร่วมกัน ห้ามเพิ่มคอลัมน์ซ้ำ
+  expiresAt    DateTime?   @map("expires_at") @db.Timestamptz(6)
+  caregiver    Caregiver?  @relation(fields: [caregiverId], references: [id])
+  user         User        @relation(fields: [userId], references: [id])
+  reviews      KycReview[]
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([reviewStatus], map: "idx_kyc_documents_review_status")
+  // หมายเหตุ: index จริงเป็น partial (WHERE expires_at IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([expiresAt])
   @@map("kyc_documents")
 }
 
@@ -811,9 +1006,15 @@ model KycReview {
   action      String
   reason      String?
   reviewedAt  DateTime  @default(now()) @map("reviewed_at")
-  caregiver   Caregiver @relation(fields: [caregiverId], references: [id])
-  reviewer    User      @relation(fields: [reviewerId], references: [id])
+  /// PYG-506: รีวิวใบนี้ตัดสิน "เอกสารใบไหน" — NULL = รีวิว KYC ทั้งก้อนแบบเดิม
+  /// มีคอลัมน์นี้เพื่อให้เหตุผลที่ปฏิเสธรูปโปรไฟล์ไม่ปนกับเหตุผลที่ปฏิเสธ KYC
+  documentId  String?      @map("document_id")
+  caregiver   Caregiver    @relation(fields: [caregiverId], references: [id])
+  reviewer    User         @relation(fields: [reviewerId], references: [id])
+  document    KycDocument? @relation(fields: [documentId], references: [id])
 
+  // หมายเหตุ: index จริงเป็น partial (WHERE document_id IS NOT NULL) — มีเฉพาะใน migration SQL
+  @@index([documentId], map: "idx_kyc_reviews_document")
   @@map("kyc_reviews")
 }
 
@@ -874,6 +1075,186 @@ model caregiver_edit_logs {
   users         User      @relation(fields: [edited_by], references: [id])
 }
 
+/// PYG-608: ผลประเมิน ADL และ Flags ของผู้สูงอายุ (S08 · PYG-563) — 1 แถวต่อผู้สูงอายุ 1 คน เก็บเฉพาะครั้งล่าสุด
+/// ข้อมูลสุขภาพ: RLS เปิดโดยไม่มี policy — client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// CHECK ใน migration SQL (Prisma เขียนไม่ได้): คะแนน 0–20 · unsure_count >= 0 ·
+///   no_special_conditions อยู่ร่วมกับ flags ไม่ได้
+/// ★ care_recipients ใช้ soft delete — onDelete: Cascade ทำงานเฉพาะตอนแถวถูกลบจริง
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareRecipientAssessment {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  careRecipientId     String        @unique(map: "care_recipient_assessments_recipient_key") @map("care_recipient_id") @db.Uuid
+  /// คำตอบ ADL รายข้อ: รหัสข้อ → ค่าคำตอบ (รายการข้อรอยืนยันกับอาจารย์)
+  adlAnswers          Json          @map("adl_answers")
+  /// backend เป็นผู้รวมคะแนน ไม่รับจาก client
+  adlTotalScore       Int           @map("adl_total_score")
+  unsureCount         Int           @default(0) @map("unsure_count")
+  /// เฉพาะ Flags ที่ญาติเลือกเอง — Flag "ไม่แน่ใจ" ที่ระบบตั้งอยู่ที่ hasUnsureFlag
+  flags               String[]      @default([])
+  noSpecialConditions Boolean       @default(false) @map("no_special_conditions")
+  hasUnsureFlag       Boolean       @default(false) @map("has_unsure_flag")
+  /// มีความหมายเฉพาะเมื่อ flags มี 'dementia'
+  dementiaSevere      Boolean?      @map("dementia_severe")
+  assessedBy          String        @map("assessed_by")
+  assessedAt          DateTime      @default(now()) @map("assessed_at") @db.Timestamptz(6)
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// ไม่มี @updatedAt / trigger — service ต้องตั้งค่าเองทุกครั้งที่บันทึก
+  updatedAt           DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-613: กลุ่มผู้สูงอายุจากคะแนน ADL รวม — 'social' (12–20) | 'homebound' (5–11) | 'bedridden' (0–4)
+  /// (DB มี CHECK care_recipient_assessments_care_group_check) backend เป็นผู้คำนวณใน transaction เดียวกับคะแนน
+  /// NULL ได้ชั่วคราวจนกว่า BE ของ S09 (PYG-614) ขึ้น แล้วจึงตั้ง NOT NULL ด้วย migration ถัดไป
+  careGroup           String?       @map("care_group")
+  careRecipient       CareRecipient @relation(fields: [careRecipientId], references: [id], onDelete: Cascade)
+  assessor            User          @relation(fields: [assessedBy], references: [id])
+
+  @@map("care_recipient_assessments")
+}
+
+/// PYG-638: กติการะดับของ Flag (เกณฑ์ที่ 2) และบริการ (เกณฑ์ที่ 3) ที่ใช้คำนวณระดับ booking (S16 · PYG-569)
+/// level = NULL หมายถึงรายการนี้ไม่มีผลต่อระดับ (เช่น กายภาพบำบัด) — ต่างจาก "ไม่มีแถว" ซึ่งเป็นข้อมูลตั้งค่าผิด
+/// DB มี CHECK: source IN ('flag','service') · level เป็น NULL หรือ 'basic' | 'intermediate' | 'advanced'
+/// updated_at ขยับเองด้วย trigger trg_booking_level_rules_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// PYG-642: รายการทักษะกลาง — รหัสอ้างอิงร่วมของ Required Skills (S17)
+/// DB มี CHECK care_skills_code_not_blank
+/// ไม่เก็บการล็อกวิชาชีพที่นี่ — เก็บที่เดียวคือ CareActivityProfession (เคาะ 8 ต.ค. 2026)
+model CareSkill {
+  code              String                 @id
+  nameTh            String                 @map("name_th")
+  nameEn            String                 @map("name_en")
+  isActive          Boolean                @default(true) @map("is_active")
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)
+  rules             CareSkillRule[]
+  bookingSkills     BookingRequiredSkill[]
+
+  @@map("care_skills")
+}
+
+/// PYG-642: กติกาสร้างทักษะ — source: 'adl' | 'flag' | 'service' (CHECK ใน DB)
+model CareSkillRule {
+  source     String
+  /// รหัสข้อ ADL / รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
+  sourceCode String    @map("source_code")
+  /// ช่วงคะแนนที่เข้าเงื่อนไข (รวมปลาย) — ใช้เฉพาะ source = 'adl'
+  scoreMin   Int?      @map("score_min")
+  scoreMax   Int?      @map("score_max")
+  skillCode  String    @map("skill_code")
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  skill      CareSkill @relation(fields: [skillCode], references: [code])
+
+  @@id([source, sourceCode, skillCode])
+  @@map("care_skill_rules")
+}
+
+/// PYG-642: ทักษะของ booking พร้อมแหล่งที่มา — PK กันทักษะซ้ำใน booking เดียว (S17-R5)
+model BookingRequiredSkill {
+  bookingId String    @map("booking_id") @db.Uuid
+  skillCode String    @map("skill_code")
+  /// แหล่งที่มาทุกแหล่ง: 'adl' | 'flag' | 'service' — DB บังคับอย่างน้อย 1 ค่า
+  sources   String[]
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  skill     CareSkill @relation(fields: [skillCode], references: [code])
+
+  @@id([bookingId, skillCode])
+  @@map("booking_required_skills")
+}
+
+model BookingLevelRule {
+  source    String
+  /// รหัส Flag ตามที่ S08 กำหนด หรือรหัสบริการตามที่ S13 / S15 กำหนด
+  code      String
+  /// กรณีย่อยของ Flag เดียวกัน — '' = กรณีทั่วไป
+  variant   String   @default("")
+  level     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([source, code, variant])
+  @@map("booking_level_rules")
+}
+
+/// PYG-633: รายการกิจกรรมการดูแลกลาง (S15 · PYG-568) — แอดมินเป็นผู้ดูแล ไม่ลบแถว ใช้ isActive ปิดใช้งานแทน
+/// DB มี CHECK care_activities_care_level_check: 'basic' (ต้น) | 'intermediate' (กลาง) | 'advanced' (สูง)
+/// updated_at ขยับเองด้วย trigger trg_care_activities_updated_at (ไม่ใช้ @updatedAt)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CareActivity {
+  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nameTh     String            @map("name_th")
+  nameEn     String?           @map("name_en")
+  /// ชื่อหมวดตามตาราง T-01 — ยังไม่มี CHECK จนกว่ารายการหมวดจะนิ่ง
+  category   String
+  careLevel  String            @map("care_level")
+  isActive   Boolean           @default(true) @map("is_active")
+  sortOrder  Int               @default(0) @map("sort_order")
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// PYG-651: รหัสกิจกรรมตาม T-01 (A01…) — ตัวอ้างอิงที่ไม่เปลี่ยนแม้ชื่อถูกแก้ถ้อยคำ
+  /// NULL ได้ (กิจกรรมที่แอดมินเพิ่มเองไม่บังคับมีรหัส) · ห้ามซ้ำ · DB มี CHECK care_activities_code_not_blank
+  code       String?           @unique(map: "care_activities_code_unique")
+  bookingActivities BookingActivity[]
+  professions       CareActivityProfession[]
+
+  @@unique([category, nameTh], map: "care_activities_category_name_unique")
+  @@index([isActive, category, sortOrder], map: "care_activities_active_idx")
+  @@map("care_activities")
+}
+
+/// PYG-633: กิจกรรมที่ booking เลือกจากรายการกลาง — เก็บ "สำเนา" ชื่อ หมวด ระดับ ณ ตอนจอง
+/// booking เดิมจึงแสดงได้เหมือนเดิมแม้กิจกรรมถูกแก้หรือปิดใช้งานภายหลัง (S15-R6)
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// PYG-651 follow-up: วิชาชีพที่ทำกิจกรรมนี้ได้ (ล็อกวิชาชีพ)
+/// กิจกรรมที่ไม่มีแถว = ไม่ล็อก · มีแถว = ผู้ดูแลต้องมี profession ตรงกับแถวใดแถวหนึ่ง
+/// DB มี CHECK care_activity_professions_profession_check — ค่าชุดเดียวกับ caregivers.profession
+model CareActivityProfession {
+  careActivityId String       @map("care_activity_id") @db.Uuid
+  profession     String
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  careActivity   CareActivity @relation(fields: [careActivityId], references: [id], onDelete: Cascade)
+
+  @@id([careActivityId, profession])
+  @@map("care_activity_professions")
+}
+
+model BookingActivity {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId      String       @map("booking_id") @db.Uuid
+  careActivityId String       @map("care_activity_id") @db.Uuid
+  activityName   String       @map("activity_name")
+  category       String
+  careLevel      String       @map("care_level")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking        Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  careActivity   CareActivity @relation(fields: [careActivityId], references: [id])
+
+  @@unique([bookingId, careActivityId], map: "booking_activities_unique")
+  @@map("booking_activities")
+}
+
+/// PYG-580: ประวัติการกำหนด / เปลี่ยนระดับผู้ดูแล (S02-AC4) — หนึ่งแถว = หนึ่งครั้งที่ระดับเปลี่ยน
+/// RLS เปิดโดยไม่มี policy: client อ่านเขียนตรงไม่ได้ ใช้ผ่าน backend เท่านั้น
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caregiver_care_level_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caregiver_id String
+  /// NULL = กำหนดครั้งแรก
+  old_level    String?
+  new_level    String
+  /// NULL = ระบบตั้งให้ (backfill) ไม่ใช่แอดมิน
+  changed_by   String?
+  /// 'migration_default' = แถวจาก backfill ของ migration
+  reason       String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  caregivers   Caregiver @relation(fields: [caregiver_id], references: [id])
+  users        User?     @relation(fields: [changed_by], references: [id], onDelete: Restrict)
+
+  @@index([caregiver_id, created_at(sort: Desc)], map: "caregiver_care_level_logs_caregiver_idx")
+}
+
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model booking_tasks {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -884,9 +1265,64 @@ model booking_tasks {
   time_note    String?
   sort_order   Int      @default(0)
   created_at   DateTime @default(now()) @db.Timestamptz(6)
+  /// PYG-361 — NULL = ยังไม่ติ๊ก, มีค่า = ติ๊กแล้วเมื่อไหร่ (ไม่ใช่ boolean เพื่อให้แอดมินเห็นเวลาจริง)
+  /// ⚠ สองคอลัมน์นี้ถูก apply ลง live DB ผ่าน Supabase CLI (20260829132846) ก่อนมีไฟล์ในรีโป
+  ///    ไฟล์ที่ track ไว้จริงคือ prisma/migrations/20260906000000_pyg361_booking_tasks_done_state
+  done_at      DateTime? @db.Timestamptz(6)
+  done_by      String?
   bookings     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  caregivers   Caregiver? @relation(fields: [done_by], references: [id], onDelete: SetNull, onUpdate: Cascade)
 
   @@index([booking_id], map: "idx_booking_tasks_booking")
+}
+
+/// PYG-361 — "บันทึกจากผู้ดูแล" ระหว่างปฏิบัติงาน (display-only)
+///
+/// ★ SCOPE BOUNDARY: จำนวน/เนื้อหาของ care log ต้องไม่มีผลต่อ proofOfWork.verdict
+///   หรือ review_reasons หรือการปล่อยเงิน — เป็น display-only ล้วน ๆ
+/// ★ append-only: ไม่มี update/delete (audit trail ของการดูแลผู้ป่วย)
+///
+/// ⚠️ photo_url เก็บ "storage path" เท่านั้น ('{bookingId}/xxx.jpg') ห้ามเก็บ URL เต็ม
+///    bucket 'job-evidence' เป็น private — signed URL ออกตอนอ่านทุกครั้งที่ JobEvidenceService.sign()
+///    (กฎเดียวกับที่ PR #39 แก้ kyc_documents)
+///
+/// ⚠️ DB มี CHECK constraint 3 ตัวที่ Prisma declare ในไฟล์นี้ไม่ได้ —
+///    นิยามอยู่ใน prisma/migrations/20260906010000_pyg361_care_logs/migration.sql:
+///      `care_logs_category_check`
+///          category IN ('vitals','food','medication','activity','other')
+///          ★ ต้องตรงกับ CARE_LOG_CATEGORY_VALUES ใน src/monitoring/monitoring.constants.ts
+///      `care_logs_body_length_check`
+///          char_length(body) <= 500
+///      `care_logs_photo_url_not_full_url_check`
+///          photo_url IS NULL OR (NOT ILIKE 'http%' AND NOT LIKE '//%')
+///          ด่านสุดท้ายกัน public URL หลุดลงคอลัมน์นี้
+///    นิยามอยู่ใน prisma/migrations/20260914000000_pyg466_care_log_images_bucket/migration.sql:
+///      `care_logs_photo_bucket_check`
+///          photo_bucket IS NULL OR photo_bucket IN ('job-evidence','care-log-images')
+///
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model care_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id   String    @db.Uuid
+  caregiver_id String
+  /// 'vitals' | 'food' | 'medication' | 'activity' | 'other' (บังคับด้วย CHECK ฝั่ง DB)
+  category     String
+  /// ไม่เกิน 500 ตัวอักษร (บังคับด้วย CHECK ฝั่ง DB)
+  body         String
+  /// storage path เท่านั้น ห้าม URL เต็ม — ดูหมายเหตุบน model
+  photo_url    String?
+  /// bucket ของ photo_url: 'job-evidence' (แถวเก่า) | 'care-log-images' (PYG-466) — NULL อ่านเป็น 'job-evidence'
+  photo_bucket String?
+  /// เวลาของเซิร์ฟเวอร์ = เวลาจริงเพียงแหล่งเดียว
+  server_ts    DateTime  @default(now()) @db.Timestamptz(6)
+  /// เวลาที่เครื่อง client อ้าง — metadata เท่านั้น
+  device_ts    DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  bookings     Booking   @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  /// ON DELETE RESTRICT (ตั้งใจ): ลบ caregiver ที่ยังมีบันทึกการดูแลอยู่ไม่ได้
+  caregivers   Caregiver @relation(fields: [caregiver_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([booking_id, server_ts(sort: Desc)], map: "idx_care_logs_booking_ts")
 }
 
 model Payment {
@@ -900,6 +1336,9 @@ model Payment {
   currency       String                 @default("THB") @db.VarChar(3)
   omiseChargeId  String?                @map("omise_charge_id")
   omiseToken     String?                @map("omise_token")
+  // saved card (Christina): เก็บ customer/card id ของ Omise ไว้จ่ายซ้ำ
+  omiseCustomerId String?               @map("omise_customer_id")
+  omiseCardId     String?               @map("omise_card_id")
   paymentMethod  String                 @default("credit_card") @map("payment_method") @db.VarChar(20)
   paymentStatus  PaymentStatus          @default(pending) @map("payment_status")
   failureCode    String?                @map("failure_code")
@@ -938,6 +1377,26 @@ model PaymentStatusHistory {
   @@map("payment_status_history")
 }
 
+/// PYG-461/462 — Audit trail ของการเปลี่ยน booking status (append-only, mirror payment_status_history)
+/// เขียนผ่าน recordBookingStatusChange() (src/booking/booking-status-history.ts) เท่านั้น
+/// ผู้เขียนมีแค่ cron หมดอายุ booking (เฟส 1) + BookingSettlementService (เฟส 2)
+/// call site เดิมที่เปลี่ยน bookings.status (accept/decline/confirm/cancel/check-in ฯลฯ) ยังไม่เขียนที่นี่ — เป็นการ์ดแยก
+/// from/to เป็น String เพราะ bookings.status เป็น TEXT · changedBy ไม่มี FK โดยตั้งใจ (null = ระบบ/cron)
+model BookingStatusHistory {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId  String   @map("booking_id") @db.Uuid
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  changedBy  String?  @map("changed_by")
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_bsh_booking")
+
+  @@index([bookingId, createdAt], map: "idx_bsh_booking_created")
+  @@map("booking_status_history")
+}
+
 /// PYG-375: deterministic once-only execution for money commands (capture/refund/payout/transfer).
 /// key is INSERTed before the Omise call; a PK collision → return stored `result` (no 2nd call).
 /// Same key is also sent as the Omise-Idempotency-Key header (two layers). Cron prunes > 30 days.
@@ -971,7 +1430,16 @@ enum NotificationType {
   payment_refunded
   payment_voided
   payment_transferred
+  license_approved // PYG-587: แอดมินอนุมัติใบประกอบวิชาชีพ
+  license_rejected // PYG-587: แอดมินปฏิเสธใบประกอบวิชาชีพ (แนบเหตุผล)
+  license_expired // PYG-587: ใบประกอบวิชาชีพหมดอายุ → อัปโหลดใหม่
+  job_type_removed // PYG-592 / PYG-591: ประเภทงานเดิมถูกนำออกเพราะไม่ตรงวิชาชีพ/ใบประกอบฯ
   job_checked_in // PYG-353
+  job_care_log_added // มีการบันทึก care log (Christina)
+  profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
+  profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
+  payout_account_verified // Omise accept บัญชีรับเงินแล้ว → ผู้ดูแลเปิดรับงานได้
+  payout_account_failed // Omise ปฏิเสธบัญชีรับเงิน → ผู้ดูแลต้องแก้ไขบัญชี
 }
 
 enum booking_service_type {
@@ -1035,4 +1503,47 @@ enum time_slot {
   morning
   afternoon
   evening
+}
+
+/// PYG-473 — ประวัติความยินยอมตาม PDPA (append-only audit trail)
+///
+/// ทำไม append-only: ต้องตอบได้ย้อนหลังว่า "ผู้ใช้คนนี้ยินยอมนโยบายเวอร์ชันไหน เมื่อไหร่"
+/// ถ้า update แถวเดิมตอนผู้ใช้เปลี่ยนใจ หลักฐานของการยินยอมครั้งก่อนจะหายไป
+/// → ถอนความยินยอม = insert แถวใหม่ granted = false (มี trigger กัน UPDATE ไว้ในฐานด้วย)
+///
+/// ชื่อ model เป็น snake_case ล้วนตามกลุ่ม booking_tasks / care_logs / field_locks
+/// (schema นี้มี 2 convention ปนกันโดยตั้งใจ — ดูคอมเมนต์ของ care_logs)
+model user_consents {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  user_id String @map("user_id")
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  /// ชนิดความยินยอม — ค่าที่ใช้จริงคุมด้วยค่าคงที่ฝั่งโค้ด ไม่ใช่ CHECK
+  /// (ชุด consent ยังไม่นิ่ง: PYG-472 ข้อความ / PYG-503 ข้อมูลอ่อนไหว / PYG-505 การเปิดเผย)
+  consent_type String
+
+  /// เวอร์ชันนโยบายที่ผู้ใช้เห็นตอนกด เช่น 'v1.0' — รูปแบบกำหนดใน PYG-472
+  policy_version String
+
+  /// true = ยินยอม, false = ไม่ยินยอม/ถอน (แถวใหม่เสมอ ไม่แก้ของเดิม)
+  granted Boolean
+
+  granted_at DateTime @default(now()) @db.Timestamptz(6)
+
+  /// จุดในแอปที่ขอความยินยอม — 'register' | 'onboarding' | 'booking' | 'family_group' |
+  /// 'settings' | 're_consent' (CONSENT_SOURCE ใน src/consent/consent.constants.ts)
+  /// PYG-538: แก้จากเดิมที่เขียนว่า 'web' | 'mobile' — แพลตฟอร์มดูจาก user_agent ได้อยู่แล้ว
+  /// แต่ "ขอตรงไหน" ดูจากที่อื่นไม่ได้ และเป็นสิ่งที่ต้องพิสูจน์ได้ตาม PDPA
+  source String?
+
+  /// หลักฐานประกอบคำขอ (PDPA) — เก็บเท่าที่จำเป็นต่อการพิสูจน์ ไม่เอาไปทำอย่างอื่น
+  ip_address String? @db.Inet
+  user_agent String?
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, consent_type], map: "idx_user_consents_user_type")
+  @@index([user_id, consent_type, granted_at(sort: Desc)], map: "idx_user_consents_latest")
+  @@map("user_consents")
 }

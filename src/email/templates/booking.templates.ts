@@ -27,6 +27,11 @@ export type BookingEmailParams = {
   // ── รายละเอียด (optional) — มีค่าตัวไหนค่อยแสดงแถวนั้นในตาราง ──
   caregiverName?: string;
   dateText?: string;
+  /**
+   * PYG-526: "09:00 – 13:00 (4 ชม.)" — เดิม template นี้มีแค่วันที่ ไม่มีเวลาเลย
+   * (ใช้กับ event ที่ไม่มี per-event template เช่น job.checked_out)
+   */
+  timeText?: string;
   serviceText?: string;
   amountText?: string;
 
@@ -45,6 +50,7 @@ function detailsTable(p: BookingEmailParams): string {
   const rows: Array<[string, string]> = [];
   if (p.caregiverName) rows.push(['ผู้ดูแล', p.caregiverName]);
   if (p.dateText) rows.push(['วันที่', p.dateText]);
+  if (p.timeText) rows.push(['เวลา', p.timeText]);
   if (p.serviceText) rows.push(['บริการ', p.serviceText]);
   if (p.amountText) rows.push(['ยอดรวม', p.amountText]);
   if (rows.length === 0) return '';
@@ -71,6 +77,7 @@ function detailsText(p: BookingEmailParams): string {
   const lines: string[] = [];
   if (p.caregiverName) lines.push(`ผู้ดูแล: ${p.caregiverName}`);
   if (p.dateText) lines.push(`วันที่: ${p.dateText}`);
+  if (p.timeText) lines.push(`เวลา: ${p.timeText}`);
   if (p.serviceText) lines.push(`บริการ: ${p.serviceText}`);
   if (p.amountText) lines.push(`ยอดรวม: ${p.amountText}`);
   return lines.length ? `\n${lines.join('\n')}\n` : '';

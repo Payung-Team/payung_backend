@@ -31,6 +31,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { OmiseService } from '../payment/omise/omise.service';
+import { PayoutAccountService } from '../payment/payout-account.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/entities/notification-type.enum';
 import { PayoutStateMachine } from './payout-state-machine';
@@ -46,6 +47,7 @@ export class PayoutWorkerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly omise: OmiseService,
+    private readonly payoutAccounts: PayoutAccountService,
     private readonly notifications: NotificationService,
     private readonly stateMachine: PayoutStateMachine,
     private readonly retryPolicy: PayoutRetryPolicy,
@@ -110,6 +112,7 @@ export class PayoutWorkerService {
               select: {
                 omiseRecipientId: true,
                 recipientStatus: true,
+                status: true,
               },
             },
           },
@@ -169,14 +172,42 @@ export class PayoutWorkerService {
 
     const account = payout.caregiver?.payoutAccount;
     const recipientId = account?.omiseRecipientId ?? null;
-    const recipientStatus = account?.recipientStatus ?? null;
+    let recipientStatus = account?.recipientStatus ?? null;
+    let accountStatus = account?.status ?? null;
 
-    if (!recipientId || recipientStatus !== 'verified') {
+    // Repair stale local state when a recipient webhook was missed. This makes
+    // already-scheduled payouts recover automatically on the next worker run.
+    if (
+      recipientId &&
+      (recipientStatus !== 'verified' || accountStatus !== 'active')
+    ) {
+      try {
+        const reconciled = await this.payoutAccounts.reconcileRecipient(
+          recipientId,
+          'payout_worker',
+        );
+        recipientStatus = reconciled?.recipientStatus ?? recipientStatus;
+        accountStatus = reconciled?.status ?? accountStatus;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[PayoutWorker] recipient reconcile failed payout=${payoutId} ` +
+            `recipient_id=${recipientId}: ${msg}`,
+        );
+      }
+    }
+
+    if (
+      !recipientId ||
+      recipientStatus !== 'verified' ||
+      accountStatus !== 'active'
+    ) {
       // ห้าม claim / ห้ามแตะ row / ห้าม log ประวัติ
       // caregiver จะมา verify ผ่าน PYG-307 → payout ยัง scheduled รอต่อ
       this.logger.warn(
         `[PayoutWorker] skip payout=${payoutId} — recipient not ready ` +
-          `(recipient_id=${recipientId ?? 'null'}, recipient_status=${recipientStatus ?? 'null'})`,
+          `(recipient_id=${recipientId ?? 'null'}, recipient_status=${recipientStatus ?? 'null'}, ` +
+          `account_status=${accountStatus ?? 'null'})`,
       );
       return;
     }

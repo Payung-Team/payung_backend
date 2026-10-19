@@ -4,7 +4,12 @@ import { FamilyGroupService } from './family-group.service';
 import { FamilyGroupResolver } from './family-group.resolver';
 import { FamilyGroupGuard } from './guards/family-group.guard';
 import { FamilyBookingResolver } from './family-booking.resolver';
+import {
+  FamilyGroupMemberAvatarResolver,
+  FamilyGroupActivityActorAvatarResolver,
+} from './family-avatar.resolver';
 import { BookingModule } from '../booking/booking.module';
+import { ConsentModule } from '../consent/consent.module';
 
 /**
  * FamilyGroupModule (PYG-412) — Epic PYG-381 "กลุ่มครอบครัว & จองแทน"
@@ -22,11 +27,15 @@ import { BookingModule } from '../booking/booking.module';
  */
 @Module({
   // PYG-424: BookingModule ให้ BookingService สำหรับ mutation createBookingOnBehalf
-  imports: [CommonModule, BookingModule],
+  // PYG-540: ConsentModule ให้ ConsentService — ซ่อนโปรไฟล์/ฟีดของคนที่ถอนความยินยอมเปิดเผยให้กลุ่ม
+  imports: [CommonModule, BookingModule, ConsentModule],
   providers: [
     FamilyGroupResolver,
     // PYG-424: จองแทน + ลิสต์ผู้รับบริการของกลุ่ม
     FamilyBookingResolver,
+    // sign avatarUrl (storage path ของ bucket private) ของสมาชิก/ผู้ลงมือในฟีด
+    FamilyGroupMemberAvatarResolver,
+    FamilyGroupActivityActorAvatarResolver,
     FamilyGroupService,
     FamilyGroupGuard,
   ],

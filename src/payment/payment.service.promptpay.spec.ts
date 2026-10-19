@@ -10,12 +10,15 @@
  *  - paymentByBooking authorization (party / admin only)
  *  - card flow ไม่ถูกแตะ (sanity check)
  */
+import { Prisma } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, UnprocessableEntityException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { PaymentStateMachine } from './payment-state-machine';
 import { OmiseService } from './omise/omise.service';
 import { PaymentStatus } from './entities/payment-status.enum';
@@ -42,9 +45,12 @@ function fakeBooking(overrides: Record<string, unknown> = {}) {
     caregiver: {
       id: 'cg-profile-0001',
       userId: CAREGIVER_USER_ID,
-      hourlyRate: 300,
     },
     durationHours: { toNumber: () => 4 },
+    estimatedCost: new Prisma.Decimal(1200), // ราคา catalog × 4 ชม. ที่บันทึกตอนจอง
+    // PYG-461/462: guard เวลาใน createPayment — 2026-07-01 09:00 เวลาไทย (ก่อน fixedClock ของไฟล์นี้เสมอ)
+    bookingDate: new Date('2026-07-01'),
+    startTime: new Date('1970-01-01T09:00:00.000Z'),
     ...overrides,
   };
 }
@@ -76,6 +82,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
     payment: { findUnique: jest.Mock; findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
     paymentStatusHistory: { create: jest.Mock };
     $transaction: jest.Mock;
+    $queryRaw?: jest.Mock; // PYG-461/462: มีเฉพาะบน tx (lock booking ใน captureFromWebhook)
   };
   let tx: typeof prisma;
   let fsm: { transition: jest.Mock };
@@ -97,6 +104,8 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
       },
       paymentStatusHistory: { create: jest.fn() },
       $transaction: jest.fn(),
+      // PYG-461/462: captureFromWebhook ล็อก booking ก่อน (LOCK ORDER bookings → payments)
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
     prisma = {
       booking: { findUnique: jest.fn(), update: jest.fn() },
@@ -124,6 +133,12 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         { provide: PaymentStateMachine, useValue: fsm },
         { provide: OmiseService, useValue: omise },
         { provide: EventEmitter2, useValue: emitter },
+        // PYG-461/462: createPayment มี guard เวลา — ตรึงนาฬิกาไว้ก่อนวันงานของ fakeBooking
+        {
+          provide: ClockService,
+          useValue: { now: () => new Date('2026-06-30T00:00:00.000Z') },
+        },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: RefundService, useValue: { refund: jest.fn() } },
       ],
     }).compile();
@@ -152,6 +167,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         bookingId: BOOKING_ID,
         paymentMethod: 'promptpay',
         // ไม่มี omiseToken (PromptPay ไม่ต้อง)
+        saveCard: false,
       };
 
       const result = await service.createPayment(input, asUser(PATIENT_ID, ROLE_ID.PATIENT));
@@ -191,6 +207,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
         bookingId: BOOKING_ID,
         paymentMethod: 'credit_card',
         // omiseToken missing — DTO @ValidateIf bypassed in unit test; service guard catches
+        saveCard: false,
       };
 
       await expect(
@@ -203,6 +220,26 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
   // ─── captureFromWebhook ────────────────────────────────────────────────
 
   describe('captureFromWebhook', () => {
+    it('PYG-461/462: LOCK ORDER — ล็อก booking ก่อน FSM อัปเดต payment (กัน deadlock กับ settle)', async () => {
+      prisma.payment.findFirst.mockResolvedValue(fakePromptPayPayment());
+      omise.retrieveCharge.mockResolvedValue({
+        id: CHARGE_ID,
+        status: 'successful',
+        paid: true,
+      });
+
+      await service.captureFromWebhook(CHARGE_ID);
+
+      const lock = tx.$queryRaw!;
+      const sql = (lock.mock.calls[0][0] as TemplateStringsArray).join('?');
+      expect(sql).toContain('FROM "bookings"');
+      expect(sql).toContain('FOR UPDATE');
+      expect(lock.mock.calls[0][1]).toBe(BOOKING_ID);
+      expect(lock.mock.invocationCallOrder[0]).toBeLessThan(
+        fsm.transition.mock.invocationCallOrder[0],
+      );
+    });
+
     it('pending → captured + emit CONFIRMED + booking → confirmed', async () => {
       prisma.payment.findFirst.mockResolvedValue(fakePromptPayPayment());
       omise.retrieveCharge.mockResolvedValue({

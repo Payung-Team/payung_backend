@@ -4,7 +4,18 @@ import { FamilyGroupService } from './family-group.service';
 import { BookingService } from '../booking/booking.service';
 import { BookingSummary } from '../booking/dto/booking-summary.types';
 import { CreateBookingOnBehalfInput } from './dto/create-booking-on-behalf.input';
-import { GroupCareRecipient } from './entities/care-recipient.entity';
+import {
+  GroupCareRecipient,
+  RemoveGroupCareRecipientResult,
+} from './entities/care-recipient.entity';
+import { GroupBookingSummary } from './entities/group-booking.entity';
+// PYG-517: รายชื่อสมาชิกสำหรับ shortcut + autofill ตอนจองแทน
+import { GroupBookingRecipient } from './entities/group-booking-recipient.entity';
+import {
+  AddGroupCareRecipientInput,
+  UpdateGroupCareRecipientInput,
+  RemoveGroupCareRecipientInput,
+} from './dto/manage-care-recipient.input';
 import { GroupRole } from './decorators/group-role.decorator';
 import { FamilyGroupGuard } from './guards/family-group.guard';
 import { GROUP_ROLE } from './family-group.constants';
@@ -54,8 +65,59 @@ export class FamilyBookingResolver {
   @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
   async groupCareRecipients(
     @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
   ): Promise<GroupCareRecipient[]> {
-    return this.familyGroupService.groupCareRecipients(groupId);
+    // PYG-540: ผู้อ่านเป็นใครมีผล — เจ้าของโปรไฟล์ที่ถอนความยินยอมยังเห็นของตัวเอง
+    return this.familyGroupService.groupCareRecipients(groupId, user.id);
+  }
+
+
+  /**
+   * PYG-517 — รายชื่อสมาชิกสำหรับ shortcut + autofill ตอนจองแทน
+   *
+   * ต่างจาก `groupCareRecipients` ตรงที่นี่คืน "คน" ไม่ใช่ "โปรไฟล์" — สมาชิก ACTIVE
+   * ทุกคนได้หนึ่งรายการเสมอ แม้ยังไม่มีโปรไฟล์ในกลุ่ม (FE จะได้มีปุ่มให้กดครบทุกคน)
+   *
+   * ★ ไม่คืนข้อมูลจากโปรไฟล์ส่วนตัวของสมาชิก — ดูเหตุผลเต็มใน service
+   */
+  @Query(() => [GroupBookingRecipient], {
+    description:
+      'PYG-517: สมาชิก ACTIVE ทุกคนในกลุ่ม (รวมเจ้าของ) พร้อมข้อมูลผู้รับบริการในกลุ่ม ' +
+      'สำหรับ shortcut + autofill ตอนจองแทน · ชื่อ-นามสกุลล็อก (nameLocked = true) · ' +
+      'ยังไม่มีโปรไฟล์ในกลุ่ม = hasProfile false, details null (FE ปล่อยช่องว่างให้กรอก)',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
+  async groupBookingRecipients(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<GroupBookingRecipient[]> {
+    // PYG-540: ผู้อ่านเป็นใครมีผล — สมาชิกที่ถอนความยินยอมเปิดเผยให้กลุ่มยังเห็นรายการของตัวเอง
+    return this.familyGroupService.groupBookingRecipients(groupId, user.id);
+  }
+
+  @Query(() => [GroupBookingSummary], {
+    description:
+      'PYG-385: ฟีดนัดหมาย "จองแทน" ทั้งหมดของกลุ่ม เรียงล่าสุดก่อน — ทุกสมาชิก ACTIVE เห็นเหมือนกัน. bookedByMe = ผู้เรียกเป็นคนจองเอง',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER) // guard อ่าน groupId จาก args.groupId
+  async groupBookings(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<GroupBookingSummary[]> {
+    return this.bookingService.groupBookings(groupId, user.id);
+  }
+
+  @Query(() => BookingSummary, {
+    description:
+      'รายละเอียดคำจองในกลุ่ม — สมาชิก ACTIVE ทุกคนอ่านได้ แต่ bookedByMe บอกว่าผู้เรียกมีสิทธิ์จัดการคำจองหรือไม่',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async groupBooking(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @Args('bookingId', { type: () => ID }) bookingId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<BookingSummary> {
+    return this.bookingService.groupBookingById(bookingId, groupId, user.id);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -74,5 +136,45 @@ export class FamilyBookingResolver {
     // userId มาจาก JWT ที่ Supabase เซ็นแล้ว ไม่ใช่จาก input — ปลอมไม่ได้
     // (กติกาเดียวกับทุก mutation ในโมดูลนี้)
     return this.bookingService.createBookingOnBehalf(user.id, input);
+  }
+
+  // ── PYG-385: จัดการโปรไฟล์ผู้รับบริการในกลุ่ม (เพิ่ม/แก้ไข/นำออก) ────────────
+  //  ทุก mutation @GroupRole(MEMBER) — guard อ่าน groupId จาก input.groupId
+  //  "เพิ่ม" ทำได้ทุกสมาชิก; "แก้ไข/นำออก" เฉพาะเจ้าของโปรไฟล์ (เช็คในเซอร์วิส → RECIPIENT_NOT_OWNER)
+
+  @Mutation(() => GroupCareRecipient, {
+    description:
+      'เพิ่มโปรไฟล์ผู้รับบริการเข้ากลุ่ม — ผู้เรียกกลายเป็นเจ้าของโปรไฟล์นั้น. NOT_A_MEMBER ถ้าไม่ใช่สมาชิก ACTIVE',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async addGroupCareRecipient(
+    @Args('input') input: AddGroupCareRecipientInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<GroupCareRecipient> {
+    return this.familyGroupService.addGroupCareRecipient(user.id, input);
+  }
+
+  @Mutation(() => GroupCareRecipient, {
+    description:
+      'แก้ไขชื่อ/ชื่อเล่นของโปรไฟล์ในกลุ่ม — เฉพาะเจ้าของโปรไฟล์ (RECIPIENT_NOT_OWNER ถ้าไม่ใช่, RECIPIENT_NOT_IN_GROUP ถ้าไม่พบ/คนละกลุ่ม)',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async updateGroupCareRecipient(
+    @Args('input') input: UpdateGroupCareRecipientInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<GroupCareRecipient> {
+    return this.familyGroupService.updateGroupCareRecipient(user.id, input);
+  }
+
+  @Mutation(() => RemoveGroupCareRecipientResult, {
+    description:
+      'นำโปรไฟล์ออกจากกลุ่ม (unshare — โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ) — เฉพาะเจ้าของโปรไฟล์',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async removeGroupCareRecipient(
+    @Args('input') input: RemoveGroupCareRecipientInput,
+    @CurrentUser() user: AuthUser,
+  ): Promise<RemoveGroupCareRecipientResult> {
+    return this.familyGroupService.removeGroupCareRecipient(user.id, input);
   }
 }

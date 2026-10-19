@@ -22,6 +22,7 @@ import { PrismaService } from '../../common/prisma.service';
 import { ClockService } from '../../common/clock.service';
 import { JobQrService } from './job-qr.service';
 import { JOB_SESSION_STATUS } from './qr.constants';
+import { ScanAction } from './entities/scan-result.enum';
 
 // ต้องตั้งกุญแจ "ก่อน" สร้าง service เพราะ resolveSecret() อ่าน ENV ตอน constructor
 // ถ้าไม่ตั้ง service จะสุ่มกุญแจให้เอง (ซึ่งเทสก็ยังผ่าน แต่จะไม่ได้ทดสอบเส้นทางจริง)
@@ -51,12 +52,28 @@ const EXPECTED_VALID_UNTIL = new Date('2026-06-13T08:00:00Z');
 /** เวลาปัจจุบันของเทสส่วนใหญ่ — 10:00 ไทย = อยู่ในช่วงที่สแกนได้ */
 const NOW = new Date('2026-06-13T03:00:00Z');
 
+/**
+ * PYG-437 — "เลขรอบ" ของ token คือ updated_at ของแถว
+ * ตั้งเป็นเวลาก่อน NOW เพื่อให้เห็นชัดว่า token ไม่ได้คำนวณจาก "เวลาปัจจุบัน"
+ * แต่คำนวณจาก "เวลาที่แถวถูกแก้ล่าสุด" ซึ่งเป็นคนละเรื่องกัน
+ */
+const SESSION_UPDATED_AT = new Date('2026-06-13T00:30:00Z');
+
+/**
+ * hash ที่ "ถูกต้อง" สำหรับแถว PENDING ตัวอย่าง — คำนวณใน beforeEach ด้วย service จริง
+ * ★ ต้องใส่ค่าที่ถูกให้ fakeSession ไม่งั้น syncTokenHash() จะมองว่าแถวล้าสมัย
+ *   แล้วยิง UPDATE ทุกเทส ซึ่งบดบังพฤติกรรมที่เรากำลังจะทดสอบจริง ๆ
+ */
+let pendingTokenHash: string;
+
 /** แถว job_sessions ที่ jobQr() อ่านมาได้ */
 function fakeSession(overrides: Record<string, unknown> = {}) {
   return {
     id: SESSION_ID,
     bookingId: BOOKING_ID,
     status: JOB_SESSION_STATUS.PENDING,
+    tokenHash: pendingTokenHash,
+    updatedAt: SESSION_UPDATED_AT,
     validFrom: EXPECTED_VALID_FROM,
     validUntil: EXPECTED_VALID_UNTIL,
     ...overrides,
@@ -78,14 +95,23 @@ describe('JobQrService (PYG-434)', () => {
   let service: JobQrService;
   let prisma: {
     booking: { findUnique: jest.Mock };
-    jobSession: { update: jest.Mock };
+    jobSession: {
+      update: jest.Mock;
+      updateMany: jest.Mock;
+      findUnique: jest.Mock;
+    };
   };
   let clock: { now: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
       booking: { findUnique: jest.fn() },
-      jobSession: { update: jest.fn() },
+      jobSession: {
+        update: jest.fn(),
+        // PYG-437: syncTokenHash() ใช้สองตัวนี้ตอนเจอแถวที่ token_hash ล้าสมัย
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn(),
+      },
     };
     clock = { now: jest.fn().mockReturnValue(NOW) };
 
@@ -98,6 +124,14 @@ describe('JobQrService (PYG-434)', () => {
     }).compile();
 
     service = moduleRef.get(JobQrService);
+
+    // คำนวณ hash ที่ถูกต้องของแถวตัวอย่างด้วยสูตรจริง (ไม่ copy สูตรมาไว้ในเทส
+    // เพราะถ้าสูตรเปลี่ยนแล้วเทสไม่รู้ตัว เทสจะกลายเป็นของปลอมทันที)
+    pendingTokenHash = service.tokenHashFor(
+      SESSION_ID,
+      ScanAction.CHECK_IN,
+      SESSION_UPDATED_AT,
+    );
   });
 
   // ════════════════════════════════════════════════════════════════════
@@ -293,12 +327,22 @@ describe('JobQrService (PYG-434)', () => {
         startTime: START_TIME,
         durationHours: DURATION_HOURS,
       });
-      const stored = tx.jobSession.create.mock.calls[0][0].data;
+      const stored = tx.jobSession.create.mock.calls[0][0].data as {
+        id: string;
+        tokenHash: string;
+        updatedAt: Date;
+      };
 
       // ② อ่านกลับมาผ่าน jobQr() เหมือนที่ patient เปิดหน้า booking detail
       prisma.booking.findUnique.mockResolvedValue(
         fakeBooking({
-          jobSession: fakeSession({ id: stored.id }),
+          jobSession: fakeSession({
+            id: stored.id,
+            // PYG-437: เลขรอบ + hash ต้องเป็นค่าที่ createForBooking เขียนไว้จริง
+            // ไม่งั้นเทสจะกลายเป็นการอ่านแถวคนละใบกับที่เพิ่งสร้าง
+            updatedAt: stored.updatedAt,
+            tokenHash: stored.tokenHash,
+          }),
         }),
       );
       const result = await service.jobQr(PATIENT_ID, BOOKING_ID);
@@ -311,12 +355,16 @@ describe('JobQrService (PYG-434)', () => {
       expect(service.hashToken(result.token)).toBe(stored.tokenHash);
     });
 
-    it('เรียก jobQr ซ้ำกี่ครั้งก็ได้ token เดิม (QR ใบเดียวต่อ booking ปริ้นท์แปะไว้ได้)', async () => {
+    it('เรียก jobQr ซ้ำ ๆ ได้ token เดิม ตราบใดที่แถวไม่ถูกแก้', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking());
 
       const first = await service.jobQr(PATIENT_ID, BOOKING_ID);
       const second = await service.jobQr(PATIENT_ID, BOOKING_ID);
 
+      // ★ PYG-434 เดิมเทสข้อนี้ไว้เพื่อยืนยันว่า "ปริ้นท์แปะตู้เย็นได้"
+      //   PYG-437 ยกเลิกข้ออ้างนั้นแล้ว แต่ยังต้องคงคุณสมบัตินี้ไว้ เพราะ
+      //   หน้าจอผู้รับบริการ poll ทุก 30 วินาที ถ้า token เปลี่ยนเองทุกครั้งที่อ่าน
+      //   ผู้ดูแลจะสแกนไม่ทันสักครั้งเดียว
       expect(first.token).toBe(second.token);
     });
 
@@ -330,28 +378,164 @@ describe('JobQrService (PYG-434)', () => {
   });
 
   // ════════════════════════════════════════════════════════════════════
+  // C2. PYG-437 — token คนละใบต่อ action + ออก QR ใหม่ได้
+  //
+  // บล็อกนี้คือ "สัญญา" ของ PYG-437 ทั้งหมด
+  // ถ้าข้อไหนแดง แปลว่าฟีเจอร์ที่ทีมขอหายไปแล้ว ไม่ใช่แค่เทสเขียนผิด
+  // ════════════════════════════════════════════════════════════════════
+  describe('PYG-437 — token แยกตาม action และออกใหม่ได้', () => {
+    it('★ token ของ CHECK_IN กับ CHECK_OUT ต้องเป็นคนละค่า', async () => {
+      // สองแถวนี้ต่างกัน "แค่ status" — เลขรอบ (updatedAt) เท่ากันเป๊ะ
+      // จงใจตั้งแบบนี้เพื่อพิสูจน์ว่า action อยู่ในสูตรจริง ๆ
+      // ไม่ใช่ผ่านเพราะบังเอิญเวลาต่างกัน
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+      const checkIn = await service.jobQr(PATIENT_ID, BOOKING_ID);
+
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          jobSession: fakeSession({
+            status: JOB_SESSION_STATUS.CHECKED_IN,
+          }),
+        }),
+      );
+      const checkOut = await service.jobQr(PATIENT_ID, BOOKING_ID);
+
+      expect(checkOut.token).not.toBe(checkIn.token);
+      expect(checkIn.nextAction).toBe('CHECK_IN');
+      expect(checkOut.nextAction).toBe('CHECK_OUT');
+    });
+
+    it('★ rotateJobQr() เขียน updatedAt + tokenHash ใหม่ และได้ token คนละตัวกับเดิม', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+      const before = await service.jobQr(PATIENT_ID, BOOKING_ID);
+
+      // ดีบีคืนแถวหลังอัปเดตกลับมา — เลขรอบกลายเป็น NOW
+      prisma.jobSession.update.mockResolvedValue(
+        fakeSession({
+          updatedAt: NOW,
+          tokenHash: service.tokenHashFor(SESSION_ID, ScanAction.CHECK_IN, NOW),
+        }),
+      );
+
+      const after = await service.rotateJobQr(PATIENT_ID, BOOKING_ID);
+
+      // ① token ที่ผู้ใช้เห็นต้องเปลี่ยน = ใบเก่าที่หลุดไปแล้วใช้ไม่ได้อีก
+      expect(after.token).not.toBe(before.token);
+
+      // ② สองฟิลด์ต้องถูกเขียนพร้อมกันด้วย now ตัวเดียวกัน
+      //    ถ้าเขียนแค่ tokenHash โดยไม่ขยับ updatedAt (หรือกลับกัน)
+      //    ค่าในดีบีจะไม่ตรงกับสูตร แล้วสแกนไม่ผ่านทันที
+      const [{ data }] = prisma.jobSession.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data.updatedAt).toEqual(NOW);
+      expect(data.tokenHash).toBe(
+        service.tokenHashFor(SESSION_ID, ScanAction.CHECK_IN, NOW),
+      );
+
+      // ③ hash ที่เขียนลงดีบี ต้องมาจาก token ที่คืนให้ผู้ใช้จริง ๆ
+      expect(service.hashToken(after.token)).toBe(data.tokenHash);
+    });
+
+    it('งานที่ปิดแล้ว rotate ไม่ได้ (ไม่เหลือ action ให้สแกน)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({
+          jobSession: fakeSession({
+            status: JOB_SESSION_STATUS.CHECKED_OUT,
+          }),
+        }),
+      );
+
+      await expect(service.rotateJobQr(PATIENT_ID, BOOKING_ID)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.jobSession.update).not.toHaveBeenCalled();
+    });
+
+    it('★ patient คนอื่นกด rotate งานของคนอื่นไม่ได้ (ด่านเดียวกับ jobQr)', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+
+      await expect(
+        service.rotateJobQr(OTHER_PATIENT_ID, BOOKING_ID),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.jobSession.update).not.toHaveBeenCalled();
+    });
+
+    it('★ แถวที่ token_hash ล้าสมัย (สูตร v1 เดิม) ถูกซ่อมให้เองตอนอ่าน', async () => {
+      // จำลองแถวที่เขียนไว้ด้วยสูตรเก่า — hash เป็นค่าที่ไม่มีทางตรงกับสูตรใหม่
+      const staleHash = '0'.repeat(64);
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ jobSession: fakeSession({ tokenHash: staleHash }) }),
+      );
+
+      const result = await service.jobQr(PATIENT_ID, BOOKING_ID);
+
+      // ★ นี่คือเหตุผลที่การเปลี่ยนสูตร v1 → v2 "ไม่ต้องมี backfill script"
+      //   เขียนทับแบบมีเงื่อนไข (CAS) เพื่อไม่ให้ทับของใหม่ที่คนอื่นเพิ่งเขียน
+      expect(prisma.jobSession.updateMany).toHaveBeenCalledWith({
+        where: { id: SESSION_ID, tokenHash: staleHash },
+        data: { tokenHash: service.hashToken(result.token) },
+      });
+    });
+
+    it('แถวที่ token_hash ถูกต้องอยู่แล้ว → ไม่เขียนดีบีเลย', async () => {
+      prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+
+      await service.jobQr(PATIENT_ID, BOOKING_ID);
+
+      // การอ่าน QR เกิดขึ้นทุก 30 วินาทีต่อผู้ใช้หนึ่งคน
+      // ถ้าเผลอเขียนทุกครั้ง จะกลายเป็นภาระดีบีที่ไม่มีใครสังเกตจนกว่าจะสาย
+      expect(prisma.jobSession.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════════
   // D. resyncValidityWindow() — เตรียมไว้ให้ฟีเจอร์เลื่อนนัด
   // ════════════════════════════════════════════════════════════════════
   describe('resyncValidityWindow()', () => {
-    it('อัปเดตช่วงเวลาใหม่ตามตารางงานล่าสุด โดยไม่แตะ token', async () => {
+    it('อัปเดตช่วงเวลาใหม่ + เขียน token ใหม่ในคำสั่งเดียวกัน', async () => {
       prisma.booking.findUnique.mockResolvedValue({
         id: BOOKING_ID,
         bookingDate: BOOKING_DATE,
         startTime: START_TIME,
         durationHours: DURATION_HOURS,
-        jobSession: { id: SESSION_ID },
+        jobSession: { id: SESSION_ID, status: JOB_SESSION_STATUS.PENDING },
       });
 
       await service.resyncValidityWindow(BOOKING_ID);
 
+      // ★ PYG-437: การเขียนแถวทำให้ updated_at ขยับ = token เปลี่ยนเสมอ
+      //   ถ้าลืมเขียน tokenHash ไปด้วย ดีบีจะเหลือ hash ของ token ที่ไม่มีใครถืออยู่
+      //   → ผู้ดูแลสแกนไม่ผ่าน จนกว่าผู้รับบริการจะเปิดหน้าใหม่ (syncTokenHash ซ่อมให้)
       expect(prisma.jobSession.update).toHaveBeenCalledWith({
         where: { id: SESSION_ID },
         data: {
           validFrom: EXPECTED_VALID_FROM,
           validUntil: EXPECTED_VALID_UNTIL,
           updatedAt: NOW,
+          tokenHash: service.tokenHashFor(SESSION_ID, ScanAction.CHECK_IN, NOW),
         },
       });
+    });
+
+    it('งานที่ปิดแล้ว → ขยับเวลาได้ แต่ไม่แตะ token (ไม่มีใครสแกนต่อแล้ว)', async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        id: BOOKING_ID,
+        bookingDate: BOOKING_DATE,
+        startTime: START_TIME,
+        durationHours: DURATION_HOURS,
+        jobSession: {
+          id: SESSION_ID,
+          status: JOB_SESSION_STATUS.CHECKED_OUT,
+        },
+      });
+
+      await service.resyncValidityWindow(BOOKING_ID);
+
+      const [{ data }] = prisma.jobSession.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).not.toHaveProperty('tokenHash');
     });
 
     it('booking ที่ไม่มี session → ไม่ทำอะไรและไม่ error', async () => {

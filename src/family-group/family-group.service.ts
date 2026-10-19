@@ -2,6 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
+// PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" ต้องไม่ถูกเห็นในกลุ่มอีก
+import { ConsentService } from '../consent/consent.service';
+import { CONSENT_SOURCE, CONSENT_TYPE } from '../consent/consent.constants';
+import type { ConsentAnswerInput } from '../consent/dto/consent-answer.input';
+import type { RequestEvidence } from '../common/utils/request-evidence';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
@@ -13,6 +20,10 @@ import {
   LeaveFamilyGroupResult,
 } from './entities/family-group.entity';
 import { FamilyGroupMemberItem } from './entities/family-group-member.entity';
+import {
+  FamilyGroupActivityConnection,
+  FamilyGroupActivityItem,
+} from './entities/family-group-activity.entity';
 import { GroupCareRecipient } from './entities/care-recipient.entity';
 import {
   FamilyGroupJoinLink,
@@ -20,12 +31,16 @@ import {
 } from './entities/family-group-join-link.entity';
 import {
   ACTIVITY_ACTION,
+  ACTIVITY_CURSOR_SEPARATOR,
+  ACTIVITY_PAGE_SIZE_DEFAULT,
+  ACTIVITY_PAGE_SIZE_MAX,
   ACTIVITY_TARGET,
   ActivityAction,
   ActivityTarget,
   GROUP_NAME_MAX_LENGTH,
   GROUP_NAME_MIN_LENGTH,
   GROUP_ROLE,
+  GroupRoleName,
   MEMBER_STATUS,
   joinLinkBaseUrl,
   GROUP_MAX_MEMBERS,
@@ -36,11 +51,13 @@ import {
   JOIN_LINK_TTL_HOURS,
 } from './family-group.constants';
 import {
+  ActivityCursorInvalidError,
   AlreadyOwnerError,
   GroupNameInvalidError,
   GroupNotFoundError,
   LastOwnerError,
   MemberNotFoundError,
+  NotAMemberError,
   NotGroupOwnerError,
   GroupMemberLimitReachedError,
   JoinLinkConfigMissingError,
@@ -49,7 +66,25 @@ import {
   JoinLinkInvalidError,
   JoinLinkNotFoundError,
   JoinLinkRevokedError,
+  RecipientNotInGroupError,
+  RecipientNotOwnerError,
 } from './family-group.errors';
+import {
+  AddGroupCareRecipientInput,
+  UpdateGroupCareRecipientInput,
+  RemoveGroupCareRecipientInput,
+} from './dto/manage-care-recipient.input';
+import { RemoveGroupCareRecipientResult } from './entities/care-recipient.entity';
+import {
+  PATIENT_PROFILE_SELECT,
+  toPatientProfile,
+} from '../patient/patient-profile.mapper';
+// PYG-517: ชื่อตามบัญชี — ฟังก์ชันเดียวกับที่ PYG-516 ใช้เขียนลงใบจอง
+import {
+  ACCOUNT_NAME_SELECT,
+  accountDisplayName,
+} from '../common/utils/account-name';
+import { GroupBookingRecipient } from './entities/group-booking-recipient.entity';
 
 /**
  * field set มาตรฐานของ "สมาชิก 1 คน" — ใช้ที่เดียวทุกที่ กันลืม join users
@@ -86,6 +121,34 @@ type MemberRow = Prisma.FamilyGroupMemberGetPayload<{
 }>;
 
 /**
+ * field set ของ "กิจกรรม 1 แถว" ในฟีด (PYG-421)
+ *
+ * ★ ระบุคอลัมน์เอง ไม่ใช้ include เปล่า ๆ — ตาราง users มีทั้งอีเมล เบอร์โทร ที่อยู่
+ *   การ join ทั้งแถวมาแล้วค่อยไปตัดทิ้งในโค้ดคือวิธีที่ข้อมูลส่วนบุคคลหลุดออก API
+ *   ตอนมีคนเผลอเติมฟิลด์ใน entity ทีหลัง (เหตุผลเดียวกับ groupCareRecipients)
+ *
+ * ★★ ไม่มี email ของ actor ในนี้ ต่างจาก MEMBER_SELECT โดยตั้งใจ
+ *    ฟีดต้องการแค่ "ชื่อกับรูปให้จำหน้าได้" ส่วนอีเมลมีที่ทางของมันอยู่แล้ว
+ *    ในหน้ารายชื่อสมาชิก ซึ่งแสดงเฉพาะคนที่ยัง ACTIVE — ฟีดย้อนหลังไปถึงคนที่
+ *    ออกจากกลุ่มไปแล้ว ถ้าใส่อีเมลมาด้วยเท่ากับเปิดสมุดที่อยู่ของอดีตสมาชิกทั้งหมด
+ */
+const ACTIVITY_SELECT = {
+  id: true,
+  actorId: true,
+  action: true,
+  targetType: true,
+  targetId: true,
+  metadata: true,
+  createdAt: true,
+  actor: { select: { displayName: true, avatarUrl: true } },
+} as const;
+
+/** รูปทรงแถวที่ ACTIVITY_SELECT คืนกลับ */
+type ActivityRow = Prisma.FamilyGroupActivityGetPayload<{
+  select: typeof ACTIVITY_SELECT;
+}>;
+
+/**
  * FamilyGroupService (PYG-412) — ตรรกะทั้งหมดของ "สร้าง/จัดการกลุ่มครอบครัว"
  *
  * ═══ กติกา 3 ข้อที่ห้ามแหก ไม่ว่าจะเพิ่มเมธอดอะไรในไฟล์นี้ต่อ ═══
@@ -102,15 +165,26 @@ type MemberRow = Prisma.FamilyGroupMemberGetPayload<{
  *    ไม่ใช่ update() เฉย ๆ — เหตุผลเต็มอยู่ที่ transferOwnership ด้านล่าง (เรื่อง race)
  *
  * ── สิ่งที่ "ไม่ได้" อยู่ในการ์ดนี้ ────────────────────────────────────────
- *   เชิญสมาชิก/ยกเลิกคำเชิญ = PYG-416 · รับคำเชิญ = PYG-417
- *   ฟีดกิจกรรมแบบแบ่งหน้า   = PYG-421 · จองแทน/ผู้รับบริการ = PYG-424
- *   ไฟล์นี้แค่ "เขียน" activity ลงตาราง แต่ยังไม่มี query ให้อ่าน
+ *   สร้าง/หมุน/ยกเลิกลิงก์เข้าร่วม = PYG-416 · กดเข้าร่วมจริง (joinGroupByLink) = PYG-417
+ *   ฟีดกิจกรรมแบบแบ่งหน้า = PYG-421 · จองแทน = PYG-424 (อยู่ที่ BookingService)
+ *   ★ ช่องว่างที่ยังเหลือของฟีด (PYG-421 อ่านได้ครบทุก action แล้ว แต่ฝั่งเขียนยังขาด):
+ *     - คนที่เคยออกแล้วกลับเข้ามา ถูกบันทึกเป็น MEMBER_JOINED ไม่ใช่ MEMBER_REJOINED
  */
+
+/** ผู้เรียกที่ไม่มี request (เทส / งานภายใน) — ไม่มีหลักฐาน IP/UA ให้บันทึก */
+const NO_EVIDENCE: RequestEvidence = { ipAddress: null, userAgent: null };
+
 @Injectable()
 export class FamilyGroupService {
   private readonly logger = new Logger(FamilyGroupService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // PYG-540: กรองโปรไฟล์/ฟีดของสมาชิกที่ถอนความยินยอมเปิดเผยให้กลุ่ม
+    private readonly consentService: ConsentService,
+    // PYG-518: sign avatarUrl ของสมาชิก/ผู้ลงมือในฟีดกิจกรรมแบบ batch
+    private readonly avatarUrlService: AvatarUrlService,
+  ) {}
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Mutations
@@ -126,10 +200,14 @@ export class FamilyGroupService {
   async createFamilyGroup(
     userId: string,
     input: CreateFamilyGroupInput,
+    evidence: RequestEvidence = NO_EVIDENCE,
   ): Promise<FamilyGroup> {
     const name = this.assertValidName(input.name);
+    const consents = this.assertGroupConsents(input.consents);
 
     const group = await this.prisma.$transaction(async (tx) => {
+      await this.recordGroupConsents(tx, userId, consents, evidence);
+
       const created = await tx.familyGroup.create({
         data: {
           name,
@@ -454,7 +532,7 @@ export class FamilyGroupService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return groups.map((group) => this.toFamilyGroup(group, userId));
+    return Promise.all(groups.map((group) => this.toFamilyGroup(group, userId)));
   }
 
   /**
@@ -476,33 +554,380 @@ export class FamilyGroupService {
   }
 
   /**
-   * PYG-424 — โปรไฟล์ผู้รับบริการทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้
+   * โปรไฟล์ที่ถูก "แชร์เข้ากลุ่มนี้" แล้วเท่านั้น พร้อมรายละเอียดสำหรับจองแทน.
    *
-   * สิทธิ์ "เป็นสมาชิก ACTIVE" ถูกตรวจโดย FamilyGroupGuard มาแล้ว (@GroupRole('MEMBER'))
-   * ที่นี่จึงกรองด้วย familyGroupId อย่างเดียวพอ ไม่ต้องคิวรี่ตารางสมาชิกซ้ำ
-   * (ข้อกำหนด "avoids N+1" ของ PYG-412 — guard อ่านไปแล้วใน request เดียวกัน)
+   * ★ ไม่ดึงโปรไฟล์ส่วนตัว (`family_group_id IS NULL`) ของสมาชิก
+   *   เดิมเงื่อนไขเป็น `OR: [{ familyGroupId: null }, { familyGroupId: groupId }]`
+   *   ซึ่งหมายความว่า "ทุกโปรไฟล์ส่วนตัวของสมาชิกทุกคน" ถูกส่งออกมาพร้อม `details`
+   *   (อายุ เพศ โรคประจำตัว ยาที่ใช้ ประวัติแพ้ ฯลฯ) ให้สมาชิกคนอื่นในกลุ่มเห็น
+   *   รวมใบ `is_self` ที่ระบบสร้างให้ตอน Onboarding — คนกรอกไม่เคยเลือกที่จะแชร์อะไรเลย
    *
-   * ★ ต่างจาก care-recipients REST เดิม (patient/care-recipients.service.ts) ตรงเกณฑ์กรอง:
-   *     REST เดิม → where patientId = ฉัน        คือโปรไฟล์ที่ "ฉันเป็นคนเพิ่ม"
-   *     อันนี้    → where familyGroupId = กลุ่ม  คือโปรไฟล์ที่ "ถูกแชร์เข้ากลุ่ม" ไม่ว่าใครเพิ่ม
-   *   สองอันนี้ตอบคนละคำถาม จึงอยู่ร่วมกันได้ และของเดิมไม่ต้องแก้แม้แต่บรรทัดเดียว
+   *   นั่นคือการเปิดเผยข้อมูลสุขภาพโดยไม่มีความยินยอม (PDPA ม.26) และขัดกับ
+   *   ประกาศความเป็นส่วนตัวของเราเองที่เขียนว่าข้อมูลสุขภาพแชร์เฉพาะที่เจ้าของเลือกแชร์
+   *
+   *   การแชร์เข้ากลุ่มมีทางเดียวคือ `addGroupCareRecipient` ซึ่งเจ้าของเป็นคนกด
+   *   (หรือกลไกคัดลอกเข้ากลุ่มตอนจองจริงของ PYG-500) — เงื่อนไขนี้จึงตรงกับ
+   *   คำอธิบายของ query ที่เขียนไว้ตั้งแต่แรกว่า "โปรไฟล์ทั้งหมดที่ถูกแชร์อยู่ในกลุ่มนี้"
+   *
+   *   ★ ไม่มีใครเสียความสามารถไป: เส้นทางจองแทนด้วย careRecipientId ปฏิเสธโปรไฟล์
+   *     ส่วนตัวอยู่แล้ว (`recipient.familyGroupId !== input.groupId` → RecipientNotInGroupError)
+   *     แถวที่ตัดออกนี้จึงเป็นตัวเลือกที่กดแล้ว error มาตลอด — รั่วข้อมูลโดยไม่มีคนได้ใช้
+   *
+   *   PYG-517 (`groupBookingRecipients`) ใช้เงื่อนไขนี้อยู่แล้ว ใบนี้แก้ของเดิมให้ตรงกัน
+   *
+   * PYG-540: ไม่แสดงโปรไฟล์ของเจ้าของที่ "ถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว"
+   *   ยกเว้นเจ้าของดูเอง (ยังจัดการโปรไฟล์ของตัวเองได้) · ไม่ลบโปรไฟล์ — ให้ความยินยอมกลับก็เห็นอีก
+   *   ★ สำคัญเป็นพิเศษเพราะรายการนี้ส่ง details (ข้อมูลสุขภาพ) ออกไปด้วย
+   *   ผลพลอยได้: คนที่ถอนหายจากตัวเลือก "จองให้ใคร" ไปด้วย
+   *   (ด่านจริงอยู่ที่ BookingService.createBookingOnBehalf อีกชั้น เผื่อ FE ส่ง id เก่ามา)
+   *
+   * ── สองด่านนี้คนละเรื่องกัน ต้องมีทั้งคู่ ────────────────────────────────
+   *   `familyGroupId: groupId`  = "ใบนี้ถูกแชร์เข้ากลุ่มหรือยัง" (เจ้าของยังไม่เคยตัดสินใจ = ไม่แชร์)
+   *   ตัวกรอง `withdrawnUserIds` = "เจ้าของถอนความยินยอมไปแล้วหรือยัง" (เคยแชร์ แต่ขอถอนคืน)
+   *   ตัดอันแรกทิ้งแล้วเหลือแต่อันหลัง = คนที่ยังไม่เคยตอบความยินยอม (เกือบทุกคน) รั่วหมด
    */
-  async groupCareRecipients(groupId: string): Promise<GroupCareRecipient[]> {
-    const rows = await this.prisma.careRecipient.findMany({
-      where: { familyGroupId: groupId },
-      orderBy: { name: 'asc' },
-      // เลือกเฉพาะคอลัมน์ที่ GroupCareRecipient ประกาศไว้เท่านั้น
-      // ★ ห้าม select ข้อมูลสุขภาพออกมา "เผื่อไว้" — การเผื่อไว้คือวิธีที่ข้อมูล
-      //   อ่อนไหวหลุดออก API โดยไม่มีใครตั้งใจ (เหตุผลเต็มอยู่ที่ care-recipient.entity.ts)
-      select: { id: true, name: true, nickname: true, patientId: true },
+  async groupCareRecipients(
+    groupId: string,
+    viewerId: string,
+  ): Promise<GroupCareRecipient[]> {
+    const members = await this.prisma.familyGroupMember.findMany({
+      where: { groupId, status: MEMBER_STATUS.ACTIVE },
+      select: { userId: true },
     });
+    const all = await this.prisma.careRecipient.findMany({
+      where: {
+        patientId: { in: members.map((member) => member.userId) },
+        is_deleted: false,
+        familyGroupId: groupId,
+      },
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        nickname: true,
+        patientId: true,
+        self_reported: true,
+        ...PATIENT_PROFILE_SELECT,
+      },
+    });
+
+    // query เดียวสำหรับทุกเจ้าของในหน้านี้ (ไม่ใช่โปรไฟล์ละ query)
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      all.map((r) => r.patientId),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const rows = all.filter(
+      (r) => !withdrawn.has(r.patientId) || r.patientId === viewerId,
+    );
 
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
       nickname: r.nickname ?? undefined,
       ownerUserId: r.patientId,
+      selfReported: r.self_reported,
+      details: toPatientProfile(r),
     }));
+  }
+
+
+  /**
+   * PYG-517 — รายชื่อสมาชิก ACTIVE ทุกคน (รวมเจ้าของกลุ่ม) พร้อมข้อมูลสำหรับ autofill
+   *
+   * ใช้เป็น shortcut ในขั้น "กรอกข้อมูลผู้เข้ารับบริการ" ตอนจองแทน — กดชื่อสมาชิกแล้ว
+   * ฟอร์มเติมให้อัตโนมัติ ส่วนชื่อ-นามสกุลล็อก (PYG-516 ปฏิเสธ patientName ที่ส่งมา)
+   *
+   * ★ มองเป็น "รายชื่อคน" ไม่ใช่ "รายชื่อโปรไฟล์" — สมาชิกทุกคนได้หนึ่งรายการเสมอ
+   *   แม้ยังไม่มีโปรไฟล์ในกลุ่ม (hasProfile = false, details = null) เพื่อให้ FE
+   *   มีปุ่มให้กดครบทุกคน ไม่ใช่หายไปเงียบ ๆ เพราะยังไม่เคยถูกจองให้
+   *
+   * ★★ ลำดับแหล่งข้อมูล autofill:
+   *    ① โปรไฟล์ในกลุ่มนี้ (familyGroupId = groupId)
+   *    ② ใบ is_self จาก Onboarding — เฉพาะเจ้าของที่ "ยินยอม" disclose_to_family_group
+   *       ชัดแจ้งในเวอร์ชันปัจจุบัน (ยังไม่เคยตอบไม่นับ) เพราะเป็นข้อมูลอ่อนไหว PDPA ม.26
+   *       ที่ยังไม่เคยถูกแชร์เข้ากลุ่ม · โปรไฟล์ส่วนตัวใบอื่น (ไม่ใช่ is_self) ไม่ดึงเด็ดขาด
+   *    ③ ไม่มีทั้งคู่ → details = undefined ให้คนจองกรอก
+   *
+   * ชื่อมาจากบัญชีด้วย accountDisplayName ตัวเดียวกับที่ PYG-516 ใช้เขียนลง
+   * care_recipients.name / bookings.patient_name — ถ้าคำนวณคนละแบบ ผู้ใช้จะกดชื่อหนึ่ง
+   * แล้วใบจองขึ้นอีกชื่อหนึ่งโดยไม่มี error ให้เห็น
+   *
+   * สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE" ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
+   */
+  async groupBookingRecipients(
+    groupId: string,
+    viewerId: string,
+  ): Promise<GroupBookingRecipient[]> {
+    const activeMembers = await this.prisma.familyGroupMember.findMany({
+      where: { groupId, status: MEMBER_STATUS.ACTIVE },
+      orderBy: { joinedAt: 'asc' },
+      select: {
+        userId: true,
+        user: { select: ACCOUNT_NAME_SELECT },
+      },
+    });
+    if (activeMembers.length === 0) return [];
+
+    // PYG-540: สมาชิกที่ถอนความยินยอม "เปิดเผยให้กลุ่มครอบครัว" → ไม่อยู่ในรายการ (ยกเว้นดูตัวเอง)
+    // ★ ตัดออกทั้งคน ไม่ใช่แค่ซ่อน details: จองแทนคนนี้ยังไงก็ถูกปฏิเสธ (CONSENT_WITHDRAWN ที่
+    //   BookingService) ถ้ายังโชว์ปุ่มไว้ คนจองจะนั่งพิมพ์ข้อมูลสุขภาพของเขาเองแล้วไปติดตอนกดยืนยัน
+    //   ชื่อสมาชิกยังเห็นได้ที่หน้ารายชื่อสมาชิกตามเดิม — ที่นี่คือรายการ "จองให้ใครได้บ้าง"
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      activeMembers.map((m) => m.userId),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const members = activeMembers.filter(
+      (m) => !withdrawn.has(m.userId) || m.userId === viewerId,
+    );
+    if (members.length === 0) return [];
+
+    // โปรไฟล์ "ในกลุ่มนี้" เท่านั้น — familyGroupId ต้องเท่ากับ groupId ตรง ๆ
+    const profiles = await this.prisma.careRecipient.findMany({
+      where: {
+        patientId: { in: members.map((m) => m.userId) },
+        familyGroupId: groupId,
+        is_deleted: false,
+      },
+      // สมาชิกหนึ่งคนอาจมีหลายใบในกลุ่ม (ข้อมูลเก่า) — เอาใบที่อัปเดตล่าสุด
+      orderBy: { updated_at: 'desc' },
+      select: {
+        patientId: true,
+        nickname: true,
+        address_line: true,
+        province: true,
+        district: true,
+        ...PATIENT_PROFILE_SELECT,
+      },
+    });
+
+    const profileByMember = new Map<string, (typeof profiles)[number]>();
+    for (const profile of profiles) {
+      if (!profileByMember.has(profile.patientId)) {
+        profileByMember.set(profile.patientId, profile);
+      }
+    }
+
+    // ยังไม่มีโปรไฟล์ในกลุ่ม → ใช้ใบ is_self (กรอกตอน Onboarding) แทน
+    // เฉพาะคนที่ "ยินยอม" disclose_to_family_group ชัดแจ้งและเป็นเวอร์ชันปัจจุบัน
+    // (ยังไม่เคยตอบ ≠ ยินยอม) · ตัวเองดูของตัวเองได้เสมอ
+    // ★ ข้อมูลชุดเดียวกับที่ BookingService สาขา ② คัดลอกเข้ากลุ่มตอนจองจริงอยู่แล้ว
+    //   ฟอร์มจึงแสดงสิ่งที่จะถูกบันทึกจริง ไม่ใช่ปล่อยว่างแล้วไปโผล่ในใบจองทีหลัง
+    const withoutGroupProfile = members
+      .map((m) => m.userId)
+      .filter((id) => !profileByMember.has(id));
+    if (withoutGroupProfile.length > 0) {
+      const granted = await this.consentService.grantedCurrentUserIds(
+        withoutGroupProfile,
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+      const allowed = withoutGroupProfile.filter(
+        (id) => granted.has(id) || id === viewerId,
+      );
+      if (allowed.length > 0) {
+        const personal = await this.prisma.careRecipient.findMany({
+          where: {
+            patientId: { in: allowed },
+            familyGroupId: null,
+            // ★ ใบของ "ตัวเจ้าของบัญชี" เท่านั้น — โปรไฟล์ส่วนตัวอื่นอาจเป็นของคนอื่น (เช่น คุณยาย)
+            is_self: true,
+            is_deleted: false,
+          },
+          orderBy: { updated_at: 'desc' },
+          select: {
+            patientId: true,
+            nickname: true,
+            address_line: true,
+            province: true,
+            district: true,
+            ...PATIENT_PROFILE_SELECT,
+          },
+        });
+        for (const profile of personal) {
+          if (!profileByMember.has(profile.patientId)) {
+            profileByMember.set(profile.patientId, profile);
+          }
+        }
+      }
+    }
+
+    return members.map((member) => {
+      const profile = profileByMember.get(member.userId);
+      const health = profile ? toPatientProfile(profile) : undefined;
+
+      return {
+        memberUserId: member.userId,
+        // ★ ไม่มีชื่อในบัญชี → สตริงว่าง ไม่ใช่ error
+        //   ลิสต์ทั้งกลุ่มต้องไม่พังเพราะสมาชิกคนเดียวยังไม่ได้กรอกชื่อ
+        //   ตอนกดจองจริงถึงจะโดนปฏิเสธด้วย MEMBER_NAME_MISSING (PYG-516)
+        name: accountDisplayName(member.user) ?? '',
+        nameLocked: true,
+        nickname: profile?.nickname ?? undefined,
+        hasProfile: profile !== undefined,
+        details: profile
+          ? {
+              ...health,
+              addressLine: profile.address_line ?? undefined,
+              province: profile.province ?? undefined,
+              district: profile.district ?? undefined,
+            }
+          : undefined,
+      };
+    });
+  }
+
+  // ── PYG-385: เพิ่ม/แก้ไข/นำออกโปรไฟล์ผู้รับบริการในกลุ่ม ────────────────────
+  //
+  //  สิทธิ์ระดับกลุ่ม (เป็นสมาชิก ACTIVE) ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว
+  //  ที่นี่เหลือแค่สิทธิ์ระดับโปรไฟล์: "เจ้าของเท่านั้นที่แก้/ลบได้"
+  //  (เพิ่มได้ทุกสมาชิก — คนที่เพิ่มกลายเป็นเจ้าของโปรไฟล์นั้น)
+  //
+  //  ทั้งสามเขียน RECIPIENT_* ลงฟีดใน transaction เดียวกับโปรไฟล์ (กติกาข้อ 2)
+  //  ★ metadata ว่างโดยตั้งใจ — ไม่แช่ชื่อผู้รับบริการไว้ในฟีดเหมือน BOOKING_ON_BEHALF
+  //    เพราะ PYG-540 ปิดชื่อในฟีดให้เฉพาะแถว BOOKING_ON_BEHALF เท่านั้น ถ้าใส่ชื่อไว้ที่นี่
+  //    ชื่อจะยังโชว์ต่อหลังเจ้าของถอนความยินยอม · ร่องรอยตรวจสอบ = actor + targetId พอแล้ว
+
+  /** เพิ่มโปรไฟล์ใหม่เข้ากลุ่ม — patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ */
+  async addGroupCareRecipient(
+    userId: string,
+    input: AddGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const r = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.careRecipient.create({
+        data: {
+          patientId: userId,
+          familyGroupId: input.groupId,
+          name: input.name.trim(),
+          nickname: input.nickname?.trim() || null,
+        },
+        select: {
+          id: true,
+          name: true,
+          nickname: true,
+          patientId: true,
+          self_reported: true,
+        },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_ADDED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: created.id,
+        metadata: {},
+      });
+      return created;
+    });
+    this.logger.log({
+      event: 'group_care_recipient.added',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return {
+      id: r.id,
+      name: r.name,
+      nickname: r.nickname ?? undefined,
+      ownerUserId: r.patientId,
+      selfReported: r.self_reported,
+    };
+  }
+
+  /** แก้ไขโปรไฟล์ — เฉพาะเจ้าของ (คนที่เพิ่ม) เท่านั้น */
+  async updateGroupCareRecipient(
+    userId: string,
+    input: UpdateGroupCareRecipientInput,
+  ): Promise<GroupCareRecipient> {
+    const r = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.careRecipient.findUnique({
+        where: { id: input.recipientId },
+        select: { patientId: true, familyGroupId: true },
+      });
+      // ไม่มีจริง หรือไม่ได้อยู่ในกลุ่มนี้ → ตอบเหมือนกัน (กันเดา id ข้ามกลุ่ม, PDPA)
+      if (!existing || existing.familyGroupId !== input.groupId) {
+        throw new RecipientNotInGroupError();
+      }
+      if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+      const updated = await tx.careRecipient.update({
+        where: { id: input.recipientId },
+        data: {
+          ...(input.name !== undefined && { name: input.name.trim() }),
+          ...(input.nickname !== undefined && {
+            nickname: input.nickname.trim() || null,
+          }),
+        },
+        select: {
+          id: true,
+          name: true,
+          nickname: true,
+          patientId: true,
+          self_reported: true,
+        },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_UPDATED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: input.recipientId,
+        metadata: {},
+      });
+      return updated;
+    });
+    this.logger.log({
+      event: 'group_care_recipient.updated',
+      id: r.id,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return {
+      id: r.id,
+      name: r.name,
+      nickname: r.nickname ?? undefined,
+      ownerUserId: r.patientId,
+      selfReported: r.self_reported,
+    };
+  }
+
+  /**
+   * นำโปรไฟล์ออกจากกลุ่ม (unshare) — set familyGroupId = null ไม่ใช่ลบทิ้ง
+   * โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ และ booking เก่ายังอ้าง careRecipientId ได้เหมือนเดิม
+   * (booking เก็บ familyGroupId ของตัวเอง จึงไม่กระทบฟีดย้อนหลัง)
+   */
+  async removeGroupCareRecipient(
+    userId: string,
+    input: RemoveGroupCareRecipientInput,
+  ): Promise<RemoveGroupCareRecipientResult> {
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.careRecipient.findUnique({
+        where: { id: input.recipientId },
+        select: { patientId: true, familyGroupId: true },
+      });
+      if (!existing || existing.familyGroupId !== input.groupId) {
+        throw new RecipientNotInGroupError();
+      }
+      if (existing.patientId !== userId) throw new RecipientNotOwnerError();
+
+      await tx.careRecipient.update({
+        where: { id: input.recipientId },
+        data: { familyGroupId: null },
+      });
+      await this.writeActivity(tx, {
+        groupId: input.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.RECIPIENT_REMOVED,
+        targetType: ACTIVITY_TARGET.RECIPIENT,
+        targetId: input.recipientId,
+        metadata: {},
+      });
+    });
+    this.logger.log({
+      event: 'group_care_recipient.removed',
+      id: input.recipientId,
+      groupId: input.groupId,
+      by: userId,
+    });
+    return { recipientId: input.recipientId, removed: true };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -643,26 +1068,42 @@ export class FamilyGroupService {
   }
 
   /**
-   * อ่านลิงก์ปัจจุบันของกลุ่ม (เจ้าของเท่านั้น) — ตัวที่ทำให้ปุ่ม "คัดลอกลิงก์" กดซ้ำได้
+   * อ่านลิงก์ปัจจุบันของกลุ่ม (สมาชิก ACTIVE ทุกคน) — ตัวที่ทำให้ปุ่ม "คัดลอกลิงก์" กดซ้ำได้
+   *
+   * ★ PYG-478 · SCR-FG2-001 Amendment 1 (B9/B10) — เดิมเปิดให้เจ้าของคนเดียว
+   *   ตอนนี้สมาชิก ACTIVE ทุกคน (ทั้ง OWNER และ MEMBER) อ่านได้ เพราะคนที่นึกได้ว่า
+   *   ต้องชวนญาติคนไหนเพิ่ม มักไม่ใช่คนเดียวกับคนที่สร้างกลุ่ม
+   *   ส่วน สร้าง/หมุน/ยกเลิก ลิงก์ ยังเป็นของเจ้าของคนเดียวเหมือนเดิม (assertOwner ใน
+   *   createJoinLink / rotateJoinLink / revokeJoinLink ด้านบน ไม่ได้แตะ)
+   *   → ตัวคุมจริงของลิงก์ (โควตา max_uses, เพดานสมาชิก, วันหมดอายุ, การ rotate)
+   *     ยังอยู่ในมือเจ้าของ — ระบบคุม "การส่งต่อ" ไม่ได้อยู่แล้วตั้งแต่ลิงก์ออกจากแอป
    *
    * ★ เมธอดนี้คือเหตุผลทั้งหมดที่เราเก็บ tokenRaw ลงดีบี (ข้อตัดสินใจ ก. ของ SCR)
    *   ถ้าเก็บแค่ hash เมธอดนี้จะเขียนไม่ได้เลย และเจ้าของกลุ่มจะต้อง rotate
    *   ทุกครั้งที่อยากส่งลิงก์ให้คนถัดไป ซึ่งจะฆ่าลิงก์ของคนก่อนหน้าที่ยังไม่ได้กด
+   *
+   * ★ อ่านอย่างเดียวเสมอ — ไม่มีลิงก์ก็โยน JOIN_LINK_NOT_FOUND ไม่สร้างให้ (B10)
+   *   ห้ามเปลี่ยนเป็น "ไม่มีก็สร้างให้เลย" เด็ดขาด เพราะเมธอดนี้สมาชิกธรรมดาเรียกได้
+   *   = จะกลายเป็นประตูหลังให้สมาชิกสร้างลิงก์ได้ ทั้งที่ B1 บอกว่าต้องเป็นเจ้าของเท่านั้น
    */
   async groupJoinLink(
     userId: string,
     groupId: string,
   ): Promise<FamilyGroupJoinLink> {
-    // ตรวจสิทธิ์กับอ่านลิงก์อยู่ในธุรกรรมเดียวกัน — ถ้าแยกกัน คนที่เพิ่งถูกโอนสิทธิ์ออก
-    // ระหว่างสองคำสั่งจะยังได้ url กลับไป ซึ่งเท่ากับแจกลิงก์ให้คนที่ไม่ใช่เจ้าของแล้ว
     const link = await this.prisma.$transaction(async (tx) => {
-      await this.assertOwner(tx, groupId, userId);
+      // ตรวจซ้ำชั้นที่สอง (ชั้นแรกคือ @GroupRole('MEMBER') ที่ resolver)
+      // ทำไมไม่ปล่อยให้ guard ทำคนเดียว: ค่าที่เมธอดนี้คืนคือ url ที่ใช้เข้ากลุ่มได้จริง
+      // ถ้าวันหนึ่งมีคนเผลอถอด @GroupRole ออก หรือเรียกเมธอดนี้จากโค้ดอื่นที่ไม่ผ่าน guard
+      // คนนอกกลุ่ม / คนที่ถูกเตะออกแล้ว ก็ยังได้ NOT_A_MEMBER อยู่ดี ไม่ใช่ได้ url ไป
+      const role = await this.assertActiveMember(tx, groupId, userId);
 
       const active = await tx.familyGroupJoinLink.findFirst({
         where: { groupId, status: JOIN_LINK_STATUS.ACTIVE },
       });
       if (!active) {
-        throw new JoinLinkNotFoundError();
+        // B10 — code เดียวกันทั้งเจ้าของและสมาชิก (FE แยกกรณีด้วย code นี้)
+        // ต่างกันแค่ข้อความ: เจ้าของ → "กดสร้างลิงก์ก่อน" · สมาชิก → "ขอให้เจ้าของกลุ่มสร้างลิงก์"
+        throw new JoinLinkNotFoundError(role !== GROUP_ROLE.OWNER);
       }
       return active;
     });
@@ -729,6 +1170,115 @@ export class FamilyGroupService {
   }
 
   /**
+   * เข้าร่วมกลุ่มด้วยลิงก์ (PYG-417) — token ดิบจาก URL
+   *
+   * ★ used_count เพิ่มด้วย conditional UPDATE ใน SQL ไม่ใช่อ่านมาบวกแล้วเขียนกลับ
+   *   สองคนที่กดพร้อมกันตอนเหลือโควตาใบสุดท้าย จะมีคนเดียวที่ UPDATE ติด
+   */
+  async joinGroupByLink(
+    userId: string,
+    token: string,
+    rawConsents?: ConsentAnswerInput[],
+    evidence: RequestEvidence = NO_EVIDENCE,
+  ): Promise<FamilyGroup> {
+    // ตรวจก่อนแตะลิงก์ — คำตอบผิดรูปต้องไม่กินโควตา used_count
+    const consents = this.assertGroupConsents(rawConsents);
+    const tokenHash = this.hashJoinToken(token);
+
+    const link = await this.prisma.familyGroupJoinLink.findUnique({
+      where: { tokenHash },
+      include: {
+        group: {
+          include: {
+            members: {
+              where: { status: MEMBER_STATUS.ACTIVE },
+              select: { userId: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!link) {
+      throw new JoinLinkInvalidError();
+    }
+
+    const activeMembers = link.group.members;
+    const memberCount = activeMembers.length;
+
+    // กดลิงก์ซ้ำทั้งที่อยู่ในกลุ่มแล้ว = no-op ไม่กิน used_count (idempotent)
+    if (activeMembers.some((m) => m.userId === userId)) {
+      return this.familyGroup(userId, link.groupId);
+    }
+
+    this.assertJoinLinkUsable(link, memberCount);
+
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.$queryRaw<{ id: string }[]>`
+        UPDATE family_group_join_links
+           SET used_count = used_count + 1
+         WHERE token_hash = ${tokenHash}
+           AND status = 'ACTIVE'
+           AND expires_at > now()
+           AND (max_uses IS NULL OR used_count < max_uses)
+        RETURNING id;
+      `;
+
+      // UPDATE ไม่ติด = ลิงก์เปลี่ยนสถานะไประหว่างที่เราเช็คกับที่เรากด
+      // อ่านแถวสดมาโยน error ที่ตรงเหตุผลจริง แทนที่จะบอกแค่ "ลิงก์ใช้ไม่ได้"
+      if (claimed.length === 0) {
+        const freshLink = await tx.familyGroupJoinLink.findUnique({
+          where: { id: link.id },
+        });
+        if (!freshLink) throw new JoinLinkInvalidError();
+        const freshCount = await tx.familyGroupMember.count({
+          where: { groupId: link.groupId, status: MEMBER_STATUS.ACTIVE },
+        });
+        this.assertJoinLinkUsable(freshLink, freshCount);
+        throw new JoinLinkInvalidError();
+      }
+
+      // หลังยึดโควตาได้แล้วเท่านั้น — ลิงก์ใช้ไม่ได้ = ไม่มีหลักฐานความยินยอมของการเข้ากลุ่มที่ไม่เกิดขึ้น
+      await this.recordGroupConsents(tx, userId, consents, evidence);
+
+      // upsert เพราะคนที่เคยออก/โดนเตะยังมีแถวเดิมค้างอยู่ (unique groupId+userId)
+      // → กลับเข้ามาคือ UPDATE status กลับเป็น ACTIVE ไม่ใช่ INSERT แถวที่สอง
+      await tx.familyGroupMember.upsert({
+        where: { groupId_userId: { groupId: link.groupId, userId } },
+        create: {
+          groupId: link.groupId,
+          userId,
+          role: GROUP_ROLE.MEMBER,
+          status: MEMBER_STATUS.ACTIVE,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+        },
+        update: {
+          status: MEMBER_STATUS.ACTIVE,
+          role: GROUP_ROLE.MEMBER,
+          invitedBy: link.createdBy,
+          joinedViaLinkId: link.id,
+          joinedAt: new Date(),
+          removedAt: null,
+        },
+      });
+
+      await this.writeActivity(tx, {
+        groupId: link.groupId,
+        actorId: userId,
+        action: ACTIVITY_ACTION.MEMBER_JOINED,
+        targetType: ACTIVITY_TARGET.MEMBER,
+        targetId: userId,
+        // PYG-485: key = linkId ตามข้อกำหนด PYG-423 (ไม่ใช่ joinedViaLinkId ตามชื่อคอลัมน์)
+        //   แถวเก่าที่ยังเป็น joinedViaLinkId ถูกแปลงตอนอ่านใน normalizeActivityMetadata
+        metadata: { linkId: link.id },
+      });
+    });
+
+    return this.familyGroup(userId, link.groupId);
+  }
+
+  /**
    * token ดิบ → sha256 hex สำหรับค้นหาแถว
    *
    * public เพราะ PYG-417 (joinGroupByLink) ต้องใช้ตัวนี้เป๊ะ ๆ
@@ -737,6 +1287,38 @@ export class FamilyGroupService {
    */
   hashJoinToken(token: string): string {
     return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  // ─── ความยินยอม disclose_to_family_group ตอนสร้าง/เข้ากลุ่ม ─────────────────
+  //
+  //  ★ ไม่บังคับ: ไม่ยินยอมก็สร้าง/เข้ากลุ่มได้ (ข้อความในกล่องสัญญาไว้แบบนั้น)
+  //    แต่คำตอบ "ไม่ยินยอม" ก็บันทึกด้วย — ผลคือถูกกรองออกจากรายการจองแทน (PYG-540)
+  //  ★ ตรวจ "ก่อน" เปิด transaction และบันทึก "ใน" transaction เดียวกับการสร้าง/เข้ากลุ่ม
+  //    แยกกันแล้วฝั่งหนึ่งล้ม จะได้หลักฐานความยินยอมของการเข้ากลุ่มที่ไม่เคยเกิด (append-only แก้ไม่ได้)
+
+  /** ไม่ส่งมา = ไม่มีอะไรต้องบันทึก · ส่งมา = ตรวจเข้มแบบหน้าจอ family_group */
+  private assertGroupConsents(
+    consents: ConsentAnswerInput[] | undefined,
+  ): ConsentAnswerInput[] {
+    if (!consents || consents.length === 0) return [];
+    this.consentService.assertAnswersForSource(
+      consents,
+      CONSENT_SOURCE.FAMILY_GROUP,
+    );
+    return consents;
+  }
+
+  private async recordGroupConsents(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    consents: ConsentAnswerInput[],
+    evidence: RequestEvidence,
+  ): Promise<void> {
+    if (consents.length === 0) return;
+    await this.consentService.recordMany(tx, userId, consents, {
+      ...evidence,
+      source: CONSENT_SOURCE.FAMILY_GROUP,
+    });
   }
 
   // ─── ตัวช่วยภายในของลิงก์เข้าร่วม ────────────────────────────────────────
@@ -858,7 +1440,7 @@ export class FamilyGroupService {
     }
   }
 
-  /** แถวจากดีบี → type ที่ GraphQL ส่งออก (เฉพาะฝั่งเจ้าของกลุ่ม) */
+  /** แถวจากดีบี → type ที่ GraphQL ส่งออก (เฉพาะสมาชิก ACTIVE ของกลุ่ม — คนนอกห้ามเห็น) */
   private toJoinLink(
     link: {
       id: string;
@@ -937,6 +1519,44 @@ export class FamilyGroupService {
   }
 
   /**
+   * ยืนยันว่า userId เป็นสมาชิก ACTIVE ของกลุ่มนี้ (OWNER หรือ MEMBER ก็ได้) — ใช้ภายใน transaction
+   *
+   * คู่แฝดของ assertOwner ด้านบน ต่างกันแค่ "ไม่กรอง role"
+   * ใช้กับการอ่านที่สมาชิกทุกคนมีสิทธิ์ แต่ผลลัพธ์อ่อนไหวพอที่ต้องตรวจซ้ำหลัง guard
+   * (ตอนนี้มีที่เดียวคือ groupJoinLink — PYG-478)
+   *
+   * ★ กรอง status = ACTIVE เสมอ ตามกติกาข้อ 1 ของไฟล์นี้
+   *   คนที่ LEFT/REMOVED ยังมีแถวค้างอยู่ ถ้าลืมกรอง คนที่ถูกเตะแล้วจะยังเอา url ไปได้
+   *
+   * @returns role ของผู้เรียกในกลุ่มนี้ — ให้ผู้เรียกเลือกข้อความตามบทบาทได้
+   *          โดยไม่ต้องคิวรี่ตารางสมาชิกซ้ำอีกรอบ
+   * @throws NotAMemberError — code เดียวกับที่ FamilyGroupGuard ตอบคนนอกกลุ่ม
+   *         (คนนอกจึงแยกไม่ออกว่าโดนกันที่ชั้นไหน และเดาไม่ได้ว่ากลุ่มนี้มีลิงก์หรือเปล่า)
+   */
+  private async assertActiveMember(
+    tx: Prisma.TransactionClient,
+    groupId: string,
+    userId: string,
+  ): Promise<GroupRoleName> {
+    const member = await tx.familyGroupMember.findFirst({
+      where: {
+        groupId,
+        userId,
+        status: MEMBER_STATUS.ACTIVE,
+        // ★ ไม่มี role ในนี้โดยตั้งใจ — นี่คือจุดต่างเดียวจาก assertOwner
+      },
+      select: { role: true },
+    });
+    if (!member) {
+      throw new NotAMemberError();
+    }
+    // role ในดีบีเป็น TEXT → แปลงเป็นชนิดที่แคบลง แบบเดียวกับที่ FamilyGroupGuard ทำ
+    return member.role === GROUP_ROLE.OWNER
+      ? GROUP_ROLE.OWNER
+      : GROUP_ROLE.MEMBER;
+  }
+
+  /**
    * เรียกเมื่อ updateMany ได้ count = 0 — แปลว่ามีอะไรไม่ตรงคาด แต่ยังไม่รู้ว่าอะไร
    * อ่านแถวจริงมาดูเพื่อคืน error ที่ตรงสาเหตุ แทนที่จะโยน error กว้าง ๆ ให้ผู้ใช้เดาเอง
    *
@@ -992,8 +1612,17 @@ export class FamilyGroupService {
   }
 
   /** แปลงแถวจากดีบีเป็น type ที่ GraphQL ส่งออก */
-  private toFamilyGroup(group: GroupRow, viewerId: string): FamilyGroup {
-    const members = group.members.map((m) => this.toMemberItem(m, viewerId));
+  private async toFamilyGroup(group: GroupRow, viewerId: string): Promise<FamilyGroup> {
+    // PYG-518: เซ็น avatar ของสมาชิกทุกคนในกลุ่มพร้อมกัน (createSignedUrls ครั้งเดียว
+    // ต่อกลุ่ม แทนที่จะปล่อยให้ field resolver ของแต่ละคน sign แยกทีละคน)
+    const avatarByMember = await this.avatarUrlService.resolveMany(
+      group.members,
+      (m) => m.user?.avatarUrl,
+      PROFILE_PHOTOS_BUCKET,
+    );
+    const members = group.members.map((m) =>
+      this.toMemberItem(m, viewerId, avatarByMember.get(m) ?? undefined),
+    );
 
     // เจ้าของขึ้นก่อนเสมอ ที่เหลือคงลำดับ joinedAt จากดีบีไว้
     // (ไม่ใช้ orderBy role ที่ดีบี เพราะนั่นคือการเรียงตามตัวอักษรที่บังเอิญถูก
@@ -1018,20 +1647,286 @@ export class FamilyGroupService {
     };
   }
 
-  /** แปลงแถวสมาชิก 1 คน */
+  /** แปลงแถวสมาชิก 1 คน — avatarUrl ต้อง sign มาก่อนแล้ว (ดู toFamilyGroup) */
   private toMemberItem(
     row: MemberRow,
     viewerId: string,
+    avatarUrl: string | undefined,
   ): FamilyGroupMemberItem {
     return {
       id: row.id,
       userId: row.userId,
       displayName: row.user?.displayName ?? undefined,
-      email: row.user?.email ?? '',
-      avatarUrl: row.user?.avatarUrl ?? undefined,
+      // PYG-603: ไม่มีอีเมล = null (เดิม '') ให้ตรงกับ field ที่เป็น nullable แล้ว
+      email: row.user?.email ?? null,
+      avatarUrl,
       role: row.role,
       joinedAt: row.joinedAt,
       isMe: row.userId === viewerId,
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-421 · FG-3 — ฟีดกิจกรรมของกลุ่ม (keyset pagination)
+  //
+  //  ── ทำไมไม่ใช้ cursor ของ Prisma (skip/cursor) ───────────────────────
+  //  cursor ของ Prisma รับได้เฉพาะฟิลด์ที่เป็น unique เดี่ยว ๆ หรือ compound
+  //  unique ที่ประกาศไว้ในสคีมา แต่คู่ (createdAt, id) ของเราไม่ใช่ unique
+  //  (มันเป็นแค่ index สำหรับเรียงลำดับ) → เขียนเงื่อนไขเอาเองใน where
+  //  ซึ่งได้ผลเหมือนกันเป๊ะและตรงกับ index ที่มีอยู่แล้ว
+  //
+  //  ── เรื่องสิทธิ์ ──────────────────────────────────────────────────────
+  //  "สมาชิก ACTIVE เท่านั้นที่อ่านได้" ถูกบังคับที่ @GroupRole('MEMBER') บน resolver
+  //  → คนที่ถูกเตะออกหมดสิทธิ์อ่านฟีดทันทีในคำขอถัดไป ไม่ต้องรออะไรหมดอายุ
+  //  ที่นี่จึงไม่เช็คซ้ำ ด้วยเหตุผลเดียวกับ familyGroup()/groupCareRecipients()
+  //  (คิวรี่ซ้ำสิ่งที่ guard เพิ่งทำ = N+1 ที่ PYG-412 สั่งให้เลี่ยง)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * ฟีดกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าด้วย keyset
+   *
+   * @param groupId  กลุ่มที่จะอ่าน (guard ตรวจสิทธิ์มาแล้ว)
+   * @param viewerId ผู้อ่าน — PYG-540 ใช้ตัดสินว่าเห็นรายละเอียดนัดของคนที่ถอนความยินยอมได้ไหม
+   * @param first    จำนวนแถวที่ขอ — ไม่ส่ง = 20, เกิน 50 ถูกหั่นลงเหลือ 50
+   * @param after    cursor ของแถวสุดท้ายที่ได้ไปแล้ว — ไม่ส่ง = เริ่มจากใหม่สุด
+   */
+  async familyGroupActivity(
+    groupId: string,
+    viewerId: string,
+    first?: number | null,
+    after?: string | null,
+  ): Promise<FamilyGroupActivityConnection> {
+    const take = this.resolveActivityPageSize(first);
+    const cursor = this.decodeActivityCursor(after);
+
+    // ★ ขอเกินมา 1 แถวเสมอ เพื่อรู้ว่า "ยังมีต่อไหม" โดยไม่ต้อง COUNT(*)
+    //   แถวที่ 21 ไม่ได้ถูกส่งออกไป มันมีหน้าที่เดียวคือเป็นพยานว่ายังมีของเก่ากว่านี้อยู่
+    const rows = await this.prisma.familyGroupActivity.findMany({
+      where: {
+        groupId,
+        // เงื่อนไข keyset: (created_at, id) < (cursor.createdAt, cursor.id)
+        // เขียนแตกเป็น OR เพราะ Prisma ไม่รองรับการเทียบ tuple แบบ SQL ตรง ๆ
+        //   แถวที่เก่ากว่าชัด ๆ                     → createdAt < cursor.createdAt
+        //   แถวที่เวลาเท่ากันเป๊ะ (transaction เดียวกัน) → ตัดสินด้วย id ต่อ
+        ...(cursor
+          ? {
+              OR: [
+                { createdAt: { lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+              ],
+            }
+          : {}),
+      },
+      select: ACTIVITY_SELECT,
+      // ★ ต้องเรียงสองชั้นให้ตรงกับเงื่อนไข where ด้านบนและตรงกับ index เป๊ะ ๆ
+      //   ถ้าเรียงแค่ createdAt ลำดับของแถวที่เวลาเท่ากันจะไม่คงที่ระหว่างคำขอ
+      //   → หน้า 2 อาจส่งแถวที่หน้า 1 เคยส่งไปแล้วซ้ำอีก (TC-BS-07 "stable across pages")
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: take + 1,
+    });
+
+    const hasNextPage = rows.length > take;
+    const pageRows = hasNextPage ? rows.slice(0, take) : rows;
+    // PYG-540: "ปิดรายละเอียด" แทนการตัดแถวทิ้ง — ถ้าตัดทิ้ง หน้านี้จะได้แถวไม่ครบ take
+    //   และ cursor/hasNextPage ที่คำนวณไว้ข้างบนจะเพี้ยน (keyset pagination พึ่งจำนวนแถวที่แน่นอน)
+    const redacted = await this.redactedBookingActivityIds(pageRows, viewerId);
+    // PYG-518: เซ็น avatar ของผู้ลงมือทุกแถวในหน้านี้พร้อมกัน (createSignedUrls ครั้งเดียว)
+    const avatarByRow = await this.avatarUrlService.resolveMany(
+      pageRows,
+      (row) => row.actor?.avatarUrl,
+      PROFILE_PHOTOS_BUCKET,
+    );
+    const nodes = pageRows.map((row) =>
+      this.toActivityItem(row, redacted.has(row.id), avatarByRow.get(row) ?? undefined),
+    );
+
+    return {
+      nodes,
+      pageInfo: {
+        // แถวสุดท้ายของหน้านี้คือจุดเริ่มของหน้าถัดไป
+        endCursor:
+          nodes.length > 0 ? nodes[nodes.length - 1].cursor : undefined,
+        hasNextPage,
+      },
+    };
+  }
+
+  /**
+   * PYG-540 — แถว BOOKING_ON_BEHALF ในหน้านี้ที่ต้องปิดรายละเอียด (ชื่อผู้รับบริการ / วัน / เวลา)
+   *
+   * ปิดเมื่อ "เจ้าของข้อมูล" ของนัดนั้นถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว
+   * ยกเว้นผู้อ่านเป็นเจ้าของเอง หรือเป็นคนกดจอง (actor) — เกณฑ์เดียวกับ BookingService.groupBookings
+   *
+   * ★ อ่านแค่ 2 query ต่อหน้า (booking ทั้งหน้า + ความยินยอมทั้งหน้า) ไม่ใช่แถวละ query
+   * ★ หน้าไหนไม่มีแถวจองแทนเลย → ไม่ยิง query เพิ่มสักตัว
+   */
+  private async redactedBookingActivityIds(
+    rows: ActivityRow[],
+    viewerId: string,
+  ): Promise<Set<string>> {
+    const bookingRows = rows.filter(
+      (r) => r.action === ACTIVITY_ACTION.BOOKING_ON_BEHALF && r.targetId,
+    );
+    if (bookingRows.length === 0) return new Set();
+
+    const bookings = await this.prisma.booking.findMany({
+      where: { id: { in: bookingRows.map((r) => r.targetId as string) } },
+      select: {
+        id: true,
+        patientId: true,
+        careRecipient: { select: { patientId: true } },
+      },
+    });
+    // เจ้าของข้อมูล = เจ้าของโปรไฟล์ผู้รับบริการ (ไม่มีโปรไฟล์ → ถือว่าคนจองเป็นเจ้าของ)
+    const subjectByBooking = new Map(
+      bookings.map((b) => [b.id, b.careRecipient?.patientId ?? b.patientId]),
+    );
+
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      [...subjectByBooking.values()],
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    if (withdrawn.size === 0) return new Set();
+
+    return new Set(
+      bookingRows
+        .filter((r) => {
+          const subject = subjectByBooking.get(r.targetId as string);
+          return (
+            subject !== undefined &&
+            withdrawn.has(subject) &&
+            subject !== viewerId &&
+            r.actorId !== viewerId
+          );
+        })
+        .map((r) => r.id),
+    );
+  }
+
+  /**
+   * ตีความค่า first ที่ client ส่งมาให้เป็นจำนวนแถวที่ยอมให้ขอได้จริง
+   *
+   * ★ ค่าที่ไม่สมเหตุสมผล (0, ติดลบ, ทศนิยม, NaN) ถูกปัดกลับเป็นค่าเริ่มต้น
+   *   ไม่ใช่โยน error — ที่นี่ไม่มีเจตนาร้ายให้ป้องกัน มีแต่ client ที่ส่งค่าเพี้ยน
+   *   แล้วหน้าฟีดพังทั้งหน้าโดยไม่จำเป็น (ต่างจาก cursor ที่ผิดแปลว่าตำแหน่งผิด
+   *   ซึ่งถ้าเงียบไว้จะกลายเป็นฟีดที่วนซ้ำไม่รู้จบ จึงต้องล้มดัง)
+   */
+  private resolveActivityPageSize(first?: number | null): number {
+    if (first === undefined || first === null || !Number.isInteger(first)) {
+      return ACTIVITY_PAGE_SIZE_DEFAULT;
+    }
+    if (first <= 0) return ACTIVITY_PAGE_SIZE_DEFAULT;
+    return Math.min(first, ACTIVITY_PAGE_SIZE_MAX);
+  }
+
+  /**
+   * cursor → คู่ (createdAt, id)
+   *
+   * รูปแบบ: base64url( "<ISO-8601 ของ createdAt>|<uuid ของ id>" )
+   *
+   * ★ ทำไมต้อง encode ทั้งที่ข้างในไม่ใช่ความลับ?
+   *   ไม่ได้ทำเพื่อความลับ แต่เพื่อ "ให้มันดูทึบพอที่ FE จะไม่เอาไป parse เอง"
+   *   วันที่เราเปลี่ยนวิธีแบ่งหน้า cursor ที่ FE เคยแกะไว้จะพังทันที
+   *   ค่าทึบทำให้สัญญาระหว่างสองฝั่งมีแค่ "ส่งค่าที่ได้มากลับมาเฉย ๆ" ข้อเดียว
+   */
+  private decodeActivityCursor(
+    after?: string | null,
+  ): { createdAt: Date; id: string } | null {
+    if (after === undefined || after === null || after.trim() === '') {
+      return null;
+    }
+
+    // ★ Buffer.from() ไม่เคยโยน error กับ input ที่ไม่ใช่ base64 — มันเดาไปเรื่อย
+    //   แล้วคืนขยะออกมา จึงต้องตรวจ "รูปทรงของผลลัพธ์" ทุกชั้นเอง
+    //   ไม่ใช่แค่ห่อ try/catch แล้วคิดว่าปลอดภัย
+    const decoded = Buffer.from(after, 'base64url').toString('utf8');
+    const parts = decoded.split(ACTIVITY_CURSOR_SEPARATOR);
+    if (parts.length !== 2) {
+      throw new ActivityCursorInvalidError();
+    }
+
+    const [rawCreatedAt, id] = parts;
+    const createdAt = new Date(rawCreatedAt);
+    // Invalid Date เทียบกับตัวเองแล้วได้ NaN → getTime() เป็น NaN
+    if (Number.isNaN(createdAt.getTime()) || id.length === 0) {
+      throw new ActivityCursorInvalidError();
+    }
+
+    return { createdAt, id };
+  }
+
+  /** คู่ (createdAt, id) → cursor */
+  private encodeActivityCursor(createdAt: Date, id: string): string {
+    return Buffer.from(
+      `${createdAt.toISOString()}${ACTIVITY_CURSOR_SEPARATOR}${id}`,
+      'utf8',
+    ).toString('base64url');
+  }
+
+  /**
+   * แปลงแถวกิจกรรม 1 แถวเป็น type ที่ GraphQL ส่งออก
+   *
+   * @param redacted PYG-540 — true = ปิดรายละเอียด: ล้าง metadata + targetId
+   *   แถวยังอยู่ (ผู้อ่านเห็นว่า "มีคนจองแทนสมาชิก") แต่ไม่รู้ว่าให้ใคร วันไหน
+   *   FE (activityCopy.ts) รองรับ metadata ว่างอยู่แล้ว → แสดง "จองผู้ดูแลแทนสมาชิกในกลุ่ม"
+   */
+  private toActivityItem(
+    row: ActivityRow,
+    redacted = false,
+    actorAvatarUrl?: string,
+  ): FamilyGroupActivityItem {
+    return {
+      id: row.id,
+      // actorId ยังอยู่แต่ actor เป็น null = บัญชีถูกลบไปแล้ว (FK ตั้ง ON DELETE SET NULL)
+      // ทั้งก้อนเป็น undefined เพื่อให้ FE แสดง "ผู้ใช้ที่ถูกลบ" ได้ด้วยเงื่อนไขเดียว
+      // avatarUrl ต้อง sign มาก่อนแล้ว (ดู familyGroupActivity)
+      actor:
+        row.actorId && row.actor
+          ? {
+              userId: row.actorId,
+              displayName: row.actor.displayName ?? undefined,
+              avatarUrl: actorAvatarUrl,
+            }
+          : undefined,
+      action: row.action,
+      targetType: row.targetType ?? undefined,
+      targetId: redacted ? undefined : (row.targetId ?? undefined),
+      // คอลัมน์เป็น JSONB NOT NULL DEFAULT '{}' → ไม่มีทางเป็น null จากดีบี
+      // ที่ ?? '{}' ไว้เพราะชนิดฝั่ง Prisma ยังเป็น JsonValue ที่รวม null ได้
+      metadata: redacted
+        ? '{}'
+        : JSON.stringify(
+            this.normalizeActivityMetadata(row.action, row.metadata ?? {}),
+          ),
+      createdAt: row.createdAt,
+      cursor: this.encodeActivityCursor(row.createdAt, row.id),
+    };
+  }
+
+  /**
+   * PYG-485 — แปลงชื่อ key เก่าใน metadata ก่อนส่งออก (ใช้แทนการ backfill ข้อมูลในดีบี)
+   *
+   * MEMBER_JOINED เคยเขียนเป็น { joinedViaLinkId } (ตั้งชื่อตามคอลัมน์ family_group_members)
+   * แต่ข้อกำหนด PYG-423 ระบุว่าต้องเป็น { linkId } → ฝั่งเขียนแก้แล้ว แต่แถวเก่าในดีบียังใช้ชื่อเดิม
+   * แปลงตรงนี้ทำให้ API คืน linkId ทุกแถว โดยไม่ต้องมี migration ไปแก้ข้อมูล
+   *
+   * ★ ถ้าแถวไหนมีทั้งสอง key (ไม่ควรเกิด) ให้ถือ linkId เป็นหลัก
+   */
+  private normalizeActivityMetadata(
+    action: string,
+    metadata: Prisma.JsonValue,
+  ): Prisma.JsonValue {
+    if (
+      action !== ACTIVITY_ACTION.MEMBER_JOINED ||
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      !('joinedViaLinkId' in metadata)
+    ) {
+      return metadata;
+    }
+
+    const { joinedViaLinkId, ...rest } = metadata;
+    return { linkId: joinedViaLinkId, ...rest };
   }
 }

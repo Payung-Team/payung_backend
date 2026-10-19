@@ -1,4 +1,15 @@
-import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import {
+  Args,
+  Context,
+  ID,
+  Int,
+  Mutation,
+  Query,
+  Resolver,
+} from '@nestjs/graphql';
+import { ConsentAnswerInput } from '../consent/dto/consent-answer.input';
+import { requestEvidenceOf } from '../common/utils/request-evidence';
+import type { GqlContext } from '../common/types/gql-context.type';
 import { UseGuards } from '@nestjs/common';
 import { FamilyGroupService } from './family-group.service';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
@@ -15,15 +26,34 @@ import {
   FamilyGroupJoinLink,
   JoinLinkPreview,
 } from './entities/family-group-join-link.entity';
+import { FamilyGroupActivityConnection } from './entities/family-group-activity.entity';
 import { GroupRole } from './decorators/group-role.decorator';
 import { FamilyGroupGuard } from './guards/family-group.guard';
-import { GROUP_ROLE } from './family-group.constants';
+import { JoinLinkRateLimitGuard } from './guards/join-link-rate-limit.guard';
+import {
+  ACTIVITY_PAGE_SIZE_DEFAULT,
+  ACTIVITY_PAGE_SIZE_MAX,
+  GROUP_ROLE,
+  JOIN_RATE_LIMIT_PER_USER,
+  JOIN_RATE_LIMIT_WINDOW_SECONDS,
+} from './family-group.constants';
 import {
   AuthUser,
   CurrentUser,
 } from '../common/decorators/current-user.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
+
+/**
+ * ประโยคท้าย description ของ joinLinkPreview / joinGroupByLink (PYG-479)
+ * ประกอบจากค่าคงที่จริง → ตัวเลขใน schema ตรงกับที่ guard ใช้เสมอ ไม่ต้องจำไปแก้สองที่
+ * (⚠ ถ้าตั้ง env ต่างจาก default ตัวเลขใน schema.gql ที่ commit ไว้จะไม่ตรงกับเซิร์ฟเวอร์นั้น
+ *  แต่ schema ที่เซิร์ฟเวอร์ให้ตอน runtime จะตรงเสมอ)
+ */
+const JOIN_RATE_LIMIT_NOTE =
+  `จำกัดอัตรา: joinLinkPreview + joinGroupByLink รวมกันไม่เกิน ${JOIN_RATE_LIMIT_PER_USER} ครั้ง` +
+  `ต่อผู้ใช้ใน ${JOIN_RATE_LIMIT_WINDOW_SECONDS} วินาที (มีเพดานต่อ IP อีกชั้น) ` +
+  'เกินแล้วได้ JOIN_LINK_RATE_LIMITED พร้อม extensions.retryAfterSeconds';
 
 /**
  * FamilyGroupResolver (PYG-412) — GraphQL ของ "สร้าง/จัดการกลุ่มครอบครัว"
@@ -84,8 +114,14 @@ export class FamilyGroupResolver {
   async createFamilyGroup(
     @Args('input') input: CreateFamilyGroupInput,
     @CurrentUser() user: AuthUser,
+    @Context() ctx: GqlContext,
   ): Promise<FamilyGroup> {
-    return this.familyGroupService.createFamilyGroup(user.id, input);
+    // IP + user agent เป็นหลักฐานประกอบความยินยอม — เอาจาก request ไม่ใช่ให้ FE ส่ง (ปลอมได้)
+    return this.familyGroupService.createFamilyGroup(
+      user.id,
+      input,
+      requestEvidenceOf(ctx.req),
+    );
   }
 
   @Mutation(() => FamilyGroup, {
@@ -151,17 +187,24 @@ export class FamilyGroupResolver {
   // ═══════════════════════════════════════════════════════════════════════
   //  PYG-416 · SCR-FG2-001 — ลิงก์เข้าร่วมกลุ่ม
   //
-  //  ★ ทุกตัวที่คืน FamilyGroupJoinLink ต้องมี @GroupRole('OWNER') เสมอ
-  //    เพราะ type นั้นมี url เต็มอยู่ข้างใน = ใครได้ไปก็เข้ากลุ่มได้
-  //    (service ตรวจ assertOwner ซ้ำอีกชั้นอยู่แล้ว แต่ guard ทำให้พลาดยากขึ้นหนึ่งชั้น)
+  //  ★ สิทธิ์แยกเป็นสองชั้น (SCR-FG2-001 Amendment 1 · แก้ใน PYG-478)
+  //    อ่าน/คัดลอกลิงก์   groupJoinLink                  → สมาชิก ACTIVE ทุกคน  @GroupRole('MEMBER')  (B9)
+  //    สร้าง/หมุน/ยกเลิก  create/rotate/revokeJoinLink   → เจ้าของเท่านั้น      @GroupRole('OWNER')   (B1)
+  //
+  //  ★ ทุกตัวที่คืน FamilyGroupJoinLink ต้องติด @GroupRole เสมอ (ระดับไหนก็ได้ตามตารางบน)
+  //    ห้ามถอดออกเด็ดขาด เพราะ type นั้นมี url เต็มอยู่ข้างใน = ใครได้ไปก็เข้ากลุ่มได้
+  //    คนนอกกลุ่มต้องโดนปัดตกด้วย NOT_A_MEMBER ตั้งแต่ guard
+  //    (service ตรวจสิทธิ์ซ้ำอีกชั้นอยู่แล้ว แต่ guard ทำให้พลาดยากขึ้นหนึ่งชั้น)
   // ═══════════════════════════════════════════════════════════════════════
 
   @Query(() => FamilyGroupJoinLink, {
     description:
-      'ลิงก์เข้าร่วมที่ยังใช้ได้ของกลุ่ม (เจ้าของเท่านั้น) — ใช้ตอนกดปุ่มคัดลอกลิงก์ซ้ำ ' +
-      'โยน JOIN_LINK_NOT_FOUND ถ้ากลุ่มยังไม่เคยสร้างลิงก์ หรือลิงก์ถูกยกเลิกไปแล้ว',
+      'ลิงก์เข้าร่วมที่ยังใช้ได้ของกลุ่ม (สมาชิก ACTIVE ทุกคน ทั้งเจ้าของและสมาชิกธรรมดา) — ใช้ตอนกดปุ่มคัดลอกลิงก์ ' +
+      'โยน JOIN_LINK_NOT_FOUND ถ้ากลุ่มยังไม่เคยสร้างลิงก์ หรือลิงก์ถูกยกเลิกไปแล้ว (query นี้ไม่สร้างลิงก์ให้) ' +
+      'คนนอกกลุ่ม → NOT_A_MEMBER',
   })
-  @GroupRole(GROUP_ROLE.OWNER)
+  // ★ PYG-478: เดิมเป็น OWNER — เปลี่ยนเป็น MEMBER ตาม B9 ('MEMBER' = อย่างน้อยเป็นสมาชิก เจ้าของก็ผ่าน)
+  @GroupRole(GROUP_ROLE.MEMBER)
   async groupJoinLink(
     @Args('groupId', { type: () => ID }) groupId: string,
     @CurrentUser() user: AuthUser,
@@ -173,13 +216,43 @@ export class FamilyGroupResolver {
     description:
       'ข้อมูลกลุ่มที่คนถือลิงก์เห็นก่อนกดยืนยันเข้าร่วม — ผู้ใช้ที่ล็อกอินแล้วเรียกได้ทุกคน ' +
       'ลิงก์หมดอายุ/ถูกยกเลิก/เต็ม จะคืน isUsable = false พร้อม unusableReason ไม่ใช่ error ' +
-      'โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย',
+      'โยน JOIN_LINK_INVALID เฉพาะ token ที่ไม่ตรงกับลิงก์ใดเลย ' +
+      JOIN_RATE_LIMIT_NOTE,
   })
+  // PYG-479: นับรวมกับ joinGroupByLink — preview ก็ค้นดีบีด้วย token เหมือนกัน
+  @UseGuards(JoinLinkRateLimitGuard)
   async joinLinkPreview(
     @Args('token') token: string,
     @CurrentUser() user: AuthUser,
   ): Promise<JoinLinkPreview> {
     return this.familyGroupService.joinLinkPreview(user.id, token);
+  }
+
+  @Mutation(() => FamilyGroup, {
+    description:
+      'เข้าร่วมกลุ่มด้วยลิงก์ (ผู้ใช้ที่ล็อกอินแล้วทุกคน) — ใช้ token ดิบจาก URL ' +
+      'กดซ้ำทั้งที่เป็นสมาชิกอยู่แล้วจะคืนกลุ่มเฉย ๆ ไม่กินโควตาลิงก์ ' +
+      JOIN_RATE_LIMIT_NOTE,
+  })
+  // PYG-479: จำกัดอัตราต่อผู้ใช้/IP — ตัดคำขอที่เกินเพดานทิ้งก่อนถึง service (ไม่แตะดีบี)
+  @UseGuards(JoinLinkRateLimitGuard)
+  async joinGroupByLink(
+    @Args('token') token: string,
+    @CurrentUser() user: AuthUser,
+    @Context() ctx: GqlContext,
+    @Args('consents', {
+      type: () => [ConsentAnswerInput],
+      nullable: true,
+      description: 'คำตอบความยินยอม disclose_to_family_group — ไม่บังคับ',
+    })
+    consents?: ConsentAnswerInput[],
+  ): Promise<FamilyGroup> {
+    return this.familyGroupService.joinGroupByLink(
+      user.id,
+      token,
+      consents ?? undefined,
+      requestEvidenceOf(ctx.req),
+    );
   }
 
   @Mutation(() => FamilyGroupJoinLink, {
@@ -219,5 +292,34 @@ export class FamilyGroupResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<boolean> {
     return this.familyGroupService.revokeJoinLink(user.id, groupId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  PYG-421 · FG-3 — ฟีดกิจกรรมของกลุ่ม
+  // ═══════════════════════════════════════════════════════════════════════
+
+  @Query(() => FamilyGroupActivityConnection, {
+    description:
+      'ประวัติกิจกรรมของกลุ่ม เรียงใหม่สุดก่อน แบ่งหน้าแบบ keyset (สมาชิก ACTIVE เท่านั้น). ' +
+      `first = จำนวนที่ขอ (ไม่ส่ง = ${ACTIVITY_PAGE_SIZE_DEFAULT}, เกิน ${ACTIVITY_PAGE_SIZE_MAX} ถูกหั่นลงเป็น ${ACTIVITY_PAGE_SIZE_MAX}) · ` +
+      'after = ค่า pageInfo.endCursor ที่ได้จากครั้งก่อน (ค่าทึบ ห้าม parse). ' +
+      'กลุ่มที่ยังไม่มีกิจกรรม = nodes ว่าง ไม่ใช่ error · cursor ที่แกะไม่ออก → ACTIVITY_CURSOR_INVALID',
+  })
+  @GroupRole(GROUP_ROLE.MEMBER)
+  async familyGroupActivity(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+    @Args('first', { type: () => Int, nullable: true }) first?: number,
+    @Args('after', { type: () => String, nullable: true }) after?: string,
+  ): Promise<FamilyGroupActivityConnection> {
+    // PYG-540: ส่ง user.id เข้า service แล้ว — ฟีดเคยเหมือนกันทุกคน แต่ตอนนี้แถว "จองแทน"
+    // ของเจ้าของข้อมูลที่ถอนความยินยอมเปิดเผยให้กลุ่ม จะถูกปิดรายละเอียด
+    // ยกเว้นเจ้าของเองกับคนกดจอง → ผลลัพธ์จึงขึ้นกับว่า "ใครเป็นคนอ่าน"
+    return this.familyGroupService.familyGroupActivity(
+      groupId,
+      user.id,
+      first,
+      after,
+    );
   }
 }

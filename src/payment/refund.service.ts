@@ -37,7 +37,12 @@ export type RefundSource =
   | 'admin_manual'
   | 'admin_override'
   // refund.create webhook: คืนเงินที่ทำนอกแอป เช่น admin กด refund ตรงบน Omise dashboard
-  | 'omise_dashboard';
+  | 'omise_dashboard'
+  // PYG-461/462 — BookingSettlementService (เก็บใน jsonb ไม่ใช่ DB enum → ไม่ต้อง migration)
+  | 'patient_cancel'
+  | 'caregiver_no_show'
+  // ระบบปิด booking ที่หมดอายุแต่มีเงินเข้ามา (เช่น PromptPay จ่ายหลังเลยเวลา) — ไม่อยู่ในการ์ด เพิ่มเพื่อ audit
+  | 'booking_expired';
 
 export interface RefundParams {
   paymentId: string;
@@ -57,8 +62,11 @@ const REFUNDABLE_STATUSES: PaymentStatus[] = [
   PaymentStatus.partially_refunded,
 ];
 
-/** payout สถานะที่ถือว่าเงินผูกกับผู้ดูแลแล้ว → refund อัตโนมัติไม่ได้ */
-const PAYOUT_BLOCKING: PayoutStatus[] = [
+/**
+ * payout สถานะที่ถือว่าเงินผูกกับผู้ดูแลแล้ว → refund อัตโนมัติไม่ได้
+ * PYG-461/462: export ให้ BookingSettlementService ตรวจก่อน เพื่อคืน error ที่บอกว่าติด payout ใบไหน
+ */
+export const PAYOUT_BLOCKING: PayoutStatus[] = [
   PayoutStatus.paid,
   PayoutStatus.processing,
 ];
@@ -75,7 +83,17 @@ export class RefundService {
     private readonly idempotency: IdempotencyService,
   ) {}
 
-  async refund(params: RefundParams): Promise<Payment> {
+  /**
+   * @param outerTx (PYG-461/462) optional — ส่งมาเมื่อผู้เรียกถือ lock booking + payment อยู่แล้ว
+   *   (BookingSettlementService) → ทำงานบน tx นั้น ไม่เปิด tx ซ้อน และ "ไม่ emit" REFUND_ISSUED
+   *   เพราะยังไม่ commit — ผู้เรียกต้อง emit เองหลัง commit
+   *   ไม่ส่ง (caller เดิมทั้ง 3 จุด: PaymentService.refundPayment, DisputeService ×2) = พฤติกรรมเดิมทุกอย่าง:
+   *   เปิด tx เอง timeout 20s + emit หลัง commit · guard ทั้ง 5 ข้อด้านล่างไม่เปลี่ยน ทำงานทั้งสองทาง
+   */
+  async refund(
+    params: RefundParams,
+    outerTx?: Prisma.TransactionClient,
+  ): Promise<Payment> {
     const { paymentId, source } = params;
     const reason = (params.reason ?? '').trim();
 
@@ -86,8 +104,15 @@ export class RefundService {
       );
     }
 
+    // PYG-461/462: มี outerTx → รันบน tx ของผู้เรียก / ไม่มี → เปิด tx เองแบบเดิม (body ข้างล่างไม่เปลี่ยน)
+    const inTx = <T>(
+      fn: (tx: Prisma.TransactionClient) => Promise<T>,
+      opts: { timeout: number },
+    ): Promise<T> =>
+      outerTx ? fn(outerTx) : this.prisma.$transaction(fn, opts);
+
     // ถือ lock คร่อม Omise HTTP → timeout ยาวขึ้น (refund เกิดไม่บ่อย + admin-driven)
-    const result = await this.prisma.$transaction(
+    const result = await inTx(
       async (tx) => {
         // Guard 1: SELECT … FOR UPDATE — ล็อคแถว payment กันคืนเงินพร้อมกัน
         await tx.$queryRaw`SELECT 1 FROM "payments" WHERE "id" = ${paymentId}::uuid FOR UPDATE`;
@@ -232,6 +257,9 @@ export class RefundService {
       },
       { timeout: 20000 },
     );
+
+    // PYG-461/462: มี outerTx = ยังไม่ commit → ห้าม emit ที่นี่ (ผู้เรียก emit เองหลัง commit)
+    if (outerTx) return result.updated;
 
     // emit หลัง commit — listener อ่าน booking ล่าสุดจาก DB
     this.events.emit(BOOKING_EVENTS.REFUND_ISSUED, {

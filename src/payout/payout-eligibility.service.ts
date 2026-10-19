@@ -46,6 +46,7 @@ export type PayoutEligibility = {
 
 /** สถานะเงินฝั่ง payment ที่กฎต้องใช้ (แยกจาก proof เพราะคนละตาราง) */
 export type MoneyState = {
+  paymentStatus: string;
   refundedAmount: Prisma.Decimal | number | string | null;
 } | null;
 
@@ -85,7 +86,7 @@ export class PayoutEligibilityService {
 
     const payment = await this.prisma.payment.findUnique({
       where: { bookingId },
-      select: { refundedAmount: true },
+      select: { paymentStatus: true, refundedAmount: true },
     });
 
     return this.evaluate(proof, payment);
@@ -108,6 +109,7 @@ export class PayoutEligibilityService {
       reviewReasons: proof.reviewReasons,
       noCheckout: proof.noCheckout,
       disputed: proof.disputed,
+      paymentStatus: payment?.paymentStatus ?? null,
       refundedAmount,
     };
 
@@ -118,6 +120,15 @@ export class PayoutEligibilityService {
     // refund ย้อนกลับไม่ได้ → deny ปลอดภัย (ไม่ใช่ hold ที่รอเก้อ)
     if (refundedAmount > 0) {
       return { kind: 'deny', reason: 'payment_refunded', evidence };
+    }
+
+    // payout ต้องอ้างอิงเงินจริงที่ capture สำเร็จแล้วเท่านั้น
+    // ไม่มี payment หรือยังเป็น held/pending/failed ให้พักไว้เพื่อ retry ภายหลัง
+    if (
+      payment?.paymentStatus !== 'captured' &&
+      payment?.paymentStatus !== 'transferred'
+    ) {
+      return { kind: 'hold', reason: 'payment_not_captured', evidence };
     }
 
     // ── 2. verdict — กฎกลางจาก MonitoringService ─────────────────────────

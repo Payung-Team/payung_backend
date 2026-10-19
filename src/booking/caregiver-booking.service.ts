@@ -8,7 +8,13 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
+// PYG-461/462: deadline รับงาน — สูตรเดียวกับ createPayment และ cron หมดอายุ
+import { acceptDeadlineOf, toBangkokText } from './booking-deadline.config';
+import { caregiverHasTimeConflict, lockCaregiverSchedule } from './caregiver-time-conflict';
+// PYG-526: เวลาสิ้นสุดของใบจอง — สูตรเดียวกับฝั่งผู้จอง/อีเมล
+import { computeEndTime } from './booking-time-display';
 import {
   CaregiverBookingListResponse,
   CaregiverBookingSummary,
@@ -18,6 +24,8 @@ import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
 import { DeclineBookingInput } from './dto/decline-booking.input';
 import { CancelAcceptanceInput } from './dto/cancel-acceptance.input';
+// PYG-460: type ของ snapshot ข้อมูลสุขภาพที่คืนให้ผู้ดูแล
+import { PatientProfileType } from './dto/patient-profile.type';
 
 /**
  * รูปทรงของ booking ที่ดึงมาพร้อม relation (patient + careRecipient)
@@ -44,12 +52,27 @@ type CaregiverBookingRow = {
   dayOfContactPhone: string | null;
   dayOfContactRelationship: string | null;
   estimatedCost: { toNumber(): number } | number | null;
+  payout: {
+    status: string;
+    amount: { toNumber(): number } | number;
+  } | null;
   acceptedAt: Date | null;
   confirmedAt: Date | null;
   rejectionReason: string | null;
   createdAt: Date;
   patient: { id: string; displayName: string | null; avatarUrl: string | null };
-  careRecipient: { name: string } | null;
+  // จองแทน: patientId ของ booking = คนกดจอง · bookedBy = คนกดจอง (null = จองให้ตัวเอง)
+  familyGroupId: string | null;
+  bookedBy: string | null;
+  careRecipient: {
+    name: string;
+    patientId: string;
+    is_self: boolean;
+    patient: { avatarUrl: string | null };
+  } | null;
+  // PYG-460: snapshot ข้อมูลสุขภาพ ณ วันจอง (JSONB) — null สำหรับ booking ก่อน PYG-460
+  // มาพร้อม BOOKING_INCLUDE โดยอัตโนมัติเพราะ include คืน scalar ทุกคอลัมน์อยู่แล้ว
+  memberDetails: unknown;
 };
 
 /**
@@ -59,8 +82,38 @@ type CaregiverBookingRow = {
  */
 const BOOKING_INCLUDE = {
   patient: { select: { id: true, displayName: true, avatarUrl: true } },
-  careRecipient: { select: { name: true } },
+  // patientId/is_self/avatar ใช้ตัดสินว่ารูปของ "ผู้รับบริการ" คือรูปของใคร (recipientAvatarPath)
+  careRecipient: {
+    select: {
+      name: true,
+      patientId: true,
+      is_self: true,
+      patient: { select: { avatarUrl: true } },
+    },
+  },
+  payout: { select: { status: true, amount: true } },
 } as const;
+
+/**
+ * รูปโปรไฟล์ของ "ผู้รับบริการ" (คนที่ผู้ดูแลไปดูแลจริง) — ไม่ใช่ของคนกดจองเสมอไป
+ *
+ * ★ แสดงรูปเฉพาะเมื่อมั่นใจว่าผู้รับบริการ = เจ้าของบัญชีที่มีรูปนั้น
+ *   เดาผิด = ผู้ดูแลเห็นหน้าคนอื่นบนการ์ด "ผู้รับบริการ" ซึ่งแย่กว่าไม่มีรูป (ตกเป็นตัวอักษรย่อ)
+ *   ① ไม่มี careRecipient      → จองให้ตัวเอง → รูปของผู้จอง
+ *   ② ใบ is_self               → โปรไฟล์ของเจ้าของบัญชีเอง → รูปเจ้าของใบ
+ *   ③ จองแทนในกลุ่ม และเจ้าของใบ ≠ คนกดจอง → โมเดล "สมาชิก = patient" (PYG-500) ใบเป็นของตัวสมาชิก
+ *   อื่น ๆ (เช่น โปรไฟล์ "คุณยาย" ที่ผู้จองสร้างเอง) → ไม่มีรูป
+ */
+function recipientAvatarPath(b: CaregiverBookingRow): string | undefined {
+  const cr = b.careRecipient;
+  if (!cr) return b.patient.avatarUrl ?? undefined;
+  if (cr.is_self) return cr.patient.avatarUrl ?? undefined;
+  const booker = b.bookedBy ?? b.patient.id;
+  if (b.familyGroupId && cr.patientId !== booker) {
+    return cr.patient.avatarUrl ?? undefined;
+  }
+  return undefined;
+}
 
 @Injectable()
 export class CaregiverBookingService {
@@ -69,6 +122,8 @@ export class CaregiverBookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    // PYG-461/462: guard เวลาใน acceptBooking — ห้าม new Date() ตรง ๆ (เทสคุมเวลาไม่ได้)
+    private readonly clock: ClockService,
   ) {}
 
   /** ยิง booking event แบบ fire-and-forget (PYG-292) — ดู BookingService.emit */
@@ -156,7 +211,9 @@ export class CaregiverBookingService {
     const caregiverId = await this.resolveCaregiverId(userId);
     const { page, limit, offset } = this.normalizePaging(input.page, input.limit);
 
-    const TERMINAL_STATUSES = ['completed', 'cancelled', 'rejected'];
+    // PYG-461/462: 'expired' = ระบบปิดให้เพราะเลยเวลา — ต้องโผล่ในประวัติงานของผู้ดูแลด้วย
+    // ไม่งั้นงานที่หมดอายุจะหายไปจากทุกแท็บ (ไม่อยู่ใน pending/accepted/confirmed แล้ว)
+    const TERMINAL_STATUSES = ['completed', 'cancelled', 'rejected', 'expired'];
     const where: Record<string, unknown> = { caregiverId };
     if (input.status) {
       where.status = input.status;
@@ -211,43 +268,68 @@ export class CaregiverBookingService {
       );
     }
 
-    // ตรวจสอบ time conflict กับงานที่ caregiver ยืนยันไปแล้ว
     const bookingDetail = await this.prisma.booking.findUnique({
       where: { id: bookingId },
       select: { bookingDate: true, startTime: true, durationHours: true },
     });
+    if (!bookingDetail) throw new NotFoundException('Booking not found');
 
-    if (bookingDetail) {
-      const newStart = this.timeToMinutes(bookingDetail.startTime);
-      const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
-
-      const conflicts = await this.prisma.booking.findMany({
-        where: {
-          caregiverId,
-          bookingDate: bookingDetail.bookingDate,
-          status: 'confirmed',
-          id: { not: bookingId },
-        },
-        select: { startTime: true, durationHours: true },
-      });
-
-      for (const b of conflicts) {
-        const existStart = this.timeToMinutes(b.startTime);
-        const existEnd = existStart + Math.round(this.toNumber(b.durationHours) * 60);
-        if (newStart < existEnd && existStart < newEnd) {
-          throw new ConflictException(
-            'ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณยืนยันไปแล้ว',
-          );
-        }
-      }
+    // PYG-461/462 เฟส 1: เลยเวลาเริ่มงาน (+ ACCEPT_GRACE_MINUTES) แล้ว → รับงานไม่ได้
+    // เดิมเช็คแค่ status ผู้ดูแลเลยกดรับงานที่ผ่านเวลาเริ่มไปแล้วได้
+    const acceptDeadline = acceptDeadlineOf(
+      bookingDetail.bookingDate,
+      bookingDetail.startTime,
+    );
+    if (this.clock.now().getTime() > acceptDeadline.getTime()) {
+      throw new UnprocessableEntityException(
+        `เลยเวลารับงานแล้ว (ต้องรับภายใน ${toBangkokText(acceptDeadline)}) — ไม่สามารถรับงานนี้ได้`,
+      );
     }
 
-    const now = new Date();
-    const updated = await this.prisma.booking.update({
+    const newStart = this.timeToMinutes(bookingDetail.startTime);
+    const newEnd = newStart + Math.round(this.toNumber(bookingDetail.durationHours) * 60);
+    const now = this.clock.now();
+
+    /**
+     * PYG-544 — เช็คเวลาชนกับงานที่รับไว้แล้ว + เปลี่ยนสถานะ ใน transaction เดียวที่ล็อกแถวผู้ดูแล
+     *
+     * ของเดิมเช็คแค่ 'confirmed' (จ่ายเงินแล้ว) → รับใบแรกแล้วยังไม่จ่าย กดรับใบที่ซ้อนกันได้อีก
+     * และเช็คนอก transaction → กดรับ 2 ใบพร้อมกัน ต่างฝ่ายต่างไม่เห็นกัน ผ่านทั้งคู่
+     */
+    await this.prisma.$transaction(async (tx) => {
+      await lockCaregiverSchedule(tx, caregiverId);
+
+      const busy = await caregiverHasTimeConflict(tx, {
+        caregiverId,
+        bookingDate: bookingDetail.bookingDate,
+        startMinute: newStart,
+        endMinute: newEnd,
+        excludeBookingId: bookingId,
+      });
+      if (busy) {
+        throw new ConflictException(
+          'ช่วงเวลาของงานนี้ซ้อนทับกับงานที่คุณรับไว้แล้ว',
+        );
+      }
+
+      // PYG-461/462: conditional update — cron หมดอายุ (booking-expiry.service.ts) อาจเปลี่ยน
+      // pending → expired ในจังหวะเดียวกัน · WHERE status='pending' ทั้งสองฝั่ง → Postgres re-check
+      // หลังรอ row lock มีผู้ชนะฝั่งเดียว (เดิม update({ where: { id } }) เขียนทับ expired ได้)
+      const { count } = await tx.booking.updateMany({
+        where: { id: bookingId, status: 'pending' },
+        data: { status: 'accepted', acceptedAt: now },
+      });
+      if (count === 0) {
+        throw new ConflictException(
+          'สถานะงานเปลี่ยนไปแล้ว (อาจหมดอายุหรือถูกยกเลิก) — กรุณารีเฟรชแล้วลองใหม่',
+        );
+      }
+    });
+    const updated = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      data: { status: 'accepted', acceptedAt: now },
       include: BOOKING_INCLUDE,
     });
+    if (!updated) throw new NotFoundException('Booking not found');
 
     this.logger.log({ event: 'booking.accepted', bookingId, userId });
 
@@ -414,8 +496,12 @@ export class CaregiverBookingService {
       timeSlot: b.timeSlot,
       bookingDate: this.formatDateYmd(b.bookingDate),
       startTime: this.formatTimeHm(b.startTime),
+      // PYG-526: หน้างานของผู้ดูแลแสดง "เริ่ม – สิ้นสุด" จากค่านี้ แทนการคำนวณเองฝั่ง FE
+      endTime: computeEndTime(b.startTime, this.toNumber(b.durationHours)),
       durationHours: this.toNumber(b.durationHours),
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
+      payoutStatus: b.payout?.status ?? undefined,
+      payoutAmount: b.payout != null ? this.toNumber(b.payout.amount) : undefined,
       locationAddress: b.locationAddress ?? undefined,
       // PYG-352: หน้าเช็คอินต้องใช้พิกัดคู่นี้วาดหมุดจุดงาน + วงรัศมี
       locationLat: b.locationLat != null ? this.toNumber(b.locationLat) : undefined,
@@ -427,6 +513,16 @@ export class CaregiverBookingService {
         avatarUrl: b.patient.avatarUrl ?? undefined,
       },
       careRecipientName: b.careRecipient?.name ?? undefined,
+      // ค่าดิบ (อาจเป็น storage path ของ bucket private) — resolver sign ตอน client ขอ recipientAvatarUrl
+      recipientAvatarPath: recipientAvatarPath(b),
+      /**
+       * PYG-460 — ข้อมูลสุขภาพที่ผู้ดูแลต้องเห็นก่อนเริ่มงาน
+       *
+       * ส่งต่อตามรูปทรงที่เก็บไว้ ไม่แปลงอะไรเพิ่ม เพราะ snapshot ถูกเก็บด้วย
+       * รูปทรงเดียวกับที่ฟอร์มส่งมาตั้งแต่แรก (ดู create-booking.dto.ts)
+       * cast เพราะคอลัมน์เป็น JSONB ซึ่ง Prisma ให้ type เป็น JsonValue
+       */
+      patientProfile: (b.memberDetails as PatientProfileType | null) ?? undefined,
       dayOfContactName: b.dayOfContactName ?? undefined,
       dayOfContactPhone: b.dayOfContactPhone ?? undefined,
       dayOfContactRelationship: b.dayOfContactRelationship ?? undefined,

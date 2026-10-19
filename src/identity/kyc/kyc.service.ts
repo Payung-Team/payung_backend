@@ -22,6 +22,8 @@ import {
 import { PrismaService } from '../../common/prisma.service';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
+import { PayoutAccountInput } from './dto/payout-account.input';
+import { PayoutAccountSummary } from './entities/payout-account.entity';
 import { Caregiver } from './entities/caregiver.entity';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import { CaregiverService } from './caregiver.service';
@@ -30,12 +32,45 @@ import { EmailService } from '../../email/email.service';
 import { NotificationType } from '../../notification/entities/notification-type.enum';
 import { Prisma } from '@prisma/client';
 import { computeFieldChanges } from './utils/compute-field-changes';
+import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { ClockService } from '../../common/clock.service';
+import {
+  LICENSE_DOC_TYPE,
+  LICENSE_REQUIRED_PROFESSIONS,
+  LICENSE_STATUS,
+} from './license/license.constants';
+import { LICENSE_ERROR, LicenseError, LicenseErrorCode } from './license/license.errors';
+import { isBangkokDateInFuture } from './license/license-date';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
+import { buildDrivingLicenseInfo } from './driving-license/driving-license-info.entity';
+import { pickLatestLicense } from './license/license-info.entity';
+import { normalizeLicenseNumber } from './license/license-validation';
+import { parseProfessionInput } from './profession.errors';
+import { PayoutEncryptionService } from '../../common/crypto/payout-encryption.service';
+import { PayoutAccountService } from '../../payment/payout-account.service';
+import { evaluatePayoutReadiness } from '../../payment/payout-account-readiness';
+import {
+  normalizeAccountNumber,
+  validateAccountNumberForBank,
+} from '../../common/constants/omise-banks.constant';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
-/** Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC */
+/**
+ * Fields ที่ต้องการ track เมื่อ caregiver submit/resubmit KYC
+ * ไม่มี hourlyRate (PYG-536) — submitKyc ไม่เขียนค่านี้แล้ว จึงไม่ต้อง diff
+ * PYG-575: เพิ่ม profession — resubmit ที่เปลี่ยนวิชาชีพ (E2) มีประวัติ old → new ใน caregiver_edit_logs
+ */
 const KYC_TRACKED_FIELDS = [
   'fullName', 'idCardNumber', 'gender', 'dateOfBirth',
-  'phone', 'skills', 'experienceYears', 'hourlyRate', 'bio',
+  'phone', 'skills', 'otherSkills',
+  'experienceYears', 'bio', 'profession',
 ];
+
+/**
+ * PYG-266: fields ของบัญชีรับเงินที่ track ใน caregiver_edit_logs
+ * ห้ามเพิ่ม 'accountNumber' ที่นี่เด็ดขาด — เลขบัญชีต้องไม่ปรากฏใน log แม้แต่ diff
+ */
+const PAYOUT_TRACKED_FIELDS = ['bankCode', 'accountName'];
 
 /** สถานะที่อนุญาตให้ยื่น KYC ได้ (first time หรือ resubmit) */
 const SUBMITTABLE_STATUSES = new Set(['none', 'rejected']);
@@ -49,6 +84,11 @@ export class KycService {
     private caregiverService: CaregiverService,
     private notificationService: NotificationService,
     private emailService: EmailService,
+    private payoutEncryption: PayoutEncryptionService,
+    private payoutAccountService: PayoutAccountService,
+    private careSkillService: CareSkillService,
+    private clock: ClockService,
+    private drivingLicense: DrivingLicenseService,
   ) {}
 
   /**
@@ -64,6 +104,12 @@ export class KycService {
    * @returns Caregiver entity ที่ถูกสร้าง/อัปเดต
    */
   async submitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
+    // ── ขั้นตอนที่ 0: ตรวจวิชาชีพ (PYG-575) — ก่อนแตะ DB ────────────────
+    // ไม่ส่ง → PROFESSION_REQUIRED (client เก่า · ไม่เติมค่าเริ่มต้นให้ · S01-E3)
+    // ค่านอกรายการ → PROFESSION_INVALID (S01-E4 · DB มี CHECK กันอีกชั้น)
+    // ตรวจก่อนสถานะ KYC โดยตั้งใจ: client เก่าเห็น code เดียวกันเสมอไม่ว่าสถานะใด
+    const profession = parseProfessionInput(input.profession);
+
     // ── ขั้นตอนที่ 1: เช็ค KYC status ปัจจุบัน ────────────────────────
     const existing = await this.prismaService.caregiver.findUnique({
       where: { userId: user.id },
@@ -77,6 +123,12 @@ export class KycService {
     }
 
     const isResubmit = currentStatus === 'rejected';
+
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    // ★ ใช้วิชาชีพที่ส่งมาในรอบนี้ (PYG-575) ไม่ใช่ค่าเดิมในแถว — ค่านี้คือค่าที่จะถูกเขียนลงตาราง
+    //   ถ้าอ่านจากแถวเดิม ผู้สมัครใหม่ (ยังไม่มีแถว) ที่เป็น nurse จะเลือกทักษะเฉพาะพยาบาลไม่ได้
+    //   และคนที่ยื่นซ้ำแล้วเปลี่ยนจาก nurse เป็น general_caregiver จะเก็บทักษะเฉพาะพยาบาลไว้ได้
+    await this.careSkillService.assertSkillsAllowed(input.skills, profession);
 
     // ── ขั้นตอนที่ 2: Validate documentIds ───────────────────────────
     if (input.documentIds.length > 0) {
@@ -100,6 +152,16 @@ export class KycService {
       }
     }
 
+    // ── ขั้นตอนที่ 2.5: ใบประกอบวิชาชีพ (PYG-587) ────────────────────
+    // ตรวจที่ชั้น service ก่อนเขียนอะไรลง DB · general_caregiver ไม่ตรวจ (E9: ถ้าแนบมาก็ไม่ถูกบังคับ/ไม่ถูกปฏิเสธ)
+    // ★ ใช้วิชาชีพที่ส่งมาในรอบนี้ (PYG-575) ไม่ใช่ค่าเดิมในแถว — ค่านี้คือค่าที่จะถูกเขียนลงตารางข้างล่าง
+    //   ถ้าอ่านจากแถวเดิม ผู้ดูแลใหม่ (ยังไม่มีแถว = general_caregiver) หรือคนที่ยื่นซ้ำแล้วเปลี่ยนเป็น nurse
+    //   จะข้ามการตรวจใบประกอบฯ ได้
+    await this.assertLicenseForKyc(user.id, profession, input.documentIds);
+
+    // PYG-597: ขับรถรับส่งเอง -> ต้องมีใบขับขี่ที่ใช้ได้ในรอบส่งนี้ (ตรวจที่ service ก่อนเขียนอะไรลง DB)
+    await this.drivingLicense.assertForKyc(user.id, input.selfDriveTransport, input.documentIds);
+
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
       // Generate caregiverNumber เฉพาะ record ใหม่ (format: CG-YYMMDD-XXXX)
@@ -121,8 +183,10 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          otherSkills: input.otherSkills ?? [],
+          profession, // PYG-575
           experienceYears: input.experienceYears,
-          hourlyRate: input.hourlyRate,
+          // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
@@ -135,8 +199,14 @@ export class KycService {
           dateOfBirth: input.dateOfBirth,
           phone: input.phone,
           skills: input.skills,
+          // ไม่ส่งมา = คงค่าเดิม (FE รุ่นที่ยังไม่มีช่องทักษะอื่น ๆ จะได้ไม่ลบของเดิมทิ้ง)
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
+          // PYG-575 · E2: ถูกปฏิเสธแล้วส่งใหม่ เปลี่ยนวิชาชีพได้ทันที (ยังไม่เคยอนุมัติ — แอดมินตรวจทั้งชุดอยู่แล้ว)
+          profession,
           experienceYears: input.experienceYears,
-          hourlyRate: input.hourlyRate,
+          // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
           kycStatus: 'pending',
           kycSubmittedAt: new Date(),
@@ -147,9 +217,16 @@ export class KycService {
       });
 
       // Query old linked docs (id + type) BEFORE unlinking (for audit diff)
+      // PYG-508: รูปโปรไฟล์ไม่ใช่เอกสารของรอบ KYC — ห้ามปลด caregiverId ทิ้งตอน resubmit
+      //   ไม่งั้นรูปที่รออนุมัติหลุดจากคิวแอดมิน และรูปที่อนุมัติแล้วหาเจ้าของไม่เจอ
+      const kycDocsOfCaregiver = {
+        caregiverId: upserted.id,
+        documentType: { not: PROFILE_PHOTO_DOC_TYPE },
+      };
+
       const oldLinkedDocs = isResubmit
         ? await tx.kycDocument.findMany({
-            where: { caregiverId: upserted.id },
+            where: kycDocsOfCaregiver,
             select: { id: true, documentType: true },
           })
         : [];
@@ -158,7 +235,7 @@ export class KycService {
       // so queries on caregiverId only return the current submission's docs
       if (isResubmit) {
         await tx.kycDocument.updateMany({
-          where: { caregiverId: upserted.id },
+          where: kycDocsOfCaregiver,
           data: { caregiverId: null },
         });
       }
@@ -186,7 +263,8 @@ export class KycService {
       const fieldChanges = existing
         ? computeFieldChanges(
             existing as unknown as Record<string, unknown>,
-            input as unknown as Record<string, unknown>,
+            // ใส่ profession ที่ตรวจแล้ว (ค่าเดียวกับที่เขียนลงตาราง) — log ต้องตรงกับสิ่งที่บันทึกจริง
+            { ...input, profession } as unknown as Record<string, unknown>,
             KYC_TRACKED_FIELDS,
           )
         : [];
@@ -202,7 +280,12 @@ export class KycService {
         }
       }
 
-      const allChanges = [...fieldChanges, ...docChanges];
+      // PYG-266: upsert บัญชีรับเงิน — เฉพาะตอนที่ caregiver แนบ payoutAccount มาด้วย
+      const payoutChanges = input.payoutAccount
+        ? (await this.upsertPayoutAccountInTx(tx, upserted.id, input.payoutAccount)).changes
+        : [];
+
+      const allChanges = [...fieldChanges, ...docChanges, ...payoutChanges];
       const action = isResubmit ? 'resubmit' : 'first_submit';
 
       // resubmit → log เสมอ; first_submit → log ถ้ามี changes
@@ -230,10 +313,108 @@ export class KycService {
   }
 
   /**
+   * assertLicenseForKyc — nurse / physiotherapist ต้องมีเอกสารใบประกอบฯ ที่ใช้ได้ในรอบส่งนี้
+   * (S03-AC2, E2, E3/E4, E10)
+   *
+   * "ใช้ได้" = อยู่ใน documentIds ของรอบนี้ + เป็นของผู้ใช้คนนี้ + ไม่ใช่ rejected/expired
+   * + มีเลข + มีวันหมดอายุ + วันหมดอายุเป็นอนาคตตามเวลาไทย
+   * ใบที่ผ่านการตรวจมาก่อนแต่ไม่ได้ส่งมาในรอบนี้ไม่นับ (E2: เปลี่ยนวิชาชีพต้องมีใบใหม่ที่ส่งมาพร้อมกัน)
+   * ขาดหลายช่อง → ตอบครบในครั้งเดียว (extensions.codes) · code = ช่องแรก (FILE → NUMBER → EXPIRY)
+   */
+  private async assertLicenseForKyc(
+    userId: string,
+    profession: string,
+    documentIds: string[],
+  ): Promise<void> {
+    if (!LICENSE_REQUIRED_PROFESSIONS.has(profession)) return;
+
+    const licenseDocs =
+      documentIds.length > 0
+        ? await this.prismaService.kycDocument.findMany({
+            where: { id: { in: documentIds }, userId, documentType: LICENSE_DOC_TYPE },
+            select: {
+              id: true,
+              licenseNumber: true,
+              expiresAt: true,
+              reviewStatus: true,
+              uploadedAt: true,
+            },
+            orderBy: { uploadedAt: 'desc' },
+          })
+        : [];
+
+    // ใบที่ถูกปฏิเสธ/หมดอายุแล้วใช้ส่งซ้ำไม่ได้ — ต้องอัปโหลดใบใหม่ (E6)
+    const usable = licenseDocs.find(
+      (d) =>
+        d.reviewStatus !== LICENSE_STATUS.REJECTED && d.reviewStatus !== LICENSE_STATUS.EXPIRED,
+    );
+
+    if (!usable) throw new LicenseError(LICENSE_ERROR.FILE_REQUIRED);
+
+    const errors: LicenseErrorCode[] = [];
+    if (!normalizeLicenseNumber(usable.licenseNumber)) errors.push(LICENSE_ERROR.NUMBER_REQUIRED);
+    if (!usable.expiresAt) errors.push(LICENSE_ERROR.EXPIRY_REQUIRED);
+    else if (!isBangkokDateInFuture(usable.expiresAt, this.clock.now())) {
+      errors.push(LICENSE_ERROR.EXPIRY_NOT_FUTURE);
+    }
+    if (errors.length > 0) throw new LicenseError(errors[0], errors);
+  }
+
+  /**
    * resubmitKyc — ยื่น KYC ใหม่หลังถูก reject
    */
   async resubmitKyc(user: AuthUser, input: KycInput): Promise<Caregiver> {
     return this.submitKyc(user, input);
+  }
+
+  /**
+   * updatePayoutAccount — PYG-266: caregiver ที่ verified แล้วเพิ่ม/แก้บัญชีรับเงินเอง
+   *
+   * นอก flow submitKyc/resubmitKyc ที่ถูกบล็อกไว้เมื่อ kycStatus='verified'
+   * (SUBMITTABLE_STATUSES = none/rejected เท่านั้น) — caregiver ที่ผ่านการยืนยันแล้ว
+   * (รวมถึงคนที่ verified ก่อนฟีเจอร์นี้จะมีอยู่) ใช้ mutation นี้แทน
+   */
+  async updatePayoutAccount(
+    user: AuthUser,
+    input: PayoutAccountInput,
+  ): Promise<PayoutAccountSummary> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId: user.id },
+    });
+
+    if (!caregiver) {
+      throw new NotFoundException('ไม่พบข้อมูล caregiver ของคุณ');
+    }
+
+    if (caregiver.kycStatus !== 'verified') {
+      throw new BadRequestException(
+        'ต้องผ่านการยืนยันตัวตน (KYC) ก่อนจึงจะแก้ไขบัญชีรับเงินได้ — กรุณาส่งหรือแก้ไข KYC ผ่านหน้ายืนยันตัวตนแทน',
+      );
+    }
+
+    const { account } = await this.prismaService.$transaction(async (tx) => {
+      const result = await this.upsertPayoutAccountInTx(tx, caregiver.id, input);
+
+      if (result.changes.length > 0) {
+        const changesJson = JSON.stringify(result.changes);
+        await tx.$executeRaw`
+          INSERT INTO caregiver_edit_logs (id, caregiver_id, edited_by, action, field_changes, created_at)
+          VALUES (gen_random_uuid(), ${caregiver.id}, ${user.id}, 'payout_account_update', ${changesJson}::jsonb, NOW())
+        `;
+      }
+
+      return result;
+    });
+
+    // Fire-and-forget: สร้าง Omise recipient ใหม่เสมอ (upsertPayoutAccountInTx reset
+    // omiseRecipientId เป็น null ทุกครั้งที่แตะบัญชีนี้ — no-op ถ้าดันมี id อยู่แล้ว)
+    void this.payoutAccountService.createRecipientForCaregiver(
+      caregiver.id,
+      caregiver.fullName ?? '',
+      user.email,
+    );
+
+    return this.mapPayoutAccountSummary(account);
   }
 
   /**
@@ -248,12 +429,21 @@ export class KycService {
       return {
         status: 'none',
         documents: [],
+        drivingLicense: { verified: false, status: 'none', isExpired: false },
+        canAcceptJobs: false,
       };
     }
 
-    const documents = await this.caregiverService.getDocumentsWithSignedUrls(
+    const documents = await this.caregiverService.getOwnDocumentsWithSignedUrls(
       caregiver.id,
     );
+
+    const payoutAccountRow = await this.prismaService.caregiverPayoutAccount.findUnique({
+      where: { caregiverId: caregiver.id },
+    });
+
+    const readiness = evaluatePayoutReadiness(payoutAccountRow);
+    const kycVerified = caregiver.kycStatus === 'verified';
 
     return {
       status: caregiver.kycStatus,
@@ -261,6 +451,17 @@ export class KycService {
       verifiedAt: caregiver.kycVerifiedAt ?? undefined,
       caregiver: this.mapToEntity(caregiver),
       documents,
+      profession: caregiver.profession,
+      license: pickLatestLicense(documents),
+      drivingLicense: buildDrivingLicenseInfo(
+        await this.drivingLicense.getState({ caregiverId: caregiver.id, userId }),
+        documents,
+      ),
+      payoutAccount: payoutAccountRow
+        ? this.mapPayoutAccountSummary(payoutAccountRow)
+        : undefined,
+      canAcceptJobs: kycVerified && readiness.ready,
+      payoutBlockReason: kycVerified ? readiness.reason : undefined,
     };
   }
 
@@ -434,6 +635,113 @@ export class KycService {
     );
   }
 
+  /**
+   * upsertPayoutAccountInTx — PYG-266: encrypt + upsert บัญชีรับเงิน (ใช้ร่วมกันโดย
+   * submitKyc และ updatePayoutAccount — logic เดียวกันเป๊ะ ไม่อยาก duplicate)
+   *
+   * DECISION: ไม่เช็คว่า "เปลี่ยนจริงไหม" ด้วยการเทียบ accountNumberLast4 — เลขบัญชี
+   * สองเลขที่ต่างกันอาจบังเอิญ (หรือตั้งใจ) ลงท้ายเหมือนกัน ซึ่งจะทำให้พลาด reset
+   * omiseRecipientId ทิ้งไว้ชี้ไปบัญชีเก่า จึง reset ทุกครั้งที่แตะ payoutAccount
+   * โดยไม่มีเงื่อนไข (ถูกกว่าความเสี่ยงเงินโอนผิดบัญชีมาก)
+   */
+  private async upsertPayoutAccountInTx(
+    tx: Prisma.TransactionClient,
+    caregiverId: string,
+    input: PayoutAccountInput,
+  ): Promise<{
+    account: {
+      id: string;
+      caregiverId: string;
+      bankCode: string;
+      accountName: string;
+      accountNumberEnc: string;
+      accountNumberLast4: string;
+      omiseRecipientId: string | null;
+      recipientStatus: string;
+      status: string;
+      verifiedAt: Date | null;
+    };
+    changes: Array<{ field: string; oldValue: string | null; newValue: string | null }>;
+  }> {
+    const existingPayout = await tx.caregiverPayoutAccount.findUnique({
+      where: { caregiverId },
+    });
+
+    // ── ชั้นที่สองของการตรวจเลขบัญชี (TASK 4) ────────────────────────────────
+    // DTO ตรวจได้แค่ช่วงกว้าง เพราะ class-validator ไม่เห็น bankCode ตอนตรวจ accountNumber
+    // ตรงนี้รู้ทั้งคู่แล้ว จึงใช้กฎรายธนาคารได้ — และ normalize ซ้ำเพื่อกันเส้นทางที่
+    // เรียก helper นี้ตรง ๆ โดยไม่ผ่าน DTO (submitKyc ผ่าน KycInput ก็มาลงที่นี่)
+    const accountNumber = normalizeAccountNumber(input.accountNumber);
+    const invalidReason = validateAccountNumberForBank(input.bankCode, accountNumber);
+    if (invalidReason) {
+      throw new BadRequestException(invalidReason);
+    }
+
+    const accountNumberEnc = this.payoutEncryption.encrypt(accountNumber);
+    const accountNumberLast4 = this.payoutEncryption.last4(accountNumber);
+
+    const account = await tx.caregiverPayoutAccount.upsert({
+      where: { caregiverId },
+      create: {
+        caregiverId,
+        bankCode: input.bankCode,
+        accountName: input.accountName,
+        accountNumberEnc,
+        accountNumberLast4,
+        status: 'pending',
+        recipientStatus: 'unverified',
+      },
+      update: {
+        bankCode: input.bankCode,
+        accountName: input.accountName,
+        accountNumberEnc,
+        accountNumberLast4,
+        status: 'pending',
+        recipientStatus: 'unverified',
+        omiseRecipientId: null,
+        verifiedAt: null,
+      },
+    });
+
+    // แตะบัญชี = บัญชีกลับไปรอ Omise ตรวจใหม่ → ปิดรับงานจนกว่าจะ accept อีกครั้ง
+    // (ไม่งั้นแก้เลขบัญชีแล้วยังโผล่ในผลค้นหาด้วยบัญชีที่ยังไม่ผ่าน)
+    await tx.caregiver.updateMany({
+      where: { id: caregiverId, isSearchable: true },
+      data: { isSearchable: false },
+    });
+
+    const fieldChanges = computeFieldChanges(
+      (existingPayout ?? {}) as unknown as Record<string, unknown>,
+      input as unknown as Record<string, unknown>,
+      PAYOUT_TRACKED_FIELDS,
+    );
+
+    // เลขบัญชีถูก resupply ทุกครั้งที่แตะ — บันทึกแค่ last4 เท่านั้น ไม่ใช่ค่าจริง/เข้ารหัส
+    fieldChanges.push({
+      field: 'accountNumber',
+      oldValue: existingPayout ? `***${existingPayout.accountNumberLast4}` : null,
+      newValue: `***${accountNumberLast4}`,
+    });
+
+    return { account, changes: fieldChanges };
+  }
+
+  private mapPayoutAccountSummary(account: {
+    bankCode: string;
+    accountName: string;
+    accountNumberLast4: string;
+    status: string;
+    recipientStatus: string;
+  }): PayoutAccountSummary {
+    return {
+      bankCode: account.bankCode,
+      accountName: account.accountName,
+      accountNumberLast4: account.accountNumberLast4,
+      status: account.status,
+      recipientStatus: account.recipientStatus,
+    };
+  }
+
   private mapToEntity(caregiver: any): Caregiver {
     return {
       id: caregiver.id,
@@ -445,6 +753,8 @@ export class KycService {
       dateOfBirth: caregiver.dateOfBirth ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
+      profession: caregiver.profession, // PYG-575 — DB มี CHECK 3 ค่า
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,

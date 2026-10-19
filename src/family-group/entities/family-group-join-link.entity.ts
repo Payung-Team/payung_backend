@@ -1,11 +1,20 @@
 import { Field, ID, Int, ObjectType } from '@nestjs/graphql';
 
 /**
- * FamilyGroupJoinLink (PYG-416 · SCR-FG2-001) — ลิงก์เข้าร่วมกลุ่ม ฝั่งเจ้าของกลุ่ม
+ * FamilyGroupJoinLink (PYG-416 · SCR-FG2-001) — ลิงก์เข้าร่วมกลุ่ม ฝั่งสมาชิกในกลุ่ม
  *
- * ★ type นี้ "ห้าม" ส่งให้ใครที่ไม่ใช่ OWNER ของกลุ่มนั้น เพราะมี url เต็มอยู่ข้างใน
- *   ทุก resolver ที่คืน type นี้ต้องผ่าน @GroupRole('OWNER') และ assertOwner ซ้ำใน service
- *   คนทั่วไปที่กดลิงก์เข้ามาให้ใช้ JoinLinkPreview ด้านล่างแทน
+ * ★ type นี้ "ห้าม" ส่งให้ใครที่ไม่ใช่สมาชิก ACTIVE ของกลุ่มนั้น เพราะมี url เต็มอยู่ข้างใน
+ *   ใครเปิดดูได้บ้าง (Amendment 1 · แก้ใน PYG-478):
+ *     - อ่าน/คัดลอก (groupJoinLink)        → สมาชิก ACTIVE ทุกคน ทั้ง OWNER และ MEMBER (B9)
+ *       ต้องผ่าน @GroupRole('MEMBER') + ตรวจสมาชิก ACTIVE ซ้ำใน service
+ *     - สร้าง/หมุน/ยกเลิก (create/rotate/revoke) → เจ้าของเท่านั้น (B1)
+ *       ต้องผ่าน @GroupRole('OWNER') + assertOwner ซ้ำใน service
+ *   คนนอกกลุ่มที่กดลิงก์เข้ามาให้ใช้ JoinLinkPreview ด้านล่างแทน
+ *
+ *   หมายเหตุ: คอมเมนต์ในไฟล์ prisma/migrations/20260902000000_family_group_join_links
+ *   ยังเขียนว่า "resolver คืนค่านี้ให้เฉพาะ OWNER" ซึ่งเป็นข้อความก่อน Amendment 1
+ *   ไม่ได้แก้ไฟล์นั้นเพราะ migration นั้น apply ลงดีบีไปแล้ว (แก้แล้ว checksum เปลี่ยน)
+ *   ให้ถือตามคอมเมนต์ในไฟล์นี้เป็นหลัก — RLS ของตารางยังปิดตายเหมือนเดิม ไม่มีอะไรเปลี่ยน
  *
  * ทำไมถึงมีทั้ง remainingUses และ maxUses ทั้งที่ FE ลบเองได้?
  *   usedCount ไม่ได้ส่งออกไป (มันคือข้อมูลภายใน ไม่ใช่สิ่งที่เจ้าของกลุ่มสนใจ)
@@ -22,7 +31,7 @@ export class FamilyGroupJoinLink {
 
   @Field({
     description:
-      'URL เต็มสำหรับคัดลอกไปส่งต่อ — เจ้าของกลุ่มเท่านั้นที่เห็นค่านี้',
+      'URL เต็มสำหรับคัดลอกไปส่งต่อ — สมาชิก ACTIVE ของกลุ่มทุกคนเห็นค่านี้ คนนอกกลุ่มไม่เห็น',
   })
   url: string;
 

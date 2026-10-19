@@ -14,7 +14,9 @@ import { TransactionType } from '../entities/transaction-type.enum';
 export class TransactionParty {
   @Field(() => ID) id: string;
   @Field({ nullable: true }) displayName?: string;
-  @Field() email: string;
+  // PYG-603: null ได้ — คู่กรณีที่สมัครด้วยเบอร์โทรไม่มีอีเมล
+  //   ★ ถ้าคงเป็น @Field() (non-null) แล้วเจอ null → GraphQL ทำทั้ง query ของหน้ารายการธุรกรรมพัง
+  @Field(() => String, { nullable: true }) email: string | null;
 }
 
 /** 1 แถวในตาราง transactions ของ admin */

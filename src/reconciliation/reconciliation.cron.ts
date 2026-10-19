@@ -103,7 +103,11 @@ export class ReconciliationCron {
       where: { role: { gte: ROLE_ID.ADMIN }, isActive: true, is_deleted: false },
       select: { email: true },
     });
-    const recipients = admins.map((a) => a.email).filter(Boolean);
+    // PYG-603: users.email เป็น null ได้แล้ว — ใช้ type guard ให้ได้ string[] จริง ๆ
+    //   (แอดมินถูกเชิญด้วยอีเมลจึงมีอีเมลเสมอ แต่ตัวกรองนี้กันไว้ไม่ให้ส่งไปที่อยู่ว่าง)
+    const recipients = admins
+      .map((a) => a.email)
+      .filter((email): email is string => Boolean(email));
 
     const lines = [
       `Reconciliation ALERT — ${alertRows.length} critical row(s)`,

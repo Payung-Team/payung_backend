@@ -55,9 +55,17 @@ export const QR_TOKEN_SECRET_MIN_LENGTH = 32;
  *
  * ทำไมต้องมี: วันหนึ่งเราอาจใช้ QR_TOKEN_SECRET ตัวเดียวกันไปเซ็นอย่างอื่นด้วย
  * ถ้าไม่มีคำนำหน้าแยกกัน token ของคนละเรื่องที่บังเอิญมี id เหมือนกันจะออกมาเท่ากัน
- * มี v1 ต่อท้ายไว้เผื่อวันหนึ่งเปลี่ยนสูตร จะได้ออก v2 โดยไม่ชนของเดิม
+ * มีเลขเวอร์ชันต่อท้ายไว้เผื่อวันหนึ่งเปลี่ยนสูตร จะได้ออกรุ่นใหม่โดยไม่ชนของเดิม
+ *
+ * ★ PYG-437 ขึ้นเป็น v2 แล้ว — วันนั้นมาถึงจริง ๆ
+ *   v1: HMAC(secret, "payung:jobqr:v1:<session id>")
+ *       → QR ใบเดียวต่อ booking ไม่มีวันเปลี่ยน
+ *   v2: HMAC(secret, "payung:jobqr:v2:<session id>:<action>:<updated_at ms>")
+ *       → เช็คอินกับเช็คเอาท์คนละ token + ผู้รับบริการกดออกใบใหม่เองได้
+ *   การขึ้นเวอร์ชันทำให้ token_hash เดิมในดีบีใช้ไม่ได้ทั้งหมด แต่ "ไม่ต้อง backfill"
+ *   เพราะ JobQrService.syncTokenHash() เขียนค่าใหม่ให้เองตอนผู้ใช้เปิดหน้า QR
  */
-export const QR_TOKEN_DOMAIN = 'payung:jobqr:v1';
+export const QR_TOKEN_DOMAIN = 'payung:jobqr:v2';
 
 /**
  * PYG-435 จะใช้ค่านี้: true = 1 action สแกนได้ครั้งเดียว (สแกนซ้ำ = ปฏิเสธ)

@@ -15,8 +15,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FamilyGroupService } from './family-group.service';
 import { PrismaService } from '../common/prisma.service';
+import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import {
   ACTIVITY_ACTION,
+  ACTIVITY_TARGET,
   GROUP_ROLE,
   MEMBER_STATUS,
 } from './family-group.constants';
@@ -80,10 +84,30 @@ describe('FamilyGroupService', () => {
       updateMany: jest.Mock;
       findFirst: jest.Mock;
       findUnique: jest.Mock;
+      findMany: jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
+    // careRecipient อยู่ใน tx (ตามฝั่ง dev) ไม่ใช่เฉพาะใน prisma —
+    // prisma เป็น `typeof tx & {...}` อยู่แล้ว วางไว้ที่นี่ที่เดียวจึงครอบทั้ง
+    // เทสที่เรียกผ่าน tx และเทสที่เรียกผ่าน prisma
+    careRecipient: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
   };
-  let prisma: typeof tx & { $transaction: jest.Mock };
+  let consent: {
+    withdrawnUserIds: jest.Mock;
+    grantedCurrentUserIds: jest.Mock;
+    assertAnswersForSource: jest.Mock;
+    recordMany: jest.Mock;
+  };
+  let prisma: typeof tx & {
+    $transaction: jest.Mock;
+  };
+  let storageFrom: jest.Mock;
+  let createSignedUrls: jest.Mock;
 
   beforeEach(async () => {
     tx = {
@@ -99,18 +123,49 @@ describe('FamilyGroupService', () => {
         updateMany: jest.fn(),
         findFirst: jest.fn(),
         findUnique: jest.fn(),
+        findMany: jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
+      careRecipient: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+      },
     };
     prisma = {
       ...tx,
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
 
+    // PYG-540: ค่าเริ่มต้น = ไม่มีใครถอนความยินยอม (เทสการกรองอยู่ที่ family-consent-filter.service.spec.ts)
+    //   และไม่มีใครให้ความยินยอมชัดแจ้ง (= ไม่ดึงใบ is_self ของคนอื่น)
+    consent = {
+      withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+      grantedCurrentUserIds: jest.fn().mockResolvedValue(new Set()),
+      assertAnswersForSource: jest.fn(),
+      recordMany: jest.fn(),
+    };
+
+    createSignedUrls = jest.fn().mockImplementation((paths: string[]) => ({
+      data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}`, error: null })),
+      error: null,
+    }));
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         FamilyGroupService,
         { provide: PrismaService, useValue: prisma },
+        { provide: ConsentService, useValue: consent },
+        // PYG-518: sign avatarUrl ของสมาชิกกลุ่ม — เทสเฉพาะเรื่อง signing อยู่ท้ายไฟล์นี้
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
       ],
     }).compile();
 
@@ -195,6 +250,49 @@ describe('FamilyGroupService', () => {
       await expect(
         service.createFamilyGroup(OWNER_ID, { name: 'x'.repeat(80) }),
       ).resolves.toBeDefined();
+    });
+
+    // ── ความยินยอม disclose_to_family_group ───────────────────────────────
+    const CONSENTS = [
+      { type: 'disclose_to_family_group', granted: true, policyVersion: '1.0' },
+    ];
+    const EVIDENCE = { ipAddress: '1.2.3.4', userAgent: 'jest' };
+
+    it('ส่งความยินยอมมา → ตรวจแบบหน้าจอ family_group แล้วบันทึกใน transaction เดียวกับการสร้าง', async () => {
+      tx.familyGroup.create.mockResolvedValue(groupRow());
+
+      await service.createFamilyGroup(
+        OWNER_ID,
+        { name: 'บ้านยาย', consents: CONSENTS },
+        EVIDENCE,
+      );
+
+      expect(consent.assertAnswersForSource).toHaveBeenCalledWith(CONSENTS, 'family_group');
+      // ★ tx ตัวเดียวกับที่สร้างกลุ่ม — ล้มฝั่งไหนก็ย้อนทั้งคู่
+      expect(consent.recordMany).toHaveBeenCalledWith(tx, OWNER_ID, CONSENTS, {
+        ...EVIDENCE,
+        source: 'family_group',
+      });
+    });
+
+    it('ไม่ส่งความยินยอม → ไม่บันทึกอะไร (ผู้ที่ยินยอมไว้แล้วไม่ถูกถามซ้ำ)', async () => {
+      tx.familyGroup.create.mockResolvedValue(groupRow());
+
+      await service.createFamilyGroup(OWNER_ID, { name: 'บ้านยาย' });
+
+      expect(consent.assertAnswersForSource).not.toHaveBeenCalled();
+      expect(consent.recordMany).not.toHaveBeenCalled();
+    });
+
+    it('คำตอบความยินยอมไม่ผ่าน → ตกก่อนเปิด transaction ไม่มีกลุ่มถูกสร้าง', async () => {
+      consent.assertAnswersForSource.mockImplementation(() => {
+        throw new Error('CONSENT_TYPE_INVALID');
+      });
+
+      await expect(
+        service.createFamilyGroup(OWNER_ID, { name: 'บ้านยาย', consents: CONSENTS }),
+      ).rejects.toThrow('CONSENT_TYPE_INVALID');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
 
@@ -584,6 +682,513 @@ describe('FamilyGroupService', () => {
       ).rejects.toMatchObject({
         extensions: { code: FG_ERROR.GROUP_NOT_FOUND },
       });
+    });
+  });
+
+  // ═══ PYG-385 · จัดการโปรไฟล์ผู้รับบริการในกลุ่ม ═════════════════════════
+  describe('groupCareRecipients', () => {
+    it('คืนโปรไฟล์ที่แชร์เข้ากลุ่มแล้วพร้อมรายละเอียดของสมาชิก ACTIVE', async () => {
+      tx.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER_ID },
+        { userId: MEMBER_ID },
+      ]);
+      prisma.careRecipient.findMany.mockResolvedValue([
+        {
+          id: 'r-shared',
+          name: 'คุณยายสมศรี',
+          nickname: 'ยายศรี',
+          patientId: MEMBER_ID,
+          self_reported: true,
+          date_of_birth: new Date(Date.UTC(new Date().getUTCFullYear() - 72, 0, 1)),
+          gender: 'female',
+          weight_kg: 55,
+          height_cm: 155,
+          mobility_level: 'assisted',
+          medical_conditions: ['เบาหวาน'],
+          current_medications: 'ยาลดน้ำตาล',
+          allergies: null,
+          blood_type: 'O',
+          care_notes: 'ช่วยพยุงเดิน',
+          preferred_hospital: 'ศิริราช',
+        },
+      ]);
+
+      const result = await service.groupCareRecipients(GROUP_ID, OWNER_ID);
+
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            patientId: { in: [OWNER_ID, MEMBER_ID] },
+            is_deleted: false,
+            familyGroupId: GROUP_ID,
+          },
+        }),
+      );
+      expect(result[0]).toMatchObject({
+        id: 'r-shared',
+        ownerUserId: MEMBER_ID,
+        details: {
+          age: 72,
+          gender: 'หญิง',
+          conditions: ['เบาหวาน'],
+          careInstructions: 'ช่วยพยุงเดิน',
+        },
+      });
+    });
+
+    /**
+     * ★ เทสนี้ยืนยัน "สิ่งที่ห้ามมีใน where" ไม่ใช่แค่ผลลัพธ์ที่ถูก
+     *   เพราะโปรไฟล์ส่วนตัวถูกกรองที่ชั้น DB ถ้าใครเผลอเติม OR กลับเข้ามา
+     *   เทสที่เช็คแต่ output จะยังเขียวอยู่ (mock คืนอะไรมาก็ผ่าน) แต่ของจริงรั่ว
+     */
+    it('ไม่ดึงโปรไฟล์ส่วนตัว — where ต้องไม่มี OR และไม่มี familyGroupId: null', async () => {
+      tx.familyGroupMember.findMany.mockResolvedValue([{ userId: MEMBER_ID }]);
+      prisma.careRecipient.findMany.mockResolvedValue([]);
+
+      await service.groupCareRecipients(GROUP_ID, OWNER_ID);
+
+      const where = prisma.careRecipient.findMany.mock.calls[0][0].where;
+      expect(where.OR).toBeUndefined();
+      expect(where.familyGroupId).toBe(GROUP_ID);
+      expect(JSON.stringify(where)).not.toContain('null');
+    });
+  });
+
+  describe('addGroupCareRecipient', () => {
+    it('สร้างโปรไฟล์ patientId = คนเพิ่ม, familyGroupId = กลุ่มนี้ และ trim ชื่อ', async () => {
+      prisma.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'สมศรี วงศ์ดี',
+        nickname: 'ยายศรี',
+        patientId: OWNER_ID,
+      });
+
+      const res = await service.addGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        name: '  สมศรี วงศ์ดี  ',
+        nickname: '  ยายศรี ',
+      });
+
+      const data = prisma.careRecipient.create.mock.calls[0][0].data;
+      expect(data.patientId).toBe(OWNER_ID);
+      expect(data.familyGroupId).toBe(GROUP_ID);
+      expect(data.name).toBe('สมศรี วงศ์ดี');
+      expect(data.nickname).toBe('ยายศรี');
+      expect(res).toMatchObject({ id: 'r-new', ownerUserId: OWNER_ID });
+    });
+
+    it('เขียน RECIPIENT_ADDED 1 แถวใน transaction เดียวกัน (PYG-423_18)', async () => {
+      tx.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'คุณตา',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+
+      await service.addGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        name: 'คุณตา',
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_ADDED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r-new',
+          metadata: {},
+        },
+      });
+    });
+
+    it('ไม่ส่งชื่อเล่น → เก็บเป็น null', async () => {
+      prisma.careRecipient.create.mockResolvedValue({
+        id: 'r-new',
+        name: 'ประยูร',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+      await service.addGroupCareRecipient(OWNER_ID, { groupId: GROUP_ID, name: 'ประยูร' });
+      expect(prisma.careRecipient.create.mock.calls[0][0].data.nickname).toBeNull();
+    });
+  });
+
+  describe('updateGroupCareRecipient', () => {
+    const input = { groupId: GROUP_ID, recipientId: 'r1', name: 'ชื่อใหม่' };
+
+    it('ไม่พบโปรไฟล์ → RECIPIENT_NOT_IN_GROUP (ไม่แก้อะไร)', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue(null);
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('โปรไฟล์อยู่คนละกลุ่ม → RECIPIENT_NOT_IN_GROUP', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: 'other-group',
+      });
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_IN_GROUP },
+      });
+    });
+
+    it('คนที่ไม่ใช่เจ้าของ → RECIPIENT_NOT_OWNER (ห้ามแก้ของคนอื่น)', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: 'someone-else',
+        familyGroupId: GROUP_ID,
+      });
+      await expect(service.updateGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('เจ้าของแก้ได้ + trim ค่า', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: GROUP_ID,
+      });
+      prisma.careRecipient.update.mockResolvedValue({
+        id: 'r1',
+        name: 'ชื่อใหม่',
+        nickname: null,
+        patientId: OWNER_ID,
+      });
+      await service.updateGroupCareRecipient(OWNER_ID, {
+        groupId: GROUP_ID,
+        recipientId: 'r1',
+        name: '  ชื่อใหม่ ',
+        nickname: '   ',
+      });
+      const data = prisma.careRecipient.update.mock.calls[0][0].data;
+      expect(data.name).toBe('ชื่อใหม่');
+      expect(data.nickname).toBeNull(); // ชื่อเล่นว่างหลัง trim → ล้างเป็น null
+
+      // PYG-423_18: แก้ 1 ครั้ง = RECIPIENT_UPDATED 1 แถว actor = คนแก้
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_UPDATED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r1',
+          metadata: {},
+        },
+      });
+    });
+  });
+
+  describe('removeGroupCareRecipient', () => {
+    const input = { groupId: GROUP_ID, recipientId: 'r1' };
+
+    it('คนที่ไม่ใช่เจ้าของ → RECIPIENT_NOT_OWNER', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: 'someone-else',
+        familyGroupId: GROUP_ID,
+      });
+      await expect(service.removeGroupCareRecipient(OWNER_ID, input)).rejects.toMatchObject({
+        extensions: { code: FG_ERROR.RECIPIENT_NOT_OWNER },
+      });
+      expect(prisma.careRecipient.update).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+    });
+
+    it('เจ้าของนำออก = unshare (set familyGroupId = null) ไม่ใช่ลบทิ้ง', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        patientId: OWNER_ID,
+        familyGroupId: GROUP_ID,
+      });
+      prisma.careRecipient.update.mockResolvedValue({});
+      const res = await service.removeGroupCareRecipient(OWNER_ID, input);
+
+      expect(prisma.careRecipient.update).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+        data: { familyGroupId: null },
+      });
+      expect(res).toEqual({ recipientId: 'r1', removed: true });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.familyGroupActivity.create).toHaveBeenCalledTimes(1);
+      expect(callArg(tx.familyGroupActivity.create)).toEqual({
+        data: {
+          groupId: GROUP_ID,
+          actorId: OWNER_ID,
+          action: ACTIVITY_ACTION.RECIPIENT_REMOVED,
+          targetType: ACTIVITY_TARGET.RECIPIENT,
+          targetId: 'r1',
+          metadata: {},
+        },
+      });
+    });
+  });
+
+  // ── PYG-517: shortcut + autofill ตอนจองแทน ──────────────────────────────
+  describe('groupBookingRecipients', () => {
+    const GROUP = 'group-1';
+    const OWNER = 'user-owner';
+    const MEMBER = 'user-member';
+
+    /** แถวโปรไฟล์ที่ select ของเมธอดนี้คืนกลับ */
+    function profileRow(overrides: Record<string, unknown> = {}) {
+      return {
+        patientId: MEMBER,
+        nickname: 'ย่า',
+        address_line: '123 ถนนสุขุมวิท',
+        province: 'เชียงใหม่',
+        district: 'เมืองเชียงใหม่',
+        date_of_birth: new Date('1954-01-01'),
+        gender: 'female',
+        weight_kg: null,
+        height_cm: null,
+        mobility_level: 'assisted',
+        medical_conditions: ['เบาหวาน'],
+        current_medications: 'ยาลดความดัน',
+        allergies: null,
+        blood_type: null,
+        care_notes: null,
+        preferred_hospital: null,
+        updated_at: new Date('2026-09-20'),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        {
+          userId: OWNER,
+          user: { firstName: 'สมชาย', lastName: 'ใจดี', displayName: 'somchai' },
+        },
+        {
+          userId: MEMBER,
+          user: { firstName: 'สมศรี', lastName: 'ใจงาม', displayName: 'somsri' },
+        },
+      ]);
+      prisma.careRecipient.findMany.mockResolvedValue([]);
+    });
+
+    it('คืนสมาชิก ACTIVE ครบทุกคนรวมเจ้าของ', async () => {
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.memberUserId)).toEqual([OWNER, MEMBER]);
+    });
+
+    it('ดึงเฉพาะสมาชิกสถานะ ACTIVE — คนที่ออกจากกลุ่มไม่โผล่', async () => {
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      const query = prisma.familyGroupMember.findMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(query.where).toMatchObject({ groupId: GROUP, status: 'ACTIVE' });
+    });
+
+    it('ชื่อมาจากบัญชี และล็อกเสมอ', async () => {
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+
+      expect(result[0].name).toBe('สมชาย ใจดี');
+      // ★ FE อ่านค่านี้แล้วตั้งช่องเป็น read-only โดยไม่ต้อง hardcode กติกาฝั่งตัวเอง
+      expect(result.every((r) => r.nameLocked)).toBe(true);
+    });
+
+    it('บัญชีมีแต่ display_name → ใช้ display_name', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER, user: { firstName: null, lastName: null, displayName: 'somchai' } },
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+      expect(result[0].name).toBe('somchai');
+    });
+
+    it('★ สมาชิกที่ยังไม่มีชื่อในบัญชี → ชื่อว่าง แต่ลิสต์ทั้งกลุ่มไม่พัง', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([
+        { userId: OWNER, user: { firstName: null, lastName: null, displayName: null } },
+        { userId: MEMBER, user: { firstName: 'สมศรี', lastName: 'ใจงาม', displayName: null } },
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+
+      // ★ ปฏิเสธตอน "กดจองจริง" (MEMBER_NAME_MISSING ของ PYG-516) ไม่ใช่ตอนโหลดลิสต์
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('');
+      expect(result[1].name).toBe('สมศรี ใจงาม');
+    });
+
+    // ── ข้อมูล autofill ────────────────────────────────────────────────────
+    it('มีโปรไฟล์ในกลุ่ม → hasProfile = true และ details ตรงกับโปรไฟล์', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([profileRow()]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+      const member = result.find((r) => r.memberUserId === MEMBER)!;
+
+      expect(member.hasProfile).toBe(true);
+      expect(member.nickname).toBe('ย่า');
+      expect(member.details).toMatchObject({
+        gender: 'หญิง',
+        supportLevel: 'ช่วยเหลือตัวเองได้เล็กน้อย / ต้องการการช่วยพยุงเดิน',
+        conditions: ['เบาหวาน'],
+        medicines: 'ยาลดความดัน',
+        addressLine: '123 ถนนสุขุมวิท',
+        province: 'เชียงใหม่',
+        district: 'เมืองเชียงใหม่',
+      });
+    });
+
+    it('ยังไม่มีโปรไฟล์ในกลุ่ม → hasProfile = false, details = undefined', async () => {
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+
+      // ★ ยังต้องอยู่ในลิสต์ FE จะได้มีปุ่มให้กด ไม่ใช่หายไปเงียบ ๆ
+      expect(result[0].hasProfile).toBe(false);
+      expect(result[0].details).toBeUndefined();
+    });
+
+    it('สมาชิกมีหลายใบในกลุ่ม (ข้อมูลเก่า) → ใช้ใบที่อัปเดตล่าสุด', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        profileRow({ nickname: 'ใหม่', updated_at: new Date('2026-09-21') }),
+        profileRow({ nickname: 'เก่า', updated_at: new Date('2026-01-01') }),
+      ]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+      expect(result.find((r) => r.memberUserId === MEMBER)!.nickname).toBe('ใหม่');
+    });
+
+    // ── ★ หัวใจของการ์ด: ข้อมูลส่วนตัวห้ามหลุด ─────────────────────────────
+    it('★ query แรกอ่านแค่โปรไฟล์ของกลุ่มนี้ — ไม่ปนโปรไฟล์ส่วนตัว', async () => {
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      const query = prisma.careRecipient.findMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+
+      // ★ ถ้าเผลอเป็น OR: [{ familyGroupId: null }, ...] ใบ is_self จาก Onboarding
+      //   จะหลุดให้สมาชิกคนอื่นเห็นทั้งโรคประจำตัว ยา และประวัติแพ้
+      //   = เปิดเผยข้อมูลอ่อนไหวโดยไม่มีความยินยอม (PDPA ม.26)
+      expect(query.where).toMatchObject({
+        familyGroupId: GROUP,
+        is_deleted: false,
+      });
+      expect(JSON.stringify(query.where)).not.toContain('null');
+      expect(query.where).not.toHaveProperty('OR');
+    });
+
+    // ── ใบ is_self จาก Onboarding (เฉพาะคนที่ยินยอม) ─────────────────────────
+    /** โปรไฟล์ในกลุ่มไม่มี → query ที่สอง (ใบ is_self) คืน rows ที่ให้ */
+    const givenNoGroupProfileButSelf = (rows: unknown[]) =>
+      prisma.careRecipient.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(rows);
+
+    it('ยินยอมชัดแจ้ง + ไม่มีโปรไฟล์ในกลุ่ม → เติมจากใบ is_self', async () => {
+      consent.grantedCurrentUserIds.mockResolvedValue(new Set([MEMBER]));
+      givenNoGroupProfileButSelf([profileRow({ nickname: 'ศรี' })]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+      const member = result.find((r) => r.memberUserId === MEMBER)!;
+
+      expect(member.hasProfile).toBe(true);
+      expect(member.nickname).toBe('ศรี');
+      expect(member.details).toMatchObject({ gender: 'หญิง', conditions: ['เบาหวาน'] });
+      // ชื่อยังมาจากบัญชีเสมอ ไม่ใช่จากโปรไฟล์
+      expect(member.name).toBe('สมศรี ใจงาม');
+    });
+
+    it('★ query ใบส่วนตัวต้องเป็น is_self + familyGroupId null เท่านั้น', async () => {
+      consent.grantedCurrentUserIds.mockResolvedValue(new Set([MEMBER]));
+      givenNoGroupProfileButSelf([]);
+
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      const query = prisma.careRecipient.findMany.mock.calls[1][0] as {
+        where: Record<string, unknown>;
+      };
+      // ★ โปรไฟล์ส่วนตัวใบอื่นอาจเป็นของคนอื่น (เช่น คุณยายที่สมาชิกสร้างไว้) — ห้ามเอามาเติม
+      expect(query.where).toMatchObject({
+        familyGroupId: null,
+        is_self: true,
+        is_deleted: false,
+      });
+    });
+
+    it('★ ยังไม่เคยตอบความยินยอม → ไม่อ่านใบ is_self ของคนนั้น', async () => {
+      // grantedCurrentUserIds คืน Set ว่าง (ค่าเริ่มต้น) = ไม่มีใครยินยอมชัดแจ้ง
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      expect(consent.grantedCurrentUserIds).toHaveBeenCalledWith(
+        [OWNER, MEMBER],
+        'disclose_to_family_group',
+      );
+      // ผู้เรียก (OWNER) ดูใบของตัวเองได้ แต่ MEMBER ต้องไม่อยู่ใน query
+      const query = prisma.careRecipient.findMany.mock.calls[1][0] as {
+        where: { patientId: { in: string[] } };
+      };
+      expect(query.where.patientId.in).toEqual([OWNER]);
+    });
+
+    it('มีโปรไฟล์ในกลุ่มแล้ว → ใช้ใบในกลุ่ม ไม่ถามความยินยอมของคนนั้น', async () => {
+      prisma.careRecipient.findMany.mockResolvedValueOnce([
+        profileRow(),
+        profileRow({ patientId: OWNER }),
+      ]);
+
+      await service.groupBookingRecipients(GROUP, OWNER);
+
+      // ทุกคนมีใบในกลุ่มแล้ว → ไม่ต้องไปอ่านความยินยอม/ใบส่วนตัวเพิ่ม
+      expect(consent.grantedCurrentUserIds).not.toHaveBeenCalled();
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('กลุ่มที่ไม่มีสมาชิก ACTIVE → array ว่าง ไม่ query โปรไฟล์ต่อ', async () => {
+      prisma.familyGroupMember.findMany.mockResolvedValue([]);
+
+      const result = await service.groupBookingRecipients(GROUP, OWNER);
+
+      expect(result).toEqual([]);
+      expect(prisma.careRecipient.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // ═══ PYG-518 · avatar signing ═══════════════════════════════════════════
+  describe('avatar signing (PYG-518)', () => {
+    it('sign avatar ของสมาชิกทุกคนด้วย createSignedUrls ครั้งเดียว กับ bucket profile-photos', async () => {
+      const members = Array.from({ length: 4 }, (_, i) =>
+        memberRow({
+          id: `fgm-${i}`,
+          userId: `u-${i}`,
+          user: { displayName: 'x', email: 'x@test.com', avatarUrl: `u-${i}/photo.jpg` },
+        }),
+      );
+      prisma.familyGroup.findUnique.mockResolvedValue(groupRow({ members }));
+
+      const result = await service.familyGroup(OWNER_ID, GROUP_ID);
+
+      expect(createSignedUrls).toHaveBeenCalledTimes(1);
+      expect(createSignedUrls.mock.calls[0][0]).toHaveLength(4);
+      expect(storageFrom).toHaveBeenCalledWith('profile-photos');
+      result.members.forEach((m, i) => {
+        expect(m.avatarUrl).toBe(`https://signed.example/u-${i}/photo.jpg`);
+      });
+    });
+
+    it('ไม่คืน storage path ดิบเมื่อ sign ไม่สำเร็จ', async () => {
+      createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
+      prisma.familyGroup.findUnique.mockResolvedValue(
+        groupRow({
+          members: [memberRow({ user: { displayName: 'x', email: 'x@test.com', avatarUrl: 'u-1/photo.jpg' } })],
+        }),
+      );
+
+      const result = await service.familyGroup(OWNER_ID, GROUP_ID);
+
+      expect(result.members[0].avatarUrl).toBeUndefined();
+      expect(result.members[0].avatarUrl).not.toBe('u-1/photo.jpg');
     });
   });
 });

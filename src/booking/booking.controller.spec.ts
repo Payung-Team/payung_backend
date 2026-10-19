@@ -5,12 +5,19 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BookingService } from './booking.service';
 import { PrismaService } from '../common/prisma.service';
-import { OmiseService } from '../payment/omise/omise.service';
-import { PaymentStateMachine } from '../payment/payment-state-machine';
+import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
+import {
+  SettlementBlockedError,
+  SettlementReason,
+} from '../payment/settlement/booking-settlement.types';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+import { ConsentService } from '../consent/consent.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { SupabaseService } from '../common/supabase.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 
@@ -46,8 +53,9 @@ function fakeCaregiver(overrides: Record<string, unknown> = {}) {
     id:                  CAREGIVER_ID,
     fullName:            'สมชาย ใจดี',
     hourlyRate:          350,
+    createdAt:           new Date('2026-01-01T00:00:00Z'),
     experienceYears:     5,
-    skills:              ['elderly_care'],
+    skills:              ['bathing'],
     serviceAreaProvince: 'เชียงใหม่',
     serviceAreaDistrict: 'เมือง',
     patientReviews:      [{ rating: 5 }, { rating: 4 }],
@@ -62,16 +70,23 @@ describe('BookingService — new REST methods', () => {
   let service: BookingService;
   let prisma: {
     booking: {
-      findUnique: jest.Mock;
-      create:     jest.Mock;
-      update:     jest.Mock;
-      findMany:   jest.Mock;
-      count:      jest.Mock;
+      findUnique:        jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      create:            jest.Mock;
+      update:            jest.Mock;
+      findMany:          jest.Mock;
+      count:             jest.Mock;
     };
-    careRecipient: { findUnique: jest.Mock };
+    careRecipient: { findUnique: jest.Mock; create: jest.Mock };
     caregiver:     { findMany:   jest.Mock; findUnique: jest.Mock };
+    // PYG-499: ด่าน Onboarding อ่าน role + ชื่อ-นามสกุลของผู้จอง
+    user:          { findUnique: jest.Mock };
+    caregiverAvailability: { findMany: jest.Mock };
+    servicePriceCatalog: { findUnique: jest.Mock };
     $transaction:  jest.Mock;
   };
+  // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
+  let settlement: { settle: jest.Mock };
 
   beforeEach(async () => {
     // PYG-286: cancelBooking ใช้ $transaction → ใส่ tx mock ที่ส่ง booking.update ของ prisma ให้ callback
@@ -84,18 +99,49 @@ describe('BookingService — new REST methods', () => {
         update: jest.fn((args) => prisma.booking.update(args)),
         create: jest.fn((args) => prisma.booking.create(args)),
       },
+      // PYG-460: ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" → สร้างโปรไฟล์ใน tx เดียวกัน
+      careRecipient: {
+        create: jest.fn((args) => prisma.careRecipient.create(args)),
+      },
+      // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
+      booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma = {
       booking: {
-        findUnique: jest.fn(),
-        create:     jest.fn(),
-        update:     jest.fn(),
-        findMany:   jest.fn(),
-        count:      jest.fn(),
+        findUnique:        jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        create:            jest.fn(),
+        update:            jest.fn(),
+        findMany:          jest.fn(),
+        count:             jest.fn(),
       },
-      careRecipient: { findUnique: jest.fn() },
+      careRecipient: { findUnique: jest.fn(), create: jest.fn() },
       caregiver:     { findMany: jest.fn(), findUnique: jest.fn() },
+      // PYG-499: ค่าเริ่มต้น = ผู้สูงอายุที่ผ่าน Onboarding แล้ว (เทสด่านอยู่ที่ booking-onboarding-gate.service.spec.ts)
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ role: 1, firstName: 'สมศรี', lastName: 'ใจดี' }),
+      },
+      // PYG-524: findMany ต่อ prisma.caregiver.findUnique — ค่า default ในแต่ละ it() ตั้งเอง
+      caregiverAvailability: { findMany: jest.fn() },
+      // ราคาจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — 300 บาท/ชม. ทุกเทส เว้นแต่ override
+      servicePriceCatalog: {
+        findUnique: jest.fn().mockResolvedValue({ pricePerHour: new Prisma.Decimal(300), isActive: true }),
+      },
       $transaction:  jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    settlement = {
+      settle: jest.fn().mockResolvedValue({
+        bookingId: BOOKING_ID,
+        reason: SettlementReason.PATIENT_CANCEL,
+        alreadySettled: false,
+        bookingStatusBefore: 'accepted',
+        bookingStatusAfter: 'cancelled',
+        moneyAction: 'none',
+        paymentStatusBefore: null,
+        paymentStatusAfter: null,
+        refundAmount: null,
+        refundPercentage: null,
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -104,11 +150,24 @@ describe('BookingService — new REST methods', () => {
         { provide: PrismaService, useValue: prisma },
         // PYG-292: BookingService ยิง booking event — mock EventEmitter2
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
-        // PYG-286: cancelBooking auto-void deps (ไม่ถูกเรียกใน create/search tests แต่ต้อง inject ให้ DI ผ่าน)
-        { provide: OmiseService, useValue: { voidCharge: jest.fn() } },
-        { provide: PaymentStateMachine, useValue: { transition: jest.fn() } },
+        // PYG-461 เฟส 3a: cancelBooking เรียก settle() — แทน OmiseService + PaymentStateMachine ของ PYG-286
+        { provide: BookingSettlementService, useValue: settlement },
         // PYG-434: สร้างใบ QR พร้อม booking — mock ไว้ ตรรกะจริงเทสที่ job-qr.service.spec.ts
         { provide: JobQrService, useValue: { createForBooking: jest.fn() } },
+        // PYG-540: ด่านความยินยอมก่อนจอง — ค่าเริ่มต้น = ไม่มีใครถอน (เทสด่านอยู่ที่ booking-consent-gate.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: {
+            findWithdrawnType: jest.fn().mockResolvedValue(null),
+            withdrawnUserIds: jest.fn().mockResolvedValue(new Set()),
+          },
+        },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
+        },
       ],
     }).compile();
 
@@ -149,6 +208,442 @@ describe('BookingService — new REST methods', () => {
       expect(result.caregiver).toBeUndefined();
     });
 
+    // PYG-526: REST เดิมคืนแค่ timeSlot → client แสดงได้แค่ "ช่วงเช้า" ตอนนี้คืนเวลาจริงด้วย
+    it('response มี startTime / endTime / durationHours (endTime = start + ชั่วโมง)', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(
+        fakeBooking({
+          startTime: new Date('1970-01-01T11:00:00Z'),
+          // Decimal จริงของ Prisma — ต้องออกเป็น number 4 ไม่ใช่ string "4" ใน JSON
+          durationHours: new Prisma.Decimal('4'),
+        }),
+      );
+
+      const result = await service.createBooking(PATIENT_ID, dto);
+
+      expect(result.startTime).toBe('11:00');
+      expect(result.endTime).toBe('15:00');
+      expect(result.durationHours).toBe(4);
+    });
+
+    // ── PYG-523: startTime + endTime → BE คำนวณ durationHours / timeSlot เอง ───
+
+    describe('PYG-523 เวลาเริ่ม–สิ้นสุด', () => {
+      const newDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        startTime:        '13:00',
+        endTime:          '16:30',
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      it('บันทึก durationHours / timeSlot / startTime ที่คำนวณเอง', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.durationHours).toBe(3.5);
+        expect(call.data.timeSlot).toBe('afternoon');
+        expect(call.data.startTime).toEqual(new Date('1970-01-01T13:00:00Z'));
+      });
+
+      it('ราคาประเมิน = ราคา catalog ของ serviceType × ชั่วโมงที่คำนวณ (end − start)', async () => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+        });
+        // 13:00–16:30 อยู่ใน afternoon ล้วน (12:00–17:00) — PYG-524 ต้องเจอ slot นี้ active
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'afternoon' },
+        ]);
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, {
+          ...newDto,
+          caregiverId: 'c2222222-2222-4222-8222-222222222222',
+        });
+
+        expect(prisma.servicePriceCatalog.findUnique).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { serviceType: newDto.serviceType } }),
+        );
+        // ไม่อ่าน hourlyRate ของผู้ดูแลอีกแล้ว
+        expect(prisma.caregiver.findUnique.mock.calls[0][0].select).not.toHaveProperty('hourlyRate');
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: { estimatedCost: Prisma.Decimal };
+        };
+        expect(call.data.estimatedCost.toFixed(2)).toBe('1050.00'); // 300 × 3.5
+      });
+
+      it('ปัดเป็นสตางค์ HALF_UP — 333.33 × 1.5 = 499.995 → 500.00', async () => {
+        prisma.servicePriceCatalog.findUnique.mockResolvedValue({
+          pricePerHour: new Prisma.Decimal('333.33'),
+          isActive: true,
+        });
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, {
+          ...newDto,
+          startTime: '13:00',
+          endTime: '14:30',
+        });
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: { estimatedCost: Prisma.Decimal };
+        };
+        expect(call.data.estimatedCost.toFixed(2)).toBe('500.00');
+      });
+
+      it('จองแบบ unmatched (ไม่มีผู้ดูแล) ก็มีราคาแล้ว — ไม่ขึ้นกับผู้ดูแล', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: { estimatedCost: Prisma.Decimal; status: string };
+        };
+        expect(call.data.status).toBe('unmatched');
+        expect(call.data.estimatedCost.toFixed(2)).toBe('1050.00');
+      });
+
+      it.each([
+        ['ไม่มีแถวใน catalog', null],
+        ['is_active = false', { pricePerHour: new Prisma.Decimal(300), isActive: false }],
+      ])('serviceType ที่ยังไม่เปิดขาย (%s) → 422 ไม่สร้างใบจอง', async (_label, row) => {
+        prisma.servicePriceCatalog.findUnique.mockResolvedValue(row);
+
+        await expect(service.createBooking(PATIENT_ID, newDto)).rejects.toBeInstanceOf(
+          UnprocessableEntityException,
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('เช็คเวลาชนด้วยช่วงที่คำนวณ — นัดเดิม 15:00–17:00 ชนกับ 13:00–16:30', async () => {
+        prisma.booking.findMany.mockResolvedValue([
+          { startTime: new Date('1970-01-01T15:00:00Z'), durationHours: 2 },
+        ]);
+
+        await expect(service.createBooking(PATIENT_ID, newDto)).rejects.toThrow(
+          ConflictException,
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('นัดเดิมเริ่มตอนงานใหม่จบพอดี (16:30) → ไม่ชน', async () => {
+        prisma.booking.findMany.mockResolvedValue([
+          { startTime: new Date('1970-01-01T16:30:00Z'), durationHours: 2 },
+        ]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, newDto);
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('เวลาไม่ผ่านกฎ → 400 ก่อนแตะ DB ใด ๆ', async () => {
+        await expect(
+          service.createBooking(PATIENT_ID, { ...newDto, endTime: '12:00' }),
+        ).rejects.toThrow('เวลาสิ้นสุดต้องหลังเวลาเริ่ม และอยู่ในวันเดียวกัน');
+
+        expect(prisma.booking.findMany).not.toHaveBeenCalled();
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('แบบเดิม (timeSlot + durationHours) ยังจองได้ และเก็บค่าตามที่ส่งมา', async () => {
+        prisma.booking.findMany.mockResolvedValue([]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+
+        await service.createBooking(PATIENT_ID, dto);
+
+        const call = prisma.booking.create.mock.calls[0][0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.durationHours).toBe(4);
+        expect(call.data.timeSlot).toBe('morning');
+        expect(call.data.startTime).toEqual(new Date('1970-01-01T09:00:00Z'));
+      });
+    });
+
+    // ── PYG-524: ต้องเช็ค caregiver_availability จริง ไม่ใช่แค่เชื่อ timeSlot ─────
+
+    describe('PYG-524 เช็ค caregiver_availability ตอนจอง', () => {
+      // 2026-07-01 = วันพุธ (dayOfWeek = 3)
+      const availDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        caregiverId:      CAREGIVER_ID,
+        startTime:        '09:00',
+        endTime:          '11:00', // อยู่ใน morning (06:00–12:00) ล้วน
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      beforeEach(() => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+          hourlyRate: 300,
+        });
+        prisma.booking.findMany.mockResolvedValue([]); // ไม่มีนัดชนอื่น
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+      });
+
+      it('จองช่วงที่ผู้ดูแลไม่ได้เปิดรับ (ไม่มี slot active เลย) → ถูกปฏิเสธ', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([]);
+
+        await expect(service.createBooking(PATIENT_ID, availDto)).rejects.toThrow(
+          'ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้',
+        );
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('คร่อม 2 slot (11:00–14:00 = morning+afternoon) ที่ว่างทั้งคู่ → ผ่าน', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'morning' },
+          { timeSlot: 'afternoon' },
+        ]);
+
+        await service.createBooking(PATIENT_ID, {
+          ...availDto,
+          startTime: '11:00',
+          endTime:   '14:00',
+        });
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('คร่อม 2 slot แต่ว่างแค่ slot เดียว (morning ว่าง, afternoon ไม่ว่าง) → ไม่ผ่าน', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'morning' },
+        ]);
+
+        await expect(
+          service.createBooking(PATIENT_ID, {
+            ...availDto,
+            startTime: '11:00',
+            endTime:   '14:00',
+          }),
+        ).rejects.toThrow('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('ไม่ส่ง caregiverId มา (จองแบบ unmatched) → ไม่เช็ค availability เลย', async () => {
+        prisma.booking.create.mockResolvedValue(
+          fakeBooking({ caregiverId: null, status: 'unmatched' }),
+        );
+
+        await service.createBooking(PATIENT_ID, {
+          ...availDto,
+          caregiverId: undefined,
+        });
+
+        expect(prisma.caregiverAvailability.findMany).not.toHaveBeenCalled();
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // ── PYG-544: ผู้ดูแลรับงานของคนอื่นในเวลานั้นไปแล้ว ───────────────────────────
+
+    describe('PYG-544 เช็คเวลาชนกับงานที่ผู้ดูแลรับไว้แล้วตอนจอง', () => {
+      const busyDto: CreateBookingDto = {
+        tasks:            ['อาบน้ำ'],
+        serviceLocations: ['บ้าน'],
+        serviceType:      'elderly_care',
+        caregiverId:      CAREGIVER_ID,
+        startTime:        '10:00',
+        endTime:          '11:00',
+        locationAddress:  '123 Main St',
+        bookingDate:      '2026-07-01',
+      };
+
+      /** งานที่ผู้ดูแลรับไว้แล้ว (ของผู้จองคนอื่น) — นัดของผู้จองเองว่าง */
+      const caregiverJobs = (jobs: { startTime: Date; durationHours: number }[]) =>
+        prisma.booking.findMany.mockImplementation(
+          (args: { where: { caregiverId?: string } }) =>
+            Promise.resolve(args.where.caregiverId ? jobs : []),
+        );
+
+      beforeEach(() => {
+        prisma.caregiver.findUnique.mockResolvedValue({
+          id: CAREGIVER_ID,
+          kycStatus: 'verified',
+          isSearchable: true,
+          hourlyRate: 300,
+        });
+        prisma.caregiverAvailability.findMany.mockResolvedValue([{ timeSlot: 'morning' }]);
+        prisma.booking.create.mockResolvedValue(fakeBooking());
+      });
+
+      it('ซ้อนกับงานที่ผู้ดูแลรับไว้แล้ว (09:00–12:00) → 409 ผู้ดูแลไม่ว่าง + ไม่สร้างใบจอง', async () => {
+        caregiverJobs([{ startTime: new Date('1970-01-01T09:00:00Z'), durationHours: 3 }]);
+
+        const err = await service.createBooking(PATIENT_ID, busyDto).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(ConflictException);
+        expect((err as Error).message).toContain('ผู้ดูแลไม่ว่างในช่วงเวลานี้');
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('นับเฉพาะ accepted / confirmed / in_progress ของผู้ดูแลคนนั้นในวันเดียวกัน — ไม่นับ pending', async () => {
+        caregiverJobs([]);
+
+        await service.createBooking(PATIENT_ID, busyDto);
+
+        expect(prisma.booking.findMany).toHaveBeenCalledWith({
+          where: {
+            caregiverId: CAREGIVER_ID,
+            bookingDate: new Date('2026-07-01T00:00:00.000Z'),
+            status: { in: ['accepted', 'confirmed', 'in_progress'] },
+          },
+          select: { startTime: true, durationHours: true },
+        });
+      });
+
+      it.each([
+        ['งานก่อนหน้าจบ 10:00 พอดี', '08:00', 2],
+        ['งานถัดไปเริ่ม 11:00 พอดี', '11:00', 1],
+      ])('ต่อกันพอดี (%s) → จองได้', async (_label, hm, hours) => {
+        caregiverJobs([{ startTime: new Date(`1970-01-01T${hm}:00Z`), durationHours: hours }]);
+
+        await service.createBooking(PATIENT_ID, busyDto);
+
+        expect(prisma.booking.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('ไม่ส่ง caregiverId มา (unmatched) → ไม่เช็คงานของผู้ดูแล', async () => {
+        caregiverJobs([]);
+        prisma.booking.create.mockResolvedValue(
+          fakeBooking({ caregiverId: null, status: 'unmatched' }),
+        );
+
+        await service.createBooking(PATIENT_ID, { ...busyDto, caregiverId: undefined });
+
+        const scopes = prisma.booking.findMany.mock.calls.map(
+          ([args]: [{ where: Record<string, unknown> }]) => Object.keys(args.where),
+        );
+        expect(scopes.some((keys: string[]) => keys.includes('caregiverId'))).toBe(false);
+      });
+    });
+
+    // ── บั๊ก: เช็คเวลาชนของผู้จองเดิมไม่นับสถานะ accepted ────────────────────────
+
+    it('นัดเดิมของผู้จอง (เจ้าตัว) สถานะ accepted ในเวลาเดียวกัน → ถือว่าชน (409)', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        { startTime: new Date('1970-01-01T10:00:00Z'), durationHours: 2 },
+      ]);
+
+      await expect(service.createBooking(PATIENT_ID, dto)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: ['pending', 'accepted', 'confirmed'] },
+          }),
+        }),
+      );
+      expect(prisma.booking.create).not.toHaveBeenCalled();
+    });
+
+    // ── PYG-460: ข้อมูลสุขภาพผู้รับบริการ ─────────────────────────────────────
+
+    it('เก็บ patientProfile เป็น snapshot ลง member_details', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        patientProfile: { age: 72, gender: 'หญิง', allergies: 'แพ้ยากลุ่มซัลฟา' },
+      });
+
+      const call = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      // เก็บรูปทรงเดิมที่ FE ส่งมา ไม่แปลงเป็น enum — เพราะเป็นสำเนาไว้อ่าน ไม่ใช่ไว้ query
+      expect(call.data.memberDetails).toEqual({
+        age: 72, gender: 'หญิง', allergies: 'แพ้ยากลุ่มซัลฟา',
+      });
+    });
+
+    it('ไม่ส่ง patientProfile มา → ไม่แตะ member_details', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      await service.createBooking(PATIENT_ID, dto);
+
+      const call = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(call.data.memberDetails).toBeUndefined();
+    });
+
+    it('saveAsProfile → สร้าง care_recipient แล้วผูกกับ booking ใบเดียวกัน', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+      prisma.careRecipient.create.mockResolvedValue({ id: 'new-recipient-id' });
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        patientName:    'คุณย่า',
+        saveAsProfile:  true,
+        patientProfile: { supportLevel: 'ช่วยเหลือตัวเองไม่ได้ / ติดเตียง' },
+      });
+
+      // โปรไฟล์เขียนลงคอลัมน์จริง (แปลงเป็น enum) ไม่ใช่เก็บเป็นข้อความไทย
+      const profileCall = prisma.careRecipient.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(profileCall.data.name).toBe('คุณย่า');
+      expect(profileCall.data.mobility_level).toBe('bedridden');
+
+      // ★ หัวใจของเรื่อง: booking ที่เพิ่งสร้างต้องผูกกับโปรไฟล์ที่เพิ่งสร้าง
+      //   ก่อน PYG-460 คอลัมน์นี้ว่างทั้งตาราง (dry-run: 0 จาก 101 ใบ)
+      const bookingCall = prisma.booking.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(bookingCall.data.careRecipientId).toBe('new-recipient-id');
+
+      // ทั้งคู่ต้องอยู่ใน transaction เดียว ไม่งั้น booking พังแล้วเหลือโปรไฟล์ค้าง
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('saveAsProfile ไม่สร้างซ้ำเมื่อเลือกโปรไฟล์เดิมอยู่แล้ว', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID });
+
+      await service.createBooking(PATIENT_ID, {
+        ...dto,
+        careRecipientId: 'r-uuid',
+        patientName:     'คุณย่า',
+        saveAsProfile:   true,
+      });
+
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+    });
+
+    it('saveAsProfile ไม่สร้างโปรไฟล์ไร้ชื่อ', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.booking.create.mockResolvedValue(fakeBooking());
+
+      // name เป็นคอลัมน์ NOT NULL — ไม่มีชื่อก็ไม่มีอะไรจะบันทึก
+      await service.createBooking(PATIENT_ID, { ...dto, saveAsProfile: true });
+
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
+    });
+
     it('validates careRecipientId ownership', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ patientId: 'other-patient' });
 
@@ -178,33 +673,33 @@ describe('BookingService — new REST methods', () => {
 
   // ── cancelBooking ──────────────────────────────────────────────────────────
 
+  /**
+   * PYG-461 เฟส 3a — สถานะไหนยกเลิกได้/ไม่ได้ ย้ายไปเป็นของ settle() แล้ว
+   * (SETTLEABLE_FROM[PATIENT_CANCEL] = unmatched/pending/accepted/confirmed)
+   * ที่นี่จึงเทสแค่ว่า endpoint ต่อสายถูกและส่ง error ของ settle กลับไปให้ผู้ใช้เห็น
+   */
   describe('cancelBooking', () => {
-    it('cancels an unmatched booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'unmatched' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-      expect(prisma.booking.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { status: 'cancelled' } }),
+    beforeEach(() => {
+      prisma.booking.findUniqueOrThrow.mockResolvedValue(
+        fakeBooking({ status: 'cancelled' }),
       );
     });
 
-    it('cancels a pending booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'pending' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
+    it.each(['unmatched', 'pending', 'accepted', 'confirmed'])(
+      'ยกเลิก booking สถานะ %s ได้ — ส่งต่อให้ settle ตัดสินเรื่องเงิน',
+      async (status) => {
+        prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status }));
 
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-    });
+        const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
 
-    it('cancels an accepted booking', async () => {
-      prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'accepted' }));
-      prisma.booking.update.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-
-      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
-      expect(result.status).toBe('cancelled');
-    });
+        expect(result.status).toBe('cancelled');
+        expect(settlement.settle).toHaveBeenCalledWith(
+          BOOKING_ID,
+          SettlementReason.PATIENT_CANCEL,
+          { id: PATIENT_ID, role: 'patient' },
+        );
+      },
+    );
 
     it('throws NotFoundException when booking not found', async () => {
       prisma.booking.findUnique.mockResolvedValue(null);
@@ -218,22 +713,56 @@ describe('BookingService — new REST methods', () => {
       );
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(ForbiddenException);
+      expect(settlement.settle).not.toHaveBeenCalled();
     });
 
-    it('throws UnprocessableEntityException for completed bookings', async () => {
+    it('booking ที่จบงานแล้ว → settle ตอบ 422 แล้ว endpoint ส่งต่อให้ผู้ใช้', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'completed' }));
+      settlement.settle.mockRejectedValue(
+        new SettlementBlockedError(
+          'booking_not_settleable',
+          'งานนี้จบแล้ว ยกเลิกไม่ได้',
+        ),
+      );
+
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(UnprocessableEntityException);
     });
 
-    it('throws UnprocessableEntityException for already cancelled bookings', async () => {
+    /**
+     * ★ พฤติกรรมเปลี่ยนโดยตั้งใจ: เดิมยกเลิกใบที่ 'cancelled' อยู่แล้ว = 422
+     *   ตอนนี้ settle คืน alreadySettled แล้ว endpoint ตอบสำเร็จ (idempotent)
+     *   เพราะเคสจริงคือผู้ใช้กดซ้ำ/เน็ตหลุดแล้วกดใหม่ — ตอบ error ทั้งที่ใบถูกยกเลิกไปแล้ว
+     *   ทำให้ FE ต้องเดาว่าตกลงยกเลิกสำเร็จหรือไม่ ส่วนการไม่แจ้งเตือนซ้ำคุมไว้ที่ booking.service.spec
+     */
+    it('ยกเลิกใบที่ยกเลิกไปแล้ว → สำเร็จแบบ idempotent ไม่ใช่ 422', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'cancelled' }));
-      await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
-        .rejects.toThrow(UnprocessableEntityException);
+      settlement.settle.mockResolvedValue({
+        bookingId: BOOKING_ID,
+        reason: SettlementReason.PATIENT_CANCEL,
+        alreadySettled: true,
+        bookingStatusBefore: 'cancelled',
+        bookingStatusAfter: 'cancelled',
+        moneyAction: 'none',
+        paymentStatusBefore: null,
+        paymentStatusAfter: null,
+        refundAmount: null,
+        refundPercentage: null,
+      });
+
+      const result = await service.cancelBooking(BOOKING_ID, PATIENT_ID);
+      expect(result.status).toBe('cancelled');
     });
 
-    it('throws UnprocessableEntityException for rejected bookings', async () => {
+    it('booking ที่ผู้ดูแลปฏิเสธไปแล้ว → settle ตอบ 422', async () => {
       prisma.booking.findUnique.mockResolvedValue(fakeBooking({ status: 'rejected' }));
+      settlement.settle.mockRejectedValue(
+        new SettlementBlockedError(
+          'booking_not_settleable',
+          'การจองนี้ถูกปฏิเสธไปแล้ว',
+        ),
+      );
+
       await expect(service.cancelBooking(BOOKING_ID, PATIENT_ID))
         .rejects.toThrow(UnprocessableEntityException);
     });
@@ -252,6 +781,29 @@ describe('BookingService — new REST methods', () => {
       expect(result[0].id).toBe(CAREGIVER_ID);
       expect(result[0].avgRating).toBe(4.5);
       expect(result[0].reviewCount).toBe(2);
+    });
+
+    it('hourlyRate = ราคา catalog ของ serviceType ที่ขอ ไม่ใช่ hourlyRate ของผู้ดูแล (350)', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(prisma.servicePriceCatalog.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { serviceType: 'elderly_care' } }),
+      );
+      expect(result[0].hourlyRate).toBe(300);
+    });
+
+    it('serviceType ที่ปิดขาย → hourlyRate undefined', async () => {
+      prisma.caregiver.findMany.mockResolvedValue([fakeCaregiver()]);
+      prisma.servicePriceCatalog.findUnique.mockResolvedValue({
+        pricePerHour: new Prisma.Decimal(300),
+        isActive: false,
+      });
+
+      const result = await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+
+      expect(result[0].hourlyRate).toBeUndefined();
     });
 
     it('filters by province when provided', async () => {
@@ -285,13 +837,88 @@ describe('BookingService — new REST methods', () => {
       expect(result[0].reviewCount).toBe(0);
     });
 
-    it('caps results at 20', async () => {
-      prisma.caregiver.findMany.mockResolvedValue([]);
-      await service.searchMatchesBasic({ serviceType: 'elderly_care' });
+    // ── PYG-489: ลำดับไม่ขึ้นกับ hourly_rate ของผู้ดูแลอีกต่อไป ─────────────────
 
-      expect(prisma.caregiver.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 20 }),
+    /** ผู้ดูแลสำหรับเทสลำดับ — ratings ว่าง = ยังไม่มีรีวิว */
+    const ranked = (id: string, ratings: number[], createdAt: string, hourlyRate: number | null = 350) =>
+      fakeCaregiver({
+        id,
+        hourlyRate,
+        createdAt: new Date(createdAt),
+        patientReviews: ratings.map((rating) => ({ rating })),
+      });
+
+    const orderOf = async (rows: unknown[]) => {
+      prisma.caregiver.findMany.mockResolvedValue(rows);
+      return (await service.searchMatchesBasic({ serviceType: 'elderly_care' })).map((m) => m.id);
+    };
+
+    it('PYG-489: เรียงตามคะแนนรีวิวเฉลี่ยจากมากไปน้อย ผู้ที่ยังไม่มีรีวิวอยู่ท้าย', async () => {
+      const ids = await orderOf([
+        ranked('cg-none', [], '2026-01-01'),
+        ranked('cg-3', [3, 3], '2026-01-02'),
+        ranked('cg-5', [5], '2026-01-03'),
+        ranked('cg-4.5', [4, 5], '2026-01-04'),
+      ]);
+
+      expect(ids).toEqual(['cg-5', 'cg-4.5', 'cg-3', 'cg-none']);
+    });
+
+    it('PYG-489: คะแนนเท่ากัน → สมัครก่อนอยู่ก่อน (ทั้งกลุ่มที่มีรีวิวและกลุ่มที่ยังไม่มี)', async () => {
+      const ids = await orderOf([
+        ranked('cg-new-4', [4], '2026-03-01'),
+        ranked('cg-none-new', [], '2026-05-01'),
+        ranked('cg-old-4', [4, 4], '2026-01-01'),
+        ranked('cg-none-old', [], '2026-02-01'),
+      ]);
+
+      expect(ids).toEqual(['cg-old-4', 'cg-new-4', 'cg-none-old', 'cg-none-new']);
+    });
+
+    it('PYG-489: ★ ผู้ดูแล hourly_rate = null ไม่ถูกดันไปท้ายเพราะราคา — อยู่ตามคะแนนรีวิวของตัวเอง', async () => {
+      const ids = await orderOf([
+        ranked('cg-cheap-low', [2], '2026-01-01', 100),
+        ranked('cg-null-top', [5, 5], '2026-06-01', null),
+        ranked('cg-pricey-mid', [4], '2026-01-02', 900),
+        ranked('cg-null-none', [], '2026-01-03', null),
+        ranked('cg-rated-none', [], '2026-01-04', 200),
+      ]);
+
+      // ผู้ดูแลราคา null ที่รีวิวดีที่สุดขึ้นอันดับ 1 · ราคา null ที่ยังไม่มีรีวิวอยู่ก่อนคนมีราคาที่สมัครทีหลัง
+      expect(ids).toEqual(['cg-null-top', 'cg-pricey-mid', 'cg-cheap-low', 'cg-null-none', 'cg-rated-none']);
+    });
+
+    it('PYG-489: query ไม่อ่านและไม่เรียงตาม hourlyRate ของผู้ดูแลแล้ว', async () => {
+      await orderOf([]);
+
+      const call = prisma.caregiver.findMany.mock.calls[0][0] as {
+        select: Record<string, unknown>;
+        orderBy: unknown;
+      };
+      expect(call.select).not.toHaveProperty('hourlyRate');
+      expect(JSON.stringify(call.orderBy)).not.toContain('hourlyRate');
+    });
+
+    it('PYG-489: คืนสูงสุด 50 คน (เดิม 20) — ตัดหลังเรียงแล้ว คนที่ราคา null แต่รีวิวดีที่สุดไม่หลุด', async () => {
+      const rows = Array.from({ length: 60 }, (_, i) =>
+        ranked(`cg-${String(i).padStart(2, '0')}`, [3], `2026-01-${String((i % 28) + 1).padStart(2, '0')}T00:00:${String(i).padStart(2, '0')}Z`),
       );
+      rows.push(ranked('cg-null-best', [5], '2026-12-31', null));
+
+      const ids = await orderOf(rows);
+
+      expect(ids).toHaveLength(50);
+      expect(ids[0]).toBe('cg-null-best');
+    });
+
+    it('PYG-489: 21 คนที่เข้าเงื่อนไข (เกินเพดานเดิม 20) → ได้ครบ 21 รวมผู้ดูแลใหม่ที่ราคา null', async () => {
+      const rows = Array.from({ length: 19 }, (_, i) => ranked(`cg-${i}`, [4], '2026-01-01', 300 + i));
+      rows.push(ranked('cg-null-a', [], '2026-09-01', null), ranked('cg-null-b', [], '2026-10-01', null));
+
+      const ids = await orderOf(rows);
+
+      expect(ids).toHaveLength(21);
+      expect(ids.slice(-2)).toEqual(['cg-null-a', 'cg-null-b']);
     });
   });
 

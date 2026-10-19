@@ -16,6 +16,7 @@
  */
 import { Field, ID, InputType } from '@nestjs/graphql';
 import {
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsString,
@@ -40,4 +41,23 @@ export class CreatePaymentInput {
   @IsString()
   @IsNotEmpty()
   omiseToken?: string;
+
+  /**
+   * PYG-4xx — เก็บบัตรไว้ใช้ซ้ำหรือไม่ ★ opt-in: ไม่ส่ง = ไม่เก็บ
+   *
+   * false / ไม่ส่ง → ชาร์จด้วย token ตรง ๆ (ทางเดิม) token หมดอายุทันทีหลังใช้
+   *                  ไม่มีอะไรของบัตรค้างอยู่ที่ Omise
+   * true          → แปลง token เป็น Omise Customer + Card ถาวร เก็บ id ไว้บน payment
+   *                  เพื่อให้ hold-refresh cron ต่ออายุวงเงินเองได้โดยไม่ต้องขอบัตรซ้ำ
+   *
+   * ★ ต้องมาจากการที่ผู้ใช้ติ๊กเลือกเองเท่านั้น ห้าม FE ส่ง true มาโดยที่ผู้ใช้ไม่ได้เลือก
+   *   (omise_customer_id ที่ไม่เป็น null = หลักฐานว่าผู้ใช้ยินยอม จึงไม่มีคอลัมน์ consent แยก)
+   */
+  @Field({
+    defaultValue: false,
+    description:
+      'เก็บบัตรใบนี้ไว้ที่ Omise เพื่อต่ออายุวงเงินอัตโนมัติหรือไม่ — ต้องให้ผู้ใช้เลือกเอง ไม่ส่ง = ไม่เก็บ',
+  })
+  @IsBoolean()
+  saveCard: boolean = false;
 }

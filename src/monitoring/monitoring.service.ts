@@ -18,6 +18,8 @@ import { CheckInInput } from './dto/check-in.input';
 import { CheckOutInput } from './dto/check-out.input';
 import { JobEvent } from './entities/job-event.entity';
 import { ProofOfWorkSummary } from './entities/proof-of-work.entity';
+import { JobEvidenceService } from './job-evidence.service';
+import { canViewBookingMonitoring } from './booking-viewer-access.util';
 import {
   BOOKING_STATUS,
   BUSINESS_TIMEZONE,
@@ -26,17 +28,16 @@ import {
   GPS_ACCURACY_TRUST_M,
   JOB_EVENT_SOURCE,
   JOB_EVENT_TYPE,
-  JOB_EVIDENCE_BUCKET,
   LATE_VERDICT_MIN,
   MIN_DURATION_RATIO,
   REVIEW_REASON,
-  SIGNED_URL_TTL_SEC,
   VERDICT,
   VERDICT_RADIUS_M,
   WARN_RADIUS_M,
   type Verdict,
 } from './monitoring.constants';
 import { PaymentStatus } from '../payment/entities/payment-status.enum';
+import { CompleteBookingService } from '../payment/complete-booking.service';
 
 /** booking ที่โหลด jobEvents มาครบแล้ว — อินพุตของ summarize() */
 type BookingWithProof = Prisma.BookingGetPayload<{
@@ -86,6 +87,8 @@ export class MonitoringService {
     private readonly clock: ClockService,
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly jobEvidenceService: JobEvidenceService,
+    private readonly completeBookingService: CompleteBookingService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════════
@@ -276,9 +279,10 @@ export class MonitoringService {
    *
    * ★ จุดที่ต่างจากแผนเดิมมาก: การกดปุ่มนี้ "คือ" การปิดงาน
    *   ผู้รับบริการไม่ต้องมากดยืนยันอะไรอีก (ทีมตัดสินใจ 2026-07-27)
-   *   สถานะหลังจากนี้จึงเป็น awaiting_release ไม่ใช่ awaiting_confirmation
+   *   สถานะหลังจากนี้จึงเป็น completed ทันที
    *
-   * ⚠ การ์ดนี้ "ไม่" แตะเงินเลย การ capture เป็นงานของ Epic 2 ทั้งหมด
+   * หลังบันทึก check-out ระบบจะ capture เงินที่กันวงไว้ แล้วจึงประกาศ booking.completed
+   * เพื่อไม่ให้ payout เริ่มก่อนที่เงินจริงจะถูกตัดจากผู้รับบริการสำเร็จ
    */
   async checkOutBooking(
     userId: string,
@@ -291,6 +295,7 @@ export class MonitoringService {
       where: { id: input.bookingId },
       include: {
         jobEvents: true, // เอามาทั้งสองแถว (check_in + check_out ถ้ามี)
+        payment: { select: { paymentStatus: true } },
         // PYG-435: ดึงมาเพื่อตอบคำถามเดียว — "งานใบนี้มี QR ไหม"
         jobSession: { select: { id: true } },
       },
@@ -317,6 +322,18 @@ export class MonitoringService {
     // ปิดงานซ้ำ → คืนแถวเดิม ไม่ throw (เหมือนเช็คอิน)
     // เช็คก่อนด่านอื่น ด้วยเหตุผลเดียวกับ checkInBooking
     if (existingCheckOut) {
+      // ถ้า capture รอบแรกพัง QR session จะยังเป็น CHECKED_IN และ payment ยัง held
+      // การสแกนซ้ำจึงต้อง retry capture โดยไม่สร้าง job_event ซ้ำ
+      if (
+        booking.status !== BOOKING_STATUS.COMPLETED ||
+        booking.payment?.paymentStatus === PaymentStatus.held
+      ) {
+        await this.completeBookingService.finalizeCheckedOutBooking(
+          userId,
+          booking.id,
+          existingCheckOut.serverTs,
+        );
+      }
       this.logger.log({
         event: 'monitoring.check_out.duplicate',
         bookingId: booking.id,
@@ -334,8 +351,8 @@ export class MonitoringService {
       throw new BadRequestException('ยังไม่ได้เช็คอิน จึงเช็คเอาท์ไม่ได้');
     }
 
-    // ── ตรวจไฟล์แนบก่อนเขียนอะไรทั้งสิ้น ─────────────────────────────
-    const photoPath = this.validateEvidencePath(input.photoUrl, booking.id);
+    // ── ตรวจไฟล์แนบก่อนเขียนอะไรทั้งสิ้น (ใช้ตัวเดียวกับ CareLogService — PYG-361) ──
+    const photoPath = this.jobEvidenceService.validatePath(input.photoUrl, booking.id);
 
     const now = this.clock.now();
     const deviceTs = input.deviceTs ? new Date(input.deviceTs) : null;
@@ -381,11 +398,8 @@ export class MonitoringService {
       booking.disputeStatus,
     );
 
-    const nextStatus =
-      verdict === VERDICT.VALID
-        ? BOOKING_STATUS.AWAITING_RELEASE
-        : BOOKING_STATUS.NEEDS_REVIEW;
-
+    // สถานะ booking สะท้อนวงจรชีวิตของงานเท่านั้น: เมื่อเช็กเอาต์ งานจบแล้วเสมอ
+    // ธงตรวจสอบยังเก็บใน reviewReasons/verdict เพื่อให้ payout gate ตัดสินแยกต่างหาก
     const [created] = await this.prisma.$transaction([
       this.prisma.jobEvent.create({
         data: {
@@ -406,11 +420,18 @@ export class MonitoringService {
       this.prisma.booking.update({
         where: { id: booking.id },
         data: {
-          status: nextStatus,
           reviewReasons: { set: mergedReasons },
         },
       }),
     ]);
+
+    // เช็กเอาต์สำเร็จ = ตัดเงินจริงทันทีสำหรับบัตรที่ held
+    // PromptPay/captured จะข้าม capture และไปขั้น emit completed ได้เลย
+    await this.completeBookingService.finalizeCheckedOutBooking(
+      userId,
+      booking.id,
+      now,
+    );
 
     this.logger.log({
       event: 'monitoring.check_out',
@@ -421,7 +442,7 @@ export class MonitoringService {
       distanceOutM,
       verdict,
       reviewReasons: mergedReasons,
-      nextStatus,
+      nextStatus: BOOKING_STATUS.COMPLETED,
     });
 
     // ── แจ้งผู้รับบริการว่างานปิดแล้ว + เหลือเวลากี่ชั่วโมงให้ทักท้วง ──
@@ -451,7 +472,7 @@ export class MonitoringService {
   /**
    * สรุปหลักฐานการทำงานของ booking 1 ใบ
    *
-   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน
+   * เปิดให้: ผู้รับบริการเจ้าของงาน / ผู้ดูแลเจ้าของงาน / แอดมิน / สมาชิกกลุ่มครอบครัวของงานนี้
    */
   async proofOfWork(
     userId: string,
@@ -470,16 +491,26 @@ export class MonitoringService {
       throw new NotFoundException('ไม่พบงานนี้');
     }
 
-    // แอดมิน (3) ดูได้ทุกงาน; คนอื่นต้องเป็นคู่กรณีของงานนั้นเท่านั้น
-    const isAdmin = role === 3;
-    const isParticipant =
-      booking.patientId === userId || booking.caregiver?.userId === userId;
-
-    if (!isAdmin && !isParticipant) {
+    // แอดมิน / คู่กรณี / สมาชิกกลุ่มครอบครัวของ booking นี้ — ดู booking-viewer-access.util
+    if (!(await canViewBookingMonitoring(this.prisma, userId, role, booking))) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ดูข้อมูลงานนี้');
     }
 
-    return this.summarize(booking);
+    const summary = this.summarize(booking);
+
+    // PYG-470: sign รูปหลักฐานที่นี่ทางเดียว — ผ่านการตรวจสิทธิ์ข้างบนแล้ว
+    //   (sign ใช้ service-role ซึ่ง bypass RLS) · proofOfWorkForSystem ไม่ sign เพราะไม่มีคนดูรูป
+    //   checkOutBooking / QR ก็ไม่ sign — FE refetch ผ่าน query นี้เอา
+    await Promise.all(
+      [summary.checkIn, summary.checkOut].map(async (event) => {
+        if (event?.photoUrl) {
+          event.photoUrl =
+            (await this.jobEvidenceService.sign(event.photoUrl)) ?? undefined;
+        }
+      }),
+    );
+
+    return summary;
   }
 
   /**
@@ -795,79 +826,6 @@ export class MonitoringService {
     return Math.round(Number(durationHours) * 60);
   }
 
-  /**
-   * ตรวจไฟล์แนบให้ปลอดภัย แล้วคืนค่าเป็น "path" ที่จะเก็บลงฐานข้อมูล (PYG-358 STEP 2)
-   *
-   * ทำไมต้องตรวจเข้มขนาดนี้: ถ้ารับ URL อะไรก็ได้ ใครก็ตามที่ยิง API เป็น
-   * จะแปะลิงก์จากเว็บไหนก็ได้ลงในบันทึกหลักฐาน — หลักฐานก็หมดความหมายทันที
-   * และแย่กว่านั้นคือแอดมินที่กดดูอาจโดนพาไปเว็บอันตราย
-   *
-   * เงื่อนไขที่ต้องผ่าน "ครบทั้งสามข้อ" ถ้าส่งมาเป็น URL เต็ม:
-   *   a) host ตรงกับโปรเจกต์ Supabase ของเรา
-   *   b) bucket ใน path คือ 'job-evidence'
-   *   c) path ขึ้นต้นด้วย '{bookingId}/'  ← กัน booking หนึ่งไปอ้างรูปของอีก booking
-   *
-   * ถ้าส่งมาเป็น path เปล่า ๆ ('{bookingId}/xxx.jpg') ก็รับได้
-   * เพราะ path เปล่าชี้ออกนอกโดเมนเราไม่ได้อยู่แล้ว แต่ยังต้องผ่านข้อ (c)
-   *
-   * @returns path ที่จะเก็บ (ไม่ใช่ URL) หรือ null ถ้าไม่ได้แนบรูปมา
-   */
-  private validateEvidencePath(
-    photoUrl: string | undefined,
-    bookingId: string,
-  ): string | null {
-    // ไม่แนบรูปมา = ปกติ รูปเป็นของไม่บังคับ
-    if (!photoUrl) return null;
-
-    const rejected = new BadRequestException('ไฟล์แนบไม่ถูกต้อง');
-
-    let objectPath: string;
-
-    if (photoUrl.includes('://')) {
-      // ── ส่งมาเป็น URL เต็ม → ตรวจครบสามข้อ ──
-      let parsed: URL;
-      try {
-        parsed = new URL(photoUrl);
-      } catch {
-        throw rejected; // แปลงเป็น URL ไม่ได้เลย
-      }
-
-      // (a) host ต้องเป็นของโปรเจกต์เรา
-      const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
-      if (!supabaseUrl) {
-        // ไม่มี config = ตรวจไม่ได้ = ไม่รับ (ปลอดภัยไว้ก่อน)
-        this.logger.error('SUPABASE_URL ไม่ได้ตั้งค่า — ปฏิเสธไฟล์แนบทั้งหมด');
-        throw rejected;
-      }
-      if (parsed.host !== new URL(supabaseUrl).host) throw rejected;
-
-      // (b) bucket ใน path ต้องเป็น job-evidence
-      // path จริงของ Supabase หน้าตาประมาณ
-      //   /storage/v1/object/sign/job-evidence/{bookingId}/check-out-123.jpg
-      const marker = `/${JOB_EVIDENCE_BUCKET}/`;
-      const markerAt = parsed.pathname.indexOf(marker);
-      if (markerAt === -1) throw rejected;
-
-      objectPath = decodeURIComponent(
-        parsed.pathname.slice(markerAt + marker.length),
-      );
-    } else {
-      // ── ส่งมาเป็น path เปล่า ──
-      // เผื่อ FE ส่งมาแบบมีชื่อ bucket นำหน้า ก็ตัดออกให้
-      objectPath = photoUrl.startsWith(`${JOB_EVIDENCE_BUCKET}/`)
-        ? photoUrl.slice(JOB_EVIDENCE_BUCKET.length + 1)
-        : photoUrl;
-    }
-
-    // (c) ต้องอยู่ใต้โฟลเดอร์ของ booking นี้เท่านั้น
-    if (!objectPath.startsWith(`${bookingId}/`)) throw rejected;
-
-    // กัน path traversal (../) ที่อาจพาออกนอกโฟลเดอร์ตัวเอง
-    if (objectPath.includes('..')) throw rejected;
-
-    return objectPath;
-  }
-
   /** Prisma Decimal → number (null คงเป็น null) */
   private toNumber(value: Prisma.Decimal | null): number | null {
     if (value === null || value === undefined) return null;
@@ -926,27 +884,6 @@ export class MonitoringService {
       reviewReasons: evaluation?.reviewReasons ?? [],
       alreadyCheckedIn,
     };
-  }
-
-  /**
-   * สร้าง signed URL ให้รูปหลักฐาน (bucket เป็น private)
-   *
-   * ⚠ ห้ามเก็บ public URL ลงฐานข้อมูลเด็ดขาด — โปรเจกต์นี้เคยพลาดมาแล้วกับเอกสาร KYC
-   *   เก็บเป็น path เปล่า ๆ แล้วค่อย sign ตอนอ่านทุกครั้ง
-   *
-   * ยังไม่มีใครเรียกใน PYG-352 (เช็คอินไม่มีรูป) — PYG-358 (เช็คเอาท์) จะใช้
-   */
-  async signEvidenceUrl(path: string): Promise<string | null> {
-    const supabase = this.supabaseService.getClient();
-    const { data, error } = await supabase.storage
-      .from(JOB_EVIDENCE_BUCKET)
-      .createSignedUrl(path, SIGNED_URL_TTL_SEC);
-
-    if (error || !data?.signedUrl) {
-      this.logger.warn({ event: 'monitoring.sign_url_failed', path });
-      return null;
-    }
-    return data.signedUrl;
   }
 
   /** ค่าคงที่ที่ FE ต้องใช้วาดวงกลมสองวงบนแผนที่ (ดีไซน์วาดไว้ก่อนเช็คอินด้วยซ้ำ) */

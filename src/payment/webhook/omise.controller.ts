@@ -15,6 +15,7 @@ import type { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { PaymentService } from '../payment.service';
 import { RefundService } from '../refund.service';
+import { PayoutAccountService } from '../payout-account.service';
 import { verifyOmiseSignature } from './omise-signature';
 
 interface OmiseWebhookBody {
@@ -30,7 +31,9 @@ interface OmiseWebhookBody {
  */
 function signatureErrorFor(reason: string): Error {
   if (reason === 'invalid_secret') {
-    return new InternalServerErrorException('webhook secret is not valid base64');
+    return new InternalServerErrorException(
+      'webhook secret is not valid base64',
+    );
   }
   if (
     reason === 'missing_raw_body' ||
@@ -52,6 +55,7 @@ export class OmiseController {
     private readonly configService: ConfigService,
     private readonly paymentService: PaymentService,
     private readonly refundService: RefundService,
+    private readonly payoutAccountService: PayoutAccountService,
   ) {}
 
   /**
@@ -88,13 +92,15 @@ export class OmiseController {
     const secret = this.configService.get<string>('OMISE_WEBHOOK_SECRET');
 
     if (!secret) {
-      // webhook recipient.verified เป็นประตูเดียวที่ปลดล็อกบัญชีรับเงินให้พร้อมรับโอน
-      // ไม่ตั้ง secret = ใครก็ปลอม event นี้เข้ามาได้ → ห้ามรับ webhook เลยดีกว่ารับมั่ว
+      // handler ส่วนใหญ่ดึงสถานะจริงจาก Omise ซ้ำ (captureFromWebhook / reconcileRecipient) จึงปลอมผลไม่ได้
+      // แต่ยังปลอม event ให้เรายิง Omise API / ทำงานซ้ำได้ไม่จำกัด — ไม่ตั้ง secret = ห้ามรับ webhook เลย
       this.logger.error(
         '[OmiseWebhook] ปฏิเสธทุก webhook — OMISE_WEBHOOK_SECRET ไม่ได้ตั้ง ' +
           '(ตรวจลายเซ็นไม่ได้ = ยืนยันไม่ได้ว่า Omise ส่งมาจริง)',
       );
-      throw new InternalServerErrorException('webhook signature verification not configured');
+      throw new InternalServerErrorException(
+        'webhook signature verification not configured',
+      );
     }
 
     const verdict = verifyOmiseSignature(
@@ -143,8 +149,38 @@ export class OmiseController {
         );
         break;
 
+      case 'recipient.create':
+      case 'recipient.update':
+      case 'recipient.verify':
+      case 'recipient.activate':
+      case 'recipient.deactivate': {
+        // Recipient event means the remote object changed. Re-fetch it instead
+        // of inferring verified/active state from the event name.
+        const recipientId = typeof data?.id === 'string' ? data.id : undefined;
+        if (recipientId) {
+          try {
+            await this.payoutAccountService.reconcileRecipient(
+              recipientId,
+              key,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.error(
+              `[OmiseWebhook] ${key} handler failed recipientId=${recipientId}: ${msg}`,
+            );
+          }
+        } else {
+          this.logger.warn(
+            `[OmiseWebhook] ${key} missing data.id — payload: ${JSON.stringify(data)}`,
+          );
+        }
+        break;
+      }
+
       default:
-        this.logger.log(`[OmiseWebhook] unhandled event key=${key ?? 'undefined'}`);
+        this.logger.log(
+          `[OmiseWebhook] unhandled event key=${key ?? 'undefined'}`,
+        );
     }
 
     return { received: true };

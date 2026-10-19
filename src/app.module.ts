@@ -24,6 +24,8 @@ import { TransactionModule } from './transaction/transaction.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { FamilyGroupModule } from './family-group/family-group.module';
+import { ConsentModule } from './consent/consent.module';
+import { CareSkillModule } from './care-skill/care-skill.module';
 
 @Module({
   imports: [
@@ -48,6 +50,11 @@ import { FamilyGroupModule } from './family-group/family-group.module';
 
       // sortSchema: เรียง field ใน schema ตามตัวอักษร (อ่านง่ายขึ้น)
       sortSchema: true,
+
+      // addNewlineAtEnd: ปิดไฟล์ด้วย newline — ค่าเริ่มต้นของ Nest ไม่ใส่ แต่ editor ส่วนใหญ่ใส่ให้ตอนเซฟ
+      // ไม่งั้นไฟล์ที่ commit กับไฟล์ที่ server เขียนทุกครั้งที่สตาร์ทต่างกันแค่บรรทัดสุดท้าย
+      // → src/schema.gql ขึ้น modified ค้าง และขวาง git pull ทุกครั้งที่มี commit แตะไฟล์นี้
+      buildSchemaOptions: { addNewlineAtEnd: true },
 
       // playground: เปิดหน้า UI ทดสอบ API ที่ localhost:3000/graphql
       playground: true,
@@ -78,6 +85,8 @@ import { FamilyGroupModule } from './family-group/family-group.module';
     MonitoringModule,    // PYG-352: proof-of-work — checkInBooking + job_events
     ReconciliationModule, // PYG-376: payments vs Omise vs payouts recon report + alert cron
     FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
+    ConsentModule,       // PYG-472: ข้อความ PDPA consent + เวอร์ชันนโยบาย (อ่านอย่างเดียว)
+    CareSkillModule,     // PYG-652: careSkills(profession) + ตรวจทักษะผู้ดูแลก่อนบันทึก
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

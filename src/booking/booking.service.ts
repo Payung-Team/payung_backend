@@ -4,15 +4,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
-import { OmiseService } from '../payment/omise/omise.service';
-import { PaymentStateMachine } from '../payment/payment-state-machine';
-import { PaymentStatus } from '../payment/entities/payment-status.enum';
+import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
+import { SettlementReason } from '../payment/settlement/booking-settlement.types';
 import {
   BookingListResponse,
   BookingPagination,
@@ -20,6 +19,7 @@ import {
   CaregiverBriefDto,
 } from './dto/booking-summary.types';
 import { BookingHistoryInput } from './dto/booking-history.input';
+import { PatientProfileType } from './dto/patient-profile.type';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
 import {
@@ -28,7 +28,17 @@ import {
   MatchedCaregiverRest,
   TaskSuggestion,
 } from './dto/booking-rest.types';
+import { resolveBookingTime } from './booking-time';
+// PYG-526: เวลาสิ้นสุด/รูปแบบแสดงผลของใบจอง — ที่เดียวในระบบ
+import { computeEndTime, formatStartTime } from './booking-time-display';
+import { bookingHourlyRate } from '../common/pricing/display-price';
 import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma/client';
+// PYG-524: นิยาม "ช่วงเวลาคาบเกี่ยว slot ไหนบ้าง" ต้องเป็นตัวเดียวกับที่ปฏิทินคิวว่าง
+// รายวันของ PYG-493 ใช้ (common/constants/time-slot.constant.ts) ไม่งั้นปฏิทินกับการจอง
+// จะตัดสิน slot คนละแบบ
+import { overlappingSlots } from '../common/constants/time-slot.constant';
+import { caregiverHasTimeConflict } from './caregiver-time-conflict';
+import { activeHourlyPrice, estimatedCostOf } from '../common/pricing/service-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -36,9 +46,41 @@ import {
   ACTIVITY_ACTION,
   ACTIVITY_TARGET,
 } from '../family-group/family-group.constants';
-import { RecipientNotInGroupError } from '../family-group/family-group.errors';
+import {
+  RecipientNotInGroupError,
+  MemberNotFoundError,
+  MemberNameMissingError,
+  PatientNameNotAllowedError,
+} from '../family-group/family-group.errors';
+import type { MemberDetailsInput } from '../family-group/dto/create-booking-on-behalf.input';
+import { GroupBookingSummary } from '../family-group/entities/group-booking.entity';
+// PYG-460: แปลงข้อความไทยจากฟอร์ม → คอลัมน์/enum ของ care_recipients (ตาราง mapping ที่เดียว)
+import { toCareRecipientColumns } from '../patient/patient-profile.mapper';
+// PYG-516/517: ชื่อตามบัญชี — ฟังก์ชันเดียวที่ทั้งระบบใช้
+import {
+  ACCOUNT_NAME_SELECT,
+  accountDisplayName,
+} from '../common/utils/account-name';
 // PYG-434: ใบ QR ของงาน — สร้างพร้อม booking ใน transaction เดียวกัน
 import { JobQrService } from '../monitoring/qr/job-qr.service';
+// PYG-540: ถอนความยินยอมแล้วต้องจองใหม่ไม่ได้ / กลุ่มไม่เห็นนัดหมายของคนที่ถอน
+import { ConsentService } from '../consent/consent.service';
+import {
+  BOOKING_BLOCKING_CONSENTS,
+  CONSENT_TYPE,
+  ON_BEHALF_BLOCKING_CONSENTS,
+} from '../consent/consent.constants';
+import {
+  consentWithdrawnError,
+  consentWithdrawnHttpError,
+} from '../consent/consent.errors';
+// PYG-499: ผู้สูงอายุที่ยังไม่ผ่าน Onboarding สร้าง Booking ไม่ได้ (plain file ไม่มี DI)
+import {
+  ONBOARDING_GATE_SELECT,
+  OnboardingRequiredError,
+  isOnboardingRequired,
+  onboardingRequiredHttpError,
+} from '../identity/auth/onboarding-gate';
 
 // ── Static task suggestion map ────────────────────────────────────────────────
 // Q3: static map per service_type (locale: Thai task labels)
@@ -91,6 +133,8 @@ const TASK_SUGGESTIONS: Record<string, string[]> = {
 type BookingWithIncludes = {
   id: string;
   patientId: string;
+  familyGroupId: string | null;
+  bookedBy: string | null;
   status: string;
   serviceType: string;
   timeSlot: string;
@@ -109,15 +153,42 @@ type BookingWithIncludes = {
   disputeStatus: string | null;
   disputeReason: string | null;
   createdAt: Date;
+  patientName: string | null;
+  dayOfContactName: string | null;
+  dayOfContactPhone: string | null;
+  dayOfContactRelationship: string | null;
+  memberDetails: unknown;
   // caregiver is nullable when booking is unmatched
   caregiver: {
     id: string;
     fullName: string | null;
     hourlyRate: number | null;
+    averageRating: number | null;
+    reviewCount: number | null;
+    experienceYears: number | null;
+    phone: string | null;
     user: { avatarUrl: string | null };
   } | null;
   careRecipient: { name: string } | null;
 };
+
+/** จำนวนผู้ดูแลสูงสุดที่ searchMatchesBasic คืน (PYG-489: ขยายจาก 20) */
+const MATCHES_LIMIT = 50;
+
+/** คะแนนรีวิวเฉลี่ย (ทศนิยม 2 ตำแหน่ง) — undefined เมื่อยังไม่มีรีวิว */
+function ratingOf(reviews: { rating: number }[]): { avgRating?: number; reviewCount: number } {
+  const reviewCount = reviews.length;
+  const avgRating =
+    reviewCount > 0
+      ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / reviewCount) * 100) / 100
+      : undefined;
+  return { avgRating, reviewCount };
+}
+
+// เบอร์ผู้ดูแลเปิดให้ผู้จองเห็นหลังยืนยันการจองแล้วเท่านั้น
+const CAREGIVER_PHONE_VISIBLE_STATUSES = new Set([
+  'confirmed', 'in_progress', 'completed',
+]);
 
 /**
  * PYG-424 — บริบท "จองแทนในนามกลุ่มครอบครัว"
@@ -132,6 +203,16 @@ export interface OnBehalfContext {
   bookedBy: string;
   /** ชื่อผู้รับบริการ ณ เวลาที่จอง — เก็บลงฟีดกิจกรรมเพื่อให้อ่านย้อนหลังได้เสมอ */
   recipientName: string;
+  /**
+   * PYG-385: อาการ/รายละเอียดที่สมาชิกกรอกตอนจองแทน → คอลัมน์ bookings.member_details (JSONB).
+   * undefined = ไม่ได้กรอก → คอลัมน์เป็น NULL (พฤติกรรมเดิม)
+   */
+  memberDetails?: MemberDetailsInput;
+  /**
+   * PYG-500: สมาชิกยังไม่มีโปรไฟล์ในกลุ่ม → ข้อมูลใบใหม่ที่ต้องสร้าง "ใน transaction เดียวกับ booking"
+   * undefined = มีโปรไฟล์อยู่แล้ว (dto.careRecipientId ถูกเซ็ตมาแล้ว)
+   */
+  newRecipient?: Prisma.CareRecipientUncheckedCreateInput;
 }
 
 @Injectable()
@@ -141,11 +222,15 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
-    // PYG-286: ใช้ใน cancelBooking auto-void เท่านั้น (held payment → reverse charge + FSM)
-    private readonly omiseService: OmiseService,
-    private readonly fsm: PaymentStateMachine,
+    // PYG-461 เฟส 3a: เงินตอนยกเลิกทั้งหมดอยู่ที่นี่ (แทน OmiseService + PaymentStateMachine
+    // ที่ PYG-286 เคย inject ไว้ให้ cancelBooking void hold เอง — ดูตารางย้ายการ์ดที่ cancelBooking)
+    private readonly settlementService: BookingSettlementService,
     // PYG-434: สร้างใบ QR เช็คอิน/เช็คเอาท์ พร้อมกับ booking ใน transaction เดียวกัน
     private readonly jobQrService: JobQrService,
+    // PYG-540: ด่านความยินยอมก่อนจอง + กรองนัดหมายของกลุ่ม
+    private readonly consentService: ConsentService,
+    // PYG-518: sign avatarUrl ของผู้ดูแลก่อนส่งออก
+    private readonly avatarUrlService: AvatarUrlService,
   ) {}
 
   /**
@@ -165,7 +250,33 @@ export class BookingService {
    * caregiverId = null จนกว่า Phase 3 matching engine จะ assign
    */
   async createBooking(patientId: string, dto: CreateBookingDto): Promise<BookingRest> {
+    // PYG-499: ยังไม่ผ่าน Onboarding → 403 ONBOARDING_REQUIRED ไม่สร้างอะไรเลย
+    // ★ อยู่ก่อนด่านความยินยอม — หน้า Onboarding ขอความยินยอมข้อมูลสุขภาพด้วยอยู่แล้ว (PYG-538)
+    //   ส่งไปหน้านั้นหน้าเดียวจึงแก้ได้ทั้งสองเรื่อง ถ้าสลับกันผู้ใช้ต้องเดินสองรอบ
+    // ★ REST ต้องโยน HttpException (มี statusCode) — ดู onboarding-gate.ts
+    if (await this.needsOnboarding(patientId)) {
+      this.logger.log({ event: 'booking.blocked_onboarding_required', patientId });
+      throw onboardingRequiredHttpError();
+    }
+
+    // PYG-540: จองให้ตัวเอง/คนในความดูแล = เจ้าของข้อมูลคือ patient คนนี้เอง
+    // ★ ตรวจก่อนเขียนอะไรทั้งหมด — ถอนไว้แล้วต้องไม่มีอะไรถูกเขียนลง DB เลย
+    // ★ REST ต้องโยน HttpException (มี statusCode) ไม่ใช่ ConsentError — ดู consent.errors.ts
+    const withdrawn = await this.consentService.findWithdrawnType(
+      patientId,
+      BOOKING_BLOCKING_CONSENTS,
+    );
+    if (withdrawn) {
+      this.logger.log({
+        event: 'booking.blocked_consent_withdrawn',
+        patientId,
+        consentType: withdrawn,
+      });
+      throw consentWithdrawnHttpError(withdrawn, true);
+    }
+
     const booking = await this.createBookingRecord(patientId, dto);
+    await this.signCaregiverAvatars([booking]);
     return this.toRestSummary(booking);
   }
 
@@ -187,35 +298,333 @@ export class BookingService {
    *     ถ้าดีไซน์สรุปว่า "เจ้าของโปรไฟล์เป็นคนจ่าย" ให้แก้ค่า patientId ที่ส่งเข้า
    *     createBookingRecord บรรทัดเดียว แล้วต้องแก้เงื่อนไขฝั่ง payment ตามไปด้วย
    *
-   * ── ทำไมยังไม่รับ memberDetails ────────────────────────────────────────────
-   *   คอลัมน์ bookings.member_details (JSONB) มีอยู่แล้วจาก PYG-411 แต่ยังไม่รับค่า
-   *   ในเวอร์ชันนี้ เพราะฟอร์ม FG-4 ยังไม่มีดีไซน์ (PYG-426 ยัง To Do) และ repo
-   *   ยังไม่มี graphql-type-json ให้ประกาศ scalar JSON
-   *   คอลัมน์เป็น nullable → เติมทีหลังได้โดยไม่ต้องแก้ migration หรือรื้อ mutation นี้
+   * ── memberDetails — สองเส้นทางเขียนคอลัมน์เดียวกัน (PYG-385 + PYG-460) ───────
+   *   bookings.member_details (JSONB) มีมาตั้งแต่ PYG-411 ตอนนี้มีสองที่ที่เขียนลงไป:
+   *
+   *   ① จองแทนในกลุ่ม (GraphQL, PYG-385) — รับผ่าน MemberDetailsInput
+   *      (structured input แทน JSON scalar — repo จงใจไม่พึ่ง graphql-type-json)
+   *      4 ช่อง: conditions / medicines / allergies / careInstructions
+   *   ② จองปกติ (REST, PYG-460) — รับผ่าน CreateBookingDto.patientProfile
+   *      11 ช่อง ซึ่งคลุม 4 ช่องของ ① ทั้งหมด และชื่อฟิลด์ตรงกันเป๊ะ
+   *
+   *   ★ ที่ใช้คอลัมน์เดียวกันได้โดยไม่ตีกัน เพราะรูปทรงของ ① เป็น subset แท้ของ ②
+   *     → CaregiverBookingSummary.patientProfile อ่านแถวที่มาจากเส้นทางไหนก็ได้
+   *       ช่องที่ ① ไม่ได้กรอกจะเป็น null ซึ่ง type ประกาศเป็น nullable อยู่แล้ว
+   *     ถ้าวันหนึ่งรูปทรงสองฝั่งแตกออกจากกัน ต้องแยกคอลัมน์ ไม่ใช่ยัดต่อในก้อนเดิม
+   *
+   *   ✓ เพดานความยาวของ medicines/allergies เท่ากันแล้วทั้งสองเส้นทาง (2000 ตัวอักษร)
+   *     แก้ตาม PYG-464 follow-up (พบตอน QA ของ PYG-427 TC-BS-03/06, PYG-427_32) —
+   *     ทั้งสอง DTO อ้างค่าคงที่ร่วมกันที่ patient/dto/patient-profile.constants.ts
+   *     ห้ามฮาร์ดโค้ดตัวเลขแยกกันอีก ไม่งั้นจะเหลื่อมกันซ้ำ
+   *
+   *   ไม่ได้กรอกทั้งสองเส้นทาง → คอลัมน์เป็น NULL เหมือนเดิม ไม่ต้องแก้ migration
    */
   async createBookingOnBehalf(
     bookerId: string,
-    input: CreateBookingDto & { groupId: string; careRecipientId: string },
+    input: CreateBookingDto & {
+      groupId: string;
+      // PYG-500: โมเดล "สมาชิก = patient" — ส่งอย่างใดอย่างหนึ่ง
+      memberUserId?: string;   // แนะนำ: เลือกสมาชิกในกลุ่มเป็นผู้รับบริการ
+      careRecipientId?: string; // เส้นทางเดิม: อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
+      patientName?: string;     // PYG-516: ส่งมา = 400 — ชื่อมาจากบัญชีสมาชิกเท่านั้น
+      memberDetails?: MemberDetailsInput;
+    },
   ): Promise<BookingSummary> {
-    // สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
-    // ที่นี่จึงเหลือคำถามเดียวที่ guard ตอบให้ไม่ได้: โปรไฟล์คนไข้อยู่ในกลุ่มนี้จริงไหม
-    const recipient = await this.prisma.careRecipient.findUnique({
-      where: { id: input.careRecipientId },
-      select: { id: true, name: true, familyGroupId: true },
-    });
+    // PYG-516 (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 6 / PYG-495)
+    //   ชื่อ-นามสกุลของผู้รับบริการเป็น "ตัวตน" ของเจ้าของบัญชี คนจองแทนพิมพ์ทับไม่ได้
+    //   ★ ด่านอยู่ก่อนทุกเส้นทาง เพราะช่องโหว่เกิดได้ทั้งตอนสร้างโปรไฟล์ใหม่ (สาขา ③)
+    //     และตอนเขียน bookings.patient_name (createBookingRecord) — กันที่เดียวจบ
+    if (input.patientName !== undefined) {
+      throw new PatientNameNotAllowedError();
+    }
 
-    // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
-    if (!recipient || recipient.familyGroupId !== input.groupId) {
+    // PYG-499: คนกดจอง (ผู้เรียก) เป็นผู้สูงอายุที่ยังไม่ผ่าน Onboarding → ONBOARDING_REQUIRED
+    //   ★ ตรวจ "คนกดจอง" ไม่ใช่สมาชิกที่ถูกจองให้ — การ์ดกันผู้เรียกที่ข้ามหน้า Onboarding
+    //     สมาชิกที่ยังไม่มีข้อมูลยังถูกจองแทนได้ตามสาขา ③ ของ resolveGroupPatientProfile
+    //   ★ อยู่ก่อนอ่านข้อมูลกลุ่ม/โปรไฟล์ใด ๆ — ไม่ผ่านด่านก็ไม่มีเหตุให้ไปอ่านข้อมูลสุขภาพของใคร
+    //   ★ GraphQL ต้องโยน GraphQLError (extensions.code) — ดู onboarding-gate.ts
+    if (await this.needsOnboarding(bookerId)) {
+      this.logger.log({
+        event: 'booking.on_behalf_blocked_onboarding_required',
+        groupId: input.groupId,
+        bookerId,
+      });
+      throw new OnboardingRequiredError();
+    }
+
+    // สิทธิ์ "ผู้เรียกเป็นสมาชิก ACTIVE ของกลุ่มนี้" ถูกตรวจโดย FamilyGroupGuard มาแล้ว
+    // ที่นี่เหลือการ resolve ว่า booking ใบนี้ผูกกับโปรไฟล์ผู้รับบริการใบไหน (careRecipientId)
+    let recipientId: string | undefined;
+    let recipientName: string;
+    let newRecipient: Prisma.CareRecipientUncheckedCreateInput | undefined;
+
+    if (input.memberUserId && input.careRecipientId) {
+      const membership = await this.prisma.familyGroupMember.findFirst({
+        where: { groupId: input.groupId, userId: input.memberUserId, status: 'ACTIVE' },
+        select: { userId: true },
+      });
+      if (!membership) throw new MemberNotFoundError();
+
+      // PYG-540: เจ้าของข้อมูล = สมาชิกคนนี้ · ตรวจหลังยืนยันสมาชิก และก่อนอ่านโปรไฟล์สุขภาพ
+      // (เส้นทางนี้ใช้ได้กับโปรไฟล์ส่วนตัวด้วย — ถอนข้อ family group แล้วต้องไม่ถูกดึงเข้ากลุ่ม)
+      await this.assertOnBehalfConsents(input.memberUserId, bookerId, input.groupId);
+
+      const recipient = await this.prisma.careRecipient.findFirst({
+        where: {
+          id: input.careRecipientId,
+          patientId: input.memberUserId,
+          is_deleted: false,
+          OR: [{ familyGroupId: null }, { familyGroupId: input.groupId }],
+        },
+        select: { id: true, name: true },
+      });
+      if (!recipient) throw new RecipientNotInGroupError();
+      recipientId = recipient.id;
+      recipientName = recipient.name;
+    } else if (input.memberUserId) {
+      // PYG-500 — โมเดลใหม่: patient คือ "สมาชิกในกลุ่ม" ระบบหา/สร้างโปรไฟล์ให้อัตโนมัติ
+      const resolved = await this.resolveGroupPatientProfile(
+        input.groupId,
+        input.memberUserId,
+        bookerId,
+        input.memberDetails,
+      );
+      recipientId = resolved.id;
+      recipientName = resolved.name;
+      newRecipient = resolved.create;
+    } else if (input.careRecipientId) {
+      // เส้นทางเดิม (PYG-424): อ้างโปรไฟล์ที่แชร์ในกลุ่มตรง ๆ
+      // ไม่มีโปรไฟล์ หรือมีแต่เป็นของกลุ่มอื่น/เป็นโปรไฟล์ส่วนตัว → ตอบ error เดียวกัน (กันเดา id)
+      const recipient = await this.prisma.careRecipient.findUnique({
+        where: { id: input.careRecipientId },
+        // PYG-540: patientId = เจ้าของข้อมูล — ใช้ทั้งเช็คสมาชิก ACTIVE (PYG-516) และตรวจความยินยอม
+        select: {
+          id: true,
+          name: true,
+          familyGroupId: true,
+          patientId: true,
+          is_deleted: true,
+        },
+      });
+      if (
+        !recipient ||
+        recipient.familyGroupId !== input.groupId ||
+        recipient.is_deleted
+      ) {
+        throw new RecipientNotInGroupError();
+      }
+
+      // PYG-516 — เดิมตรวจแค่ "โปรไฟล์อยู่ในกลุ่มนี้" คนที่ออกจากกลุ่ม/ถูกเตะไปแล้ว
+      //   จึงยังถูกจองแทนได้ตลอดกาล เพราะโปรไฟล์ยังค้างอยู่ในกลุ่ม
+      //   ★ ตอบ RecipientNotInGroupError ตัวเดิม ไม่ใช่ error ใหม่ — ไม่งั้นคนยิง id มั่ว ๆ
+      //     จะไล่ดูได้ว่าใบไหน "มีอยู่แต่เจ้าของออกจากกลุ่มแล้ว" ซึ่งไม่ควรรั่ว
+      const ownerActive = await this.prisma.familyGroupMember.findFirst({
+        where: {
+          groupId: input.groupId,
+          userId: recipient.patientId,
+          status: 'ACTIVE',
+        },
+        select: { userId: true },
+      });
+      if (!ownerActive) throw new RecipientNotInGroupError();
+
+      // PYG-540: ตรวจ "หลัง" ยืนยันว่าโปรไฟล์อยู่ในกลุ่มและเจ้าของยังเป็นสมาชิกแล้วเท่านั้น
+      // ไม่งั้นคนนอกกลุ่มส่ง id มั่ว ๆ เพื่อแอบดูว่าใครถอนความยินยอมได้
+      await this.assertOnBehalfConsents(recipient.patientId, bookerId, input.groupId);
+      recipientId = recipient.id;
+      recipientName = recipient.name;
+    } else {
+      // ไม่ได้ส่งทั้งคู่ — ต้องระบุว่าจองแทน "ใคร"
       throw new RecipientNotInGroupError();
     }
 
-    const booking = await this.createBookingRecord(bookerId, input, {
-      familyGroupId: input.groupId,
-      bookedBy: bookerId,
-      recipientName: recipient.name,
+    const booking = await this.createBookingRecord(
+      bookerId,
+      // PYG-516: bookings.patient_name คือชื่อที่ผู้ดูแลเห็นบนใบงาน — ต้องเป็นชื่อจากโปรไฟล์
+      // ที่ resolve มาแล้ว ไม่ใช่ค่าที่คนจองพิมพ์ (ซึ่งตอนนี้ส่งมาไม่ได้อยู่แล้ว)
+      { ...input, careRecipientId: recipientId, patientName: recipientName },
+      {
+        familyGroupId: input.groupId,
+        bookedBy: bookerId,
+        recipientName,
+        // PYG-385: undefined เมื่อไม่ได้กรอก — createBookingRecord จะไม่แตะคอลัมน์ให้ (คง NULL)
+        memberDetails: input.memberDetails,
+        newRecipient,
+      },
+    );
+
+    await this.signCaregiverAvatars([booking]);
+    return this.toSummary(booking);
+  }
+
+  /**
+   * PYG-500 — หา/สร้าง "โปรไฟล์ผู้รับบริการในกลุ่ม" ของสมาชิกที่ถูกจองแทน (โมเดลสมาชิก = patient)
+   *
+   * ลำดับความสำคัญ (ตามที่เจ้าของสรุปไว้):
+   *   ① มีโปรไฟล์ในกลุ่มของสมาชิกคนนี้อยู่แล้ว → ใช้ใบนั้น (ไม่แตะ self_reported เดิม)
+   *   ② ยังไม่มี แต่สมาชิกมี "โปรไฟล์ส่วนตัว" อยู่ → คัดลอกข้อมูลนั้นเข้ากลุ่ม, self_reported = true
+   *      (= ข้อมูลจากเจ้าตัว) เก็บเป็น snapshot ไม่ผูกกับโปรไฟล์ส่วนตัวเดิม เพื่อไม่ให้แก้ทีหลังย้อนกระทบ
+   *   ③ ไม่มีข้อมูลเลย → สร้างใบใหม่ด้วย **ชื่อจากบัญชีของสมาชิก** (PYG-516)
+   *      ข้อมูลสุขภาพยังให้คนจองกรอกได้, self_reported = false (= คนอื่นกรอกให้)
+   *
+   * PYG-516 — ทำไมไม่ rename ใบเดิมในสาขา ① ให้ตรงกับบัญชี:
+   *   `care_recipients.patient_id` มีความหมายปนกันสองแบบในข้อมูลจริง — เส้นทางใหม่เก็บ
+   *   "ตัวผู้รับบริการ" แต่แถวเก่าจาก addGroupCareRecipient เก็บ "คนที่สร้างใบ"
+   *   rename ตามบัญชีของ patient_id จะทำให้ใบ "คุณยาย" ที่ลูกสร้างไว้กลายเป็นชื่อลูกทันที
+   *   → การ์ดนี้ล็อกแค่ "ชื่อที่ไหลเข้า booking" การแยกความหมายของคอลัมน์เป็นอีกตั๋ว
+   *
+   * patientId ของโปรไฟล์ที่สร้าง = memberUserId (subject) เสมอ — เพื่อให้ลิสต์/ฟีดของกลุ่ม
+   * อ้างกลับได้ว่า "โปรไฟล์นี้คือของสมาชิกคนไหน" (FE ก็ key ด้วย patientId อยู่แล้ว)
+   *
+   * ★ ที่นี่ "อ่านอย่างเดียว" — สาขา ②/③ คืนข้อมูลใบใหม่ (`create`) ไปให้ createBookingRecord
+   *   สร้างใน transaction เดียวกับ booking (ขั้น ⓪ ในนั้น) ซึ่งแก้สองอาการของ PYG-427:
+   *   - _34(b) booking ล้ม → เดิมโปรไฟล์ค้างพร้อมข้อมูลสุขภาพที่คนจองกรอกให้โดยไม่มี booking รองรับ
+   *   - _31 จองแทนคนเดียวกันพร้อมกัน → เดิมทั้งคู่ไม่เจอใบเดิม แล้วต่างคนต่างสร้าง ได้โปรไฟล์ซ้ำ
+   */
+  private async resolveGroupPatientProfile(
+    groupId: string,
+    memberUserId: string,
+    bookerId: string,
+    memberDetails?: MemberDetailsInput,
+  ): Promise<{
+    id?: string;
+    name: string;
+    create?: Prisma.CareRecipientUncheckedCreateInput;
+  }> {
+    // subject ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้ (guard ตรวจแค่ "ผู้เรียก" ไม่ได้ตรวจ "คนที่ถูกจองให้")
+    const membership = await this.prisma.familyGroupMember.findFirst({
+      where: { groupId, userId: memberUserId, status: 'ACTIVE' },
+      select: { userId: true },
+    });
+    if (!membership) throw new MemberNotFoundError();
+
+    // PYG-540: เจ้าของข้อมูลถอนความยินยอมไว้ → หยุดก่อนแตะ care_recipients ทุกอย่าง
+    // (ขั้น ②/③ ข้างล่าง "สร้าง/คัดลอก" ข้อมูลสุขภาพเข้ากลุ่ม ซึ่งคือสิ่งที่เขาถอนไปแล้ว)
+    // ★ อยู่หลังเช็คสมาชิก — คนนอกกลุ่มจะใช้ error นี้แอบดูความยินยอมของใครไม่ได้
+    await this.assertOnBehalfConsents(memberUserId, bookerId, groupId);
+
+    // ① โปรไฟล์ในกลุ่มที่มีอยู่แล้ว
+    const existing = await this.prisma.careRecipient.findFirst({
+      where: { patientId: memberUserId, familyGroupId: groupId, is_deleted: false },
+      select: { id: true, name: true },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (existing) return existing;
+
+    // ② คัดลอกจากโปรไฟล์ส่วนตัวของสมาชิก (familyGroupId = null) — เอาใบที่เป็น is_self ก่อน แล้วใบล่าสุด
+    const personal = await this.prisma.careRecipient.findFirst({
+      where: { patientId: memberUserId, familyGroupId: null, is_deleted: false },
+      orderBy: [{ is_self: 'desc' }, { updated_at: 'desc' }],
+    });
+    if (personal) {
+      return {
+        name: personal.name,
+        create: {
+          patientId:               memberUserId,
+          familyGroupId:           groupId,
+          self_reported:           true,
+          name:                    personal.name,
+          nickname:                personal.nickname,
+          date_of_birth:           personal.date_of_birth,
+          gender:                  personal.gender,
+          weight_kg:               personal.weight_kg,
+          height_cm:               personal.height_cm,
+          mobility_level:          personal.mobility_level,
+          medical_conditions:      personal.medical_conditions,
+          current_medications:     personal.current_medications,
+          allergies:               personal.allergies,
+          blood_type:              personal.blood_type,
+          address_line:            personal.address_line,
+          province:                personal.province,
+          district:                personal.district,
+          emergency_contact_name:  personal.emergency_contact_name,
+          emergency_contact_phone: personal.emergency_contact_phone,
+          emergency_contact_rel:   personal.emergency_contact_rel,
+          preferred_hospital:      personal.preferred_hospital,
+          care_notes:              personal.care_notes,
+        },
+      };
+    }
+
+    // ③ สมาชิกยังไม่มีข้อมูลเลย → คนจองกรอก "ข้อมูลสุขภาพ" ให้ได้
+    //    แต่ชื่อมาจากบัญชีของสมาชิกเสมอ (PYG-516)
+    const name = await this.resolveMemberAccountName(memberUserId);
+    return {
+      name,
+      create: {
+        patientId:           memberUserId,
+        familyGroupId:       groupId,
+        self_reported:       false,
+        name,
+        ...(memberDetails ? toCareRecipientColumns(memberDetails) : {}),
+      },
+    };
+  }
+
+
+  /**
+   * PYG-516 — ชื่อผู้รับบริการ "ตามบัญชี" ของสมาชิกที่ถูกจองแทน
+   *
+   * ลำดับ: `first_name last_name` (จาก Onboarding PYG-496/497) → ไม่มีก็ `display_name`
+   *   บัญชีเก่าที่สมัครก่อน Onboarding มีแต่ display_name จาก provider — ยังจองแทนได้
+   *
+   * ★ ไม่มีทั้งคู่ → MemberNameMissingError ไม่ใช่ fallback เป็น "ผู้ใช้ #xxxx"
+   *   ใบงานที่ผู้ดูแลถือไปต้องระบุตัวคนที่จะไปดูแลได้จริง ชื่อหลอกอันตรายกว่าการจองไม่ผ่าน
+   */
+  private async resolveMemberAccountName(memberUserId: string): Promise<string> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: memberUserId },
+      select: ACCOUNT_NAME_SELECT,
     });
 
-    return this.toSummary(booking);
+    // PYG-517 ใช้ฟังก์ชันเดียวกันนี้โชว์บนปุ่ม shortcut — ถ้าคำนวณคนละแบบ
+    // ผู้ใช้จะกดชื่อหนึ่งแล้วใบจองขึ้นอีกชื่อหนึ่ง
+    const name = accountDisplayName(account);
+    if (!name) throw new MemberNameMissingError();
+    return name;
+  }
+
+  /**
+   * PYG-499 — ผู้เรียกเป็นผู้สูงอายุ (role 1) ที่ยังไม่ผ่าน Onboarding หรือไม่
+   *
+   * คืน boolean แทนการโยนเอง เพราะแต่ละเส้นทางต้องโยน error คนละแบบ
+   * (REST = HttpException · GraphQL = GraphQLError) — เกณฑ์เต็มอยู่ที่ onboarding-gate.ts
+   */
+  private async needsOnboarding(userId: string): Promise<boolean> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: ONBOARDING_GATE_SELECT,
+    });
+    return isOnboardingRequired(account);
+  }
+
+  /**
+   * PYG-540 — ด่านความยินยอมของ "เจ้าของข้อมูล" ก่อนจองแทนในกลุ่มครอบครัว
+   *
+   * ★ ตรวจเจ้าของข้อมูล (subject) ไม่ใช่คนกดจอง — ความยินยอมเป็นของคนที่ข้อมูลสุขภาพจะถูกใช้
+   *   คนกดจองถอนของตัวเองไว้ก็ไม่เกี่ยวกับการจองให้คนอื่น
+   * ★ ถอนข้อใดข้อหนึ่งใน ON_BEHALF_BLOCKING_CONSENTS → โยน CONSENT_WITHDRAWN
+   *   ยังไม่เคยตอบ = ผ่าน (ดูเหตุผลที่ findWithdrawnType)
+   */
+  private async assertOnBehalfConsents(
+    subjectId: string,
+    bookerId: string,
+    groupId: string,
+  ): Promise<void> {
+    const withdrawn = await this.consentService.findWithdrawnType(
+      subjectId,
+      ON_BEHALF_BLOCKING_CONSENTS,
+    );
+    if (!withdrawn) return;
+
+    this.logger.log({
+      event: 'booking.on_behalf_blocked_consent_withdrawn',
+      groupId,
+      bookerId,
+      subjectId,
+      consentType: withdrawn,
+    });
+    throw consentWithdrawnError(withdrawn, subjectId === bookerId);
   }
 
   /**
@@ -229,6 +638,11 @@ export class BookingService {
     dto: CreateBookingDto,
     onBehalf?: OnBehalfContext,
   ): Promise<BookingWithIncludes> {
+    // PYG-523 — ตรวจ/คำนวณเวลาก่อนอย่างอื่นทั้งหมด (ยังไม่มีอะไรถูกเขียนลง DB)
+    //   ค่าด้านล่างทุกจุด (ราคา / เวลาชน / แถวที่บันทึก) ต้องใช้ time.* ไม่ใช่ dto.* ตรง ๆ
+    //   เพราะแบบใหม่ client ไม่ได้ส่ง durationHours / timeSlot มาเลย
+    const time = resolveBookingTime(dto);
+
     // ตรวจสอบ careRecipientId ถ้าส่งมา — ต้องเป็นของ patient คนนี้
     //
     // PYG-424: ข้ามเช็คนี้เมื่อเป็นการจองแทน เพราะโปรไฟล์เป็นของ "สมาชิกคนอื่น"
@@ -245,29 +659,81 @@ export class BookingService {
         throw new ForbiddenException('Care recipient does not belong to this patient');
     }
 
+    const newStart = time.startMinute;
+    const newEnd = newStart + Math.round(time.durationHours * 60);
+    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
+
+    // ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ราคาจาก service_price_catalog ตาม serviceType
+    // ไม่ขึ้นกับผู้ดูแล → ใบ unmatched ก็มีราคาแล้ว · ประเภทที่ยังไม่เปิดขาย = 422 ไม่สร้างใบจอง
+    // ยอดนี้คือยอดที่ PaymentService ตัดจริง (ไม่คิดใหม่ตอนจ่าย)
+    const estimatedCost = estimatedCostOf(
+      await activeHourlyPrice(this.prisma, dto.serviceType),
+      time.durationHours,
+    );
+
     // ตรวจสอบ caregiverId ถ้าส่งมา — ต้องเป็น verified + searchable caregiver
     let resolvedCaregiverId: string | null = null;
-    let estimatedCost: number | null = null;
     if (dto.caregiverId) {
       const caregiver = await this.prisma.caregiver.findUnique({
         where: { id: dto.caregiverId },
-        select: { id: true, kycStatus: true, isSearchable: true, hourlyRate: true },
+        select: { id: true, kycStatus: true, isSearchable: true },
       });
       if (!caregiver || caregiver.kycStatus !== 'verified' || !caregiver.isSearchable) {
         throw new NotFoundException('Caregiver not found or unavailable');
       }
       resolvedCaregiverId = caregiver.id;
-      if (caregiver.hourlyRate != null) {
-        estimatedCost = caregiver.hourlyRate * dto.durationHours;
+
+      /**
+       * PYG-524 — เช็ค caregiver_availability จริง แทนการเชื่อ timeSlot ที่ client ส่งมาเฉย ๆ
+       *
+       * ของเดิม: createBooking เก็บ dto.timeSlot ลงใบจองตรง ๆ ไม่เคยเทียบกับตารางว่างของ
+       * ผู้ดูแลเลย (search.service.ts ก็เช็คแค่ "มี slot active อย่างน้อย 1 ช่อง" ไม่ดูวัน/เวลา)
+       * → จองผู้ดูแลในวัน/ช่วงที่เขาไม่ได้เปิดรับได้อยู่เสมอมา
+       *
+       * เกณฑ์: ต้องมี caregiver_availability ที่ is_active ใน dayOfWeek ของวันจอง
+       * ครบทุก slot ที่ช่วงเวลาคาบเกี่ยว (overlappingSlots) — ขาดแม้ slot เดียวก็ไม่ผ่าน
+       * เพราะช่วงที่คร่อม 2 slot (เช่น 11:00–14:00) ต้องว่างทั้งคู่ ไม่ใช่แค่ slot ที่เวลาเริ่มอยู่
+       *
+       * ใช้ overlappingSlots ตัวเดียวกับปฏิทินคิวว่างรายวันของ PYG-493
+       * (common/constants/time-slot.constant.ts) เพื่อให้ปฏิทินกับการจองตัดสิน slot ตรงกัน
+       */
+      const dayOfWeek = bookingDateObj.getUTCDay();
+      const requiredSlots = overlappingSlots(newStart, newEnd);
+
+      const activeSlots = await this.prisma.caregiverAvailability.findMany({
+        where: {
+          caregiverId: resolvedCaregiverId,
+          dayOfWeek,
+          isActive: true,
+          timeSlot: { in: requiredSlots as time_slot[] },
+        },
+        select: { timeSlot: true },
+      });
+      const coveredSlots = new Set(activeSlots.map((slot) => slot.timeSlot));
+
+      if (!requiredSlots.every((slot) => coveredSlots.has(slot))) {
+        throw new ConflictException('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+      }
+
+      /**
+       * PYG-544 — ตารางว่างรายสัปดาห์ข้างบนไม่รู้ว่าวันนั้นผู้ดูแลรับงานของคนอื่นไปแล้วหรือยัง
+       * → เช็คกับใบจองที่ผู้ดูแลรับไว้แล้วด้วย (ไม่นับ pending ดู CAREGIVER_BUSY_STATUSES)
+       *
+       * ไม่ล็อกแถวผู้ดูแลตรงนี้: ใบใหม่เกิดเป็น pending ซึ่งไม่กันเวลาของใคร ถ้าผู้ดูแลกดรับ
+       * อีกใบในจังหวะเดียวกัน ใบนี้จะถูกกันที่ acceptBooking ซึ่งเป็นด่านที่ล็อกจริง
+       */
+      const caregiverBusy = await caregiverHasTimeConflict(this.prisma, {
+        caregiverId: resolvedCaregiverId,
+        bookingDate: bookingDateObj,
+        startMinute: newStart,
+        endMinute: newEnd,
+      });
+      if (caregiverBusy) {
+        throw new ConflictException('ผู้ดูแลไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่นหรือผู้ดูแลท่านอื่น');
       }
     }
 
     // ── ตรวจสอบ time conflict ──────────────────────────────────────────────────
-    const [startH, startM] = dto.startTime.split(':').map(Number);
-    const newStart = startH * 60 + startM;
-    const newEnd = newStart + Math.round(dto.durationHours * 60);
-    const bookingDateObj = new Date(dto.bookingDate + 'T00:00:00.000Z');
-
     /**
      * PYG-424 — เช็คเวลาชน "ต่อผู้รับบริการ" ไม่ใช่ "ต่อคนจอง"
      *
@@ -280,19 +746,27 @@ export class BookingService {
      * เกณฑ์ที่ถูกคือ "ร่างกายหนึ่งคนอยู่ได้ที่เดียว" → กรองด้วย careRecipientId
      * ไม่มี careRecipientId (จองให้ตัวเอง) = ผู้รับบริการคือ patient เอง
      * → กลับไปใช้ patientId เหมือนเดิมทุกประการ พฤติกรรมเดิมไม่เปลี่ยน
+     *
+     * PYG-500: จองแทนสมาชิกที่ยังไม่มีโปรไฟล์ (newRecipient) → ข้าม โปรไฟล์ที่ยังไม่เกิดไม่มีนัดให้ชน
+     *   และถ้าปล่อยไหลลง { patientId } จะกลายเป็นเช็คนัดของ "คนกดจอง" แทนผู้รับบริการ
      */
     const conflictScope = dto.careRecipientId
       ? { careRecipientId: dto.careRecipientId }
       : { patientId };
 
-    const conflicts = await this.prisma.booking.findMany({
-      where: {
-        ...conflictScope,
-        bookingDate: bookingDateObj,
-        status: { in: ['pending', 'confirmed'] },
-      },
-      select: { startTime: true, durationHours: true },
-    });
+    const conflicts = onBehalf?.newRecipient
+      ? []
+      : await this.prisma.booking.findMany({
+          where: {
+            ...conflictScope,
+            bookingDate: bookingDateObj,
+            // 'accepted' = caregiver กดรับงานแล้ว รอผู้ป่วยยืนยัน/จ่ายเงิน — ยังมีผลอยู่
+            // เหมือน pending/confirmed ไม่ใช่ draft ที่ยกเลิกเองได้เงียบ ๆ (ดู caregiver-booking.service.ts)
+            // ของเดิมไม่นับ → จองซ้อนกับใบที่ผู้ดูแลรับไปแล้วได้
+            status: { in: ['pending', 'accepted', 'confirmed'] },
+          },
+          select: { startTime: true, durationHours: true },
+        });
 
     for (const b of conflicts) {
       const existStart = b.startTime.getUTCHours() * 60 + b.startTime.getUTCMinutes();
@@ -310,6 +784,13 @@ export class BookingService {
       }
     }
 
+    // PYG-361: booking_tasks เป็นแหล่งข้อมูลใหม่สำหรับ per-task completion state
+    // (bookings.tasks ด้านล่างยังเขียนไว้เหมือนเดิม ไม่ถูกลบ — legacy display field ที่ตอนนี้
+    // ไม่ใช่แหล่งเดียวอีกต่อไป) ต้องอยู่ใน transaction เดียวกับ booking.create: ถ้า insert แถว
+    // task ล้ม ต้อง rollback booking ด้วย ไม่งั้นจะได้ booking ที่มี tasks (TEXT[]) แต่
+    // booking_tasks ว่างเปล่า → หน้าติดตามงานของ PYG-361 จะโชว์ "0 จาก 0 รายการ" ทั้งที่จองมี task จริง
+    const suggestedForType = TASK_SUGGESTIONS[dto.serviceType] ?? [];
+
     const data: Prisma.BookingUncheckedCreateInput = {
       patientId,
       caregiverId:      resolvedCaregiverId,
@@ -317,9 +798,9 @@ export class BookingService {
       tasks:            dto.tasks,
       serviceLocations: dto.serviceLocations,
       serviceType:      dto.serviceType as booking_service_type,
-      timeSlot:         dto.timeSlot as time_slot,
-      startTime:        new Date(`1970-01-01T${dto.startTime}Z`),
-      durationHours:    dto.durationHours,
+      timeSlot:         time.timeSlot as time_slot,
+      startTime:        new Date(`1970-01-01T${time.startTime}Z`),
+      durationHours:    time.durationHours,
       locationAddress:  dto.locationAddress,
       // PYG-352: เก็บพิกัดจุดงานที่ลูกค้าปักหมุดไว้ — ก่อนหน้านี้ค่านี้ถูกทิ้งทุกครั้ง
       // ระบบเช็คอินใช้พิกัดคู่นี้คำนวณระยะ ถ้าไม่มีก็ไม่คำนวณและไม่ติดธง
@@ -331,6 +812,10 @@ export class BookingService {
       dayOfContactName:         dto.dayOfContactName         ?? null,
       dayOfContactPhone:        dto.dayOfContactPhone         ?? null,
       dayOfContactRelationship: dto.dayOfContactRelationship ?? null,
+      // PYG-460: ข้อมูลสุขภาพ ณ วันจอง — เก็บรูปทรงเดียวกับที่ FE ส่งมาเป๊ะ ๆ
+      // (SavedRecipient.details) เพื่อให้ฝั่งอ่านไม่ต้องแปลงอีกชั้น
+      // เป็น snapshot โดยตั้งใจ: แก้โปรไฟล์วันหลังต้องไม่ย้อนไปเปลี่ยนงานที่ทำไปแล้ว
+      memberDetails:    (dto.patientProfile as Prisma.InputJsonValue | undefined) ?? undefined,
       estimatedCost:    estimatedCost,
       // มี caregiverId → pending ทันที; ไม่มี → unmatched (รอ matching engine)
       status: resolvedCaregiverId ? 'pending' : 'unmatched',
@@ -338,6 +823,19 @@ export class BookingService {
       familyGroupId: onBehalf?.familyGroupId ?? null,
       bookedBy:      onBehalf?.bookedBy      ?? null,
     };
+
+    // PYG-385: เซ็ต member_details เฉพาะตอนจองแทนและมีการกรอกจริง — ไม่งั้นปล่อยคอลัมน์เป็น NULL
+    // (แตะเฉพาะเมื่อมีค่า เพราะ Prisma แยก JSON null กับ DB null; การไม่กรอก = DB null)
+    //
+    // PYG-460: บรรทัดนี้เขียนทับค่าที่ data literal ข้างบนตั้งจาก dto.patientProfile
+    // ในทางปฏิบัติสองเส้นทางไม่เคยชนกันจริง เพราะ CreateBookingOnBehalfInput (GraphQL)
+    // ไม่มีฟิลด์ patientProfile และ REST ก็ไม่เคยมี onBehalf — ลำดับนี้จึงเป็นแค่การ
+    // ประกาศให้ชัดว่า "ถ้าวันหนึ่งมีทั้งคู่ ให้ของการจองแทนชนะ" ซึ่งถูกต้องเพราะ
+    // คนจองแทนคือคนที่เพิ่งกรอกข้อมูลอาการมากับ mutation นั้นโดยตรง
+    if (onBehalf?.memberDetails !== undefined) {
+      // MemberDetailsInput มีเฉพาะฟิลด์ string/string[]/undefined → เก็บเป็น JSON ได้ตรง ๆ
+      data.memberDetails = onBehalf.memberDetails as unknown as Prisma.InputJsonValue;
+    }
 
     const include = {
       caregiver:     { include: { user: { select: { avatarUrl: true } } } },
@@ -348,11 +846,13 @@ export class BookingService {
      * ทุกอย่างที่ "ต้องเกิดพร้อม booking" อยู่ใน transaction เดียวกันหมด
      *
      * ① ตัว booking เอง
-     * ② PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
+     * ② PYG-361 — แถว booking_tasks ต่อ 1 task (per-task completion state; bookings.tasks
+     *    ด้านบนยังเขียนไว้เหมือนเดิม เป็น legacy display field ที่ไม่ใช่แหล่งเดียวอีกต่อไป)
+     * ③ PYG-424 — ฟีดกิจกรรมของกลุ่ม (เฉพาะตอนจองแทน)
      *    กติกาข้อ 2 ของโมดูล family group (ดูหัวไฟล์ family-group.service.ts)
      *    ถ้าเขียนแยกกันแล้วอันใดอันหนึ่งพัง จะได้ฟีดที่โกหกว่ามีการจองที่ไม่เคยเกิดขึ้น
      *    หรือมีการจองที่ไม่โผล่ในฟีดเลย ซึ่งทั้งสองแบบตรวจสอบย้อนหลังไม่ได้
-     * ③ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
+     * ④ PYG-434 — ใบ QR สำหรับเช็คอิน/เช็คเอาท์ (ทุกใบ ไม่มีข้อยกเว้น)
      *
      * ⚠ ก่อนหน้านี้ "จองปกติ" ใช้ create เดี่ยว ๆ เพื่อไม่จ่ายค่า transaction ฟรี ๆ
      *   PYG-434 เปลี่ยนให้ใช้ transaction ทุกเส้นทาง เพราะ AC เขียนว่า
@@ -362,9 +862,92 @@ export class BookingService {
      *   และไม่มีอะไรในระบบคอยตามซ่อมให้ — ค่า transaction หนึ่งครั้งถูกกว่ามาก
      */
     const booking = await this.prisma.$transaction(async (tx) => {
+      /**
+       * ⓪ PYG-460 — ติ๊ก "บันทึกผู้รับบริการรายนี้ไว้" → สร้างโปรไฟล์ก่อน แล้วผูกกับ booking
+       *
+       * อยู่ใน transaction เดียวกันเพราะถ้าแยกกันแล้ว booking พังทีหลัง จะเหลือ
+       * โปรไฟล์ค้างในลิสต์ที่ผู้ใช้ไม่ได้ตั้งใจสร้าง และกดจองใหม่จะได้ซ้ำอีกใบ
+       *
+       * ข้ามเมื่อ:
+       *   - ส่ง careRecipientId มาแล้ว = เลือกโปรไฟล์เดิมอยู่ ไม่ต้องสร้างซ้ำ
+       *   - จองแทน (onBehalf) = โปรไฟล์เป็นของสมาชิกในกลุ่ม ถ้ายังไม่มีจะสร้างที่ ⓪ʹ ข้างล่าง
+       *   - ไม่มีชื่อคนไข้ = ไม่มีอะไรจะตั้งเป็น name ซึ่งเป็นคอลัมน์ NOT NULL
+       */
+      if (dto.saveAsProfile && !dto.careRecipientId && !onBehalf && dto.patientName) {
+        const savedProfile = await tx.careRecipient.create({
+          data: {
+            patientId,
+            name: dto.patientName,
+            ...(dto.patientProfile ? toCareRecipientColumns(dto.patientProfile) : {}),
+          },
+          select: { id: true },
+        });
+        data.careRecipientId = savedProfile.id;
+
+        this.logger.log({
+          event: 'care_recipient.created_from_booking',
+          careRecipientId: savedProfile.id,
+          patientId,
+        });
+      }
+
+      /**
+       * ⓪ʹ PYG-500 — จองแทนสมาชิกที่ยังไม่มีโปรไฟล์ในกลุ่ม → สร้างที่นี่ ไม่ใช่ก่อนเข้า transaction
+       *
+       * - booking ล้ม → โปรไฟล์ rollback ไปด้วย ไม่ค้าง (PYG-427_34b)
+       * - จองแทนคนเดียวกันพร้อมกัน → FOR UPDATE บนแถวสมาชิกทำให้ต่อคิว คนที่มาทีหลัง
+       *   เจอใบที่คนแรกเพิ่งสร้างแล้วใช้ใบนั้น ไม่สร้างซ้ำ (PYG-427_31)
+       *   ได้ตรวจ ACTIVE ซ้ำใน tx ไปด้วย — ถูกเตะระหว่างทางก็ไม่จอง
+       *
+       * ★ ไม่ใช้ unique index (patient_id, family_group_id) กัน: แถวจาก addGroupCareRecipient
+       *   เก็บ patient_id = คนสร้างใบ สมาชิกคนเดียวมีหลายใบในกลุ่มเดียวได้โดยถูกต้อง (ยาย + ตา)
+       */
+      if (onBehalf?.newRecipient) {
+        const profile = onBehalf.newRecipient;
+        const member = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM family_group_members
+          WHERE group_id = ${onBehalf.familyGroupId}::uuid
+            AND user_id = ${profile.patientId}
+            AND status = 'ACTIVE'
+          FOR UPDATE`;
+        if (member.length === 0) throw new MemberNotFoundError();
+
+        const existing = await tx.careRecipient.findFirst({
+          where: { patientId: profile.patientId, familyGroupId: onBehalf.familyGroupId, is_deleted: false },
+          select: { id: true },
+          orderBy: { updated_at: 'desc' },
+        });
+        if (existing) {
+          data.careRecipientId = existing.id;
+        } else {
+          const provisioned = await tx.careRecipient.create({ data: profile, select: { id: true } });
+          data.careRecipientId = provisioned.id;
+
+          this.logger.log({
+            event: 'group_care_recipient.provisioned',
+            groupId: onBehalf.familyGroupId,
+            memberUserId: profile.patientId,
+            careRecipientId: provisioned.id,
+            source: profile.self_reported ? 'personal_profile' : 'booker_filled',
+          });
+        }
+      }
+
       const created = await tx.booking.create({ data, include });
 
-      // ② จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
+      // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
+      // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
+      await tx.booking_tasks.createMany({
+        data: dto.tasks.map((description, index) => ({
+          booking_id:   created.id,
+          description,
+          is_suggested: suggestedForType.includes(description),
+          is_custom:    !suggestedForType.includes(description),
+          sort_order:   index,
+        })),
+      });
+
+      // ③ จองแทนเท่านั้น — จองปกติไม่มีกลุ่มให้บันทึก
       if (onBehalf) {
         await tx.familyGroupActivity.create({
           data: {
@@ -378,13 +961,13 @@ export class BookingService {
             metadata: {
               recipientName: onBehalf.recipientName,
               bookingDate:   dto.bookingDate,
-              startTime:     dto.startTime,
+              startTime:     time.startTime,
             },
           },
         });
       }
 
-      // ③ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
+      // ④ ใบ QR — คำนวณช่วงเวลาที่สแกนได้จากตารางงานของ booking ที่เพิ่งสร้าง
       //    ส่ง tx เข้าไปเพื่อให้อยู่ใน transaction เดียวกัน (service บังคับรับ tx)
       await this.jobQrService.createForBooking(tx, created);
 
@@ -415,115 +998,90 @@ export class BookingService {
   // ── ② PATCH /api/v1/bookings/:id/cancel ────────────────────────────────────
 
   /**
-   * Patient ยกเลิก booking ของตัวเอง
-   * อนุญาตเฉพาะ status: unmatched | pending | accepted
-   * (ไม่อนุญาต: completed | cancelled | rejected)
+   * Patient ยกเลิก booking ของตัวเอง — PYG-461 เฟส 3a
    *
-   * PYG-286: ถ้า booking มี payment 'held' (กันวงเงินไว้) → void hold ที่ Omise + FSM voided
-   *   - Omise call นอก tx (HTTP, อย่าถือ tx ค้าง)
-   *   - booking.update + FSM.transition(voided) ใน tx เดียว (atomic)
-   *   - ยิง BOOKING_EVENTS.PAYMENT_VOIDED แยกจาก CANCELLED → patient รู้ว่า hold ถูกปล่อยแล้ว
+   * เมธอดนี้เหลือหน้าที่ "สิทธิ์ + แจ้งเตือนระดับ booking" เท่านั้น
+   * เรื่องเงินทั้งหมดย้ายไป `BookingSettlementService.settle()` (เฟส 2)
+   *
+   * ★ การ์ดเงินที่ถูกลบจากตรงนี้ ย้ายไปอยู่ที่ไหน (ไม่มีตัวไหนหายไปเฉย ๆ):
+   *
+   *   `cancellableStatuses = [unmatched, pending, accepted]`
+   *     → `SETTLEABLE_FROM[PATIENT_CANCEL]` ซึ่ง **เพิ่ม 'confirmed'** เข้าไป — คือตัวบั๊กของ PYG-461
+   *       (payment เป็น held/captured ได้เฉพาะตอน booking = confirmed → ด่านเดิมบล็อกไว้หมด
+   *        โค้ด void ของ PYG-286 จึงไม่เคยทำงานจริงเลย) · นอกรายการ → 422 booking_not_settleable
+   *
+   *   `shouldVoid` (held + มี omiseChargeId) → `omiseService.voidCharge` นอก tx
+   *     → matrix ของ settle: held → void ที่ Omise **ใต้ row lock ใน tx เดียวกัน**
+   *       พร้อม Omise-Idempotency-Key (กัน void ซ้ำเมื่อ tx rollback หลัง Omise สำเร็จ)
+   *
+   *   `catch → ServiceUnavailableException` (Omise พัง = ไม่ยกเลิก booking)
+   *     → settle: Omise fail = rollback ทั้งก้อน booking ไม่เปลี่ยนสถานะ + 422 omise_unreachable
+   *       ที่ retryable = true · การรับประกัน "ไม่มีทาง cancelled ทั้งที่เงินยังไม่คืน" แข็งขึ้น
+   *       เพราะเดิม void สำเร็จแล้ว tx ล้ม = วงเงินถูกปล่อยแต่ booking ยังค้าง
+   *
+   *   `fsm.transition(payment → voided)` ใน tx
+   *     → settle ทำใน tx เดียวกับ booking.update + เขียน booking_status_history ด้วย
+   *
+   *   `eventEmitter.emit(PAYMENT_VOIDED)`
+   *     → settle ยิงเองหลัง commit (พร้อม REFUND_ISSUED ที่เดิมไม่มี)
+   *
+   *   ที่เดิม **ไม่มี** และเพิ่มเข้ามาจาก settle:
+   *     captured (PromptPay จ่ายจริงแล้ว) → RefundService.refund() ตาม CANCELLATION_POLICY
+   *       — เดิมยกเลิกผ่านโดยไม่คืนเงิน คือข้อที่การ์ดเรียกว่า "ผู้ป่วยเสียเงินฟรี"
+   *     pending (PromptPay ยังไม่สแกน) → ถาม Omise ก่อน แล้วปิด charge ให้ webhook ตามมาทีหลังไม่ได้
+   *     refunded / partially_refunded / transferred และ payout ที่จ่ายแล้ว → 422 ไม่ปล่อยผ่าน
+   *
+   * ★ สิ่งที่ settle **ไม่** ทำ และต้องอยู่ที่นี่ต่อ: ตรวจว่าเป็น booking ของผู้เรียกจริง
+   *   settle ไม่รู้จักเจ้าของ (cron ก็เรียกได้) → ถ้าย้ายออกไปด้วยจะกลายเป็นใครก็ยกเลิกของใครก็ได้
    */
   async cancelBooking(bookingId: string, patientId: string): Promise<BookingRest> {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      include: {
-        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-        payment:       true,
-      },
+      select: { id: true, patientId: true },
     });
 
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== patientId)
       throw new ForbiddenException('Access denied');
 
-    const cancellableStatuses = ['unmatched', 'pending', 'accepted'];
-    if (!cancellableStatuses.includes(booking.status)) {
-      throw new UnprocessableEntityException(
-        `Cannot cancel a booking with status "${booking.status}". ` +
-          `Only ${cancellableStatuses.join(', ')} bookings can be cancelled.`,
-      );
-    }
+    // เงิน + สถานะ booking + audit ทั้งหมดอยู่ใน settle() — โยน 422/404 ที่อ่านรู้เรื่องเองเมื่อยกเลิกไม่ได้
+    const settlement = await this.settlementService.settle(
+      bookingId,
+      SettlementReason.PATIENT_CANCEL,
+      { id: patientId, role: 'patient' },
+    );
 
-    // PYG-286: เช็คว่ามี held payment ต้อง void หรือไม่
-    // ใช้ != null เพื่อครอบทั้ง null และ undefined (test mocks อาจไม่ได้ใส่ field นี้)
-    const payment = booking.payment;
-    const shouldVoid =
-      payment != null &&
-      (payment.paymentStatus as PaymentStatus) === PaymentStatus.held &&
-      !!payment.omiseChargeId;
-
-    // void Omise นอก tx (ถ้ามี held payment) — fail → throw ServiceUnavailable, ไม่ cancel booking
-    if (shouldVoid) {
-      try {
-        await this.omiseService.voidCharge(payment!.omiseChargeId!);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.logger.error(
-          `[cancelBooking] Omise void failed for chargeId=${payment!.omiseChargeId}: ${msg}`,
-        );
-        throw new ServiceUnavailableException(
-          'ไม่สามารถยกเลิกการกันวงเงินได้ในขณะนี้ กรุณาลองใหม่ภายหลัง',
-        );
-      }
-    }
-
-    // atomic: booking.cancelled + (ถ้า void แล้ว) FSM transition payment → voided
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.booking.update({
-        where: { id: bookingId },
-        data:  { status: 'cancelled' },
-        include: {
-          caregiver:     { include: { user: { select: { avatarUrl: true } } } },
-          careRecipient: { select: { name: true } },
-        },
-      });
-
-      if (shouldVoid) {
-        // FSM ตรวจกฎ held → voided + เขียน history (atomic ใน tx เดียว)
-        await this.fsm.transition(
-          payment!.id,
-          PaymentStatus.voided,
-          {
-            changedBy: patientId,
-            reason: 'booking cancelled by patient',
-            metadata: {
-              omiseChargeId: payment!.omiseChargeId,
-              voidedAt: new Date().toISOString(),
-            },
-          },
-          tx,
-        );
-      }
-
-      return u;
+    // อ่านใหม่หลัง settle — แถวเพิ่งเปลี่ยนสถานะไป ถ้าใช้ของที่อ่านก่อนหน้าจะคืน status เก่าให้ FE
+    const updated = await this.prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+      include: {
+        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+      },
     });
 
-    this.logger.log({ event: 'booking.cancelled', bookingId, patientId, voided: shouldVoid });
+    this.logger.log({
+      event: 'booking.cancelled',
+      bookingId,
+      patientId,
+      moneyAction: settlement.moneyAction,
+      refundAmount: settlement.refundAmount,
+      alreadySettled: settlement.alreadySettled,
+    });
 
     // PYG-292: แจ้ง caregiver ว่าผู้ใช้บริการยกเลิกการจอง
-    this.emit({
-      bookingId,
-      eventType: BOOKING_EVENTS.CANCELLED,
-      patientId,
-      caregiverId: updated.caregiver?.userId ?? null,
-    });
-
-    // PYG-286: ถ้า void → แจ้ง patient ว่า hold ถูกปล่อย (ผู้รับ = patient เอง, in-app เป็น signal สำหรับ FE refresh wallet)
-    if (shouldVoid) {
-      this.eventEmitter.emit(BOOKING_EVENTS.PAYMENT_VOIDED, {
+    // ★ เรียกซ้ำ (alreadySettled) → ไม่ยิงซ้ำ ไม่งั้นผู้ดูแลได้แจ้งเตือน "ถูกยกเลิก" หลายรอบจากใบเดียว
+    //   PAYMENT_VOIDED / REFUND_ISSUED ไม่ต้องยิงที่นี่ — settle ยิงให้แล้วหลัง commit
+    if (!settlement.alreadySettled) {
+      this.emit({
         bookingId,
-        eventType: BOOKING_EVENTS.PAYMENT_VOIDED,
+        eventType: BOOKING_EVENTS.CANCELLED,
         patientId,
         caregiverId: updated.caregiver?.userId ?? null,
-        metadata: {
-          amount: payment!.amount,
-          omiseChargeId: payment!.omiseChargeId,
-        },
       });
     }
 
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return this.toRestSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -536,7 +1094,17 @@ export class BookingService {
    *  - isSearchable = true
    *  - kycStatus    = 'verified'
    *  - serviceAreaProvince ตรงกับ dto.province (ถ้าส่งมา)
-   * เรียงตาม hourlyRate ASC (ถูกที่สุดก่อน)
+   *
+   * ลำดับ (PYG-489): คะแนนรีวิวเฉลี่ยจากมากไปน้อย ผู้ดูแลที่ยังไม่มีรีวิวอยู่ท้าย
+   *   คะแนนเท่ากัน (หรือไม่มีรีวิวเหมือนกัน) → สมัครก่อนอยู่ก่อน (created_at เก่าไปใหม่)
+   *   เดิมเรียงตาม caregivers.hourly_rate ASC — ผู้ดูแลตั้งราคาเองไม่ได้แล้ว คนใหม่ทุกคนเป็น null
+   *   จึงถูกเรียงไว้ท้ายสุดและหลุดจากรายการเมื่อเกินจำนวนที่ตัด ทั้งที่ราคาที่ลูกค้าจ่ายเท่ากันทุกคน
+   * ตัดที่ MATCHES_LIMIT คนหลังเรียงแล้ว
+   *
+   * ⚠ เรียงในหน่วยความจำ: Prisma เรียงตามค่าเฉลี่ยของ relation ไม่ได้ จึงดึงผู้ดูแลที่เข้าเงื่อนไขมาทั้งหมดก่อน
+   *   จำนวนยังน้อย (หลักสิบ) — ถ้าโตถึงหลักพันให้ย้ายไปเรียงใน SQL · รอ matching engine
+   *
+   * ราคาที่คืน = ราคา catalog ของ dto.serviceType (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — เท่ากับยอดที่จะคิดตอนจองจริง
    */
   async searchMatchesBasic(dto: SearchMatchesDto): Promise<MatchedCaregiverRest[]> {
     const where: Record<string, unknown> = {
@@ -548,39 +1116,56 @@ export class BookingService {
       where.serviceAreaProvince = dto.province;
     }
 
-    const caregivers = await this.prisma.caregiver.findMany({
+    const candidates = await this.prisma.caregiver.findMany({
       where,
       select: {
         id:                   true,
         fullName:             true,
-        hourlyRate:           true,
+        createdAt:            true,
         experienceYears:      true,
         skills:               true,
+        otherSkills:          true,
         serviceAreaProvince:  true,
         serviceAreaDistrict:  true,
         patientReviews:       { select: { rating: true } },
         user:                 { select: { avatarUrl: true } },
       },
-      orderBy: { hourlyRate: 'asc' },
-      take:    20, // hard cap — Phase 3 will paginate properly
+      // ลำดับตั้งต้นให้ผลคงที่ — ลำดับจริงเรียงด้านล่าง
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
 
-    return caregivers.map((cg) => {
-      const reviewCount = cg.patientReviews.length;
-      const avgRating =
-        reviewCount > 0
-          ? Math.round(
-              (cg.patientReviews.reduce((s, r) => s + r.rating, 0) / reviewCount) * 100,
-            ) / 100
-          : undefined;
+    const caregivers = candidates
+      .map((cg) => ({ cg, ...ratingOf(cg.patientReviews) }))
+      .sort(
+        (a, b) =>
+          (b.avgRating ?? -1) - (a.avgRating ?? -1) ||
+          a.cg.createdAt.getTime() - b.cg.createdAt.getTime() ||
+          a.cg.id.localeCompare(b.cg.id),
+      )
+      .slice(0, MATCHES_LIMIT);
 
+    const catalogRow = await this.prisma.servicePriceCatalog.findUnique({
+      where: { serviceType: dto.serviceType },
+      select: { pricePerHour: true, isActive: true },
+    });
+    const servicePrice =
+      catalogRow?.isActive ? Number(catalogRow.pricePerHour) : undefined;
+
+    // PYG-518: เซ็น avatar ของ caregiver ทั้ง 20 รายในการเรียกเดียว ไม่ยิงทีละคน
+    const avatarByCaregiver = await this.avatarUrlService.resolveMany(
+      caregivers.map(({ cg }) => cg),
+      (cg) => cg.user.avatarUrl,
+    );
+
+    return caregivers.map(({ cg, avgRating, reviewCount }) => {
       return {
         id:              cg.id,
         fullName:        cg.fullName        ?? undefined,
-        avatarUrl:       cg.user.avatarUrl  ?? undefined,
-        hourlyRate:      cg.hourlyRate      ?? undefined,
+        avatarUrl:       avatarByCaregiver.get(cg) ?? undefined,
+        hourlyRate:      servicePrice,
         experienceYears: cg.experienceYears ?? undefined,
         skills:          cg.skills,
+        otherSkills:     cg.otherSkills,
         province:        cg.serviceAreaProvince ?? undefined,
         district:        cg.serviceAreaDistrict ?? undefined,
         avgRating,
@@ -642,6 +1227,7 @@ export class BookingService {
                           : String(booking.bookingDate),
     });
 
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return {
       booking: this.toRestSummary(updated as unknown as BookingWithIncludes),
       matches,
@@ -688,6 +1274,7 @@ export class BookingService {
     });
 
     this.logger.log({ event: 'booking.confirmed', bookingId, userId });
+    await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return this.toSummary(updated as unknown as BookingWithIncludes);
   }
 
@@ -701,7 +1288,48 @@ export class BookingService {
     });
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.patientId !== userId) throw new ForbiddenException('Access denied');
-    return this.toSummary(booking as unknown as BookingWithIncludes);
+    await this.signCaregiverAvatars([booking as unknown as BookingWithIncludes]);
+    const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    if (summary.caregiver && booking.caregiverId) {
+      summary.caregiver.completedJobs = await this.prisma.booking.count({
+        where: { caregiverId: booking.caregiverId, status: 'completed' },
+      });
+    }
+    return summary;
+  }
+
+  /**
+   * รายละเอียดคำจองในมุมมองกลุ่มครอบครัว.
+   * FamilyGroupGuard ตรวจสมาชิกภาพ ACTIVE ก่อนเข้ามาถึงเมธอดนี้ ส่วนเงื่อนไข
+   * familyGroupId ป้องกันการนำ booking id จากกลุ่มอื่นมาอ่านผ่าน groupId ที่ตนเป็นสมาชิก.
+   */
+  async groupBookingById(
+    bookingId: string,
+    groupId: string,
+    userId: string,
+  ): Promise<BookingSummary> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        caregiver:     { include: { user: { select: { avatarUrl: true } } } },
+        careRecipient: { select: { name: true } },
+      },
+    });
+
+    // คืน NotFound ทั้งกรณีไม่มี booking และ booking อยู่คนละกลุ่ม เพื่อไม่เปิดเผยข้อมูลข้ามกลุ่ม
+    if (!booking || booking.familyGroupId !== groupId) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    await this.signCaregiverAvatars([booking as unknown as BookingWithIncludes]);
+    const summary = this.toSummary(booking as unknown as BookingWithIncludes);
+    summary.bookedByMe = booking.bookedBy === userId || booking.patientId === userId;
+    if (summary.caregiver && booking.caregiverId) {
+      summary.caregiver.completedJobs = await this.prisma.booking.count({
+        where: { caregiverId: booking.caregiverId, status: 'completed' },
+      });
+    }
+    return summary;
   }
 
   async myPendingConfirmations(
@@ -739,7 +1367,12 @@ export class BookingService {
     const limit = Math.min(50, Math.max(1, input.limit ?? 10));
     const offset = (page - 1) * limit;
 
-    const where: Record<string, unknown> = { patientId: userId };
+    //   เฉพาะการจองส่วนตัว — ใบ "จองแทน" มี patientId = คนกดจองด้วย (เพื่อให้จ่ายเงินได้ ดู
+    //   createBookingOnBehalf) ถ้าไม่กรอง นัดของสมาชิกในครอบครัวจะปนมาใน "นัดหมายของฉัน"
+    //   ใบจองแทนดู/จ่ายเงิน/จัดการได้ที่หน้ากลุ่มครอบครัว (groupBookings + BookingDetail โหมดกลุ่ม)
+    //   ผลพลอยได้: ที่อยู่ล่าสุดที่เติมให้ตอนจองครั้งถัดไป (GET_LATEST_BOOKING_ADDRESS)
+    //   ไม่หยิบที่อยู่บ้านสมาชิกมาเป็นที่อยู่ของเราอีก
+    const where: Record<string, unknown> = { patientId: userId, familyGroupId: null };
     if (input.status) where.status = input.status;
 
     const [items, total] = await Promise.all([
@@ -759,7 +1392,134 @@ export class BookingService {
     return this.toListResponse(items as unknown as BookingWithIncludes[], { page, limit, total });
   }
 
+  // ── ①.6 PYG-385: ฟีดนัดหมายของกลุ่มครอบครัว (GraphQL) ──────────────────────
+
+  /**
+   * นัดหมาย "จองแทน" ทั้งหมดของกลุ่ม — ทุกสมาชิกเห็นร่วมกัน (family group §2: ฟีดต้องตรงกัน
+   * ทุกคน). กรองด้วย familyGroupId เท่านั้น เพราะการจองปกติ (familyGroupId = null) ไม่เกี่ยว
+   * กับกลุ่ม. เรียงล่าสุดก่อน; take 100 พอสำหรับกลุ่มครอบครัว (เพดานสมาชิก 10 คน) โดยไม่ต้อง
+   * ทำ pagination ให้ FE ในเวอร์ชันนี้.
+   *
+   * สิทธิ์ "เป็นสมาชิก ACTIVE ของกลุ่ม" ถูกตรวจโดย FamilyGroupGuard ที่ resolver แล้ว.
+   *
+   * PYG-540: ซ่อนนัดหมายของผู้รับบริการที่ "ถอนความยินยอมเปิดเผยให้กลุ่มครอบครัว"
+   *   ยกเว้นคนที่เกี่ยวข้องโดยตรงยังเห็นเหมือนเดิม:
+   *   - เจ้าของข้อมูลเอง (ข้อมูลของเขา)
+   *   - คนกดจอง (เป็นคู่สัญญา/คนจ่ายเงิน — เห็นใบนี้ในประวัติการจองของตัวเองอยู่แล้ว
+   *     ซ่อนจากหน้ากลุ่มไปก็ไม่ได้ปกป้องอะไรเพิ่ม มีแต่ทำให้งงว่านัดหายไปไหน)
+   *   ไม่ลบนัดหมาย — แค่ไม่แสดงให้สมาชิกคนอื่น ถ้าให้ความยินยอมกลับ นัดก็กลับมาแสดง
+   */
+  async groupBookings(
+    groupId: string,
+    viewerUserId: string,
+  ): Promise<GroupBookingSummary[]> {
+    const rows = await this.prisma.booking.findMany({
+      where: { familyGroupId: groupId },
+      include: {
+        caregiver: { include: { user: { select: { avatarUrl: true } } } },
+        // PYG-540: patientId ของโปรไฟล์ = เจ้าของข้อมูล ใช้ตรวจความยินยอม
+        careRecipient: { select: { name: true, patientId: true } },
+        bookedByUser: { select: { displayName: true } },
+        payment: { select: { paymentStatus: true } },
+        // เวลาเช็คอินจริงสำหรับการ์ด "กำลังบริการ" — JOB_EVENT_TYPE.CHECK_IN ('check_in')
+        jobEvents: {
+          where: { eventType: 'check_in' },
+          select: { deviceTs: true, serverTs: true },
+          take: 1,
+        },
+      },
+      orderBy: [{ bookingDate: 'desc' }, { startTime: 'desc' }],
+      take: 100,
+    });
+
+    // เวลาเช็คอินเก็บเป็น timestamptz (UTC) → แสดงเป็นเวลาไทยเสมอ ไม่พึ่ง TZ ของเซิร์ฟเวอร์
+    const bkkTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Bangkok',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    // PYG-540: เจ้าของข้อมูลของแต่ละใบ — ไม่มีโปรไฟล์ (ไม่ควรเกิดกับการจองแทน) ถือว่าคนจองเป็นเจ้าของ
+    const subjectOf = (b: (typeof rows)[number]) => b.careRecipient?.patientId ?? b.patientId;
+    // query เดียวต่อหน้า ไม่ใช่ใบละ query
+    const withdrawn = await this.consentService.withdrawnUserIds(
+      rows.map(subjectOf),
+      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+    );
+    const items = rows.filter((b) => {
+      const subject = subjectOf(b);
+      return (
+        !withdrawn.has(subject) ||
+        subject === viewerUserId ||
+        b.bookedBy === viewerUserId
+      );
+    });
+
+    // PYG-518: เซ็น avatar ของผู้ดูแลทุกใบในฟีดกลุ่มพร้อมกัน (createSignedUrls ครั้งเดียว)
+    await this.signCaregiverAvatars(items);
+
+    return items.map((b) => ({
+      id: b.id,
+      bookingDate:
+        b.bookingDate instanceof Date
+          ? b.bookingDate.toISOString().slice(0, 10)
+          : String(b.bookingDate),
+      startTime: formatStartTime(b.startTime),
+      // PYG-526: การ์ดนัดหมายของกลุ่มแสดง "เริ่ม – สิ้นสุด (N ชม.)"
+      endTime: computeEndTime(b.startTime, b.durationHours),
+      status: b.status,
+      serviceType: b.serviceType,
+      durationHours: b.durationHours != null ? Number(b.durationHours) : undefined,
+      careRecipientName: b.careRecipient?.name ?? undefined,
+      caregiver: b.caregiver
+        ? {
+            id: b.caregiver.id,
+            fullName: b.caregiver.fullName ?? undefined,
+            avatarUrl: b.caregiver.user.avatarUrl ?? undefined,
+            // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+            hourlyRate: bookingHourlyRate(b.estimatedCost, b.durationHours),
+          }
+        : undefined,
+      bookedByName: b.bookedByUser?.displayName ?? undefined,
+      bookedByUserId: b.bookedBy ?? undefined,
+      bookedByMe: b.bookedBy === viewerUserId,
+      estimatedCost: b.estimatedCost != null ? Number(b.estimatedCost) : undefined,
+      serviceLocations: b.serviceLocations ?? [],
+      locationAddress: b.locationAddress ?? undefined,
+      paymentStatus: b.payment?.paymentStatus ?? undefined,
+      checkInTime: (() => {
+        const ev = b.jobEvents?.[0];
+        const ts = ev?.deviceTs ?? ev?.serverTs;
+        return ts ? bkkTime.format(ts) : undefined;
+      })(),
+    }));
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * PYG-518 — เซ็น avatarUrl ของผู้ดูแลในหลาย booking row พร้อมกัน (createSignedUrls
+   * ครั้งเดียว ไม่ยิงทีละแถว) แล้ว mutate ค่าใน row.caregiver.user.avatarUrl ให้เป็น
+   * signed URL ตรง ๆ — เรียกก่อน toSummary/toRestSummary/groupBookings เสมอ
+   * เพื่อให้ตัว mapper ที่เหลือไม่ต้องรู้เรื่อง signing เลย แค่อ่านค่าที่มีอยู่ตามปกติ
+   */
+  private async signCaregiverAvatars(
+    rows: ReadonlyArray<{ caregiver: { user: { avatarUrl: string | null } } | null }>,
+  ): Promise<void> {
+    const withCaregiver = rows.filter(
+      (r): r is { caregiver: { user: { avatarUrl: string | null } } } => !!r.caregiver,
+    );
+    if (withCaregiver.length === 0) return;
+
+    const urlByRow = await this.avatarUrlService.resolveMany(
+      withCaregiver,
+      (r) => r.caregiver.user.avatarUrl,
+    );
+    for (const r of withCaregiver) {
+      r.caregiver.user.avatarUrl = urlByRow.get(r) ?? null;
+    }
+  }
 
   /** REST summary (caregiver may be null for unmatched bookings) */
   private toRestSummary(booking: BookingWithIncludes): BookingRest {
@@ -768,7 +1528,8 @@ export class BookingService {
           id:         booking.caregiver.id,
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
-          hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+          hourlyRate: bookingHourlyRate(booking.estimatedCost, booking.durationHours),
         }
       : undefined;
 
@@ -780,6 +1541,11 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
+      // PYG-526: ให้ REST มีเวลาจริงเหมือน GraphQL — endTime คำนวณจาก startTime + durationHours
+      startTime:        formatStartTime(booking.startTime),
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
+      // Number(): คอลัมน์เป็น Decimal — ถ้าส่งตรง ๆ JSON จะออกมาเป็น string "4"
+      durationHours:    booking.durationHours != null ? Number(booking.durationHours) : undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,
       locationAddress:  booking.locationAddress,
@@ -801,7 +1567,14 @@ export class BookingService {
           id:         booking.caregiver.id,
           fullName:   booking.caregiver.fullName   ?? undefined,
           avatarUrl:  booking.caregiver.user.avatarUrl ?? undefined,
-          hourlyRate: booking.caregiver.hourlyRate ?? undefined,
+          // ราคาของใบจองนี้ (estimated_cost ÷ ชม.) ไม่ใช่ hourly_rate ปัจจุบันของผู้ดูแล
+          hourlyRate: bookingHourlyRate(booking.estimatedCost, booking.durationHours),
+          averageRating:   booking.caregiver.averageRating   ?? undefined,
+          reviewCount:     booking.caregiver.reviewCount     ?? undefined,
+          experienceYears: booking.caregiver.experienceYears ?? undefined,
+          phone: CAREGIVER_PHONE_VISIBLE_STATUSES.has(booking.status)
+            ? booking.caregiver.phone ?? undefined
+            : undefined,
         }
       : undefined;
 
@@ -813,9 +1586,9 @@ export class BookingService {
       status:           booking.status,
       serviceType:      booking.serviceType,
       timeSlot:         booking.timeSlot,
-      startTime:        booking.startTime instanceof Date
-                          ? booking.startTime.toISOString().slice(11, 16)
-                          : undefined,
+      startTime:        formatStartTime(booking.startTime),
+      // PYG-526: FE แสดง "เริ่ม – สิ้นสุด (N ชม.)" แทนชื่อ slot — คำนวณที่ BE ที่เดียว
+      endTime:          computeEndTime(booking.startTime, booking.durationHours),
       durationHours:    booking.durationHours ?? undefined,
       tasks:            booking.tasks,
       serviceLocations: booking.serviceLocations,
@@ -826,6 +1599,12 @@ export class BookingService {
                           : undefined,
       caregiver,
       careRecipientName: booking.careRecipient?.name ?? undefined,
+      patientName:              booking.patientName              ?? undefined,
+      dayOfContactName:         booking.dayOfContactName         ?? undefined,
+      dayOfContactPhone:        booking.dayOfContactPhone        ?? undefined,
+      dayOfContactRelationship: booking.dayOfContactRelationship ?? undefined,
+      // JSONB → ส่งต่อตามรูปทรงที่เก็บไว้ (เหมือน CaregiverBookingService.toSummary)
+      patientProfile: (booking.memberDetails as PatientProfileType | null) ?? undefined,
       confirmedAt:      booking.confirmedAt   ?? undefined,
       disputeStatus:    booking.disputeStatus ?? 'none',
       disputeReason:    booking.disputeReason ?? undefined,
@@ -836,10 +1615,11 @@ export class BookingService {
     };
   }
 
-  private toListResponse(
+  private async toListResponse(
     items: BookingWithIncludes[],
     { page, limit, total }: { page: number; limit: number; total: number },
-  ): BookingListResponse {
+  ): Promise<BookingListResponse> {
+    await this.signCaregiverAvatars(items);
     const pagination: BookingPagination = {
       page,
       limit,

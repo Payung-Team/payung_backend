@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { UserService } from './user.service';
 import { PrismaService } from '../../common/prisma.service';
+import { ConsentService } from '../../consent/consent.service';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,16 @@ describe('UserService', () => {
       providers: [
         UserService,
         { provide: PrismaService, useValue: mockPrisma },
+        // PYG-538: UserService ต้องมี ConsentService — ไฟล์นี้ไม่ได้เทส Onboarding
+        // จึง mock ไว้พอให้ DI ผ่าน (เทสจริงอยู่ที่ complete-onboarding.service.spec.ts)
+        {
+          provide: ConsentService,
+          useValue: {
+            assertAnswers: jest.fn(),
+            recordMany: jest.fn(),
+            hasHealthDataConsent: jest.fn().mockResolvedValue(true),
+          },
+        },
       ],
     }).compile();
 

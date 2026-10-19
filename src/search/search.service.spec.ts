@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { SearchService } from './search.service';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
+import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
+import { SupabaseService } from '../common/supabase.service';
 import { SortByEnum } from './dto/search-caregiver.input';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -9,15 +12,16 @@ import { SortByEnum } from './dto/search-caregiver.input';
 type RawRow = {
   id: string; full_name: string | null; avatar_url: string | null;
   hourly_rate: number | null; avg_rating: number | null; review_count: bigint;
-  skills: string[]; province: string | null; district: string | null; total_count: bigint;
+  skills: string[]; profession: string; province: string | null; district: string | null;
+  gender: string | null; total_count: bigint;
 };
 
 function row(overrides: Partial<RawRow> = {}): RawRow {
   return {
     id: 'cg-1', full_name: 'สมชาย ใจดี', avatar_url: null,
     hourly_rate: 350, avg_rating: 4.5, review_count: BigInt(12),
-    skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
-    total_count: BigInt(1),
+    skills: ['bathing'], profession: 'general_caregiver', province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+    gender: 'male', total_count: BigInt(1),
     ...overrides,
   };
 }
@@ -75,14 +79,29 @@ function getValues(mockFn: jest.Mock, callIndex = 0): unknown[] {
 describe('SearchService', () => {
   let service: SearchService;
   let prisma: { $queryRaw: jest.Mock };
+  let storageFrom: jest.Mock;
+  let createSignedUrls: jest.Mock;
 
   beforeEach(async () => {
     prisma = { $queryRaw: jest.fn() };
+    createSignedUrls = jest.fn().mockImplementation((paths: string[]) => ({
+      data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}`, error: null })),
+      error: null,
+    }));
+    storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SearchService,
         { provide: PrismaService, useValue: prisma },
+        // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเฉพาะเรื่อง signing อยู่ที่ท้ายไฟล์นี้
+        AvatarUrlService,
+        {
+          provide: SupabaseService,
+          useValue: {
+            getAdminClient: jest.fn().mockReturnValue({ storage: { from: storageFrom } }),
+          },
+        },
       ],
     }).compile();
 
@@ -101,9 +120,30 @@ describe('SearchService', () => {
     expect(result.data[0]).toMatchObject({
       id: 'cg-1', fullName: 'สมชาย ใจดี',
       hourlyRate: 350, avgRating: 4.5, reviewCount: 12,
-      skills: ['elderly_care'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+      skills: ['bathing'], province: 'เชียงใหม่', district: 'เมืองเชียงใหม่',
+      gender: 'male',
     });
     expect(result.pagination).toMatchObject({ page: 1, limit: 10, total: 1, totalPages: 1 });
+  });
+
+  // PYG-556 · S01-AC3: ป้ายวิชาชีพบนการ์ดหน้า List
+  it('selects c.profession and maps it to CaregiverSummary.profession', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      row({ profession: 'physiotherapist' }),
+    ]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(getSql(prisma.$queryRaw)).toContain('c.profession');
+    expect(result.data[0].profession).toBe('physiotherapist');
+  });
+
+  it('maps gender to undefined when the caregiver never filled it in', async () => {
+    prisma.$queryRaw.mockResolvedValue([row({ gender: null })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].gender).toBeUndefined();
   });
 
   // ── Empty results ───────────────────────────────────────────────────────
@@ -207,6 +247,33 @@ describe('SearchService', () => {
     expect(values).toContain(600);
   });
 
+  // ── ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2: ราคาจาก service_price_catalog ──────────
+
+  it('ราคาอ่านจาก service_price_catalog (is_active) ไม่ใช่ c.hourly_rate ที่ผู้ดูแลตั้งเอง', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await service.searchCaregivers({ minPrice: 200, sortBy: SortByEnum.PRICE_ASC });
+
+    const sql = getSql(prisma.$queryRaw);
+    expect(sql).toContain('MIN(spc.price_per_hour)');
+    expect(sql).toContain('spc.is_active = true');
+    expect(sql).not.toContain('c.hourly_rate');
+  });
+
+  it('กรอง jobType → ราคาเริ่มต้นคิดเฉพาะประเภทที่กรอง (jobTypes ถูกส่งเข้าซับคิวรีราคาด้วย)', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await service.searchCaregivers({ jobType: 'physiotherapy' });
+
+    const sql = getSql(prisma.$queryRaw);
+    expect(sql).toContain('AND jt.job_type::text = ANY(');
+    // ใช้ 2 ที่: ตัวกรอง EXISTS + ซับคิวรีราคา
+    const jobTypeParams = getValues(prisma.$queryRaw).filter(
+      (v) => Array.isArray(v) && v.includes('physiotherapy'),
+    );
+    expect(jobTypeParams).toHaveLength(2);
+  });
+
   it('passes minRating as parameter and adds outer COALESCE filter', async () => {
     prisma.$queryRaw.mockResolvedValue([]);
 
@@ -239,7 +306,8 @@ describe('SearchService', () => {
 
     await service.searchCaregivers({});
 
-    expect(getSql(prisma.$queryRaw)).not.toContain('caregiver_job_types');
+    // caregiver_job_types ยังถูกอ้างในซับคิวรีราคาเริ่มต้น — เช็คเฉพาะตัวกรอง EXISTS
+    expect(getSql(prisma.$queryRaw)).not.toContain('SELECT 1 FROM caregiver_job_types');
   });
 
   // ── All filters combined ────────────────────────────────────────────────
@@ -266,5 +334,32 @@ describe('SearchService', () => {
     expect(values).toContain(700);
     expect(values).toContain(4);
     expect(result.pagination).toMatchObject({ page: 2, limit: 5, total: 3, totalPages: 1 });
+  });
+
+  // ── PYG-518: avatar signing ─────────────────────────────────────────────
+
+  it('sign avatar_url ของทุกแถวด้วย createSignedUrls ครั้งเดียว กับ bucket profile-photos', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      row({ id: `cg-${i}`, avatar_url: `cg-${i}/photo.jpg`, total_count: BigInt(20) }),
+    );
+    prisma.$queryRaw.mockResolvedValue(rows);
+
+    const result = await service.searchCaregivers({ limit: 20 });
+
+    // ★ Done criterion: ผลค้นหา 20 ใบเซ็นในการเรียกเดียว
+    expect(createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(createSignedUrls.mock.calls[0][0]).toHaveLength(20);
+    expect(storageFrom).toHaveBeenCalledWith(PROFILE_PHOTOS_BUCKET);
+    expect(result.data.every((d, i) => d.avatarUrl === `https://signed.example/cg-${i}/photo.jpg`)).toBe(true);
+  });
+
+  it('ไม่คืน storage path ดิบเมื่อ sign ไม่สำเร็จ — เป็น undefined แทน', async () => {
+    createSignedUrls.mockResolvedValue({ data: null, error: { message: 'bucket not found' } });
+    prisma.$queryRaw.mockResolvedValue([row({ avatar_url: 'cg-1/photo.jpg' })]);
+
+    const result = await service.searchCaregivers({});
+
+    expect(result.data[0].avatarUrl).toBeUndefined();
+    expect(result.data[0].avatarUrl).not.toBe('cg-1/photo.jpg');
   });
 });

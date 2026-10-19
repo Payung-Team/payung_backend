@@ -5,7 +5,7 @@
  *   จึงต้องกันเงินหลุดด้วย 2 ชั้นอิสระ — ชั้นใดชั้นหนึ่งพังอีกชั้นต้องยังกันได้:
  *     Layer 1: source='system'  → computeVerdict ผ่านได้เฉพาะ source==='caregiver'
  *     Layer 2: review_reasons += 'no_checkout' → computeVerdict ผ่านได้เฉพาะ reasons ว่าง
- *   ผล: verdict = needs_review เสมอ → PayoutEligibility ไม่ปล่อยเงิน (ยังคง held)
+ *   ผล: booking ปิดเป็น completed แต่ verdict = needs_review → PayoutEligibility ไม่ปล่อยเงิน
  *
  * cron นี้ "ไม่แตะเงิน" เลย — แค่บันทึกว่า "ไม่มีการเช็คเอาท์" แล้วส่งเข้าคิว admin
  */
@@ -91,7 +91,7 @@ export class NoCheckoutSweeperService {
   }
 
   /**
-   * เขียน system check_out + ปิดงานเป็น needs_review ใน transaction เดียว
+   * เขียน system check_out + ปิดงานเป็น completed ใน transaction เดียว
    * - ไม่คำนวณ duration (ไม่รู้ว่าเลิกงานตอนไหน — เดา = ปลอมหลักฐาน)
    * - ไม่เดาพิกัด (lat/lng/distance = NULL)
    * - append 'no_checkout' ไม่ทับธงเดิม
@@ -122,7 +122,8 @@ export class NoCheckoutSweeperService {
         this.prisma.booking.update({
           where: { id: b.id },
           data: {
-            status: BOOKING_STATUS.NEEDS_REVIEW, // system row → เข้าคิว admin เสมอ (ไม่ใช่ awaiting_release)
+            status: BOOKING_STATUS.COMPLETED,
+            completedAt: now,
             reviewReasons: { set: mergedReasons }, // Layer 2 (append)
           },
         }),

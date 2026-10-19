@@ -18,7 +18,7 @@ function fakeCaregiverRow(overrides: Record<string, unknown> = {}) {
     id:                  CAREGIVER_ID,
     fullName:            'สมชาย ใจดี',
     hourlyRate:          350,
-    skills:              ['elderly_care'],
+    skills:              ['bathing'],
     serviceAreaProvince: 'เชียงใหม่',
     serviceAreaDistrict: 'เมือง',
     user:                { avatarUrl: null },
@@ -48,6 +48,8 @@ describe('SavedCaregiversService', () => {
       delete:     jest.Mock;
     };
     caregiver: { findUnique: jest.Mock };
+    caregiverJobType: { findMany: jest.Mock };
+    servicePriceCatalog: { findMany: jest.Mock };
   };
 
   beforeEach(async () => {
@@ -59,6 +61,13 @@ describe('SavedCaregiversService', () => {
         delete:     jest.fn(),
       },
       caregiver: { findUnique: jest.fn() },
+      // ราคาเริ่มต้นจาก catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2)
+      caregiverJobType: {
+        findMany: jest.fn().mockResolvedValue([{ caregiverId: CAREGIVER_ID, jobType: 'general_care' }]),
+      },
+      servicePriceCatalog: {
+        findMany: jest.fn().mockResolvedValue([{ serviceType: 'general_care', pricePerHour: 300 }]),
+      },
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -92,10 +101,17 @@ describe('SavedCaregiversService', () => {
       expect(result).toEqual([]);
     });
 
-    it('maps null hourlyRate to undefined', async () => {
+    it('hourlyRate = ราคาเริ่มต้นจาก catalog ไม่ใช่ hourlyRate ที่ผู้ดูแลตั้งเอง', async () => {
       prisma.savedCaregiver.findMany.mockResolvedValue([
-        fakeSavedRow({ caregiver: fakeCaregiverRow({ hourlyRate: null }) }),
+        fakeSavedRow({ caregiver: fakeCaregiverRow({ hourlyRate: 350 }) }),
       ]);
+      const result = await service.list(PATIENT_ID);
+      expect(result[0].caregiver.hourlyRate).toBe(300);
+    });
+
+    it('ผู้ดูแลไม่มีประเภทงานที่มีราคา → hourlyRate undefined', async () => {
+      prisma.savedCaregiver.findMany.mockResolvedValue([fakeSavedRow()]);
+      prisma.caregiverJobType.findMany.mockResolvedValue([]);
       const result = await service.list(PATIENT_ID);
       expect(result[0].caregiver.hourlyRate).toBeUndefined();
     });
@@ -106,10 +122,10 @@ describe('SavedCaregiversService', () => {
   describe('save', () => {
     it('saves a caregiver successfully', async () => {
       prisma.caregiver.findUnique.mockResolvedValue(fakeCaregiverRow());
+      // service select { caregiverId, created_at } — ตรงกับคอลัมน์จริงของ saved_caregivers
       prisma.savedCaregiver.create.mockResolvedValue({
-        id:          SAVED_ID,
         caregiverId: CAREGIVER_ID,
-        savedAt:     SAVED_AT,
+        created_at:  SAVED_AT,
       });
 
       const result = await service.save(PATIENT_ID, CAREGIVER_ID);

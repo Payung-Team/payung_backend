@@ -14,15 +14,45 @@
  * - setSearchable() — เปิด/ปิดการแสดงในผลค้นหา
  */
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { Caregiver } from './entities/caregiver.entity';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
 import { KycDocument } from './entities/kyc-document.entity';
+import {
+  KYC_BUCKET,
+  KYC_SIGNED_URL_TTL_SECONDS,
+  toStoragePathForSigning,
+} from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
+import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { CareSkillService } from '../../care-skill/care-skill.service';
+import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
+import { DRIVING_LICENSE_REVIEW_ACTION } from './driving-license/driving-license.constants';
+import {
+  PAYOUT_ACCOUNT_NOT_READY,
+  PAYOUT_NOT_READY_MESSAGES,
+  evaluatePayoutReadiness,
+} from '../../payment/payout-account-readiness';
+import { CaregiverProfession } from './profession.constants';
+import { careLevelFromDb } from '../../common/care-level/care-level';
 
-/** Profile fields ที่ track ได้ใน updateProfile */
-const PROFILE_TRACKED_FIELDS = ['bio', 'hourlyRate', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
+/**
+ * Profile fields ที่ track ได้ใน updateProfile
+ *
+ * PYG-534: ตัด hourlyRate ออก — ถ้ายังอยู่ในนี้ edit log จะบันทึกว่า "เปลี่ยนราคา"
+ * ทั้งที่ service ไม่ได้เขียนลงตารางจริง (log โกหก)
+ */
+const PROFILE_TRACKED_FIELDS = [
+  'bio',
+  'skills',
+  'otherSkills',
+  'experienceYears',
+  'phone',
+  'address',
+  'languages',
+];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -36,6 +66,9 @@ type PrismaCaregiver = {
   address: string | null;
   phone: string | null;
   skills: string[];
+  otherSkills: string[];
+  /** PYG-556: 'general_caregiver' | 'nurse' | 'physiotherapist' (CHECK ใน DB) */
+  profession: string;
   experienceYears: number | null;
   hourlyRate: number | null;
   bio: string | null;
@@ -47,6 +80,7 @@ type PrismaCaregiver = {
   resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
+  careLevel?: string | null; // PYG-581: optional — ไม่ส่ง = ยังไม่มีระดับ
 };
 
 /** ข้อมูลสำหรับสร้าง caregiver ใหม่ */
@@ -67,6 +101,8 @@ export class CaregiverService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly supabaseService: SupabaseService,
+    private readonly configService: ConfigService,
+    private readonly careSkillService: CareSkillService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -92,6 +128,9 @@ export class CaregiverService {
       address: caregiver.address ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
+      // DB มี CHECK 3 ค่า → cast ได้ปลอดภัย (ค่าเดียวกับ enum)
+      profession: caregiver.profession as CaregiverProfession,
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,
@@ -103,6 +142,8 @@ export class CaregiverService {
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      // PYG-581: 'basic' → CareLevel.BASIC (GraphQL ส่งออกเป็น "BASIC") · null → undefined (= ยังไม่มีระดับ)
+      careLevel: careLevelFromDb(caregiver.careLevel) ?? undefined,
     };
   }
 
@@ -231,8 +272,9 @@ export class CaregiverService {
   /**
    * updateProfile — แก้ไข profile ของ caregiver (เฉพาะ whitelist fields)
    *
-   * Whitelist: bio, hourlyRate, skills, experienceYears, phone
+   * Whitelist: bio, skills, otherSkills, experienceYears, phone, address, languages
    * Locked: fullName, idCardNumber, gender, dateOfBirth, caregiverNumber
+   * Ignored: hourlyRate (PYG-534) — รับได้แต่ไม่เขียน ราคาเปลี่ยนไม่ได้จากทางผู้ดูแลแล้ว
    *
    * @param userId - internal user id ของ caregiver ที่ login อยู่
    * @param input  - fields ที่ต้องการเปลี่ยน (partial update)
@@ -257,6 +299,30 @@ export class CaregiverService {
       );
     }
 
+    // ── PYG-534: ผู้ดูแลตั้งราคาเองไม่ได้แล้ว ─────────────────────────
+    // ช่วงเปลี่ยนผ่าน: FE รุ่นเก่ายังส่ง hourlyRate มา → รับไว้ (ไม่ตอบ 400 ให้ field อื่นพังไปด้วย)
+    // แต่ "ไม่เขียน" ลงตาราง + log warning ไว้ดูว่ายังมี client ส่งมาอยู่ไหม
+    // log หายไปเมื่อไหร่ = ลบ field ออกจาก UpdateCaregiverInput ได้
+    if (input.hourlyRate !== undefined) {
+      this.logger.warn({
+        event: 'caregiver.profile.hourly_rate_ignored',
+        caregiverId: existing.id,
+        userId,
+        submitted: input.hourlyRate,
+        // true  = FE แค่ส่งค่าเดิมกลับมา (ปกติของ FE รุ่นปัจจุบัน)
+        // false = มีคนพยายาม "เปลี่ยน" ราคาจริง — ตัวนี้ที่ควรจับตา
+        sameAsCurrent: input.hourlyRate === existing.hourlyRate,
+      });
+    }
+
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    if (input.skills !== undefined) {
+      await this.careSkillService.assertSkillsAllowed(
+        input.skills,
+        existing.profession,
+      );
+    }
+
     // ── Compute field changes ก่อน update ────────────────────────────
     const fieldChanges = computeFieldChanges(
       existing as unknown as Record<string, unknown>,
@@ -270,8 +336,11 @@ export class CaregiverService {
         where: { userId },
         data: {
           ...(input.bio !== undefined && { bio: input.bio }),
-          ...(input.hourlyRate !== undefined && { hourlyRate: input.hourlyRate }),
+          // ไม่มี hourlyRate โดยตั้งใจ (PYG-534) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคาจะมาจาก Catalog (PYG-487)
           ...(input.skills !== undefined && { skills: input.skills }),
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
           ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
           ...(input.phone !== undefined && { phone: input.phone }),
           ...(input.address !== undefined && { address: input.address }),
@@ -327,6 +396,24 @@ export class CaregiverService {
       throw new ForbiddenException(
         'ต้องผ่านการยืนยันตัวตนก่อน',
       );
+    }
+
+    // ── 2.5: Guard — เปิดรับงาน (true) ต้องมีบัญชีรับเงินที่ Omise accept แล้ว ──
+    // ปิด (false) ทำได้เสมอ — caregiver ต้องหยุดรับงานได้โดยไม่ติดเงื่อนไข
+    // KYC อนุมัติแยกจากสถานะ Omise (ตัวเลือก C) จึงต้องกันที่จุดนี้แทน
+    if (isSearchable) {
+      const payoutAccount = await this.prismaService.caregiverPayoutAccount.findUnique({
+        where: { caregiverId: existing.id },
+        select: { status: true, recipientStatus: true, omiseRecipientId: true },
+      });
+      const readiness = evaluatePayoutReadiness(payoutAccount);
+      if (!readiness.ready) {
+        throw new ForbiddenException({
+          code: PAYOUT_ACCOUNT_NOT_READY,
+          reason: readiness.reason,
+          message: PAYOUT_NOT_READY_MESSAGES[readiness.reason!],
+        });
+      }
     }
 
     // ── 3: อัปเดต is_searchable ─────────────────────────────────
@@ -436,15 +523,128 @@ export class CaregiverService {
    * @param caregiverId - UUID ของ caregiver
    * @returns รายการเอกสารพร้อม signedUrl (array ว่างถ้าไม่มีเอกสาร)
    */
-  async getDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
-    const docs = await this.prismaService.kycDocument.findMany({
-      where: { caregiverId },
-      orderBy: { uploadedAt: 'desc' },
+  /**
+   * getOwnDocumentsWithSignedUrls — caregiver ดูเอกสารของตัวเอง
+   *
+   * ★ แยกจากเส้นของ admin โดยตั้งใจ ไม่ใช่แค่เรื่องความสวยงามของโค้ด:
+   *   "คนเปิดดูรูปบัตรประชาชนของคนอื่น" คือสิ่งที่ต้องมีร่องรอยที่สุดในระบบนี้
+   *   ถ้าเหลือ method กลางตัวเดียว วันหนึ่งจะมีคนเรียกไปอ่านของคนอื่นโดยไม่ลง audit
+   *   แล้วไม่มีใครรู้ว่าเกิดขึ้น — สองประตูทำให้ "ลืมลง audit" เป็นไปไม่ได้
+   */
+  async getOwnDocumentsWithSignedUrls(caregiverId: string): Promise<KycDocument[]> {
+    return this.signDocuments(await this.loadDocs(caregiverId));
+  }
+
+  /**
+   * getDocumentsForAdminReview — admin เปิดดูเอกสารของ caregiver คนอื่น
+   *
+   * ลง admin_audit_logs "ก่อน" ออก signed URL เสมอ ถ้าเขียน audit ไม่สำเร็จ
+   * ให้ throw ออกไปเลย ไม่ต้องออก URL — ยอมให้แอดมินเปิดดูไม่ได้ชั่วคราว
+   * ดีกว่ามีคนเปิดดูรูปบัตรประชาชนแล้วไม่เหลือหลักฐาน
+   */
+  async getDocumentsForAdminReview(
+    caregiverId: string,
+    adminId: string,
+  ): Promise<KycDocument[]> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { id: caregiverId },
+      select: { userId: true },
     });
 
+    // โหลดเอกสารก่อนลง audit เพื่อให้ log ตอบได้ว่า "เปิดดูอะไรบ้าง" ไม่ใช่แค่ "เปิดดูของใคร"
+    const docs = await this.loadDocs(caregiverId);
+
+    const details = JSON.stringify({
+      caregiverId,
+      bucket: KYC_BUCKET,
+      ttlSeconds: KYC_SIGNED_URL_TTL_SECONDS,
+      documentCount: docs.length,
+      documents: docs.map((d) => ({ id: d.id, docType: d.documentType })),
+    });
+
+    await this.prismaService.$executeRaw`
+      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+      VALUES (gen_random_uuid(), ${adminId}, 'kyc_documents_viewed',
+              ${caregiver?.userId ?? null}, ${details}::jsonb, NOW())
+    `;
+
+    return this.signDocuments(docs);
+  }
+
+  /**
+   * loadDocs — โหลดเอกสาร + supabase_uid ของ "เจ้าของแถว" มาด้วยเสมอ
+   *
+   * ★ join users เข้ามาเพื่อให้เส้น sign ตรวจเจ้าของได้เอง ไม่ต้องเชื่อ caller
+   *   (ดูเหตุผลใน assertPathBelongsToOwner)
+   */
+  private loadDocs(caregiverId: string) {
+    return this.prismaService.kycDocument.findMany({
+      // PYG-508: รูปโปรไฟล์ (PYG-507) อยู่ตารางเดียวกันแต่คนละ bucket และ path ขึ้นต้นด้วย users.id
+      //   ไม่ใช่ supabase_uid — ถ้าหลุดเข้ามา assertPathBelongsToOwner จะ throw ทั้งหน้า KYC
+      //   รูปโปรไฟล์มีเส้นของตัวเอง (AdminProfilePhotoService) ไม่ผ่านตรงนี้
+      where: { caregiverId, documentType: { not: PROFILE_PHOTO_DOC_TYPE } },
+      orderBy: { uploadedAt: 'desc' },
+      include: { user: { select: { supabaseUid: true } } },
+    });
+  }
+
+  /**
+   * assertPathBelongsToOwner — ยามราคาถูกบนเส้น sign
+   *
+   * ★ ทำไมต้องมีทั้งที่ query กรองด้วย caregiver_id มาแล้ว:
+   *   "ด่านก่อนหน้ากรองแล้ว" คือ reasoning แบบเดียวกับที่ทำให้เกิดบั๊กเดิม
+   *   (uploadKycDocument เชื่อว่า @IsUrl กรองแล้ว / signer เชื่อว่า upload กรองแล้ว)
+   *   ยามตัวนี้ไม่เชื่อใครเลย ตรวจกับความจริงในแถวเอง:
+   *     โฟลเดอร์แรกของ path ต้อง = supabase_uid ของ user ที่เป็นเจ้าของแถวนั้น
+   *   จับได้ทั้ง 2 กรณีพร้อมกัน:
+   *     - แถวเสีย (ชี้ข้ามคน) ที่หลุดเข้ามาก่อนมี validator
+   *     - caller ที่หลุดมา (ถ้าวันหนึ่งมีใครส่ง caregiverId จาก args)
+   */
+  private assertPathBelongsToOwner(
+    objectPath: string,
+    ownerUid: string | undefined,
+    docId: string,
+  ): void {
+    const folder = objectPath.split('/')[0];
+    if (!ownerUid || folder !== ownerUid) {
+      this.logger.error(
+        `[KYC] เอกสาร ${docId} มี path ที่ไม่ตรงกับเจ้าของแถว — ปฏิเสธการออก signed URL`,
+      );
+      throw new ForbiddenException('เอกสารนี้ไม่ตรงกับเจ้าของ — ไม่สามารถออกลิงก์ได้');
+    }
+  }
+
+  /**
+   * PYG-587: เหตุผลที่ปฏิเสธใบประกอบฯ ล่าสุดของแต่ละเอกสาร (จาก kyc_reviews.document_id)
+   * เฉพาะเอกสารที่สถานะ rejected — ประวัติปฏิเสธเดิมของใบอื่นไม่ปน (E6)
+   */
+  private async loadLicenseRejectionReasons(
+    docs: Array<{ id: string; reviewStatus: string | null }>,
+  ): Promise<Map<string, string>> {
+    const rejectedIds = docs
+      .filter((d) => d.reviewStatus === LICENSE_STATUS.REJECTED)
+      .map((d) => d.id);
+    const reasons = new Map<string, string>();
+    if (rejectedIds.length === 0) return reasons;
+
+    const reviews = await this.prismaService.kycReview.findMany({
+      where: { documentId: { in: rejectedIds }, action: { in: [LICENSE_REVIEW_ACTION.REJECTED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED] } },
+      orderBy: { reviewedAt: 'desc' },
+      select: { documentId: true, reason: true },
+    });
+    for (const r of reviews) {
+      if (r.documentId && r.reason && !reasons.has(r.documentId)) reasons.set(r.documentId, r.reason);
+    }
+    return reasons;
+  }
+
+  private async signDocuments(
+    docs: Awaited<ReturnType<CaregiverService['loadDocs']>>,
+  ): Promise<KycDocument[]> {
     if (docs.length === 0) return [];
 
     const supabase = this.supabaseService.getAdminClient();
+    const rejectionReasons = await this.loadLicenseRejectionReasons(docs);
 
     const enriched = await Promise.all(
       docs.map(async (doc) => {
@@ -453,39 +653,53 @@ export class CaregiverService {
           caregiverId: doc.caregiverId ?? undefined,
           userId: doc.userId,
           docType: doc.documentType,
-          fileUrl: doc.fileUrl,
+          // ★ ไม่คืน storage path ดิบให้ client — FE ต้องใช้ signedUrl เท่านั้น
+          //   path ดิบเป็นข้อมูลที่ช่วยให้เดาไฟล์ของคนอื่นได้ ไม่มีเหตุให้เปิดเผย
+          fileUrl: '',
           fileName: doc.fileName,
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
           uploadedAt: doc.uploadedAt,
+          // PYG-587: field เพิ่มฝั่งอ่าน (client เก่าไม่เห็น ไม่พัง)
+          licenseNumber: doc.licenseNumber ?? undefined,
+          expiresAt: doc.expiresAt ?? undefined,
+          reviewStatus: doc.reviewStatus ?? undefined,
+          rejectionReason: rejectionReasons.get(doc.id),
         };
 
+        // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก
+        //   ของเดิมอ่านชื่อ bucket ออกจาก fileUrl แล้วเซ็นด้วย service role
+        //   ซึ่ง bypass Storage RLS → ใครยัด path ของ bucket ไหนมาก็เซ็นให้หมด
+        const objectPath = toStoragePathForSigning(
+          doc.fileUrl,
+          this.configService.getOrThrow<string>('SUPABASE_URL'),
+        );
+
+        if (!objectPath) {
+          // ค่าที่เก็บไว้ไม่ใช่ของ bucket KYC (เช่นแถว fixture ที่เป็น URL ภายนอก)
+          // → ไม่เซ็นให้ และไม่คืน path ดิบออกไป
+          this.logger.warn(
+            `[KYC] เอกสาร ${doc.id} มี storage path ที่ไม่รองรับ — ไม่ออก signed URL`,
+          );
+          return entity;
+        }
+
+        // ★ อยู่ "นอก" try โดยตั้งใจ — ยามตัวนี้ต้อง throw ออกไปจริง ๆ
+        //   ถ้าวางไว้ในบล็อกที่ catch ทิ้ง มันจะกลายเป็นแค่ "ไม่มี signedUrl" เงียบ ๆ
+        //   ซึ่งแปลว่าเอกสารที่ชี้ข้ามคนจะผ่านไปโดยไม่มีใครรู้ — ตรงข้ามกับที่ต้องการ
+        this.assertPathBelongsToOwner(objectPath, doc.user?.supabaseUid, doc.id);
+
         try {
-          // fileUrl format: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
-          // หรือ: https://<project>.supabase.co/storage/v1/object/<bucket>/<path>
-          // ต้องดึง bucket name และ object path ออกมา
-          const storageSegment = doc.fileUrl.split('/storage/v1/object/')[1];
-          if (storageSegment) {
-            // ตัด "public/" ออกถ้ามี
-            const withoutPublic = storageSegment.startsWith('public/')
-              ? storageSegment.slice('public/'.length)
-              : storageSegment;
-            const slashIndex = withoutPublic.indexOf('/');
-            if (slashIndex !== -1) {
-              const bucket = withoutPublic.slice(0, slashIndex);
-              const objectPath = withoutPublic.slice(slashIndex + 1);
+          const { data, error } = await supabase.storage
+            .from(KYC_BUCKET)
+            .createSignedUrl(objectPath, KYC_SIGNED_URL_TTL_SECONDS);
 
-              const { data, error } = await supabase.storage
-                .from(bucket)
-                .createSignedUrl(objectPath, 3600); // 1 hour
-
-              if (!error && data?.signedUrl) {
-                entity.signedUrl = data.signedUrl;
-              }
-            }
+          if (!error && data?.signedUrl) {
+            entity.signedUrl = data.signedUrl;
           }
         } catch {
-          // ถ้า sign URL ล้มเหลว → ใช้ fileUrl เดิม (ไม่ให้ query พัง)
+          // เรียก storage ไม่สำเร็จ (network ฯลฯ) → ไม่มี signedUrl
+          // อันนี้ catch ได้ เพราะเป็นเรื่องปลายทางล่ม ไม่ใช่เรื่องสิทธิ์
         }
 
         return entity;

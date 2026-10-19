@@ -142,6 +142,26 @@ describe('CompleteBookingService', () => {
 
   // ─── happy path ────────────────────────────────────────────────────────────
 
+  it('PYG-461/462: LOCK ORDER — ล็อก bookings ก่อน payments (กัน deadlock กับ BookingSettlementService)', async () => {
+    prisma.booking.findUnique.mockResolvedValue(fakeBooking());
+    omise.captureCharge.mockResolvedValue(fakeCaptureOk());
+    fsm.transition.mockResolvedValue({});
+
+    await service.completeBooking(asUser(PATIENT_ID, ROLE_ID.PATIENT), BOOKING_ID);
+
+    const sqls = tx.$queryRaw.mock.calls.map((c: unknown[]) =>
+      (c[0] as TemplateStringsArray).join('?'),
+    );
+    expect(sqls[0]).toContain('FROM "bookings"');
+    expect(sqls[0]).toContain('FOR UPDATE');
+    expect(tx.$queryRaw.mock.calls[0][1]).toBe(BOOKING_ID);
+    expect(sqls[1]).toContain('FROM "payments"');
+    // ล็อกทั้งคู่ก่อนเรียก Omise capture
+    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+      omise.captureCharge.mock.invocationCallOrder[0],
+    );
+  });
+
   it('capture + ปิดงาน เมื่อ booking=confirmed และ payment=held (เรียกโดย patient)', async () => {
     prisma.booking.findUnique.mockResolvedValue(fakeBooking());
     omise.captureCharge.mockResolvedValue(fakeCaptureOk());
@@ -208,6 +228,68 @@ describe('CompleteBookingService', () => {
       ),
     ).resolves.toBeDefined();
     expect(omise.captureCharge).toHaveBeenCalled();
+  });
+
+  describe('QR checkout finalization', () => {
+    const checkedOutAt = new Date('2026-06-22T10:00:00Z');
+
+    it('booking completed + payment held → capture ก่อน emit COMPLETED', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress' }),
+      );
+      omise.captureCharge.mockResolvedValue(fakeCaptureOk());
+      fsm.transition.mockResolvedValue({});
+
+      await service.finalizeCheckedOutBooking(
+        CAREGIVER_USER_ID,
+        BOOKING_ID,
+        checkedOutAt,
+      );
+
+      expect(omise.captureCharge).toHaveBeenCalledWith(
+        'chrg_test_1',
+        'capture:book-0001',
+      );
+      expect(fsm.transition).toHaveBeenCalledWith(
+        PAYMENT_ID,
+        PaymentStatus.captured,
+        expect.objectContaining({ changedBy: CAREGIVER_USER_ID }),
+        tx,
+      );
+      expect(emitter.emit).toHaveBeenCalledWith(
+        BOOKING_EVENTS.COMPLETED,
+        expect.objectContaining({ bookingId: BOOKING_ID }),
+      );
+
+      const completedEventIndex = emitter.emit.mock.calls.findIndex(
+        (call) => call[0] === BOOKING_EVENTS.COMPLETED,
+      );
+      expect(omise.captureCharge.mock.invocationCallOrder[0]).toBeLessThan(
+        emitter.emit.mock.invocationCallOrder[completedEventIndex],
+      );
+    });
+
+    it('capture ล้มเหลว → ไม่ emit COMPLETED จึงไม่เริ่ม payout', async () => {
+      prisma.booking.findUnique.mockResolvedValue(
+        fakeBooking({ status: 'in_progress' }),
+      );
+      omise.captureCharge.mockRejectedValue(
+        new CaptureFailedError('capture failed'),
+      );
+
+      await expect(
+        service.finalizeCheckedOutBooking(
+          CAREGIVER_USER_ID,
+          BOOKING_ID,
+          checkedOutAt,
+        ),
+      ).rejects.toBeInstanceOf(CaptureFailedError);
+
+      expect(emitter.emit).not.toHaveBeenCalledWith(
+        BOOKING_EVENTS.COMPLETED,
+        expect.anything(),
+      );
+    });
   });
 
   // ─── guards ──────────────────────────────────────────────────────────────

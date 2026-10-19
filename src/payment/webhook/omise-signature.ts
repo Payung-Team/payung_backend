@@ -28,9 +28,7 @@ import * as crypto from 'crypto';
 /** ระยะเวลาที่ยอมรับความต่างของ timestamp (วินาที) — กัน replay */
 export const OMISE_SIGNATURE_TOLERANCE_SECONDS = 300;
 
-export type SignatureVerdict =
-  | { ok: true }
-  | { ok: false; reason: string };
+export type SignatureVerdict = { ok: true } | { ok: false; reason: string };
 
 /**
  * @param rawBody      ไบต์ดิบของ request body (ต้องมาจาก req.rawBody เท่านั้น
@@ -51,8 +49,10 @@ export function verifyOmiseSignature(
     // ไม่มี raw body = ตรวจไม่ได้ ห้ามเดาว่าผ่าน
     return { ok: false, reason: 'missing_raw_body' };
   }
-  if (!signatureHeader) return { ok: false, reason: 'missing_signature_header' };
-  if (!timestampHeader) return { ok: false, reason: 'missing_timestamp_header' };
+  if (!signatureHeader)
+    return { ok: false, reason: 'missing_signature_header' };
+  if (!timestampHeader)
+    return { ok: false, reason: 'missing_timestamp_header' };
 
   const timestampSeconds = Number(timestampHeader);
   if (!Number.isFinite(timestampSeconds)) {
@@ -61,7 +61,10 @@ export function verifyOmiseSignature(
 
   const ageSeconds = Math.abs(nowMs / 1000 - timestampSeconds);
   if (ageSeconds > OMISE_SIGNATURE_TOLERANCE_SECONDS) {
-    return { ok: false, reason: `timestamp_out_of_tolerance:${Math.round(ageSeconds)}s` };
+    return {
+      ok: false,
+      reason: `timestamp_out_of_tolerance:${Math.round(ageSeconds)}s`,
+    };
   }
 
   const secret = Buffer.from(secretBase64, 'base64');
@@ -92,5 +95,7 @@ export function verifyOmiseSignature(
     matched |= crypto.timingSafeEqual(provided, expected) ? 1 : 0;
   }
 
-  return matched === 1 ? { ok: true } : { ok: false, reason: 'signature_mismatch' };
+  return matched === 1
+    ? { ok: true }
+    : { ok: false, reason: 'signature_mismatch' };
 }

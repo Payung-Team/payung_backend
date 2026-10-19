@@ -23,17 +23,42 @@
  * - caregiver (role=2) → caregiver = { ... } (ดึงจาก caregivers table)
  */
 import { Resolver, ResolveField, Parent } from '@nestjs/graphql';
-import { NotFoundException } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import { User } from './entities/user.entity';
 import { Caregiver } from '../kyc/entities/caregiver.entity';
 import { CaregiverService } from '../kyc/caregiver.service';
+import { UserService } from './user.service';
+import { AvatarUrlService } from '../../common/avatar-url.service';
+import { PhoneAuthService } from './phone/phone-auth.service';
 
 // role IDs (ตรงกับ users.role: 1=patient, 2=caregiver, 3=admin)
 const ROLE_CAREGIVER = 2;
 
 @Resolver(() => User)
 export class UserResolver {
-  constructor(private readonly caregiverService: CaregiverService) {}
+  private readonly logger = new Logger(UserResolver.name);
+
+  constructor(
+    private readonly caregiverService: CaregiverService,
+    private readonly userService: UserService,
+    private readonly avatarUrlService: AvatarUrlService,
+    // PYG-603: User.phoneVerified
+    private readonly phoneAuthService: PhoneAuthService,
+  ) {}
+
+  /**
+   * Field resolver สำหรับ User.avatarUrl — sign storage path ของ bucket private
+   * (รายละเอียดดู AvatarUrlService) ไม่งั้น header แสดงตัวอักษรย่อแทนรูป
+   * ทุก role อยู่ bucket เดียว (PYG-508) · ผู้ดูแลได้ avatar_url เฉพาะรูปที่แอดมินอนุมัติแล้ว
+   */
+  @ResolveField(() => String, {
+    nullable: true,
+    description:
+      'Avatar URL — signed URL when stored as a private storage path',
+  })
+  avatarUrl(@Parent() user: User): Promise<string | null> {
+    return this.avatarUrlService.resolve(user.avatarUrl, user.id);
+  }
 
   /**
    * Field resolver สำหรับ User.caregiver
@@ -64,6 +89,49 @@ export class UserResolver {
         return null;
       }
       throw err; // error อื่นๆ ปล่อยขึ้นไป
+    }
+  }
+
+  /**
+   * Field resolver สำหรับ User.onboardingCompleted (PYG-498)
+   *
+   * เหตุผลเดียวกับ caregiver ข้างบน — ต้องยิง query ตาราง care_recipients เพิ่ม
+   * ถ้าใส่ใน findById จะมี query พ่วงทุกครั้งที่ระบบอ่าน user ทั้งที่มีแค่หน้า Onboarding
+   * กับตัว redirect หลัง login (PYG-501) ที่ต้องใช้
+   */
+  @ResolveField(() => Boolean, {
+    description:
+      'ผ่านหน้า Onboarding แล้วหรือยัง — role 1 ต้องมีโปรไฟล์ของตัวเองที่กรอกอายุ เพศ ' +
+      'และระดับการช่วยเหลือครบ · role อื่นคืน true เสมอ',
+  })
+  async onboardingCompleted(@Parent() user: User): Promise<boolean> {
+    return this.userService.isOnboardingCompleted(user.id, user.role);
+  }
+
+  /**
+   * Field resolver สำหรับ User.phoneVerified (PYG-603)
+   *
+   * lazy เหตุผลเดียวกับ onboardingCompleted — ต้องอ่าน auth.users ของ Supabase เพิ่ม 1 query
+   * มีแค่หน้าตั้งค่าเบอร์ที่ขอ (FE: MyPhoneStatus)
+   *
+   * ★ error → คืน false ไม่ throw: field นี้เป็น Boolean! (non-null) ถ้า throw GraphQL จะทำให้
+   *   `me` ทั้งก้อนเป็น null → ทุกหน้าที่ query me พร้อม phoneVerified พังเพราะอ่าน auth.users ไม่ได้ครั้งเดียว
+   *   ตอบ false = "ยังไม่ยืนยัน" ซึ่งปลอดภัย (ผู้ใช้แค่เห็นปุ่มให้ยืนยันเบอร์)
+   */
+  @ResolveField(() => Boolean, {
+    description:
+      'เบอร์ใน phone ยืนยันแล้วและใช้ล็อกอินได้ (Supabase Auth) — ผู้ใช้เดิมเป็น false จนกว่าจะผูกเบอร์',
+  })
+  async phoneVerified(@Parent() user: User): Promise<boolean> {
+    try {
+      return await this.phoneAuthService.isPhoneVerified(user.id, user.phone);
+    } catch (err) {
+      this.logger.error({
+        event: 'user.phone_verified_failed',
+        userId: user.id,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      return false;
     }
   }
 }

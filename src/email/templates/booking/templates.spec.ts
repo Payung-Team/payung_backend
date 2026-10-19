@@ -28,7 +28,7 @@ const baseCtx: BookingEmailContext = {
   caregiverRatingText: '4.8 ★ (รีวิว 12 ครั้ง)',
   patientName: 'มาลี ใจดี',
   dateText: '15 กรกฎาคม 2569',
-  timeText: '09:00 - 13:00 น. (4 ชม.)',
+  timeText: '09:00 – 13:00 (4 ชม.)', // PYG-526: รูปแบบเดียวกับหน้าเว็บ (formatTimeRange)
   serviceText: 'ดูแลทั่วไป',
   locationAddress: '123 ถ.สุขุมวิท กรุงเทพฯ',
   // platform_fee = NULL ในทุก booking ปัจจุบัน → ไม่มี breakdown ค่าบริการ/ค่าธรรมเนียม

@@ -333,11 +333,30 @@ export class JobScanService {
               // เพื่อให้ job_sessions กับ job_events พูดตรงกันเป๊ะ
               checkedInAt: jobEvent.serverTs,
               updatedAt: now,
+              // ★★ PYG-437 — บรรทัดที่ทำให้ "เริ่มงานกับจบงานคนละ token" เป็นจริง ★★
+              //   พอสถานะขยับเป็น CHECKED_IN แล้ว token ที่ใช้ได้ต้องกลายเป็น
+              //   ของ CHECK_OUT ทันที → QR ใบที่ผู้ดูแลเพิ่งสแกนไปเมื่อกี้ "ตาย" ที่บรรทัดนี้
+              //   (สแกนใบเดิมซ้ำจะหาแถวไม่เจอ → TOKEN_NOT_FOUND ซึ่งถูกต้องแล้ว:
+              //    หน้าจอผู้รับบริการจะขึ้น QR ใบใหม่ให้ภายในไม่กี่วินาที)
+              //
+              //   ⚠ ต้องใช้ `now` ตัวเดียวกับที่เขียนลง updatedAt เป๊ะ ๆ
+              //     เพราะ updatedAt คือ "เลขรอบ" ที่อยู่ในสูตรคำนวณ token
+              //     (ดู JobQrService หัวคลาส) ถ้าใช้คนละค่า token จะคำนวณไม่ตรงกัน
+              tokenHash: this.jobQrService.tokenHashFor(
+                session.id,
+                ScanAction.CHECK_OUT,
+                now,
+              ),
             }
           : {
               status: JOB_SESSION_STATUS.CHECKED_OUT,
               checkedOutAt: jobEvent.serverTs,
               updatedAt: now,
+              // ★ ปิดงานแล้ว "ไม่" เขียน tokenHash ใหม่ โดยตั้งใจ
+              //   ปล่อยใบสุดท้ายค้างไว้ ผู้ดูแลที่เผลอสแกนซ้ำจะยังหาแถวเจอ
+              //   แล้วได้ข้อความ "งานนี้ปิดเรียบร้อยแล้ว ไม่ต้องสแกนอีก" (ALREADY_COMPLETED)
+              //   ถ้าเขียนใหม่จะได้ "QR นี้ใช้ไม่ได้" ซึ่งโกหกและชวนให้โทรหาแอดมินเปล่า ๆ
+              //   ไม่มีความเสี่ยงเพิ่ม เพราะ session ที่ CHECKED_OUT ทำอะไรต่อไม่ได้อยู่แล้ว
             },
     });
 

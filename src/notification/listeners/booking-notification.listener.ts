@@ -40,8 +40,10 @@ import {
   formatRating,
   formatServiceType,
   formatThaiDate as formatThaiDateEmail,
-  formatTimeSlot,
+  formatTimeRange,
 } from '../../email/templates/booking/helpers';
+// PYG-526: รูปแบบเวลาใบจองกลาง — ข้อความแจ้งเตือนในแอปใช้ตัวเดียวกับอีเมลและหน้าเว็บ
+import { formatBookingTimeRange } from '../../booking/booking-time-display';
 
 /** ใครเป็นผู้รับ notification ของ event นี้ */
 type Recipient = 'patient' | 'caregiver' | 'both' | 'admin';
@@ -57,7 +59,14 @@ interface NotifyContext {
   caregiverName: string;
   serviceText: string;
   dateText: string;
+  /**
+   * PYG-526: "09:00 – 13:00 (4 ชม.)" — undefined ถ้าใบจองไม่มีเวลาเริ่ม
+   * แสดงต่อท้ายวันที่ผ่าน whenText() ห้ามใส่ชื่อ slot ("ช่วงเช้า") เพราะผู้ใช้ไม่ได้เลือก slot เองแล้ว
+   */
+  timeText?: string;
   amountText: string;
+  /** PYG-266: ยอดสุทธิที่ caregiver ได้รับจริง (หลังหักค่าธรรมเนียมแพลตฟอร์ม) — ใช้เฉพาะ PAYMENT_TRANSFERRED */
+  netAmountText: string;
   reason?: string;
 }
 
@@ -85,6 +94,14 @@ const SERVICE_LABEL: Record<booking_service_type, string> = {
 };
 
 /**
+ * PYG-526: "วันที่ 15 ก.ค. 2569 เวลา 09:00 – 13:00 (4 ชม.)" — ข้อความวัน+เวลาในแจ้งเตือนในแอป
+ * ไม่มีเวลาเริ่ม → เหลือแค่ "วันที่ ..." (ไม่แสดง "เวลา -" ที่อ่านแล้วงง)
+ */
+function whenText(c: NotifyContext): string {
+  return c.timeText ? `วันที่ ${c.dateText} เวลา ${c.timeText}` : `วันที่ ${c.dateText}`;
+}
+
+/**
  * Recipient matrix + เนื้อหา ของทุก event
  * (อ้างอิง Figma anatomy + ทิศทางการนำทางของ FE: booking_new/confirmed/cancelled → caregiver)
  *
@@ -98,7 +115,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.booking_new,
     recipient: 'caregiver',
     title: 'มีคำขอจองใหม่',
-    body: (c) => `มีคำขอจองใหม่ บริการ${c.serviceText} วันที่ ${c.dateText} — แตะเพื่อดูรายละเอียดและตอบรับ`,
+    body: (c) => `มีคำขอจองใหม่ บริการ${c.serviceText} ${whenText(c)} — แตะเพื่อดูรายละเอียดและตอบรับ`,
     email: true,
     ctaLabel: 'ดูคำขอจอง',
   },
@@ -125,7 +142,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.booking_confirmed,
     recipient: 'both',
     title: 'การจองยืนยันแล้ว',
-    body: (c) => `การจองบริการ${c.serviceText} วันที่ ${c.dateText} ได้รับการยืนยันและชำระเงินแล้ว`,
+    body: (c) => `การจองบริการ${c.serviceText} ${whenText(c)} ได้รับการยืนยันและชำระเงินแล้ว`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
@@ -171,11 +188,29 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     email: true,
     ctaLabel: 'ดูรายละเอียดงาน',
   },
+  // [BOOKING_EVENTS.JOB_CARE_LOG_ADDED]: {
+  //   // PYG-361: ผู้ดูแลโพสต์ "บันทึกจากผู้ดูแล" รายการแรกของงานนี้ (CareLogService เป็นคนกรอง
+  //   // ให้ยิง event นี้เฉพาะรายการแรกเท่านั้น — ที่นี่แค่รับ event มาแปลงเป็น notification)
+  //   //
+  //   // ★ PO ตัดสินใจ 2026-09-06: แจ้งเฉพาะรายการแรกของงาน ไม่แจ้งทุกรายการ
+  //   //   (งาน 8 ชม. อาจมี 10 รายการ — แจ้งทุกครั้งผู้ใช้จะปิดแจ้งเตือนทั้งแอป)
+  //   //
+  //   // ใช้ enum value ใหม่ ไม่ยืม booking_confirmed ซ้ำกับ JOB_CHECKED_IN เพราะทั้งคู่อยู่ใน
+  //   // ช่วง in_progress ของงานเดียวกัน — ถ้ายืมซ้ำ ผู้รับบริการจะแยก "เช็คอินแล้ว" กับ
+  //   // "มีบันทึกใหม่" ไม่ออกจากไอคอน/ประเภทเลย
+  //   type: NotificationType.job_care_log_added,
+  //   recipient: 'patient',
+  //   title: 'มีบันทึกใหม่จากผู้ดูแล',
+  //   body: (c) => `${c.caregiverName} เพิ่มบันทึกการดูแลระหว่างปฏิบัติงาน`,
+  //   // in-app พอ — ไม่ใช่เหตุการณ์ที่กระทบเงินหรือเร่งด่วนพอต้องอีเมล
+  //   email: false,
+  //   ctaLabel: 'ดูรายละเอียดงาน',
+  // },
   [BOOKING_EVENTS.CANCELLED]: {
     type: NotificationType.booking_cancelled,
     recipient: 'caregiver',
     title: 'การจองถูกยกเลิก',
-    body: (c) => `การจองบริการ${c.serviceText} วันที่ ${c.dateText} ถูกยกเลิกโดยผู้ใช้บริการ`,
+    body: (c) => `การจองบริการ${c.serviceText} ${whenText(c)} ถูกยกเลิกโดยผู้ใช้บริการ`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
@@ -219,7 +254,7 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.dispute_created,
     recipient: 'admin',
     title: 'แจ้งปัญหาใหม่',
-    body: (c) => `มีการแจ้งปัญหาใหม่สำหรับการจองบริการ${c.serviceText} วันที่ ${c.dateText}`,
+    body: (c) => `มีการแจ้งปัญหาใหม่สำหรับการจองบริการ${c.serviceText} ${whenText(c)}`,
     // อุด gap: ส่ง email admin ด้วย (ครบ 11/11 email events)
     email: true,
     ctaLabel: 'ดูคิวปัญหา',
@@ -231,6 +266,14 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     body: () => 'ผลการตรวจสอบปัญหาสำหรับการจองของคุณพร้อมแล้ว — แตะเพื่อดูรายละเอียด',
     email: true,
     ctaLabel: 'ดูผลการตรวจสอบ',
+  },
+  [BOOKING_EVENTS.PAYMENT_TRANSFERRED]: {
+    type: NotificationType.payment_transferred,
+    recipient: 'caregiver',
+    title: 'โอนเงินเรียบร้อย',
+    body: (c) => `เราได้โอนเงิน ${c.netAmountText} เข้าบัญชีของคุณเรียบร้อยแล้ว (หลังหักค่าธรรมเนียมแพลตฟอร์ม)`,
+    email: true,
+    ctaLabel: 'ดูรายละเอียด',
   },
 };
 
@@ -253,6 +296,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.COMPLETED)
   @OnEvent(BOOKING_EVENTS.JOB_CHECKED_IN) // PYG-352
   @OnEvent(BOOKING_EVENTS.JOB_CHECKED_OUT) // PYG-358
+  @OnEvent(BOOKING_EVENTS.JOB_CARE_LOG_ADDED) // PYG-361
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   @OnEvent(BOOKING_EVENTS.PAYMENT_HELD)
   @OnEvent(BOOKING_EVENTS.PAYMENT_CAPTURED)
@@ -260,6 +304,7 @@ export class BookingNotificationListener {
   @OnEvent(BOOKING_EVENTS.REFUND_ISSUED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_CREATED)
   @OnEvent(BOOKING_EVENTS.DISPUTE_RESOLVED)
+  @OnEvent(BOOKING_EVENTS.PAYMENT_TRANSFERRED)
   async handleBookingEvent(event: BookingEvent): Promise<void> {
     try {
       const config = EVENT_CONFIG[event.eventType];
@@ -308,11 +353,22 @@ export class BookingNotificationListener {
       const refundAmountRaw =
         typeof event.metadata?.amount === 'number' ? event.metadata.amount : undefined;
 
+      // PYG-307: transferAmountSatangs (ยอดสุทธิหลังหักค่าธรรมเนียม) มากับ event metadata
+      // เท่านั้น — event อื่นไม่มีค่านี้ จึง fallback ไปใช้ amountText เดิม (ไม่ถูกใช้จริงนอก
+      // PAYMENT_TRANSFERRED template แต่ต้องมีค่าเสมอเพราะ NotifyContext บังคับ field นี้)
+      const transferAmountSatangs = event.metadata?.transferAmountSatangs;
+      const netAmountText =
+        typeof transferAmountSatangs === 'number'
+          ? this.formatBaht(transferAmountSatangs / 100)
+          : this.formatBaht(booking.payment?.amount ?? booking.estimatedCost);
+
       const ctx: NotifyContext = {
         caregiverName: booking.caregiver?.fullName ?? 'ผู้ดูแล',
         serviceText: SERVICE_LABEL[booking.serviceType] ?? booking.serviceType,
         dateText: this.formatThaiDate(booking.bookingDate),
+        timeText: formatBookingTimeRange(booking.startTime, booking.durationHours),
         amountText: this.formatBaht(booking.payment?.amount ?? booking.estimatedCost),
+        netAmountText,
         reason,
       };
 
@@ -368,7 +424,8 @@ export class BookingNotificationListener {
                 ),
                 patientName: booking.patient?.displayName ?? null,
                 dateText: formatThaiDateEmail(booking.bookingDate),
-                timeText: formatTimeSlot(booking.startTime, booking.durationHours),
+                // PYG-526: "09:00 – 13:00 (4 ชม.)" เหมือนหน้าเว็บ (เดิม "09:00 - 13:00 น. (4 ชม.)")
+                timeText: formatTimeRange(booking.startTime, booking.durationHours),
                 serviceText: formatServiceType(booking.serviceType),
                 locationAddress: booking.locationAddress,
                 ...priceBreakdown,
@@ -392,6 +449,7 @@ export class BookingNotificationListener {
             intro: body,
             caregiverName: ctx.caregiverName,
             dateText: ctx.dateText,
+            timeText: ctx.timeText, // PYG-526: generic template เคยมีแต่วันที่
             serviceText: ctx.serviceText,
             amountText: ctx.amountText,
             ctaPath: data.link as string,

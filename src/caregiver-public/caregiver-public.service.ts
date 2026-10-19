@@ -1,10 +1,17 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { AvatarUrlService } from '../common/avatar-url.service';
 import { CaregiverPublicDto, AvailabilitySlotDto } from './dto/caregiver-public.dto';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
+import { startingHourlyPrices } from '../common/pricing/display-price';
 
 @Injectable()
 export class CaregiverPublicService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly avatarUrlService: AvatarUrlService,
+    private readonly drivingLicense: DrivingLicenseService,
+  ) {}
 
   /**
    * getPublicProfile — returns the public-safe profile for a caregiver.
@@ -23,11 +30,13 @@ export class CaregiverPublicService {
       where: { id },
       select: {
         id: true,
+        userId: true,
         fullName: true,
         bio: true,
         experienceYears: true,
-        hourlyRate: true,
         skills: true,
+        otherSkills: true,
+        profession: true, // PYG-556: ป้ายวิชาชีพหน้า Profile ฝั่ง Elder (S01-AC4)
         kycStatus: true,
         isSearchable: true,
         kycVerifiedAt: true,
@@ -87,22 +96,38 @@ export class CaregiverPublicService {
       availMap.entries(),
     ).map(([day, slots]) => ({ day, slots }));
 
+    // PYG-518: public profile ต้องเป็น signed URL ของรูปที่อนุมัติแล้วเท่านั้น
+    // (avatar_url ของผู้ดูแลถูกตั้งเฉพาะตอนแอดมินอนุมัติ) — ห้ามส่ง storage path ดิบออก endpoint สาธารณะนี้
+    const avatarUrl = await this.avatarUrlService.resolve(
+      caregiver.user.avatarUrl,
+      id,
+    );
+
     return {
       id: caregiver.id,
       first_name: firstName,
       last_name: lastName,
-      avatar_url: caregiver.user.avatarUrl ?? null,
+      avatar_url: avatarUrl,
       bio: caregiver.bio ?? null,
       experience_years: caregiver.experienceYears ?? null,
-      hourly_rate: caregiver.hourlyRate ?? null,
+      // ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — ตรงกับหน้า Search
+      hourly_rate: (await startingHourlyPrices(this.prisma, [caregiver.id])).get(caregiver.id) ?? null,
       avg_rating: avgRating,
       review_count: reviewCount,
       completed_booking_count: completedBookingCount,
       skills: caregiver.skills,
+      other_skills: caregiver.otherSkills,
+      // R6: ถึงบรรทัดนี้ได้เฉพาะผู้ดูแลที่ค้นหาได้ + verified (404 guard ข้างบน) — กติกาเดิมของหน้า List
+      profession: caregiver.profession,
       availability,
       province: caregiver.serviceAreaProvince ?? null,
       district: caregiver.serviceAreaDistrict ?? null,
       verified_at: caregiver.kycVerifiedAt ?? null,
+      // PYG-597 R7: ฝั่ง Elder เห็นแค่ผ่าน/ไม่ผ่าน (คำนวณ ณ เวลาที่เรียก) — ไม่ส่งรูป เลข วันหมดอายุ หรือเหตุผล
+      driving_license_verified: await this.drivingLicense.isVerified({
+        caregiverId: caregiver.id,
+        userId: caregiver.userId,
+      }),
     };
   }
 }

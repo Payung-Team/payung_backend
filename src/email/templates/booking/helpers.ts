@@ -7,6 +7,8 @@
  */
 import type { Prisma } from '@prisma/client';
 import { escapeHtml } from '../layout';
+// PYG-526: รูปแบบเวลาใบจองกลางของระบบ — อีเมลต้องแสดงเหมือนหน้าเว็บ
+import { formatBookingTimeRange } from '../../../booking/booking-time-display';
 
 // ─── Constants ──────────────────────────────────────────────────────────
 const THAI_MONTHS = [
@@ -50,30 +52,20 @@ export function formatThaiDate(date: Date): string {
 }
 
 /**
- * formatTimeSlot(startTime, durationHours) → "09:00 - 13:00 น. (4 ชม.)"
+ * formatTimeRange(startTime, durationHours) → "09:00 – 13:00 (4 ชม.)"
+ *
+ * PYG-526: เดิมชื่อ formatTimeSlot และคืน "09:00 - 13:00 น. (4 ชม.)" ซึ่งคนละรูปแบบกับหน้าเว็บ
+ *   ตอนนี้ส่งต่อให้ formatBookingTimeRange (ที่เดียวในระบบ) → อีเมล หน้าเว็บ และแจ้งเตือนในแอป
+ *   แสดงเวลาเหมือนกันทุกตัวอักษร ถ้าจะเปลี่ยนรูปแบบให้แก้ที่ booking-time-display.ts
  * - startTime จาก Prisma เป็น Date object (@db.Time) — UTC components คือเวลาจริง
  * - durationHours เป็น Decimal — รองรับ 0.5/1.5 ชม.
+ * - ไม่มีเวลาเริ่ม → "-" (ตารางในอีเมลต้องมีค่าเสมอ)
  */
-export function formatTimeSlot(
+export function formatTimeRange(
   startTime: Date | null,
   durationHours: Prisma.Decimal | number | null | undefined,
 ): string {
-  if (!startTime) return '-';
-  const dur = toNumber(durationHours);
-  const startH = startTime.getUTCHours();
-  const startM = startTime.getUTCMinutes();
-  const start = `${pad2(startH)}:${pad2(startM)}`;
-
-  if (Number.isNaN(dur) || dur <= 0) return `${start} น.`;
-
-  const totalStartMin = startH * 60 + startM;
-  const endTotal = totalStartMin + Math.round(dur * 60);
-  const endH = Math.floor((endTotal / 60) % 24);
-  const endM = endTotal % 60;
-  const end = `${pad2(endH)}:${pad2(endM)}`;
-
-  const durLabel = Number.isInteger(dur) ? `${dur} ชม.` : `${dur} ชม.`;
-  return `${start} - ${end} น. (${durLabel})`;
+  return formatBookingTimeRange(startTime, durationHours) ?? '-';
 }
 
 /** "4.8 ★ (รีวิว 12 ครั้ง)" — null avg → "ยังไม่มีรีวิว" */
@@ -202,8 +194,4 @@ export function greeting(name: string | null | undefined): string {
 /** plain-text greeting (ไม่ escape เพราะไม่ render เป็น HTML) */
 export function plainGreeting(name: string | null | undefined): string {
   return name ? `สวัสดีค่ะ คุณ${name}` : 'สวัสดีค่ะ คุณผู้ใช้';
-}
-
-function pad2(n: number): string {
-  return n.toString().padStart(2, '0');
 }
