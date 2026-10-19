@@ -85,8 +85,10 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
   beforeEach(async () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
     tx = {
-      booking: { create: jest.fn().mockResolvedValue(fakeCreatedBooking()) },
-      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment' }) },
+      booking: { create: jest.fn().mockResolvedValue(fakeCreatedBooking()), findUnique: jest.fn().mockResolvedValue({ careRecipientId: RECIPIENT_ID }), findUniqueOrThrow: jest.fn().mockResolvedValue({ careRecipientId: RECIPIENT_ID, status: 'unmatched', confirmedAt: null, activities: [] }), update: jest.fn() },
+      careSkillRule: { findMany: jest.fn().mockResolvedValue([]) },
+      bookingRequiredSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, flags: [], hasUnsureFlag: false }) },
       // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
       booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
       familyGroupActivity: { create: jest.fn().mockResolvedValue({}) },
@@ -96,6 +98,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     };
 
     prisma = {
+      $queryRaw: jest.fn((sql) => Promise.resolve(sql.values.map((id) => ({ id, codes: [], items: [] })))),
       careRecipient: { findUnique: jest.fn().mockResolvedValue({ patientId: BOOKER_ID, is_deleted: false }), findFirst: jest.fn(), create: jest.fn() },
       // PYG-516: เจ้าของโปรไฟล์ต้องยัง ACTIVE — เทสที่สนใจเคสตรงข้ามจะ override เอง
       familyGroupMember: {

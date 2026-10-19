@@ -1,5 +1,6 @@
 import { Field, Float, ID, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
 import { PatientProfileType } from './patient-profile.type';
+import { BookingRequiredSkill } from '../required-skills/required-skills.types';
 
 export enum BookingStatusEnum {
   UNMATCHED = 'unmatched', // booking created, no caregiver assigned yet
@@ -39,6 +40,8 @@ export class CaregiverBriefDto {
 
 @ObjectType()
 export class BookingSummary {
+  @Field(() => [BookingRequiredSkill], { nullable: true })
+  requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID)                                    id: string;
   @Field({ nullable: true, description: 'true เมื่อผู้เรียกเป็นผู้สร้างคำจองในนามกลุ่ม' })
   bookedByMe?: boolean;

@@ -396,6 +396,11 @@ type BookingPagination {
   totalPages: Int!
 }
 
+type BookingRequiredSkill {
+  skill: CareSkillItem!
+  sources: [RequiredSkillSource!]!
+}
+
 enum BookingStatus {
   ACCEPTED
   CANCELLED
@@ -443,6 +448,7 @@ type BookingSummary {
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
   """
   payment: Payment
+  requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
 
@@ -561,6 +567,9 @@ type CareSkillItem {
   """
   code: String!
 
+  """Allowed professions; empty means unrestricted"""
+  lockedProfessions: [CaregiverProfession!]!
+
   """English name"""
   nameEn: String!
 
@@ -668,6 +677,7 @@ type CaregiverBookingSummary {
   """
   recipientAvatarUrl: String
   rejectionReason: String
+  requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String!
@@ -1613,6 +1623,7 @@ type GroupBookingSummary {
 
   """สถานะการชำระเงิน เช่น 'held' = พักเงินไว้ (escrow)"""
   paymentStatus: String
+  requiredSkills: [BookingRequiredSkill!]
 
   """รูปแบบบริการ เช่น at_home / accompany_outside"""
   serviceLocations: [String!]!
@@ -3415,6 +3426,12 @@ input RequestPhoneOtpInput {
   """เบอร์มือถือไทย — รับ +66812345678 / 0812345678 / มีขีดหรือช่องว่างได้"""
   phone: String!
   purpose: PhoneOtpPurpose!
+}
+
+enum RequiredSkillSource {
+  ADL
+  FLAG
+  SERVICE
 }
 
 input ResolveDisputeInput {

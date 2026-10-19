@@ -5,6 +5,8 @@
  * can return them without touching the GraphQL schema.
  */
 
+import type { BookingRequiredSkill } from '../required-skills/required-skills.types';
+
 export interface CaregiverBriefRest {
   id: string;
   fullName?: string;
@@ -14,6 +16,7 @@ export interface CaregiverBriefRest {
 
 /** Booking summary returned from REST endpoints */
 export interface BookingRest {
+  requiredSkills: BookingRequiredSkill[] | null;
   id: string;
   bookingDate: string;
   status: string;

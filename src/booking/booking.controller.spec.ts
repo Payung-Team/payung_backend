@@ -83,6 +83,7 @@ describe('BookingService — new REST methods', () => {
     user:          { findUnique: jest.Mock };
     caregiverAvailability: { findMany: jest.Mock };
     servicePriceCatalog: { findUnique: jest.Mock };
+    $queryRaw: jest.Mock;
     $transaction:  jest.Mock;
   };
   // PYG-461 เฟส 3a: cancelBooking มอบเรื่องเงิน+สถานะให้ settle() — ที่นี่แค่ mock ให้สำเร็จ
@@ -96,8 +97,12 @@ describe('BookingService — new REST methods', () => {
     //     เทสด้านล่างทั้งหมดจึงยัง assert ผ่าน prisma.booking.create ได้เหมือนเดิม ไม่ต้องแก้
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'recipient' }]),
-      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment' }) },
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, flags: [], hasUnsureFlag: false }) },
+      careSkillRule: { findMany: jest.fn().mockResolvedValue([]) },
+      bookingRequiredSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
       booking: {
+        findUnique: jest.fn().mockResolvedValue({ careRecipientId: 'recipient' }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ careRecipientId: 'recipient', status: 'unmatched', confirmedAt: null, activities: [] }),
         update: jest.fn((args) => prisma.booking.update(args)),
         create: jest.fn((args) => prisma.booking.create(args)),
       },
@@ -109,6 +114,7 @@ describe('BookingService — new REST methods', () => {
       booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
     prisma = {
+      $queryRaw: jest.fn((sql) => Promise.resolve(sql.values.map((id) => ({ id, codes: [], items: [] })))),
       booking: {
         findUnique:        jest.fn(),
         findUniqueOrThrow: jest.fn(),
