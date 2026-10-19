@@ -127,6 +127,9 @@ model Caregiver {
   /// NULL ทั้งที่มี careLevel = ได้ค่าจาก migration ยังไม่ผ่านการทบทวนของแอดมิน
   careLevelSetBy      String?                    @map("care_level_set_by")
   careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
+  /// PYG-660 (S06 · PYG-561): วิธีเดินทางรับส่งผู้รับการดูแล — 'self_drive' | 'hired_ride' | 'none'
+  /// (DB มี CHECK caregivers_transport_mode_check) · NULL = ยังไม่เคยตอบ (E11) ห้ามตีความว่า 'none'
+  transportMode       String?                    @map("transport_mode")
   bookings            Booking[]
   bookingsInfectionAcked Booking[]              @relation("BookingInfectionAckBy") // PYG-618: booking ที่ผู้ดูแลคนนี้กดรับทราบข้อมูลโรคติดเชื้อ
   availability        CaregiverAvailability[]
