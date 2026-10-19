@@ -50,6 +50,7 @@ describe('CareRecipientsService', () => {
       update:    jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
+    careRecipientAssessment: { deleteMany: jest.Mock };
     $transaction: jest.Mock;
   };
 
@@ -62,6 +63,7 @@ describe('CareRecipientsService', () => {
         update:     jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
+      careRecipientAssessment: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       // interactive transaction: ส่ง mock ตัวเดิมเป็น tx — เทสอ่าน call ได้ที่เดียว
       $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
     };
@@ -79,6 +81,28 @@ describe('CareRecipientsService', () => {
   // ── list ───────────────────────────────────────────────────────────────────
 
   describe('list', () => {
+    it('returns hasAssessment from row existence, without attaching health answers', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        fakeRecipient({ assessment: { id: 'assessment', careGroup: 'bedridden' } }),
+        fakeRecipient({ id: 'unassessed', assessment: null }),
+      ]);
+      const result = await service.list(PATIENT_ID);
+      expect(result.map((r) => r.hasAssessment)).toEqual([true, false]);
+      expect(result.map((r) => r.careGroup)).toEqual(['BEDRIDDEN', null]);
+      expect(result[0]).not.toHaveProperty('assessment');
+      expect(result[0]).not.toHaveProperty('answers');
+    });
+    it('gets all stored groups in the list selection, with no per-profile lookup or mobility fallback', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        fakeRecipient({ assessment: { id: 'a', careGroup: 'social' }, mobility_level: 'bedridden' }),
+        fakeRecipient({ assessment: { id: 'b', careGroup: 'homebound' } }),
+        fakeRecipient({ assessment: { id: 'c', careGroup: 'bedridden' } }),
+        fakeRecipient({ assessment: null, mobility_level: 'bedridden' }),
+      ]);
+      expect((await service.list(PATIENT_ID)).map((r) => r.careGroup)).toEqual(['SOCIAL', 'HOMEBOUND', 'BEDRIDDEN', null]);
+      expect(prisma.careRecipient.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.careRecipient.findMany.mock.calls[0][0].select.assessment).toEqual({ select: { id: true, careGroup: true } });
+    });
     it('returns care recipients for the given patient', async () => {
       prisma.careRecipient.findMany.mockResolvedValue([fakeRecipient()]);
 
@@ -137,6 +161,10 @@ describe('CareRecipientsService', () => {
   // ── create ─────────────────────────────────────────────────────────────────
 
   describe('create', () => {
+    it('returns null group on a newly created unassessed profile', async () => {
+      prisma.careRecipient.create.mockResolvedValue(fakeRecipient({ assessment: null }));
+      expect((await service.create(PATIENT_ID, { name: 'Test' })).careGroup).toBeNull();
+    });
     it('creates a care recipient', async () => {
       prisma.careRecipient.create.mockResolvedValue(fakeRecipient());
 
@@ -160,6 +188,14 @@ describe('CareRecipientsService', () => {
   // ── update ─────────────────────────────────────────────────────────────────
 
   describe('update', () => {
+    it('returns the saved group unchanged when updating profile details', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
+      prisma.careRecipient.update.mockResolvedValue(fakeRecipient({ assessment: { id: 'assessment', careGroup: 'homebound' }, mobility_level: 'independent' }));
+      const result = await service.update(PATIENT_ID, RECIPIENT_ID, { name: 'Updated' });
+      expect(result.careGroup).toBe('HOMEBOUND');
+      expect(prisma.careRecipient.update.mock.calls[0][0].data).not.toHaveProperty('careGroup');
+      expect(prisma.careRecipient.update.mock.calls[0][0].select.assessment).toEqual({ select: { id: true, careGroup: true } });
+    });
     it('updates name successfully', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID });
       prisma.careRecipient.update.mockResolvedValue(fakeRecipient({ name: 'คุณตา' }));
@@ -308,6 +344,17 @@ describe('CareRecipientsService', () => {
   // ── PYG-460: soft delete ───────────────────────────────────────────────────
 
   describe('remove', () => {
+    it('deletes assessments in the same transaction, including when none exist', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
+      await service.remove(PATIENT_ID, RECIPIENT_ID);
+      expect(prisma.careRecipientAssessment.deleteMany).toHaveBeenCalledWith({ where: { careRecipientId: RECIPIENT_ID } });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+    it('propagates cleanup failure so the transaction rolls back hiding', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
+      prisma.careRecipientAssessment.deleteMany.mockRejectedValue(new Error('cleanup failed'));
+      await expect(service.remove(PATIENT_ID, RECIPIENT_ID)).rejects.toThrow('cleanup failed');
+    });
     it('soft-deletes instead of deleting the row', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
       prisma.careRecipient.update.mockResolvedValue(fakeRecipient());
