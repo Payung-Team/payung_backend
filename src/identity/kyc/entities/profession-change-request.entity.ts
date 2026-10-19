@@ -34,26 +34,32 @@ export class ProfessionChangeRequest {
   status!: ProfessionChangeStatus;
 
   /**
-   * ใบประกอบวิชาชีพ 3 field — มาพร้อม S03 (PYG-558) ตอนนี้ null เสมอ
-   * มีใน type ตั้งแต่ตอนนี้เพื่อให้ query ของ FE validate ผ่านโดยไม่ต้องแก้
+   * ใบประกอบวิชาชีพที่แนบมากับคำขอ (PYG-663) — null เมื่อวิชาชีพใหม่ไม่ต้องมีใบ หรือคำขอเก่าก่อน PYG-663
+   * licenseDocument ไม่มี signedUrl โดยตั้งใจ: ไฟล์ดูได้ที่ kycStatus (เจ้าของ) / adminKycDetail (แอดมิน · ลง audit)
    */
   @Field(() => String, {
     nullable: true,
-    description: 'S03 (PYG-558) — ตอนนี้ null เสมอ',
+    description:
+      'License number of the attached professional license (null when none)',
   })
   licenseNumber?: string | null;
 
   @Field(() => String, {
     nullable: true,
-    description: "S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ",
+    description:
+      "Expiry of the attached license 'YYYY-MM-DD' (Asia/Bangkok) · null when none",
   })
   licenseExpiresAt?: string | null;
 
   @Field(() => KycDocument, {
     nullable: true,
-    description: 'S03 (PYG-558) — ตอนนี้ null เสมอ',
+    description:
+      'Attached professional license (no signedUrl here — view it via kycStatus / adminKycDetail)',
   })
   licenseDocument?: KycDocument | null;
+
+  /** ภายใน (ไม่อยู่ใน GraphQL) — id ใบที่แนบ อ่านจาก field_changes ของแถว request */
+  licenseDocumentId?: string | null;
 
   /** มีเฉพาะ status = rejected */
   @Field(() => String, { nullable: true })

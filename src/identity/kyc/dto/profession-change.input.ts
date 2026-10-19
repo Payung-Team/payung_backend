@@ -21,11 +21,24 @@ export class ProfessionChangeInput {
   /**
    * String ไม่ใช่ enum โดยตั้งใจ — ให้ค่าผิดไปถึง parseProfessionInput แล้วได้ PROFESSION_INVALID ตาม contract
    * (ถ้าเป็น enum, GraphQL ปฏิเสธเองก่อนด้วย BAD_USER_INPUT ทั่วไป)
-   * S03 (PYG-558) จะเพิ่ม licenseDocumentId / licenseNumber / licenseExpiresAt ที่นี่ (เพิ่มอย่างเดียว ไม่ breaking)
    */
   @Field({ description: 'general_caregiver | nurse | physiotherapist' })
   @IsString({ message: 'วิชาชีพต้องเป็นข้อความ' })
   profession!: string;
+
+  /**
+   * PYG-663: ใบประกอบฯ ที่อัปโหลดไว้แล้ว (uploadKycDocument · professional_license + เลข + วันหมดอายุ)
+   * บังคับเมื่อวิชาชีพใหม่ต้องมีใบ (nurse / physiotherapist) — ตรวจที่ service เพื่อตอบ LICENSE_* 422 ตาม contract S03
+   * nullable ใน schema โดยตั้งใจ: ไม่ส่ง = LICENSE_FILE_REQUIRED (ไม่ใช่ BAD_USER_INPUT) · general_caregiver ไม่ใช้
+   */
+  @Field(() => ID, {
+    nullable: true,
+    description:
+      'kyc_documents.id of an uploaded professional_license. Required when the new profession needs a license (nurse, physiotherapist).',
+  })
+  @IsOptional()
+  @IsString()
+  licenseDocumentId?: string | null;
 }
 
 /** คิวตรวจของแอดมิน */

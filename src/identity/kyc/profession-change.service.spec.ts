@@ -18,6 +18,7 @@ import { Test } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { ProfessionChangeService } from './profession-change.service';
 import { PrismaService } from '../../common/prisma.service';
+import { ClockService } from '../../common/clock.service';
 import { AuthUser } from '../../common/decorators/current-user.decorator';
 import {
   PROFESSION_CHANGE_ACTION,
@@ -52,6 +53,27 @@ type LogRow = {
   created_at: Date;
 };
 
+/** แถว kyc_documents เท่าที่ service ใช้ (PYG-663) */
+type DocRow = {
+  id: string;
+  userId: string;
+  caregiverId: string | null;
+  documentType: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  uploadedAt: Date;
+  licenseNumber: string | null;
+  expiresAt: Date | null;
+  reviewStatus: string | null;
+  reviewedAt: Date | null;
+};
+
+/** เวลาปัจจุบันของ ClockService ในเทส — 19 ต.ค. 2026 12:00 เวลาไทย */
+const NOW = new Date('2026-10-19T05:00:00.000Z');
+/** สิ้นวัน 31 ธ.ค. 2027 เวลาไทย */
+const FUTURE_EXPIRY = new Date('2027-12-31T16:59:59.999Z');
+
 const DECISIONS: string[] = [
   PROFESSION_CHANGE_ACTION.CANCEL,
   PROFESSION_CHANGE_ACTION.APPROVE,
@@ -64,13 +86,23 @@ const STATUS_OF: Record<string, ProfessionChangeStatus> = {
 };
 
 /** รูปของ mock — แยก tx ออกจาก prisma เพื่อเทสว่าการเขียนเกิด "ในทรานแซคชัน" */
+type DocMock = {
+  findFirst: jest.Mock;
+  findUnique: jest.Mock;
+  findMany: jest.Mock;
+  update: jest.Mock;
+  updateMany: jest.Mock;
+};
 type TxMock = {
   caregiver: { update: jest.Mock };
+  kycDocument: DocMock;
+  kycReview: { create: jest.Mock };
   $queryRaw: jest.Mock;
   $executeRaw: jest.Mock;
 };
 type PrismaMock = {
   caregiver: { findUnique: jest.Mock; update: jest.Mock };
+  kycDocument: DocMock;
   $queryRaw: jest.Mock;
   $executeRaw: jest.Mock;
   $transaction: jest.Mock;
@@ -80,6 +112,8 @@ describe('ProfessionChangeService (PYG-575)', () => {
   let service: ProfessionChangeService;
   let caregivers: CaregiverRow[];
   let logs: LogRow[];
+  let docs: DocRow[];
+  let reviews: Array<Record<string, unknown>>;
   let clock: number;
   let prisma: PrismaMock;
   let tx: TxMock;
@@ -97,6 +131,72 @@ describe('ProfessionChangeService (PYG-575)', () => {
     };
     caregivers.push(row);
     return row;
+  }
+
+  /** ใบประกอบฯ ที่อัปโหลดไว้แล้ว (uploadKycDocument) — ค่าเริ่ม: ใช้ได้ รอตรวจ ยังไม่ผูกผู้ดูแล */
+  function seedLicense(
+    user: AuthUser,
+    overrides: Partial<DocRow> = {},
+  ): string {
+    const row: DocRow = {
+      id: `00000000-0000-4000-8000-${String(docs.length + 1).padStart(12, '0')}`,
+      userId: user.id,
+      caregiverId: null,
+      documentType: 'professional_license',
+      fileName: 'license.pdf',
+      fileSize: 1000,
+      mimeType: 'application/pdf',
+      uploadedAt: NOW,
+      licenseNumber: 'ว.12345',
+      expiresAt: FUTURE_EXPIRY,
+      reviewStatus: 'pending',
+      reviewedAt: null,
+      ...overrides,
+    };
+    docs.push(row);
+    return row.id;
+  }
+
+  function docMock(): DocMock {
+    const pick = (where: Record<string, unknown>) =>
+      docs.filter((d) =>
+        Object.entries(where).every(([k, v]) =>
+          v && typeof v === 'object' && 'in' in v
+            ? (v as { in: unknown[] }).in.includes(d[k as keyof DocRow])
+            : d[k as keyof DocRow] === v,
+        ),
+      );
+    return {
+      findFirst: jest.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(pick(where)[0] ?? null),
+      ),
+      findUnique: jest.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(pick(where)[0] ?? null),
+      ),
+      findMany: jest.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(pick(where)),
+      ),
+      update: jest.fn(
+        ({ where, data }: { where: { id: string }; data: Partial<DocRow> }) => {
+          const row = docs.find((d) => d.id === where.id)!;
+          Object.assign(row, data);
+          return Promise.resolve(row);
+        },
+      ),
+      updateMany: jest.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Partial<DocRow>;
+        }) => {
+          const rows = pick(where);
+          rows.forEach((r) => Object.assign(r, data));
+          return Promise.resolve({ count: rows.length });
+        },
+      ),
+    };
   }
 
   /** INSERT จริงของ service: $executeRaw`…VALUES (${id}::uuid, ${caregiverId}, ${editedBy}, ${action}, ${json}::jsonb, …)` */
@@ -217,6 +317,8 @@ describe('ProfessionChangeService (PYG-575)', () => {
   beforeEach(async () => {
     caregivers = [];
     logs = [];
+    docs = [];
+    reviews = [];
     clock = 0;
 
     // tx แยก object จาก prisma — เทสได้ว่าการเขียนเกิด "ในทรานแซคชัน" จริง
@@ -236,6 +338,13 @@ describe('ProfessionChangeService (PYG-575)', () => {
           },
         ),
       },
+      kycDocument: docMock(),
+      kycReview: {
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          reviews.push(data);
+          return Promise.resolve(data);
+        }),
+      },
       $queryRaw: jest.fn(fakeQueryRaw),
       $executeRaw: jest.fn(fakeExecuteRaw),
     };
@@ -248,6 +357,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
         ),
         update: jest.fn(),
       },
+      kycDocument: docMock(),
       $queryRaw: jest.fn(fakeQueryRaw),
       $executeRaw: jest.fn(),
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
@@ -257,6 +367,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       providers: [
         ProfessionChangeService,
         { provide: PrismaService, useValue: prisma },
+        { provide: ClockService, useValue: { now: () => NOW } },
       ],
     }).compile();
     service = moduleRef.get(ProfessionChangeService);
@@ -278,6 +389,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
 
       const result = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       expect(result).toMatchObject({
@@ -285,9 +397,13 @@ describe('ProfessionChangeService (PYG-575)', () => {
         fromProfession: 'general_caregiver',
         toProfession: 'nurse',
         status: 'pending',
-        licenseNumber: null,
-        licenseExpiresAt: null,
-        licenseDocument: null,
+        // PYG-663: ใบที่แนบมากับคำขอ
+        licenseNumber: 'ว.12345',
+        licenseExpiresAt: '2027-12-31',
+        licenseDocument: expect.objectContaining({
+          docType: 'professional_license',
+          fileUrl: '',
+        }) as object,
         rejectionReason: null,
         reviewedAt: null,
       });
@@ -300,6 +416,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
 
       const result = await service.requestChange(CAREGIVER_USER, {
         profession: 'physiotherapist',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       expect(logs).toHaveLength(1);
@@ -322,7 +439,10 @@ describe('ProfessionChangeService (PYG-575)', () => {
     it('ล็อกแถวของ "ผู้ใช้ที่ล็อกอิน" ด้วย FOR UPDATE — ไม่มีช่องให้ส่ง caregiverId ของคนอื่น', async () => {
       seedCaregiver();
 
-      await service.requestChange(CAREGIVER_USER, { profession: 'nurse' });
+      await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
+      });
 
       const [strings, where] = tx.$queryRaw.mock.calls[0] as [
         TemplateStringsArray,
@@ -356,7 +476,10 @@ describe('ProfessionChangeService (PYG-575)', () => {
         seedCaregiver({ kyc_status: kycStatus });
 
         const err = await errorOf(
-          service.requestChange(CAREGIVER_USER, { profession: 'nurse' }),
+          service.requestChange(CAREGIVER_USER, {
+            profession: 'nurse',
+            licenseDocumentId: seedLicense(CAREGIVER_USER),
+          }),
         );
 
         expect(err.extensions).toEqual({
@@ -369,7 +492,10 @@ describe('ProfessionChangeService (PYG-575)', () => {
 
     it('ยังไม่มีแถว caregivers → PROFESSION_CHANGE_NOT_ALLOWED + kycStatus none', async () => {
       const err = await errorOf(
-        service.requestChange(CAREGIVER_USER, { profession: 'nurse' }),
+        service.requestChange(CAREGIVER_USER, {
+          profession: 'nurse',
+          licenseDocumentId: seedLicense(CAREGIVER_USER),
+        }),
       );
 
       expect(err.extensions).toEqual({
@@ -382,7 +508,10 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver({ profession: 'nurse' });
 
       const err = await errorOf(
-        service.requestChange(CAREGIVER_USER, { profession: 'nurse' }),
+        service.requestChange(CAREGIVER_USER, {
+          profession: 'nurse',
+          licenseDocumentId: seedLicense(CAREGIVER_USER),
+        }),
       );
 
       expect(err.extensions).toEqual({
@@ -396,11 +525,13 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver();
       const first = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       const err = await errorOf(
         service.requestChange(CAREGIVER_USER, {
           profession: 'physiotherapist',
+          licenseDocumentId: seedLicense(CAREGIVER_USER),
         }),
       );
 
@@ -415,11 +546,13 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver();
       const first = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       await service.cancel(CAREGIVER_USER, first.id);
 
       const second = await service.requestChange(CAREGIVER_USER, {
         profession: 'physiotherapist',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       const mine = await service.myRequest(CAREGIVER_USER);
 
@@ -439,6 +572,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       const cg = seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       const result = await service.cancel(CAREGIVER_USER, req.id);
@@ -461,6 +595,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver({ user_id: OTHER_USER.id });
       const othersRequest = await service.requestChange(OTHER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(OTHER_USER),
       });
 
       const err = await errorOf(
@@ -487,6 +622,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       await service.cancel(CAREGIVER_USER, req.id);
 
@@ -506,6 +642,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       const cg = seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       const result = await service.approve(ADMIN, req.id);
@@ -542,6 +679,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       const cg = seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       tx.$queryRaw.mockClear();
 
@@ -570,6 +708,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
         seedCaregiver();
         const req = await service.requestChange(CAREGIVER_USER, {
           profession: 'nurse',
+          licenseDocumentId: seedLicense(CAREGIVER_USER),
         });
         if (status === 'cancelled')
           await service.cancel(CAREGIVER_USER, req.id);
@@ -594,6 +733,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       const cg = seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       const result = await service.reject(ADMIN, {
@@ -624,6 +764,7 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       prisma.$transaction.mockClear();
 
@@ -637,11 +778,13 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver();
       const req = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       await service.reject(ADMIN, { id: req.id, reason: 'ไม่ชัด' });
 
       const again = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
 
       expect(again.status).toBe('pending');
@@ -660,7 +803,10 @@ describe('ProfessionChangeService (PYG-575)', () => {
     it('เห็นเฉพาะคำขอของตัวเอง', async () => {
       seedCaregiver();
       seedCaregiver({ user_id: OTHER_USER.id });
-      await service.requestChange(OTHER_USER, { profession: 'nurse' });
+      await service.requestChange(OTHER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: seedLicense(OTHER_USER),
+      });
 
       expect(await service.myRequest(CAREGIVER_USER)).toBeNull();
     });
@@ -672,9 +818,11 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver({ user_id: OTHER_USER.id, full_name: 'สมหญิง' });
       const a = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
       const b = await service.requestChange(OTHER_USER, {
         profession: 'physiotherapist',
+        licenseDocumentId: seedLicense(OTHER_USER),
       });
 
       const page = await service.adminList({});
@@ -693,8 +841,12 @@ describe('ProfessionChangeService (PYG-575)', () => {
       seedCaregiver({ user_id: OTHER_USER.id });
       const a = await service.requestChange(CAREGIVER_USER, {
         profession: 'nurse',
+        licenseDocumentId: seedLicense(CAREGIVER_USER),
       });
-      await service.requestChange(OTHER_USER, { profession: 'nurse' });
+      await service.requestChange(OTHER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: seedLicense(OTHER_USER),
+      });
       await service.approve(ADMIN, a.id);
 
       const page = await service.adminList({
@@ -716,6 +868,252 @@ describe('ProfessionChangeService (PYG-575)', () => {
         page: 1,
         totalPages: 1,
       });
+    });
+  });
+
+  // ─── PYG-663: ใบประกอบฯ ของคำขอ ───────────────────────────────────────
+
+  describe('PYG-663 ใบประกอบฯ ที่แนบมากับคำขอ', () => {
+    const codeOf = (err: unknown) =>
+      (err as { extensions?: { code?: string } }).extensions?.code;
+
+    it.each(['nurse', 'physiotherapist'])(
+      'ขอเป็น %s โดยไม่แนบใบ → LICENSE_FILE_REQUIRED และไม่มีคำขอเกิดขึ้น',
+      async (profession) => {
+        seedCaregiver();
+        const err = await errorOf(
+          service.requestChange(CAREGIVER_USER, { profession }),
+        );
+        expect(codeOf(err)).toBe('LICENSE_FILE_REQUIRED');
+        expect(requestLogs()).toHaveLength(0);
+      },
+    );
+
+    it('ใบของผู้ใช้อื่น / id ไม่ใช่ uuid → ตอบเหมือนไม่ได้แนบ (ไม่บอกว่าใบของคนอื่นมีอยู่)', async () => {
+      seedCaregiver();
+      const othersLicense = seedLicense(OTHER_USER);
+      for (const licenseDocumentId of [othersLicense, 'not-a-uuid']) {
+        const err = await errorOf(
+          service.requestChange(CAREGIVER_USER, {
+            profession: 'nurse',
+            licenseDocumentId,
+          }),
+        );
+        expect(codeOf(err)).toBe('LICENSE_FILE_REQUIRED');
+      }
+      expect(docs[0].caregiverId).toBeNull();
+    });
+
+    it.each([
+      [{ reviewStatus: 'rejected' }, 'LICENSE_FILE_REQUIRED'],
+      [{ reviewStatus: 'expired' }, 'LICENSE_FILE_REQUIRED'],
+      [{ documentType: 'certificate' }, 'LICENSE_FILE_REQUIRED'],
+      [
+        { expiresAt: new Date('2026-10-19T16:59:59.999Z') },
+        'LICENSE_EXPIRY_NOT_FUTURE',
+      ],
+    ])('ใบที่ใช้ไม่ได้ %j → %s', async (overrides, code) => {
+      seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER, overrides as Partial<DocRow>);
+      const err = await errorOf(
+        service.requestChange(CAREGIVER_USER, {
+          profession: 'nurse',
+          licenseDocumentId: id,
+        }),
+      );
+      expect(codeOf(err)).toBe(code);
+      expect(requestLogs()).toHaveLength(0);
+    });
+
+    it('ยื่นสำเร็จ → ผูกใบกับผู้ดูแล + เก็บ licenseDocumentId ในแถว request', async () => {
+      const cg = seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+
+      const result = await service.requestChange(CAREGIVER_USER, {
+        profession: 'physiotherapist',
+        licenseDocumentId: id,
+      });
+
+      expect(docs[0].caregiverId).toBe(cg.id);
+      expect(docs[0].reviewStatus).toBe('pending');
+      expect(requestLogs()[0].field_changes[0]).toMatchObject({
+        requestId: result.id,
+        licenseDocumentId: id,
+      });
+    });
+
+    it('เปลี่ยนเป็นผู้ดูแลทั่วไปไม่ต้องมีใบ · ส่งใบมาก็ไม่ผูก', async () => {
+      seedCaregiver({ profession: 'nurse' });
+      const id = seedLicense(CAREGIVER_USER);
+
+      const result = await service.requestChange(CAREGIVER_USER, {
+        profession: 'general_caregiver',
+        licenseDocumentId: id,
+      });
+
+      expect(result).toMatchObject({
+        status: 'pending',
+        licenseDocument: null,
+      });
+      expect(requestLogs()[0].field_changes[0]).not.toHaveProperty(
+        'licenseDocumentId',
+      );
+      expect(docs[0].caregiverId).toBeNull();
+    });
+
+    it('อนุมัติคำขอ → อนุมัติใบในทรานแซคชันเดียวกัน + kyc_reviews license_approved', async () => {
+      const cg = seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+      const req = await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: id,
+      });
+
+      await service.approve(ADMIN, req.id);
+
+      expect(cg.profession).toBe('nurse');
+      expect(docs[0]).toMatchObject({
+        reviewStatus: 'approved',
+        reviewedAt: NOW,
+      });
+      expect(reviews).toEqual([
+        expect.objectContaining({
+          caregiverId: cg.id,
+          reviewerId: ADMIN.id,
+          action: 'license_approved',
+          documentId: id,
+        }),
+      ]);
+      expect(tx.kycDocument.updateMany).toHaveBeenCalled();
+      expect(prisma.kycDocument.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('ใบถูกอนุมัติแยกมาก่อนแล้ว → อนุมัติคำขอได้ ไม่บันทึกการตรวจใบซ้ำ', async () => {
+      const cg = seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+      const req = await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: id,
+      });
+      docs[0].reviewStatus = 'approved';
+
+      await service.approve(ADMIN, req.id);
+
+      expect(cg.profession).toBe('nurse');
+      expect(reviews).toHaveLength(0);
+    });
+
+    it.each(['rejected', 'expired'])(
+      'ใบถูก %s ระหว่างรอ → อนุมัติไม่ได้ (PROFESSION_CHANGE_LICENSE_UNUSABLE) วิชาชีพคงเดิม',
+      async (status) => {
+        const cg = seedCaregiver();
+        const id = seedLicense(CAREGIVER_USER);
+        const req = await service.requestChange(CAREGIVER_USER, {
+          profession: 'nurse',
+          licenseDocumentId: id,
+        });
+        docs[0].reviewStatus = status;
+
+        const err = await errorOf(service.approve(ADMIN, req.id));
+
+        expect(codeOf(err)).toBe('PROFESSION_CHANGE_LICENSE_UNUSABLE');
+        expect(cg.profession).toBe('general_caregiver');
+      },
+    );
+
+    it('ใบเลยวันหมดอายุไปแล้วตอนแอดมินกด → LICENSE_EXPIRED', async () => {
+      const cg = seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+      const req = await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: id,
+      });
+      docs[0].expiresAt = new Date('2026-10-18T16:59:59.999Z');
+
+      const err = await errorOf(service.approve(ADMIN, req.id));
+
+      expect(codeOf(err)).toBe('LICENSE_EXPIRED');
+      expect(cg.profession).toBe('general_caregiver');
+      expect(docs[0].reviewStatus).toBe('pending');
+    });
+
+    it('คำขอเก่าก่อน PYG-663 (ไม่มีใบ) → อนุมัติไม่ได้ ต้องปฏิเสธ · ยังอ่านคำขอได้ปกติ', async () => {
+      const cg = seedCaregiver();
+      const legacyId = '00000000-0000-4000-9000-000000000001';
+      logs.push({
+        id: legacyId,
+        caregiver_id: cg.id,
+        edited_by: CAREGIVER_USER.id,
+        action: PROFESSION_CHANGE_ACTION.REQUEST,
+        field_changes: [
+          {
+            field: 'profession',
+            oldValue: '"general_caregiver"',
+            newValue: '"nurse"',
+            requestId: legacyId,
+          },
+        ],
+        created_at: new Date(Date.UTC(2026, 9, 17)),
+      });
+
+      await expect(service.myRequest(CAREGIVER_USER)).resolves.toMatchObject({
+        id: legacyId,
+        licenseDocument: null,
+      });
+      const err = await errorOf(service.approve(ADMIN, legacyId));
+      expect(codeOf(err)).toBe('PROFESSION_CHANGE_LICENSE_UNUSABLE');
+      expect(
+        (err as { extensions: { licenseStatus?: string } }).extensions
+          .licenseStatus,
+      ).toBe('missing');
+
+      await service.reject(ADMIN, {
+        id: legacyId,
+        reason: 'กรุณาแนบใบประกอบวิชาชีพ',
+      });
+      expect(reviews).toHaveLength(0);
+    });
+
+    it('ปฏิเสธคำขอ → ใบที่รอตรวจถูกปฏิเสธด้วยเหตุผลเดียวกัน', async () => {
+      const cg = seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+      const req = await service.requestChange(CAREGIVER_USER, {
+        profession: 'physiotherapist',
+        licenseDocumentId: id,
+      });
+
+      await service.reject(ADMIN, {
+        id: req.id,
+        reason: ' เลขใบไม่ตรงกับรูป ',
+      });
+
+      expect(cg.profession).toBe('general_caregiver');
+      expect(docs[0].reviewStatus).toBe('rejected');
+      expect(reviews).toEqual([
+        expect.objectContaining({
+          action: 'license_rejected',
+          reason: 'เลขใบไม่ตรงกับรูป',
+          documentId: id,
+        }),
+      ]);
+    });
+
+    it('ยกเลิกคำขอ → ใบคงสถานะเดิม (ผู้ดูแลใช้ยื่นใหม่ได้)', async () => {
+      seedCaregiver();
+      const id = seedLicense(CAREGIVER_USER);
+      const req = await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: id,
+      });
+
+      await service.cancel(CAREGIVER_USER, req.id);
+      const again = await service.requestChange(CAREGIVER_USER, {
+        profession: 'nurse',
+        licenseDocumentId: id,
+      });
+
+      expect(docs[0].reviewStatus).toBe('pending');
+      expect(again.licenseDocument?.id).toBe(id);
     });
   });
 });
