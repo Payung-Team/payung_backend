@@ -452,7 +452,7 @@ export class KycService {
       caregiver: this.mapToEntity(caregiver),
       documents,
       profession: caregiver.profession,
-      license: pickLatestLicense(documents),
+      license: pickLatestLicense(documents, this.clock.now()),
       drivingLicense: buildDrivingLicenseInfo(
         await this.drivingLicense.getState({ caregiverId: caregiver.id, userId }),
         documents,

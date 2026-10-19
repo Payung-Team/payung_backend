@@ -635,6 +635,11 @@ type CaregiverBookingSummary {
   endTime: String
   estimatedCost: Float
   id: ID!
+
+  """
+  Relative-reported infectious disease info (health data). Only for the caregiver who owns the request and only while it is active; null otherwise.
+  """
+  infectionDisclosure: InfectionDisclosure
   locationAddress: String
   locationLat: Float
   locationLng: Float
@@ -1641,6 +1646,21 @@ type HealthStatus {
   timestamp: String!
 }
 
+"""
+Infectious-disease info the relative reported (health data; request recipient only)
+"""
+type InfectionDisclosure {
+  """
+  When this caregiver acknowledged the latest value; null if not yet (or acknowledged before the relative changed it)
+  """
+  acknowledgedAt: DateTime
+
+  """
+  null = relative has not specified (NOT the same as "no"); true = reported by relative; false = relative reported none
+  """
+  hasInfectiousDisease: Boolean
+}
+
 input InviteAdminInput {
   """Email address of the new admin"""
   email: String!
@@ -2044,6 +2064,11 @@ type LicenseInfo {
   """End of expiry day, Asia/Bangkok"""
   expiresAt: DateTime
   fileName: String!
+
+  """
+  True when status = expired OR the expiry day has passed at call time (covers the gap before the daily job flips the status). Computed by BE; FE must not compute it.
+  """
+  isExpired: Boolean!
   licenseNumber: String
   rejectionReason: String
 
@@ -2124,7 +2149,7 @@ input MemberDetailsInput {
 
 type Mutation {
   """Caregiver accepts a pending booking request (pending → accepted)."""
-  acceptBooking(bookingId: ID!): CaregiverBookingSummary!
+  acceptBooking(bookingId: ID!, infectionAcknowledged: Boolean): CaregiverBookingSummary!
 
   """
   Admin only: Activate a suspended user (set isActive = true, is_deleted = false). Records audit log.

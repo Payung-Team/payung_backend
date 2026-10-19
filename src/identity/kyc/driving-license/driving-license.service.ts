@@ -14,7 +14,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../common/prisma.service';
 import { ClockService } from '../../../common/clock.service';
-import { toBangkokEndOfDay } from '../license/license-date';
+import { isBangkokDateInFuture, toBangkokEndOfDay } from '../license/license-date';
 import {
   DRIVING_LICENSE_DOC_TYPE,
   DRIVING_LICENSE_REVIEW_STATUS,
@@ -63,14 +63,16 @@ export class DrivingLicenseService {
   }
 
   /**
-   * วันหมดอายุ: ต้องมี และ "ผ่านมาแล้ว" ตามปฏิทินไทยไม่ได้ — วันหมดอายุเป็นวันนี้ยังรับ (R5)
+   * วันหมดอายุตอนอัปโหลด: ต้องมี และต้องเป็นวันหลังจากวันนี้ตามปฏิทินไทย (วันนี้และย้อนหลังตอบ DRIVING_LICENSE_EXPIRED)
+   * — ตรงกับ FE (ช่องวันที่ปิดวันนี้) และใบประกอบฯ ของ S03
+   * ⚠ คนละเรื่องกับ "ผ่านการตรวจ": ใบที่อัปโหลดไว้แล้วยังใช้ได้ถึงสิ้นวันหมดอายุ (R5) ดู computeDrivingLicenseState
    * @returns สิ้นวันเวลาไทยของวันหมดอายุ (ค่าที่เก็บใน expires_at)
    */
   validateExpiry(expiresAt: Date | null | undefined): Date {
     if (!(expiresAt instanceof Date) || Number.isNaN(expiresAt.getTime())) {
       throw new DrivingLicenseError(DRIVING_LICENSE_ERROR.EXPIRY_REQUIRED);
     }
-    if (!isDrivingLicenseUnexpired(expiresAt, this.clock.now())) {
+    if (!isBangkokDateInFuture(expiresAt, this.clock.now())) {
       throw new DrivingLicenseError(DRIVING_LICENSE_ERROR.EXPIRED);
     }
     return toBangkokEndOfDay(expiresAt);

@@ -41,8 +41,14 @@ describe('DrivingLicenseService', () => {
       );
     });
 
-    it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> รับ (วันหมดอายุเองยังใช้ได้) และเก็บเป็นสิ้นวัน', () => {
-      expect(service.validateExpiry(new Date('2026-10-18T00:00:00Z'))).toEqual(endOfDay('2026-10-18'));
+    it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> DRIVING_LICENSE_EXPIRED ตอนอัปโหลด (ตรงกับ FE ที่ปิดวันนี้)', () => {
+      expect(() => service.validateExpiry(new Date('2026-10-18T00:00:00Z'))).toThrow(
+        expect.objectContaining({ extensions: expect.objectContaining({ code: 'DRIVING_LICENSE_EXPIRED', statusCode: 422 }) }),
+      );
+    });
+
+    it('พรุ่งนี้ (เวลาไทย) -> รับ และเก็บเป็นสิ้นวัน', () => {
+      expect(service.validateExpiry(new Date('2026-10-19T00:00:00Z'))).toEqual(endOfDay('2026-10-19'));
     });
 
     it('เทียบด้วยเวลา server + ปฏิทินไทย: 00:30 ไทยของวันที่ 19 (17:30Z) วันหมดอายุ 18 -> EXPIRED', () => {
