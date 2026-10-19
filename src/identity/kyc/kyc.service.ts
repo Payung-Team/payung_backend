@@ -42,6 +42,7 @@ import {
 import { LICENSE_ERROR, LicenseError, LicenseErrorCode } from './license/license.errors';
 import { isBangkokDateInFuture } from './license/license-date';
 import { DrivingLicenseService } from './driving-license/driving-license.service';
+import { TransportMode, resolveTransport, toTransportMode } from './driving-license/transport-mode';
 import { buildDrivingLicenseInfo } from './driving-license/driving-license-info.entity';
 import { pickLatestLicense } from './license/license-info.entity';
 import { normalizeLicenseNumber } from './license/license-validation';
@@ -160,7 +161,9 @@ export class KycService {
     await this.assertLicenseForKyc(user.id, profession, input.documentIds);
 
     // PYG-597: ขับรถรับส่งเอง -> ต้องมีใบขับขี่ที่ใช้ได้ในรอบส่งนี้ (ตรวจที่ service ก่อนเขียนอะไรลง DB)
-    await this.drivingLicense.assertForKyc(user.id, input.selfDriveTransport, input.documentIds);
+    //   PYG-661: transportMode (ใหม่) หรือ selfDriveTransport (เดิม) → ค่าเดียว · ขัดกัน = 422
+    const transport = resolveTransport(input);
+    await this.drivingLicense.assertForKyc(user.id, transport.selfDrive, input.documentIds);
 
     // ── ขั้นตอนที่ 3: Upsert caregiver + link documents (atomic) ─────
     const caregiver = await this.prismaService.$transaction(async (tx) => {
@@ -185,6 +188,7 @@ export class KycService {
           skills: input.skills,
           otherSkills: input.otherSkills ?? [],
           profession, // PYG-575
+          ...(transport.write && { transportMode: transport.write }), // PYG-661
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -205,6 +209,8 @@ export class KycService {
           }),
           // PYG-575 · E2: ถูกปฏิเสธแล้วส่งใหม่ เปลี่ยนวิชาชีพได้ทันที (ยังไม่เคยอนุมัติ — แอดมินตรวจทั้งชุดอยู่แล้ว)
           profession,
+          // PYG-661: ไม่ส่ง/false = คงค่าเดิม (NULL ยังเป็น NULL) ไม่ตีความเป็น none (E10)
+          ...(transport.write && { transportMode: transport.write }),
           experienceYears: input.experienceYears,
           // ไม่เขียน hourlyRate (PYG-536) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคามาจาก service_price_catalog
           bio: input.bio,
@@ -418,6 +424,31 @@ export class KycService {
   }
 
   /**
+   * updateTransportMode — PYG-661 (E1/E2): ผู้ดูแลที่ KYC ผ่านแล้วเปลี่ยนวิธีเดินทางเอง
+   *
+   * ไม่บังคับแนบใบขับขี่ตอนนี้ — ป้ายฝั่ง Elder และประตูรับงาน (AC5) อ่านผลตรวจใบอยู่แล้ว
+   * (เปลี่ยนเป็น SELF_DRIVE แต่ยังไม่มีใบที่ผ่านก็ไม่ได้ป้าย และรับงานรับส่งไม่ได้)
+   * ไม่เปลี่ยน kycStatus (E1 รอเคาะจาก story)
+   */
+  async updateTransportMode(userId: string, mode: TransportMode): Promise<TransportMode> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+      select: { id: true, kycStatus: true },
+    });
+    if (!caregiver) throw new NotFoundException('ไม่พบข้อมูล caregiver ของคุณ');
+    if (caregiver.kycStatus !== 'verified') {
+      throw new ForbiddenException('ต้องผ่านการยืนยันตัวตนก่อน — ระบุวิธีเดินทางผ่านการส่ง KYC');
+    }
+
+    await this.prismaService.caregiver.update({
+      where: { id: caregiver.id },
+      data: { transportMode: mode },
+    });
+    this.logger.log({ event: 'caregiver.transport_mode.updated', caregiverId: caregiver.id });
+    return mode;
+  }
+
+  /**
    * getKycStatus — ดึงข้อมูล KYC status ครบชุดสำหรับ Status Page
    */
   async getKycStatus(userId: string): Promise<KycStatusPayload> {
@@ -452,6 +483,7 @@ export class KycService {
       caregiver: this.mapToEntity(caregiver),
       documents,
       profession: caregiver.profession,
+      transportMode: toTransportMode(caregiver.transportMode),
       license: pickLatestLicense(documents, this.clock.now()),
       drivingLicense: buildDrivingLicenseInfo(
         await this.drivingLicense.getState({ caregiverId: caregiver.id, userId }),

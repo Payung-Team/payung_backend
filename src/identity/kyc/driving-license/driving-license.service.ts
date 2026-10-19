@@ -20,6 +20,7 @@ import {
   DRIVING_LICENSE_REVIEW_STATUS,
 } from './driving-license.constants';
 import { DRIVING_LICENSE_ERROR, DrivingLicenseError } from './driving-license.errors';
+import { TransportMode } from './transport-mode';
 import {
   DrivingLicenseState,
   computeDrivingLicenseState,
@@ -51,11 +52,20 @@ export class DrivingLicenseService {
     return computeDrivingLicenseState(rows, this.clock.now());
   }
 
-  async isVerified(owner: DrivingLicenseOwner): Promise<boolean> {
+  /**
+   * สำหรับโปรไฟล์ Elder (driving_license_verified) — PYG-661 E2:
+   * ผ่านการตรวจ (R5) และผู้ดูแลยังขับเอง (transport_mode = self_drive) หรือยังไม่เคยตอบ (NULL ถือตามใบที่มี)
+   * เปลี่ยนเป็น hired_ride / none → ป้ายหาย แม้ใบยังผ่าน
+   */
+  async isVerified(owner: DrivingLicenseOwner & { transportMode: string | null }): Promise<boolean> {
+    if (owner.transportMode !== null && owner.transportMode !== TransportMode.SELF_DRIVE) return false;
     return (await this.getState(owner)).verified;
   }
 
-  /** @throws DrivingLicenseError DRIVING_LICENSE_NOT_VERIFIED (422) */
+  /**
+   * ประตูรับงานที่ต้องขับรถรับส่ง (AC5) — อ่านผลตรวจใบเท่านั้น ไม่อ่าน transport_mode
+   * @throws DrivingLicenseError DRIVING_LICENSE_NOT_VERIFIED (422)
+   */
   async assertVerified(owner: DrivingLicenseOwner): Promise<void> {
     if (!(await this.getState(owner)).verified) {
       throw new DrivingLicenseError(DRIVING_LICENSE_ERROR.NOT_VERIFIED);

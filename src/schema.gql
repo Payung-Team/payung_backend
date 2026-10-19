@@ -1951,12 +1951,15 @@ input KycInput {
   profession: String
 
   """
-  Caregiver drives the care recipient themselves (validated at submit; not persisted yet)
+  Legacy answer: true = SELF_DRIVE; false is not persisted (cannot tell HIRED_RIDE from NONE). Prefer transportMode.
   """
   selfDriveTransport: Boolean
 
   """Central skill codes from careSkills(profession)"""
   skills: [String!]!
+
+  """SELF_DRIVE | HIRED_RIDE | NONE (optional)"""
+  transportMode: TransportMode
 }
 
 """A single KYC review action by an admin"""
@@ -2036,6 +2039,9 @@ type KycStatusPayload {
 
   """When KYC was submitted"""
   submittedAt: DateTime
+
+  """Saved transport answer; null = never answered"""
+  transportMode: TransportMode
 
   """When KYC was verified by admin"""
   verifiedAt: DateTime
@@ -2529,6 +2535,11 @@ type Mutation {
 
   """Update current user profile"""
   updateProfile(input: UpdateProfileInput!): User!
+
+  """
+  Verified caregiver only: change how you transport the care recipient. Does not require a driving license upload; the license badge and job gate read the license review result.
+  """
+  updateTransportMode(mode: TransportMode!): TransportMode!
 
   """
   Upsert the caregiver work condition. Each section is optional (partial update): omit a section to keep it unchanged, or send [] to clear it. Verified caregivers only.
@@ -3778,6 +3789,15 @@ input TransferOwnershipInput {
   users.id ของเจ้าของคนใหม่ — ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้ว (เชิญคนนอกมาเป็นเจ้าของตรง ๆ ไม่ได้)
   """
   newOwnerUserId: ID!
+}
+
+"""
+How the caregiver transports the care recipient: SELF_DRIVE (needs a verified driving license), HIRED_RIDE, NONE. null = never answered.
+"""
+enum TransportMode {
+  HIRED_RIDE
+  NONE
+  SELF_DRIVE
 }
 
 input UpdateCaregiverInput {

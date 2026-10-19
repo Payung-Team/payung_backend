@@ -15,6 +15,7 @@ import { Caregiver } from '../entities/caregiver.entity';
 import { KycDocument } from '../entities/kyc-document.entity';
 import { PayoutAccountSummary } from '../entities/payout-account.entity';
 import { LicenseInfo } from '../license/license-info.entity';
+import { TransportMode } from '../driving-license/transport-mode';
 import { DrivingLicenseInfo } from '../driving-license/driving-license-info.entity';
 
 @ObjectType()
@@ -85,6 +86,10 @@ export class KycStatusPayload {
   /** PYG-587: ใบประกอบฯ ล่าสุด (สถานะ/วันหมดอายุ/เหตุผลปฏิเสธ) — null ถ้าไม่เคยแนบ */
   @Field(() => LicenseInfo, { nullable: true, description: 'Latest professional license, if any' })
   license?: LicenseInfo;
+
+  /** PYG-661: คำตอบเดิมเรื่องวิธีเดินทางรับส่ง — FE ใช้เติมค่าตอนยื่นซ้ำ · null = ยังไม่เคยตอบ (ไม่ใช่ NONE) */
+  @Field(() => TransportMode, { nullable: true, description: 'Saved transport answer; null = never answered' })
+  transportMode?: TransportMode | null;
 
   /** PYG-597: ใบขับขี่ของตัวเอง - ผลตรวจ เหตุผล วันหมดอายุ และ isExpired ที่ BE คำนวณ ณ เวลาที่เรียก */
   @Field(() => DrivingLicenseInfo, { description: 'Own driving license review info (status none when never uploaded)' })
