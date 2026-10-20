@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsOptional,
   IsString,
   MaxLength,
@@ -34,6 +35,21 @@ export class CreateCareRecipientDto {
   @ValidateNested()
   @Type(() => PatientProfileDto)
   details?: PatientProfileDto;
+
+  /**
+   * PYG-619 — โรคติดเชื้อที่ผู้ดูแลควรรู้ (ข้อมูลสุขภาพ · contract PYG-617)
+   * true = มี · false = ไม่มี · ไม่ส่ง = ไม่แตะค่าเดิม (ไม่มีทางย้อนกลับเป็น "ยังไม่ได้ระบุ")
+   * ⚠ ตรวจแค่ "ชนิด" ที่นี่ — กฎว่าต้องรับทราบข้อความแจ้งก่อนบันทึก (INFECTION_NOTICE_NOT_ACCEPTED, 422)
+   *   ตรวจที่ service เพราะ decorator ใน DTO จะตอบ 400 ก่อนถึง service (PYG-415)
+   */
+  @IsOptional()
+  @IsBoolean()
+  hasInfectiousDisease?: boolean;
+
+  /** PYG-619 — ญาติเห็นและรับทราบข้อความแจ้งว่าข้อมูลจะถูกเปิดเผยกับผู้ดูแล (ต้องเป็น true เมื่อส่ง hasInfectiousDisease) */
+  @IsOptional()
+  @IsBoolean()
+  disclosureNoticeAccepted?: boolean;
 }
 
 export class UpdateCareRecipientDto {
@@ -59,4 +75,19 @@ export class UpdateCareRecipientDto {
   @ValidateNested()
   @Type(() => PatientProfileDto)
   details?: PatientProfileDto;
+
+  /**
+   * PYG-619 — โรคติดเชื้อที่ผู้ดูแลควรรู้ (ข้อมูลสุขภาพ · contract PYG-617)
+   * true = มี · false = ไม่มี · ไม่ส่ง = ไม่แตะค่าเดิม (ไม่มีทางย้อนกลับเป็น "ยังไม่ได้ระบุ")
+   * ⚠ ตรวจแค่ "ชนิด" ที่นี่ — กฎว่าต้องรับทราบข้อความแจ้งก่อนบันทึก (INFECTION_NOTICE_NOT_ACCEPTED, 422)
+   *   ตรวจที่ service เพราะ decorator ใน DTO จะตอบ 400 ก่อนถึง service (PYG-415)
+   */
+  @IsOptional()
+  @IsBoolean()
+  hasInfectiousDisease?: boolean;
+
+  /** PYG-619 — ญาติเห็นและรับทราบข้อความแจ้งว่าข้อมูลจะถูกเปิดเผยกับผู้ดูแล (ต้องเป็น true เมื่อส่ง hasInfectiousDisease) */
+  @IsOptional()
+  @IsBoolean()
+  disclosureNoticeAccepted?: boolean;
 }

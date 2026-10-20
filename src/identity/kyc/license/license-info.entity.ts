@@ -28,10 +28,16 @@ export class LicenseInfo {
 
   @Field({ nullable: true })
   rejectionReason?: string;
+
+  @Field({
+    description:
+      'True when status = expired OR the expiry day has passed at call time (covers the gap before the daily job flips the status). Computed by BE; FE must not compute it.',
+  })
+  isExpired!: boolean;
 }
 
 /** ใบประกอบฯ ล่าสุด (documents เรียงใหม่ → เก่าอยู่แล้ว) — ไม่มี → undefined */
-export function pickLatestLicense(documents: KycDocument[]): LicenseInfo | undefined {
+export function pickLatestLicense(documents: KycDocument[], now: Date): LicenseInfo | undefined {
   const doc = documents.find((d) => d.docType === LICENSE_DOC_TYPE);
   if (!doc) return undefined;
   return {
@@ -42,5 +48,9 @@ export function pickLatestLicense(documents: KycDocument[]): LicenseInfo | undef
     expiresAt: doc.expiresAt,
     status: doc.reviewStatus ?? 'pending',
     rejectionReason: doc.rejectionReason,
+    // expires_at เก็บเป็นสิ้นวันเวลาไทย (PYG-586) — เกณฑ์เดียวกับงานรายวันและตัวตรวจประเภทงาน (expires_at <= now)
+    isExpired:
+      doc.reviewStatus === 'expired' ||
+      (doc.expiresAt != null && doc.expiresAt.getTime() <= now.getTime()),
   };
 }

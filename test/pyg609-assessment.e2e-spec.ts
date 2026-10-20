@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaService } from '../src/common/prisma.service';
+import { ClockService } from '../src/common/clock.service';
 import { AssessmentService } from '../src/assessment/assessment.service';
 import { CareRecipientsService } from '../src/patient/care-recipients.service';
 import { ConsentService } from '../src/consent/consent.service';
@@ -40,7 +41,7 @@ describeDb('PYG-609 assessment: Postgres transactions and races', () => {
     }) as PrismaService;
     await prisma.$connect();
     assessments = new AssessmentService(prisma, new ConsentService(prisma));
-    recipients = new CareRecipientsService(prisma);
+    recipients = new CareRecipientsService(prisma, new ClockService());
   });
   afterAll(async () => {
     if (prisma) {
@@ -193,21 +194,24 @@ describeDb('PYG-609 assessment: Postgres transactions and races', () => {
   it('rolls back hiding if assessment cleanup fails', async () => {
     const { owner, recipient, input } = await fixture();
     await assessments.submit(owner.id, input);
-    const failing = new CareRecipientsService({
-      careRecipient: prisma.careRecipient,
-      $transaction: (fn) =>
-        prisma.$transaction((tx) =>
-          fn(
-            new Proxy(tx, {
-              get(target, property) {
-                if (property === 'careRecipientAssessment')
-                  return { deleteMany: () => tx.$executeRaw`SELECT 1 / 0` };
-                return Reflect.get(target, property);
-              },
-            }),
+    const failing = new CareRecipientsService(
+      {
+        careRecipient: prisma.careRecipient,
+        $transaction: (fn) =>
+          prisma.$transaction((tx) =>
+            fn(
+              new Proxy(tx, {
+                get(target, property) {
+                  if (property === 'careRecipientAssessment')
+                    return { deleteMany: () => tx.$executeRaw`SELECT 1 / 0` };
+                  return Reflect.get(target, property);
+                },
+              }),
+            ),
           ),
-        ),
-    } as unknown as PrismaService);
+      } as unknown as PrismaService,
+      new ClockService(),
+    );
     await expect(failing.remove(owner.id, recipient.id)).rejects.toThrow();
     expect(
       await prisma.careRecipient.findUnique({ where: { id: recipient.id } }),

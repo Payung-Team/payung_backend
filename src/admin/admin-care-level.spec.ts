@@ -33,6 +33,7 @@ import { PayoutAccountService } from '../payment/payout-account.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { CareLevel } from '../common/care-level/care-level';
+import { ClockService } from '../common/clock.service';
 import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import {
   CARE_LEVEL_ERROR,
@@ -680,6 +681,7 @@ describe('AdminService.approveKyc — ต้องมีระดับก่อ
         { provide: PayoutAccountService, useValue: payoutAccountService },
         // PYG-597 (#132): AdminService ต้องใช้ DrivingLicenseService — approveKyc ไม่ได้เรียก
         { provide: DrivingLicenseService, useValue: {} },
+        ClockService,
       ],
     }).compile();
     service = mod.get(AdminService);
@@ -891,6 +893,7 @@ describe('AdminService.adminKycList — ระดับในหน้ารา�
         { provide: EmailService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
         { provide: DrivingLicenseService, useValue: {} }, // PYG-597 (#132) — adminKycList ไม่ได้เรียก
+        ClockService,
       ],
     }).compile();
     const service = mod.get(AdminService);

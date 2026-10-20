@@ -2,6 +2,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { CareRecipientsService } from './care-recipients.service';
 import { PrismaService } from '../common/prisma.service';
+import { ClockService } from '../common/clock.service';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ function fakeRecipient(overrides: Record<string, unknown> = {}) {
     blood_type:          null,
     care_notes:          null,
     preferred_hospital:  null,
+    has_infectious_disease: null,
     ...overrides,
   };
 }
@@ -72,6 +74,7 @@ describe('CareRecipientsService', () => {
       providers: [
         CareRecipientsService,
         { provide: PrismaService, useValue: prisma },
+        ClockService,
       ],
     }).compile();
 

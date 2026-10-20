@@ -29,6 +29,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsDate,
   IsIn,
   IsInt,
@@ -46,6 +47,7 @@ import { Transform, Type } from 'class-transformer';
 import { ValidThaiId } from '../../../common/validators/valid-thai-id.validator';
 import { ValidThaiPhone } from '../../../common/validators/valid-thai-phone.validator';
 import { PayoutAccountInput } from './payout-account.input';
+import { TransportMode } from '../driving-license/transport-mode';
 import {
   OTHER_SKILLS_MAX,
   OTHER_SKILL_MAX_LENGTH,
@@ -210,15 +212,25 @@ export class KycInput {
   /**
    * PYG-597: ขับรถรับส่งเอง - true = ต้องมีใบขับขี่ (DRIVING_LICENSE_REQUIRED / _EXPIRY_REQUIRED / _EXPIRED)
    * false = ไม่บังคับ (ไม่รับส่ง / ใช้รถรับจ้าง) · ไม่ส่ง = ไม่ตรวจและ BE ไม่ตีความเป็น false (E10 รอ contract)
-   * ⚠ ยังไม่ได้บันทึกลงฐาน - caregivers ไม่มีคอลัมน์รองรับและ story S06 ไม่มีการ์ด DB
+   * PYG-661: ใช้เมื่อไม่ส่ง transportMode — true บันทึกเป็น self_drive · false ไม่เขียนค่า (แยก hired_ride กับ none ไม่ได้ · E10)
+   * ถ้าส่งคู่กับ transportMode ต้องไม่ขัดกัน (TRANSPORT_MODE_CONFLICT 422)
    */
   @Field(() => Boolean, {
     nullable: true,
-    description: 'Caregiver drives the care recipient themselves (validated at submit; not persisted yet)',
+    description: 'Legacy answer: true = SELF_DRIVE; false is not persisted (cannot tell HIRED_RIDE from NONE). Prefer transportMode.',
   })
   @IsOptional()
   @IsBoolean({ message: 'selfDriveTransport ต้องเป็น true หรือ false' })
   selfDriveTransport?: boolean;
+
+  /**
+   * PYG-661: วิธีเดินทางรับส่ง — SELF_DRIVE ต้องมีใบขับขี่ใน documentIds รอบนี้ · บันทึกลง caregivers.transport_mode
+   * ไม่ส่ง = ไม่แตะค่าเดิม (E10: ไม่ตีความเป็น none)
+   */
+  @Field(() => TransportMode, { nullable: true, description: 'SELF_DRIVE | HIRED_RIDE | NONE (optional)' })
+  @IsOptional()
+  @IsEnum(TransportMode, { message: 'transportMode ไม่ถูกต้อง' })
+  transportMode?: TransportMode;
 
   /**
    * บัญชีธนาคารรับเงิน (PYG-266) — optional (frontend เดิมยังไม่มีฟอร์มนี้)

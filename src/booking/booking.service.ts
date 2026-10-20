@@ -805,12 +805,18 @@ export class BookingService {
       // S08: legacy name-only/new-profile flows must assess a persisted profile
       // first. Do not create one here or copy another profile's assessment.
       await assertBookingAssessment(tx, data.careRecipientId, onBehalf ? 'graphql' : 'rest');
+
+      // PYG-634: ตรวจกิจกรรมที่เลือก (มีอยู่ + เปิดใช้งาน · ล็อก FOR SHARE) ก่อนสร้าง booking
+      //   ไม่ผ่าน = โยนออกจาก transaction → ไม่มี booking ค้าง (E2) · ไม่ส่ง/ว่าง = [] (E9) · ซ้ำ = ครั้งเดียว (E8)
       const activities = await this.careActivityService.resolveForBooking(tx, dto.activityIds);
 
       const created = await tx.booking.create({ data, include });
 
       // ⑤ PYG-634: สำเนาชื่อ หมวด ระดับ ณ ตอนจอง (R6) — งานพิมพ์เอง (tasks) ไม่ถูกเขียนที่นี่ (AC6)
       await this.careActivityService.writeForBooking(tx, created.id, activities);
+
+      // ⑥ S16 + S17 (ระดับ + Required Skills) ต้องอยู่ "หลัง" ⑤ — การคำนวณอ่านรหัสกิจกรรมจาก booking.activities
+      //   ถ้าคำนวณก่อนบันทึกกิจกรรม ทักษะที่มาจากกิจกรรม (S15) จะหายไปเงียบ ๆ (#144)
       await recalculateBookingRequirements(tx, created.id, onBehalf ? 'graphql' : 'rest');
       // S18 rechecks the persisted requirements even when the client selects during creation.
       if (resolvedCaregiverId) await assertCaregiverEligible(tx,created.id,resolvedCaregiverId,bookingEvidenceReferenceDate(bookingDateObj));

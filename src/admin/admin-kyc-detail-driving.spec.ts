@@ -9,6 +9,7 @@ import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { EmailService } from '../email/email.service';
 import { PayoutAccountService } from '../payment/payout-account.service';
+import { ClockService } from '../common/clock.service';
 import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 
 const CG = 'cg-1';
@@ -95,6 +96,7 @@ describe('AdminService.adminKycDetail - drivingLicense (PYG-597)', () => {
         { provide: EmailService, useValue: {} },
         { provide: PayoutAccountService, useValue: {} },
         { provide: DrivingLicenseService, useValue: { getState } },
+        ClockService,
       ],
     }).compile();
     service = mod.get(AdminService);
