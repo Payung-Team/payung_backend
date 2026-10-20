@@ -13,18 +13,22 @@
  * - fullName: 2-100 ตัวอักษร
  * - idCardNumber: เลขบัตรประชาชนไทย 13 หลัก + check digit
  * - phone: เบอร์โทรไทย (0xx-xxx-xxxx)
- * - skills: array ต้องมีอย่างน้อย 1 รายการ
+ * - skills: รหัสกลาง (care_skills) อย่างน้อย 1 รายการ — service ตรวจรหัสและวิชาชีพ (PYG-652)
+ * - otherSkills: optional, ข้อความอิสระไม่เกิน 5 รายการ (ตัดช่องว่าง/ค่าซ้ำให้) (PYG-652)
  * - experienceYears: จำนวนเต็ม >= 0
  * - hourlyRate: deprecated (PYG-536) — optional และไม่ถูกบันทึก
  * - bio: optional, สูงสุด 500 ตัวอักษร
  * - documentIds: array ของ UUID
+ * - profession: บังคับตาม contract (PYG-573) แต่ตรวจที่ KycService — ดูเหตุผลที่ field
  *
  * Error messages เป็นภาษาไทย ตาม AC ของ PYG-63
  */
 import { InputType, Field, Int, Float } from '@nestjs/graphql';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDate,
   IsIn,
   IsInt,
@@ -38,10 +42,15 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ValidThaiId } from '../../../common/validators/valid-thai-id.validator';
 import { ValidThaiPhone } from '../../../common/validators/valid-thai-phone.validator';
 import { PayoutAccountInput } from './payout-account.input';
+import {
+  OTHER_SKILLS_MAX,
+  OTHER_SKILL_MAX_LENGTH,
+  normalizeOtherSkills,
+} from '../../../care-skill/care-skill.constants';
 
 @InputType()
 export class KycInput {
@@ -80,14 +89,39 @@ export class KycInput {
   phone!: string;
 
   /**
-   * ทักษะของ caregiver — ต้องมีอย่างน้อย 1 รายการ
-   * ตัวอย่าง: ["elder_care", "first_aid", "medication_management"]
+   * ทักษะของ caregiver — รหัสกลางจาก careSkills(profession) อย่างน้อย 1 รายการ
+   * ตัวอย่าง: ["transfer_assist", "bathing", "dementia_care"]
+   * service ตรวจซ้ำว่าทุกรหัสมีใน care_skills และวิชาชีพของผู้ดูแลถือได้ (PYG-652)
    */
-  @Field(() => [String], { description: 'List of caregiver skills' })
+  @Field(() => [String], {
+    description: 'Central skill codes from careSkills(profession)',
+  })
   @IsArray({ message: 'ทักษะต้องเป็น array' })
   @ArrayMinSize(1, { message: 'กรุณาเลือกทักษะอย่างน้อย 1 รายการ' })
   @IsString({ each: true, message: 'ทักษะแต่ละรายการต้องเป็นข้อความ' })
   skills!: string[];
+
+  /**
+   * ทักษะอื่น ๆ ที่ไม่อยู่ในรายการกลาง — ข้อความอิสระ สูงสุด 5 รายการ (PYG-652)
+   * ตัดช่องว่างหัวท้าย ทิ้งค่าว่าง และตัดค่าซ้ำให้ก่อนตรวจ
+   * ไม่ส่งมา = ยื่นครั้งแรกเป็น [] · ยื่นซ้ำคงค่าเดิมไว้
+   */
+  @Field(() => [String], {
+    nullable: true,
+    description: `Free-text skills not in the central list (max ${OTHER_SKILLS_MAX}; trimmed, de-duplicated)`,
+  })
+  @IsOptional()
+  @Transform(({ value }) => normalizeOtherSkills(value))
+  @IsArray({ message: 'ทักษะอื่น ๆ ต้องเป็น array' })
+  @ArrayMaxSize(OTHER_SKILLS_MAX, {
+    message: `ทักษะอื่น ๆ กรอกได้ไม่เกิน ${OTHER_SKILLS_MAX} รายการ`,
+  })
+  @IsString({ each: true, message: 'ทักษะอื่น ๆ แต่ละรายการต้องเป็นข้อความ' })
+  @MaxLength(OTHER_SKILL_MAX_LENGTH, {
+    each: true,
+    message: `ทักษะอื่น ๆ แต่ละรายการยาวได้ไม่เกิน ${OTHER_SKILL_MAX_LENGTH} ตัวอักษร`,
+  })
+  otherSkills?: string[];
 
   /**
    * จำนวนปีประสบการณ์ — ต้องเป็นจำนวนเต็ม >= 0
@@ -152,6 +186,39 @@ export class KycInput {
   @IsArray({ message: 'documentIds ต้องเป็น array' })
   @IsUUID('4', { each: true, message: 'document ID แต่ละตัวต้องเป็น UUID ที่ถูกต้อง' })
   documentIds!: string[];
+
+  /**
+   * วิชาชีพ (PYG-556 · S01-AC1) — "บังคับ" ตาม contract แต่ใน schema เป็น String nullable โดยตั้งใจ
+   *
+   * ทำไมไม่ใช่ `CaregiverProfession!`?
+   * - ถ้าบังคับที่ schema client เก่าที่ไม่ส่งค่าจะโดน GraphQL ปฏิเสธเองด้วย BAD_USER_INPUT (HTTP 400)
+   *   ก่อนถึงโค้ดของเรา → FE ไม่ได้ code PROFESSION_REQUIRED ตามที่ตกลง (S01-E3)
+   * - ถ้าเป็น enum ค่าผิดก็โดนปฏิเสธแบบเดียวกัน → ไม่ได้ PROFESSION_INVALID (S01-E4)
+   * - บทเรียนเดียวกับ PYG-415 (decorator ใน DTO ตอบ BAD_REQUEST ก่อนถึงตัวเช็คใน service)
+   * กติกาจริงอยู่ที่ parseProfessionInput() ซึ่ง KycService เรียกเป็นอย่างแรก
+   * decorator ที่เหลือมีไว้ให้ผ่าน forbidNonWhitelisted เท่านั้น
+   */
+  @Field({
+    nullable: true,
+    description:
+      'Required — general_caregiver | nurse | physiotherapist (missing = PROFESSION_REQUIRED)',
+  })
+  @IsOptional()
+  @IsString({ message: 'วิชาชีพต้องเป็นข้อความ' })
+  profession?: string;
+
+  /**
+   * PYG-597: ขับรถรับส่งเอง - true = ต้องมีใบขับขี่ (DRIVING_LICENSE_REQUIRED / _EXPIRY_REQUIRED / _EXPIRED)
+   * false = ไม่บังคับ (ไม่รับส่ง / ใช้รถรับจ้าง) · ไม่ส่ง = ไม่ตรวจและ BE ไม่ตีความเป็น false (E10 รอ contract)
+   * ⚠ ยังไม่ได้บันทึกลงฐาน - caregivers ไม่มีคอลัมน์รองรับและ story S06 ไม่มีการ์ด DB
+   */
+  @Field(() => Boolean, {
+    nullable: true,
+    description: 'Caregiver drives the care recipient themselves (validated at submit; not persisted yet)',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'selfDriveTransport ต้องเป็น true หรือ false' })
+  selfDriveTransport?: boolean;
 
   /**
    * บัญชีธนาคารรับเงิน (PYG-266) — optional (frontend เดิมยังไม่มีฟอร์มนี้)

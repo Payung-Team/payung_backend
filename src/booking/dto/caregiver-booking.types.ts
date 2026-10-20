@@ -1,3 +1,4 @@
+import { BookingRequiredSkill } from '../required-skills/required-skills.types';
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
 import { BookingPagination } from './booking-summary.types';
@@ -27,6 +28,8 @@ export class PatientBriefDto {
  */
 @ObjectType()
 export class CaregiverBookingSummary {
+  @Field(() => [BookingRequiredSkill], { nullable: true })
+  requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID) id: string;
 
   // สถานะปัจจุบัน: pending | accepted | confirmed | rejected | completed

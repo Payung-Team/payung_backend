@@ -21,6 +21,7 @@ import { EmailService } from '../email/email.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { PayoutAccountService } from '../payment/payout-account.service';
+import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
 
@@ -81,6 +82,10 @@ const mockCaregiverService = {
 
 const mockNotificationService = {
   create: jest.fn(),
+};
+
+const mockDrivingLicenseService = {
+  getState: jest.fn().mockResolvedValue({ verified: false, status: 'none', isExpired: false }),
 };
 
 const mockPayoutAccountService = {
@@ -144,6 +149,7 @@ describe('AdminService — inviteAdmin', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -278,6 +284,7 @@ describe('AdminService — toggleAdminStatus', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -426,6 +433,7 @@ describe('AdminService — scheduleDeleteAdmin', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -594,6 +602,7 @@ describe('AdminService — cancelScheduledDelete', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -685,7 +694,7 @@ describe('AdminService — rejectKyc', () => {
     dateOfBirth: new Date('1990-01-01'),
     address: 'Bangkok',
     phone: '0812345678',
-    skills: ['elder_care'],
+    skills: ['bathing'],
     experienceYears: 3,
     hourlyRate: 150,
     bio: null,
@@ -716,6 +725,7 @@ describe('AdminService — rejectKyc', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -851,6 +861,7 @@ describe('AdminService — editAdminInfo', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -1098,6 +1109,7 @@ describe('AdminService — toggleFieldLock', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 
@@ -1274,6 +1286,7 @@ describe('AdminService — getLockedFields', () => {
         { provide: CaregiverService, useValue: mockCaregiverService },
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
+        { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
       ],
     }).compile();
 

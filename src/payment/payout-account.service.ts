@@ -31,16 +31,22 @@
  * จะเพิ่มเงื่อนไข status='active' เข้าไปคู่กันให้ครบตาม DoD
  */
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma.service';
 import { PayoutEncryptionService } from '../common/crypto/payout-encryption.service';
 import { OmiseService } from './omise/omise.service';
 import { PaymentError } from './errors/omise-error-mapper';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/entities/notification-type.enum';
 
 /**
  * error code ที่ FE ใช้แยกเคส "เลขบัญชีผิด ผู้ใช้ต้องแก้เอง" ออกจาก "ระบบขัดข้อง รอได้"
  * (TASK 4 — ตัวตัดสินสุดท้ายเรื่องความถูกต้องของเลขบัญชีคือ Omise ไม่ใช่กฎที่เราเดา)
  */
-export const PAYOUT_ACCOUNT_NUMBER_INVALID = 'PAYOUT_ACCOUNT_NUMBER_INVALID';
+/** เพดานบัญชีต่อรอบ cron sync — กัน burst เรียก Omise (ยิงทีละตัวแบบ sequential) */
+export const PENDING_RECIPIENT_SYNC_BATCH_CAP = 50;
+
+export const PAYOUT_ACCOUNT_NUMBER_INVALID ='PAYOUT_ACCOUNT_NUMBER_INVALID';
 
 @Injectable()
 export class PayoutAccountService {
@@ -50,7 +56,50 @@ export class PayoutAccountService {
     private readonly prisma: PrismaService,
     private readonly omiseService: OmiseService,
     private readonly payoutEncryption: PayoutEncryptionService,
+    private readonly notificationService: NotificationService,
   ) {}
+
+  /**
+   * แจ้ง caregiver ผลการตรวจบัญชีรับเงินจาก Omise (fire-and-forget — ห้าม throw)
+   *
+   * KYC อนุมัติแยกจากสถานะ Omise: caregiver จะเปิดรับงานได้ต่อเมื่อ Omise accept
+   * จึงต้องแจ้งทั้งตอนผ่าน ("เปิดรับงานได้แล้ว") และตอนไม่ผ่าน ("แก้บัญชีที่ไหน")
+   */
+  private async notifyCaregiver(
+    caregiverId: string,
+    outcome: 'verified' | 'failed',
+  ): Promise<void> {
+    try {
+      const caregiver = await this.prisma.caregiver.findUnique({
+        where: { id: caregiverId },
+        select: { userId: true },
+      });
+      if (!caregiver) return;
+
+      if (outcome === 'verified') {
+        await this.notificationService.create(
+          caregiver.userId,
+          NotificationType.payout_account_verified,
+          'บัญชีรับเงินผ่านการตรวจสอบแล้ว',
+          'คุณสามารถเปิดรับงานได้แล้ว',
+          { caregiverId, linkPath: '/dashboard' },
+        );
+      } else {
+        await this.notificationService.create(
+          caregiver.userId,
+          NotificationType.payout_account_failed,
+          'บัญชีรับเงินไม่ผ่านการตรวจสอบ',
+          'กรุณาตรวจสอบและแก้ไขข้อมูลบัญชีรับเงินของคุณ จึงจะเปิดรับงานได้',
+          { caregiverId, linkPath: '/kyc/status' },
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[PayoutAccount] notify ${outcome} failed caregiverId=${caregiverId}: ${msg}`,
+      );
+    }
+  }
 
   /**
    * createRecipientForCaregiver — สร้าง Omise Recipient จากบัญชีรับเงินที่ caregiver กรอกไว้
@@ -61,7 +110,8 @@ export class PayoutAccountService {
   async createRecipientForCaregiver(
     caregiverId: string,
     fullName: string,
-    email: string,
+    // PYG-603: null = ผู้ดูแลสมัครด้วยเบอร์โทร ไม่มีอีเมล → createRecipient จะไม่ส่งช่อง email ให้ Omise
+    email: string | null,
   ): Promise<void> {
     try {
       const account = await this.prisma.caregiverPayoutAccount.findUnique({
@@ -124,6 +174,7 @@ export class PayoutAccountService {
             where: { caregiverId },
             data: { recipientStatus: 'failed', status: 'pending' },
           });
+          void this.notifyCaregiver(caregiverId, 'failed');
         } catch (markErr) {
           const m = markErr instanceof Error ? markErr.message : String(markErr);
           this.logger.error(
@@ -139,6 +190,50 @@ export class PayoutAccountService {
       );
       // ไม่ throw — ดู class doc ด้านบน
     }
+  }
+
+  /**
+   * Safety net สำรองของ webhook recipient.* — ถ้า webhook ไม่มา/หาย/endpoint ล่ม
+   * recipient จะค้าง pending และ caregiver เปิดรับงานไม่ได้ (Option C) ตลอดไป
+   *
+   * ดึงสถานะจริงจาก Omise ของทุกบัญชีที่มี recipientId แต่ยังไม่ active+verified
+   * ผ่าน reconcileRecipient เดียวกับ webhook (idempotent, แจ้งเตือนเฉพาะตอนสถานะเปลี่ยน)
+   *
+   * ปิดได้ด้วย PAYOUT_RECIPIENT_SYNC_ENABLED=false (default = เปิด; อ่านอย่างเดียวจาก Omise)
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async syncPendingRecipients(): Promise<number> {
+    const raw = (process.env.PAYOUT_RECIPIENT_SYNC_ENABLED ?? '').trim().toLowerCase();
+    if (raw === 'false' || raw === '0' || raw === 'no') return 0;
+
+    const pending = await this.prisma.caregiverPayoutAccount.findMany({
+      where: {
+        omiseRecipientId: { not: null },
+        OR: [{ status: { not: 'active' } }, { recipientStatus: { not: 'verified' } }],
+      },
+      select: { omiseRecipientId: true },
+      orderBy: { updatedAt: 'asc' },
+      take: PENDING_RECIPIENT_SYNC_BATCH_CAP,
+    });
+
+    let synced = 0;
+    for (const row of pending) {
+      try {
+        await this.reconcileRecipient(row.omiseRecipientId!, 'cron.sync');
+        synced++;
+      } catch (err) {
+        // ตัวเดียวพังไม่ควรหยุดตัวอื่น (Omise 5xx/rate limit) — รอบหน้าลองใหม่
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[PayoutAccount] cron sync failed recipientId=${row.omiseRecipientId}: ${msg}`,
+        );
+      }
+    }
+
+    if (pending.length > 0) {
+      this.logger.log(`[PayoutAccount] cron sync checked ${synced}/${pending.length} pending recipients`);
+    }
+    return synced;
   }
 
   /** Sync local payout-account state from the current Omise recipient object. */
@@ -195,6 +290,13 @@ export class PayoutAccountService {
       `[PayoutAccount] recipientId=${recipientId} → recipientStatus='${recipientStatus}' ` +
         `status='${status}' (source=${source})`,
     );
+
+    // แจ้งเฉพาะตอนเปลี่ยนเข้าสถานะ active / failed จริง (early-return ด้านบนกันซ้ำจาก webhook ซ้ำ)
+    if (status === 'active' && account.status !== 'active') {
+      void this.notifyCaregiver(account.caregiverId, 'verified');
+    } else if (recipientStatus === 'failed' && account.recipientStatus !== 'failed') {
+      void this.notifyCaregiver(account.caregiverId, 'failed');
+    }
 
     return { recipientStatus, status };
   }

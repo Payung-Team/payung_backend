@@ -17,7 +17,7 @@ describe('booking assessment gate', () => {
       where: { careRecipientId: id },
       select: { id: true },
     });
-    expect(tx.$queryRaw.mock.calls[0][0].join('?')).toContain('FOR SHARE');
+    expect(tx.$queryRaw.mock.calls[0][0].join('?')).toContain('FOR UPDATE');
   });
   it('does not allow name-only booking to bypass the gate', async () => {
     await expect(

@@ -14,6 +14,8 @@ import { ObjectType, Field } from '@nestjs/graphql';
 import { Caregiver } from '../entities/caregiver.entity';
 import { KycDocument } from '../entities/kyc-document.entity';
 import { PayoutAccountSummary } from '../entities/payout-account.entity';
+import { LicenseInfo } from '../license/license-info.entity';
+import { DrivingLicenseInfo } from '../driving-license/driving-license-info.entity';
 
 @ObjectType()
 export class KycStatusPayload {
@@ -65,4 +67,33 @@ export class KycStatusPayload {
     description: 'Payout bank account summary (masked — never the full account number)',
   })
   payoutAccount?: PayoutAccountSummary;
+
+  /**
+   * เปิดรับงานได้หรือยัง = KYC verified + บัญชีรับเงินที่ Omise accept แล้ว
+   * (KYC อนุมัติแยกจากสถานะ Omise — ดู payout-account-readiness.ts)
+   */
+  @Field({
+    description:
+      'True when the caregiver may turn on job availability (KYC verified AND payout account accepted by Omise)',
+  })
+  canAcceptJobs!: boolean;
+
+  /** PYG-587: วิชาชีพของผู้ดูแล — general_caregiver | nurse | physiotherapist */
+  @Field({ nullable: true, description: 'Caregiver profession' })
+  profession?: string;
+
+  /** PYG-587: ใบประกอบฯ ล่าสุด (สถานะ/วันหมดอายุ/เหตุผลปฏิเสธ) — null ถ้าไม่เคยแนบ */
+  @Field(() => LicenseInfo, { nullable: true, description: 'Latest professional license, if any' })
+  license?: LicenseInfo;
+
+  /** PYG-597: ใบขับขี่ของตัวเอง - ผลตรวจ เหตุผล วันหมดอายุ และ isExpired ที่ BE คำนวณ ณ เวลาที่เรียก */
+  @Field(() => DrivingLicenseInfo, { description: 'Own driving license review info (status none when never uploaded)' })
+  drivingLicense!: DrivingLicenseInfo;
+
+  /** เหตุผลที่ยังเปิดรับงานไม่ได้ (เฉพาะ KYC verified แล้ว) — NO_ACCOUNT | PENDING | FAILED */
+  @Field({
+    nullable: true,
+    description: 'Why job availability is blocked: NO_ACCOUNT | PENDING | FAILED (null when allowed)',
+  })
+  payoutBlockReason?: string;
 }

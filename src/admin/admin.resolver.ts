@@ -10,8 +10,8 @@
  *   → สรุปภาพรวม: stats, weekly submissions, avg review time, recent activity
  *
  * Mutations:
- * - approveKyc(caregiverId: ID!): Caregiver
- *   → อนุมัติ KYC: set verified + INSERT audit + notify
+ * - approveKyc(caregiverId: ID!, careLevel: String): Caregiver
+ *   → อนุมัติ KYC: [บันทึกระดับผู้ดูแล — PYG-581] + set verified + INSERT audit + notify
  * - rejectKyc(input: RejectKycInput!): Caregiver
  *   → ปฏิเสธ KYC: set rejected + INSERT audit (พร้อม reason) + notify
  *
@@ -150,28 +150,40 @@ export class AdminResolver {
    * - 'verified' → 409 Conflict
    * - 'rejected' → 409 Conflict
    *
+   * PYG-581: ต้องเลือกระดับผู้ดูแลมาด้วย (careLevel) — ไม่มีระดับ = CARE_LEVEL_REQUIRED, ค่าผิด = CARE_LEVEL_INVALID
+   *
    * @example
    * mutation {
-   *   approveKyc(caregiverId: "uuid-here") {
-   *     id fullName kycStatus kycVerifiedAt
+   *   approveKyc(caregiverId: "uuid-here", careLevel: "INTERMEDIATE") {
+   *     id fullName kycStatus kycVerifiedAt careLevel
    *   }
    * }
    *
    * @param caregiverId - UUID ของ caregiver ที่ต้องการ approve
+   * @param careLevel   - "BASIC" | "INTERMEDIATE" | "ADVANCED" (String ไม่ใช่ enum — service ตรวจเองเพื่อให้ได้ error code ตาม contract)
    * @param admin       - admin user ที่ทำการ approve (จาก JWT)
    */
   @Mutation(() => Caregiver, {
     description:
       'Admin only: Approve a caregiver KYC submission. ' +
       'Sets kycStatus = "verified", records audit log, sends notification + email. ' +
-      'Requires kycStatus = "pending".',
+      'Requires kycStatus = "pending". ' +
+      'PYG-581: a care level is required — pass careLevel, otherwise CARE_LEVEL_REQUIRED.',
   })
   async approveKyc(
     @Args('caregiverId', { type: () => ID, description: 'UUID of the caregiver to approve' })
     caregiverId: string,
+    @Args('careLevel', {
+      type: () => String,
+      nullable: true,
+      description:
+        'BASIC | INTERMEDIATE | ADVANCED — the caregiver level chosen at approval. ' +
+        'Optional in the schema so older clients get CARE_LEVEL_REQUIRED instead of a schema error.',
+    })
+    careLevel: string | null | undefined,
     @CurrentUser() admin: AuthUser,
   ): Promise<Caregiver> {
-    return this.adminService.approveKyc(caregiverId, admin);
+    return this.adminService.approveKyc(caregiverId, admin, careLevel);
   }
 
   /**

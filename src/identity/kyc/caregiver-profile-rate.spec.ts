@@ -16,6 +16,7 @@ import { CaregiverService } from './caregiver.service';
 import { PrismaService } from '../../common/prisma.service';
 import { SupabaseService } from '../../common/supabase.service';
 import { UpdateCaregiverInput } from './dto/update-caregiver.input';
+import { CareSkillService } from '../../care-skill/care-skill.service';
 
 const USER_ID = 'user-cg-1';
 const CAREGIVER_ID = 'cg-1';
@@ -32,7 +33,7 @@ const existingRow = () => ({
   dateOfBirth: null,
   address: 'กรุงเทพฯ',
   phone: '0812345678',
-  skills: ['elder_care'],
+  skills: ['bathing'],
   experienceYears: 3,
   hourlyRate: CURRENT_RATE,
   bio: 'bio เดิม',
@@ -91,6 +92,12 @@ describe('CaregiverService.updateProfile — ผู้ดูแลตั้ง�
         { provide: PrismaService, useValue: prisma },
         { provide: SupabaseService, useValue: {} },
         { provide: ConfigService, useValue: {} },
+        {
+          provide: CareSkillService,
+          useValue: {
+            assertSkillsAllowed: jest.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
@@ -133,13 +140,13 @@ describe('CaregiverService.updateProfile — ผู้ดูแลตั้ง�
         hourlyRate: 999,
         bio: 'bio ใหม่',
         phone: '0899999999',
-        skills: ['elder_care', 'dementia_care'],
+        skills: ['bathing', 'dementia_care'],
       });
 
       expect(writtenData()).toEqual({
         bio: 'bio ใหม่',
         phone: '0899999999',
-        skills: ['elder_care', 'dementia_care'],
+        skills: ['bathing', 'dementia_care'],
       });
       expect(result.bio).toBe('bio ใหม่');
       expect(result.hourlyRate).toBe(CURRENT_RATE);

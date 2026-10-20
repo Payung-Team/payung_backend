@@ -9,6 +9,8 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { assertBookingAssessment } from '../assessment/assessment-booking-gate';
+import { lockRequiredSkillRecipient, recalculateBookingRequiredSkills } from './required-skills/required-skills.persistence';
+import { readSavedRequiredSkills } from './required-skills/required-skills.read';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
@@ -784,6 +786,7 @@ export class BookingService {
       // first. Do not create one here or copy another profile's assessment.
       await assertBookingAssessment(tx, data.careRecipientId, onBehalf ? 'graphql' : 'rest');
       const created = await tx.booking.create({ data, include });
+      await recalculateBookingRequiredSkills(tx, created.id, onBehalf ? 'graphql' : 'rest');
 
       // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
       // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
@@ -974,6 +977,7 @@ export class BookingService {
         createdAt:            true,
         experienceYears:      true,
         skills:               true,
+        otherSkills:          true,
         serviceAreaProvince:  true,
         serviceAreaDistrict:  true,
         patientReviews:       { select: { rating: true } },
@@ -1014,6 +1018,7 @@ export class BookingService {
         hourlyRate:      servicePrice,
         experienceYears: cg.experienceYears ?? undefined,
         skills:          cg.skills,
+        otherSkills:     cg.otherSkills,
         province:        cg.serviceAreaProvince ?? undefined,
         district:        cg.serviceAreaDistrict ?? undefined,
         avgRating,
@@ -1077,7 +1082,7 @@ export class BookingService {
 
     await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return {
-      booking: this.toRestSummary(updated as unknown as BookingWithIncludes),
+      booking: await this.toRestSummary(updated as unknown as BookingWithIncludes),
       matches,
     };
   }
@@ -1112,13 +1117,23 @@ export class BookingService {
       );
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: 'confirmed', confirmedAt: new Date() },
-      include: {
-        caregiver: { include: { user: { select: { avatarUrl: true } } } },
-        careRecipient: { select: { name: true } },
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (booking.careRecipientId) await lockRequiredSkillRecipient(tx, booking.careRecipientId);
+      await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${bookingId}::uuid FOR UPDATE`;
+      const current = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (!current) throw new NotFoundException('Booking not found');
+      if (current.patientId !== userId) throw new ForbiddenException('Access denied');
+      if (current.status !== 'accepted') throw new UnprocessableEntityException('Only bookings with status "accepted" can be confirmed');
+      // Legacy bookings without a recipient keep their unknown skill snapshot.
+      if (current.careRecipientId) await recalculateBookingRequiredSkills(tx, bookingId);
+      return tx.booking.update({
+        where: { id: bookingId },
+        data: { status: 'confirmed', confirmedAt: new Date() },
+        include: {
+          caregiver: { include: { user: { select: { avatarUrl: true } } } },
+          careRecipient: { select: { name: true } },
+        },
+      });
     });
 
     this.logger.log({ event: 'booking.confirmed', bookingId, userId });
@@ -1370,7 +1385,9 @@ export class BookingService {
   }
 
   /** REST summary (caregiver may be null for unmatched bookings) */
-  private toRestSummary(booking: BookingWithIncludes): BookingRest {
+  private async toRestSummary(booking: BookingWithIncludes): Promise<BookingRest> {
+    const saved = await readSavedRequiredSkills(this.prisma, [booking.id]);
+    if (!saved.has(booking.id)) throw new NotFoundException('Booking not found');
     const caregiver: CaregiverBriefRest | undefined = booking.caregiver
       ? {
           id:         booking.caregiver.id,
@@ -1383,6 +1400,7 @@ export class BookingService {
 
     return {
       id:               booking.id,
+      requiredSkills:   saved.get(booking.id)!,
       bookingDate:      booking.bookingDate instanceof Date
                           ? booking.bookingDate.toISOString().slice(0, 10)
                           : String(booking.bookingDate),

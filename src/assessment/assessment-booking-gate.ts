@@ -8,10 +8,10 @@ export async function assertBookingAssessment(
   transport: 'graphql' | 'rest',
 ): Promise<void> {
   if (!careRecipientId) throw assessmentRequired(transport);
-  // SHARE prevents hiding the profile until booking + QR/tasks have committed.
+  // Same lock order as assessment saves and S17 confirmation: recipient, booking.
   const active = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM care_recipients
-    WHERE id = ${careRecipientId}::uuid AND is_deleted = false FOR SHARE`;
+    WHERE id = ${careRecipientId}::uuid AND is_deleted = false FOR UPDATE`;
   if (active.length === 0) throw assessmentRequired(transport);
   const assessment = await tx.careRecipientAssessment.findUnique({
     where: { careRecipientId },

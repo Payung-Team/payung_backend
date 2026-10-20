@@ -66,10 +66,11 @@ describe('BookingService', () => {
       findMany:          jest.Mock;
       count:             jest.Mock;
     };
+    $queryRaw: jest.Mock;
     $transaction: jest.Mock;
   };
   // PYG-286: shared mocks for cancelBooking auto-void
-  let tx: { booking: { update: jest.Mock } };
+  let tx: { $queryRaw: jest.Mock; booking: { findUnique: jest.Mock; update: jest.Mock } };
   // PYG-461 เฟส 3a: เงินตอนยกเลิกอยู่ที่ settle() — ไฟล์นี้เทสแค่ "เรียกถูกไหม + แจ้งเตือนถูกไหม"
   // พฤติกรรมของเงินเองมีเทสของตัวเองที่ booking-settlement.service.spec.ts (1,235 บรรทัด)
   let settlement: { settle: jest.Mock };
@@ -83,8 +84,9 @@ describe('BookingService', () => {
       error: null,
     }));
     storageFrom = jest.fn().mockReturnValue({ createSignedUrls });
-    tx = { booking: { update: jest.fn() } };
+    tx = { $queryRaw: jest.fn().mockResolvedValue([]), booking: { findUnique: jest.fn((args) => prisma.booking.findUnique(args)), update: jest.fn((args) => prisma.booking.update(args)) } };
     prisma = {
+      $queryRaw: jest.fn((sql) => Promise.resolve(sql.values.map((id) => ({ id, codes: null, items: [] })))),
       booking: {
         findUnique:        jest.fn(),
         findUniqueOrThrow: jest.fn(),

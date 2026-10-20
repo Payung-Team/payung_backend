@@ -27,6 +27,16 @@ import {
 } from './utils/kyc-storage-path';
 import { computeFieldChanges } from './utils/compute-field-changes';
 import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
+import { CareSkillService } from '../../care-skill/care-skill.service';
+import { LICENSE_REVIEW_ACTION, LICENSE_STATUS } from './license/license.constants';
+import { DRIVING_LICENSE_REVIEW_ACTION } from './driving-license/driving-license.constants';
+import {
+  PAYOUT_ACCOUNT_NOT_READY,
+  PAYOUT_NOT_READY_MESSAGES,
+  evaluatePayoutReadiness,
+} from '../../payment/payout-account-readiness';
+import { CaregiverProfession } from './profession.constants';
+import { careLevelFromDb } from '../../common/care-level/care-level';
 
 /**
  * Profile fields ที่ track ได้ใน updateProfile
@@ -34,7 +44,15 @@ import { PROFILE_PHOTO_DOC_TYPE } from './profile-photo.constants';
  * PYG-534: ตัด hourlyRate ออก — ถ้ายังอยู่ในนี้ edit log จะบันทึกว่า "เปลี่ยนราคา"
  * ทั้งที่ service ไม่ได้เขียนลงตารางจริง (log โกหก)
  */
-const PROFILE_TRACKED_FIELDS = ['bio', 'skills', 'experienceYears', 'phone', 'address', 'languages'];
+const PROFILE_TRACKED_FIELDS = [
+  'bio',
+  'skills',
+  'otherSkills',
+  'experienceYears',
+  'phone',
+  'address',
+  'languages',
+];
 
 /** Shape ของ caregiver ที่ Prisma คืนมา — ใช้สำหรับ mapToEntity */
 type PrismaCaregiver = {
@@ -48,6 +66,9 @@ type PrismaCaregiver = {
   address: string | null;
   phone: string | null;
   skills: string[];
+  otherSkills: string[];
+  /** PYG-556: 'general_caregiver' | 'nurse' | 'physiotherapist' (CHECK ใน DB) */
+  profession: string;
   experienceYears: number | null;
   hourlyRate: number | null;
   bio: string | null;
@@ -59,6 +80,7 @@ type PrismaCaregiver = {
   resubmitCount?: number; // optional — mapToEntity fallback เป็น 0
   createdAt: Date;
   updatedAt: Date;
+  careLevel?: string | null; // PYG-581: optional — ไม่ส่ง = ยังไม่มีระดับ
 };
 
 /** ข้อมูลสำหรับสร้าง caregiver ใหม่ */
@@ -80,6 +102,7 @@ export class CaregiverService {
     private readonly prismaService: PrismaService,
     private readonly supabaseService: SupabaseService,
     private readonly configService: ConfigService,
+    private readonly careSkillService: CareSkillService,
   ) {}
 
   // ─── Private helper ──────────────────────────────────────────────────────
@@ -105,6 +128,9 @@ export class CaregiverService {
       address: caregiver.address ?? undefined,
       phone: caregiver.phone ?? '',
       skills: caregiver.skills,
+      otherSkills: caregiver.otherSkills ?? [],
+      // DB มี CHECK 3 ค่า → cast ได้ปลอดภัย (ค่าเดียวกับ enum)
+      profession: caregiver.profession as CaregiverProfession,
       experienceYears: caregiver.experienceYears ?? 0,
       hourlyRate: caregiver.hourlyRate ?? 0,
       bio: caregiver.bio ?? undefined,
@@ -116,6 +142,8 @@ export class CaregiverService {
       resubmitCount: caregiver.resubmitCount ?? 0,
       createdAt: caregiver.createdAt,
       updatedAt: caregiver.updatedAt,
+      // PYG-581: 'basic' → CareLevel.BASIC (GraphQL ส่งออกเป็น "BASIC") · null → undefined (= ยังไม่มีระดับ)
+      careLevel: careLevelFromDb(caregiver.careLevel) ?? undefined,
     };
   }
 
@@ -244,7 +272,7 @@ export class CaregiverService {
   /**
    * updateProfile — แก้ไข profile ของ caregiver (เฉพาะ whitelist fields)
    *
-   * Whitelist: bio, skills, experienceYears, phone, address, languages
+   * Whitelist: bio, skills, otherSkills, experienceYears, phone, address, languages
    * Locked: fullName, idCardNumber, gender, dateOfBirth, caregiverNumber
    * Ignored: hourlyRate (PYG-534) — รับได้แต่ไม่เขียน ราคาเปลี่ยนไม่ได้จากทางผู้ดูแลแล้ว
    *
@@ -287,6 +315,14 @@ export class CaregiverService {
       });
     }
 
+    // ── PYG-652: ทักษะต้องเป็นรหัสกลางที่วิชาชีพของผู้ดูแลถือได้ ────────────
+    if (input.skills !== undefined) {
+      await this.careSkillService.assertSkillsAllowed(
+        input.skills,
+        existing.profession,
+      );
+    }
+
     // ── Compute field changes ก่อน update ────────────────────────────
     const fieldChanges = computeFieldChanges(
       existing as unknown as Record<string, unknown>,
@@ -302,6 +338,9 @@ export class CaregiverService {
           ...(input.bio !== undefined && { bio: input.bio }),
           // ไม่มี hourlyRate โดยตั้งใจ (PYG-534) — ผู้ดูแลตั้งราคาเองไม่ได้ ราคาจะมาจาก Catalog (PYG-487)
           ...(input.skills !== undefined && { skills: input.skills }),
+          ...(input.otherSkills !== undefined && {
+            otherSkills: input.otherSkills,
+          }),
           ...(input.experienceYears !== undefined && { experienceYears: input.experienceYears }),
           ...(input.phone !== undefined && { phone: input.phone }),
           ...(input.address !== undefined && { address: input.address }),
@@ -357,6 +396,24 @@ export class CaregiverService {
       throw new ForbiddenException(
         'ต้องผ่านการยืนยันตัวตนก่อน',
       );
+    }
+
+    // ── 2.5: Guard — เปิดรับงาน (true) ต้องมีบัญชีรับเงินที่ Omise accept แล้ว ──
+    // ปิด (false) ทำได้เสมอ — caregiver ต้องหยุดรับงานได้โดยไม่ติดเงื่อนไข
+    // KYC อนุมัติแยกจากสถานะ Omise (ตัวเลือก C) จึงต้องกันที่จุดนี้แทน
+    if (isSearchable) {
+      const payoutAccount = await this.prismaService.caregiverPayoutAccount.findUnique({
+        where: { caregiverId: existing.id },
+        select: { status: true, recipientStatus: true, omiseRecipientId: true },
+      });
+      const readiness = evaluatePayoutReadiness(payoutAccount);
+      if (!readiness.ready) {
+        throw new ForbiddenException({
+          code: PAYOUT_ACCOUNT_NOT_READY,
+          reason: readiness.reason,
+          message: PAYOUT_NOT_READY_MESSAGES[readiness.reason!],
+        });
+      }
     }
 
     // ── 3: อัปเดต is_searchable ─────────────────────────────────
@@ -557,12 +614,37 @@ export class CaregiverService {
     }
   }
 
+  /**
+   * PYG-587: เหตุผลที่ปฏิเสธใบประกอบฯ ล่าสุดของแต่ละเอกสาร (จาก kyc_reviews.document_id)
+   * เฉพาะเอกสารที่สถานะ rejected — ประวัติปฏิเสธเดิมของใบอื่นไม่ปน (E6)
+   */
+  private async loadLicenseRejectionReasons(
+    docs: Array<{ id: string; reviewStatus: string | null }>,
+  ): Promise<Map<string, string>> {
+    const rejectedIds = docs
+      .filter((d) => d.reviewStatus === LICENSE_STATUS.REJECTED)
+      .map((d) => d.id);
+    const reasons = new Map<string, string>();
+    if (rejectedIds.length === 0) return reasons;
+
+    const reviews = await this.prismaService.kycReview.findMany({
+      where: { documentId: { in: rejectedIds }, action: { in: [LICENSE_REVIEW_ACTION.REJECTED, DRIVING_LICENSE_REVIEW_ACTION.REJECTED] } },
+      orderBy: { reviewedAt: 'desc' },
+      select: { documentId: true, reason: true },
+    });
+    for (const r of reviews) {
+      if (r.documentId && r.reason && !reasons.has(r.documentId)) reasons.set(r.documentId, r.reason);
+    }
+    return reasons;
+  }
+
   private async signDocuments(
     docs: Awaited<ReturnType<CaregiverService['loadDocs']>>,
   ): Promise<KycDocument[]> {
     if (docs.length === 0) return [];
 
     const supabase = this.supabaseService.getAdminClient();
+    const rejectionReasons = await this.loadLicenseRejectionReasons(docs);
 
     const enriched = await Promise.all(
       docs.map(async (doc) => {
@@ -578,6 +660,11 @@ export class CaregiverService {
           fileSize: doc.fileSize,
           mimeType: doc.mimeType,
           uploadedAt: doc.uploadedAt,
+          // PYG-587: field เพิ่มฝั่งอ่าน (client เก่าไม่เห็น ไม่พัง)
+          licenseNumber: doc.licenseNumber ?? undefined,
+          expiresAt: doc.expiresAt ?? undefined,
+          reviewStatus: doc.reviewStatus ?? undefined,
+          rejectionReason: rejectionReasons.get(doc.id),
         };
 
         // ★ bucket ถูกตรึงเป็น KYC_BUCKET เสมอ — ห้ามแกะจากค่าที่เก็บใน DB อีก

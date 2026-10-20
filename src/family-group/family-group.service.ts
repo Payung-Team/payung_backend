@@ -1667,7 +1667,8 @@ export class FamilyGroupService {
       id: row.id,
       userId: row.userId,
       displayName: row.user?.displayName ?? undefined,
-      email: row.user?.email ?? '',
+      // PYG-603: ไม่มีอีเมล = null (เดิม '') ให้ตรงกับ field ที่เป็น nullable แล้ว
+      email: row.user?.email ?? null,
       avatarUrl,
       role: row.role,
       joinedAt: row.joinedAt,

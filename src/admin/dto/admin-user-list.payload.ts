@@ -14,8 +14,19 @@ export class UserSummary {
   @Field(() => ID, { description: 'User UUID' })
   id!: string;
 
-  @Field({ description: 'User email' })
-  email!: string;
+  /** PYG-603: null ได้ — บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล */
+  @Field(() => String, {
+    nullable: true,
+    description: 'User email (null for phone-only accounts)',
+  })
+  email!: string | null;
+
+  /**
+   * PYG-603 — เบอร์ในโปรไฟล์ (users.phone รูปแบบ 0XXXXXXXXX)
+   * FE ขอเพิ่ม: บัญชีที่ไม่มีอีเมลและไม่มีชื่อแสดง จะแยกจากกันในตารางแอดมินไม่ได้ถ้าไม่มีเบอร์
+   */
+  @Field({ nullable: true, description: 'Profile phone number (0XXXXXXXXX)' })
+  phone?: string;
 
   @Field({ nullable: true, description: 'Display name' })
   displayName?: string;

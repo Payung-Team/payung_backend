@@ -1,4 +1,5 @@
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
+import { CaregiverProfession } from '../../identity/kyc/profession.constants';
 
 @ObjectType()
 export class CaregiverSummary {
@@ -20,8 +21,19 @@ export class CaregiverSummary {
   @Field(() => Int, { description: 'Total number of patient reviews' })
   reviewCount: number;
 
-  @Field(() => [String], { description: 'Skill tags' })
+  @Field(() => [String], { description: 'Central skill codes (care_skills)' })
   skills: string[];
+
+  @Field(() => [String], {
+    description: 'Free-text skills not in the central list (PYG-652)',
+  })
+  otherSkills: string[];
+
+  /** PYG-556 · S01-AC3 — ป้ายวิชาชีพบนการ์ดหน้า List ฝั่ง Elder (ไม่มี null — ทุกแถวมีค่า) */
+  @Field(() => CaregiverProfession, {
+    description: 'Profession: general_caregiver | nurse | physiotherapist',
+  })
+  profession: CaregiverProfession;
 
   @Field({ nullable: true, description: 'Service area province' })
   province?: string;

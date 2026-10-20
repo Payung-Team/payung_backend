@@ -35,9 +35,18 @@ export class User {
   @Field(() => ID, { description: 'Unique identifier of the user' })
   id!: string;
 
-  /** Email ของ user — ใช้สำหรับ login */
-  @Field({ description: 'Email address of the user' })
-  email!: string;
+  /**
+   * Email ของ user — ใช้สำหรับ login
+   *
+   * PYG-603: เป็น null ได้ — บัญชีที่สมัครด้วยเบอร์โทร (signUpWithPhone) ไม่มีอีเมล
+   * ★ ต้องระบุ `() => String` เอง: type `string | null` ทำให้ TypeScript ส่ง metadata
+   *   เป็น Object แล้ว GraphQL เดา type ไม่ได้ (แอปบูตไม่ขึ้น)
+   */
+  @Field(() => String, {
+    nullable: true,
+    description: 'Email address of the user (null for phone-only accounts)',
+  })
+  email!: string | null;
 
   /**
    * ชื่อแสดงผล — อาจเป็น null ได้ถ้ายังไม่เคยตั้ง
@@ -137,4 +146,17 @@ export class User {
    */
   @Field(() => Boolean, { description: 'ผ่านหน้า Onboarding แล้วหรือยัง' })
   onboardingCompleted?: boolean;
+
+  /**
+   * PYG-603 — เบอร์ใน `phone` คือเบอร์ที่ยืนยันแล้วและใช้ล็อกอินได้หรือไม่
+   *
+   * ★ optional ฝั่ง TS แต่ non-null ใน GraphQL เหตุผลเดียวกับ onboardingCompleted:
+   *   ค่ามาจาก @ResolveField (UserResolver.phoneVerified) ที่อ่าน auth.users ของ Supabase
+   *   เฉพาะตอน client ขอฟิลด์นี้ ไม่พ่วง query ไปกับทุกที่ที่ระบบอ่าน user
+   */
+  @Field(() => Boolean, {
+    description:
+      'เบอร์ใน phone ยืนยันแล้วและใช้ล็อกอินได้ (Supabase Auth) — ผู้ใช้เดิมเป็น false จนกว่าจะผูกเบอร์',
+  })
+  phoneVerified?: boolean;
 }

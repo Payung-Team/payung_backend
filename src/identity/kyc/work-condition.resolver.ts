@@ -18,6 +18,7 @@ import { UseGuards } from '@nestjs/common';
 import { WorkConditionService } from './work-condition.service';
 import { WorkCondition } from './entities/work-condition.entity';
 import { UpdateWorkConditionInput } from './dto/work-condition.input';
+import { JobTypeOption } from './job-type/job-type-option.entity';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -53,6 +54,22 @@ export class WorkConditionResolver {
     @CurrentUser() user: AuthUser,
   ): Promise<WorkCondition> {
     return this.workConditionService.getByUserId(user.id);
+  }
+
+  /**
+   * myJobTypeOptions — ประเภทงานครบ 5 ค่าพร้อมเลือกได้/เหตุผล (PYG-592 · contract PYG-590)
+   *
+   * query {
+   *   myJobTypeOptions { jobType selectable blockedReason }
+   * }
+   */
+  @Query(() => [JobTypeOption], {
+    description:
+      "All 5 job types for the logged-in caregiver with selectable + blockedReason " +
+      "(PROFESSION_MISMATCH > LICENSE_NOT_APPROVED > LICENSE_EXPIRED). Takes no caregiver id.",
+  })
+  async myJobTypeOptions(@CurrentUser() user: AuthUser): Promise<JobTypeOption[]> {
+    return this.workConditionService.getJobTypeOptions(user.id);
   }
 
   /**

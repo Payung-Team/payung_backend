@@ -15,7 +15,9 @@ datasource db {
 model User {
   id                                                      String                 @id @default(uuid())
   supabaseUid                                             String                 @unique @map("supabase_uid")
-  email                                                   String                 @unique
+  /// PYG-602: NULL ได้ — บัญชีที่สมัครด้วยเบอร์โทร (Supabase Auth) ไม่มีอีเมล
+  /// DB มี CHECK users_email_or_phone_check: ต้องมี email หรือ phone ที่ไม่ว่างอย่างน้อยหนึ่งอย่าง
+  email                                                   String?                @unique
   displayName                                             String?                @map("display_name")
   /// PYG-497: ชื่อ-นามสกุลจริง กรอกตอน Onboarding (PYG-496) — NULL = ยังไม่ onboard / บัญชีเดิม
   firstName                                               String?                @map("first_name") @db.VarChar(100)
@@ -91,6 +93,10 @@ model Caregiver {
   idCardNumber        String?                    @map("id_card_number")
   phone               String?
   skills              String[]
+  /// PYG-652: ทักษะที่ไม่อยู่ในรายการกลาง (care_skills) — ข้อความอิสระ
+  otherSkills         String[]                   @default([]) @map("other_skills")
+  /// PYG-652: ค่า skills เดิมก่อนแปลงเป็นรหัสกลาง เก็บไว้ตรวจทานหรือย้อนกลับ — ห้ามใช้ในโค้ดใหม่
+  skillsLegacy        String[]                   @map("skills_legacy")
   experienceYears     Int?                       @map("experience_years")
   hourlyRate          Float?                     @map("hourly_rate")
   bio                 String?
@@ -1408,10 +1414,16 @@ enum NotificationType {
   payment_refunded
   payment_voided
   payment_transferred
+  license_approved // PYG-587: แอดมินอนุมัติใบประกอบวิชาชีพ
+  license_rejected // PYG-587: แอดมินปฏิเสธใบประกอบวิชาชีพ (แนบเหตุผล)
+  license_expired // PYG-587: ใบประกอบวิชาชีพหมดอายุ → อัปโหลดใหม่
+  job_type_removed // PYG-592 / PYG-591: ประเภทงานเดิมถูกนำออกเพราะไม่ตรงวิชาชีพ/ใบประกอบฯ
   job_checked_in // PYG-353
   job_care_log_added // มีการบันทึก care log (Christina)
   profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
   profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
+  payout_account_verified // Omise accept บัญชีรับเงินแล้ว → ผู้ดูแลเปิดรับงานได้
+  payout_account_failed // Omise ปฏิเสธบัญชีรับเงิน → ผู้ดูแลต้องแก้ไขบัญชี
 }
 
 enum booking_service_type {

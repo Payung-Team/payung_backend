@@ -26,6 +26,7 @@ describe('AssessmentService', () => {
           familyGroupId: null,
         }),
       },
+      booking: { findMany: jest.fn().mockResolvedValue([]) },
       careRecipientAssessment: {
         upsert: jest.fn().mockImplementation(({ create }) => ({
           id: 'private-id',

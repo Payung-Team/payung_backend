@@ -4,10 +4,12 @@ import { isUUID } from 'class-validator';
 import { PrismaService } from '../common/prisma.service';
 import { classifyCareGroup, storedCareGroupToApi } from '../common/care-group';
 import { ConsentService } from '../consent/consent.service';
-import { CONSENT_TYPE } from '../consent/consent.constants';
+import { assertAssessmentReadAccess } from './assessment-read-access';
 import { ADL_ITEMS, type AdlAnswers } from './assessment.constants';
 import { AssessmentError, assessmentAccessDenied } from './assessment.errors';
 import { validateAssessmentValues } from './assessment-scoring';
+import { recalculateRecipientRequiredSkills } from '../booking/required-skills/required-skills.persistence';
+import { SkillRuleInvalidError } from '../booking/required-skills/required-skills.errors';
 import {
   CareRecipientAssessment,
   SubmitCareRecipientAssessmentInput,
@@ -53,6 +55,7 @@ export class AssessmentService {
           create: { careRecipientId: input.careRecipientId, ...data },
           update: data,
         });
+        await recalculateRecipientRequiredSkills(tx, input.careRecipientId);
         return this.toResponse(row);
       }),
     );
@@ -65,32 +68,7 @@ export class AssessmentService {
   }
 
   private async readAuthorized(actorId: string, careRecipientId: string) {
-    if (!isUUID(careRecipientId)) throw assessmentAccessDenied();
-    const recipient = await this.prisma.careRecipient.findUnique({
-      where: { id: careRecipientId },
-      select: { patientId: true, is_deleted: true, familyGroupId: true },
-    });
-    if (!recipient || recipient.is_deleted) throw assessmentAccessDenied();
-    if (recipient.patientId !== actorId) {
-      if (!recipient.familyGroupId) throw assessmentAccessDenied();
-      const members = await this.prisma.familyGroupMember.findMany({
-        where: {
-          groupId: recipient.familyGroupId,
-          userId: { in: [actorId, recipient.patientId] },
-          status: 'ACTIVE',
-        },
-        select: { userId: true },
-      });
-      if (new Set(members.map((member) => member.userId)).size !== 2)
-        throw assessmentAccessDenied();
-      if (
-        await this.consent.findWithdrawnType(recipient.patientId, [
-          CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
-        ])
-      ) {
-        throw assessmentAccessDenied();
-      }
-    }
+    await assertAssessmentReadAccess(this.prisma, this.consent, actorId, careRecipientId);
     const row = await this.prisma.careRecipientAssessment.findUnique({
       where: { careRecipientId },
     });
@@ -101,7 +79,7 @@ export class AssessmentService {
     try {
       return await operation();
     } catch (error) {
-      if (error instanceof AssessmentError) throw error;
+      if (error instanceof AssessmentError || error instanceof SkillRuleInvalidError) throw error;
       // Database exceptions can contain query values. Do not expose or log them.
       throw new InternalServerErrorException(
         'ไม่สามารถดำเนินการกับแบบประเมินได้ในขณะนี้',

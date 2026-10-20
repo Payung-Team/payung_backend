@@ -21,27 +21,37 @@ import { CaregiverService } from './caregiver.service';
 import { WorkConditionService } from './work-condition.service';
 import { KycDocumentService } from './kyc-document.service';
 import { KycStorageAuditCron } from './kyc-storage-audit.cron';
+import { DrivingLicenseService } from './driving-license/driving-license.service';
+import { LicenseExpiryCron } from './license/license-expiry.cron';
+import { JobTypeEligibilityService } from './job-type/job-type-eligibility.service';
+import { JobTypeRemovalNotifier } from './job-type/job-type-removal-notifier';
 import { ProfilePhotoController } from './profile-photo.controller';
 import { ProfilePhotoService } from './profile-photo.service';
 import { ProfilePhotoResolver } from './profile-photo.resolver';
+import { ProfessionChangeService } from './profession-change.service';
+import { ProfessionChangeResolver } from './profession-change.resolver';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { FieldLockGuard } from '../../common/guards/field-lock.guard';
 import { NotificationModule } from '../../notification/notification.module';
 import { EmailModule } from '../../email/email.module';
 import { PaymentModule } from '../../payment/payment.module';
+import { CareSkillModule } from '../../care-skill/care-skill.module';
 
 @Module({
   // PYG-97: ดึง NotificationService + EmailService มา inject ใน KycService + CaregiverService
   // เพื่อ trigger notification/email ตอน KYC submit/resubmit/verify/reject
   // PYG-266: PaymentModule exports PayoutAccountService (สร้าง Omise recipient หลัง
   // updatePayoutAccount) — PaymentModule ไม่ import KycModule/AdminModule กลับ จึงไม่ circular
-  imports: [NotificationModule, EmailModule, PaymentModule],
+  // PYG-652: CareSkillModule exports CareSkillService (ตรวจทักษะก่อนบันทึก)
+  imports: [NotificationModule, EmailModule, PaymentModule, CareSkillModule],
   // PYG-507: REST endpoint รับไฟล์รูปโปรไฟล์ (GraphQL รับไฟล์ไม่ได้ — แพตเทิร์นเดียวกับ care log)
   controllers: [ProfilePhotoController],
   providers: [
     ProfilePhotoService, // PYG-507: อัปโหลดรูปโปรไฟล์ผ่าน backend + เข้าคิวรีวิวถ้าเป็นผู้ดูแล
     ProfilePhotoResolver, // PYG-488: myProfilePhotoReview — สถานะรีวิวรูปของผู้ดูแลเอง
+    ProfessionChangeService, // PYG-575: คำขอเปลี่ยนวิชาชีพหลัง KYC อนุมัติ (เก็บใน caregiver_edit_logs)
+    ProfessionChangeResolver, // PYG-575: my/request/cancel ของผู้ดูแล
     KycResolver,
     CaregiverResolver,
     WorkConditionResolver, // PYG-188: myWorkCondition + updateWorkCondition
@@ -52,12 +62,17 @@ import { PaymentModule } from '../../payment/payment.module';
     // PYG-307: ตรวจ invariant ของ file_url ทุกวัน — repo นี้ยังไม่มี CI
     // ถ้าวางไว้เป็นสคริปต์ให้ CI รัน จะไม่มีใครรันจริง
     KycStorageAuditCron,
+    JobTypeEligibilityService, // PYG-592: ตัวตรวจประเภทงาน x วิชาชีพ x ใบประกอบฯ (ตัวเดียวทั้งอ่าน/เขียน)
+    JobTypeRemovalNotifier, // PYG-592 AC6: แจ้งผู้ดูแลที่ประเภทงานเดิมถูกนำออก (idempotent)
+    DrivingLicenseService, // PYG-597: คำนวณสถานะผ่านการตรวจใบขับขี่ที่จุดเดียว (แสดงผล + รับงาน)
+    LicenseExpiryCron, // PYG-587: ใบประกอบฯ ถึงวันหมดอายุ → expired + แจ้งเตือน (รายวัน)
     SupabaseAuthGuard,
     RolesGuard,
     FieldLockGuard, // PYG-146: ใช้กับ updateCaregiverProfile
   ],
   // export CaregiverService → AuthModule's UserResolver inject ไปใช้ทำ field resolver
   // me { caregiver { ... } } (PYG-90)
-  exports: [CaregiverService],
+  // export ProfessionChangeService → AdminModule's AdminProfessionChangeResolver (คิว / อนุมัติ / ปฏิเสธ · PYG-575)
+  exports: [CaregiverService, DrivingLicenseService, ProfessionChangeService],
 })
 export class KycModule {}
