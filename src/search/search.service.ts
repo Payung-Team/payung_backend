@@ -1,3 +1,5 @@
+import { careLevelFromDb } from '../common/care-level/care-level';
+import { publicCaregiverConditions } from '../caregiver-public/caregiver-public.policy';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
@@ -16,6 +18,7 @@ type RawCaregiverRow = {
   review_count: number;
   skills: string[];
   other_skills: string[] | null;
+  care_level: string | null;
   profession: string; // PYG-556 — CHECK ใน DB 3 ค่า
   province: string | null;
   district: string | null;
@@ -42,7 +45,7 @@ export class SearchService {
    * - Outer query: กรอง min_rating (อ้าง alias avg_rating ได้หลัง CTE) + COUNT(*) OVER() สำหรับ pagination
    * - $queryRaw: ใช้ Prisma.sql สำหรับ dynamic WHERE fragments (safe parameterization)
    */
-  async searchCaregivers(input: SearchCaregiverInput): Promise<SearchCaregiverPayload> {
+  async searchCaregivers(input: SearchCaregiverInput, eligibleIds?: readonly string[], db: Pick<Prisma.TransactionClient, '$queryRaw'> = this.prismaService): Promise<SearchCaregiverPayload> {
     const page  = Math.max(1, input.page  ?? 1);
     const limit = Math.min(50, Math.max(1, input.limit ?? 10));
     const offset = (page - 1) * limit;
@@ -54,14 +57,8 @@ export class SearchService {
       : [];
 
     // ─── Build inner WHERE (applied before GROUP BY) ──────────────────────
-    const conditions: Prisma.Sql[] = [
-      Prisma.sql`c.is_searchable = true`,
-      Prisma.sql`c.kyc_status = 'verified'`,
-      Prisma.sql`EXISTS (
-        SELECT 1 FROM caregiver_availability ca
-        WHERE ca.caregiver_id = c.id AND ca.is_active = true
-      )`,
-    ];
+    const conditions = publicCaregiverConditions();
+    if (eligibleIds !== undefined) conditions.push(Prisma.sql`c.id = ANY(${[...eligibleIds]}::text[])`);
 
     if (input.province) {
       conditions.push(Prisma.sql`c.service_area_province = ${input.province}`);
@@ -113,10 +110,11 @@ export class SearchService {
       : Prisma.sql``;
 
     // ─── ORDER BY ─────────────────────────────────────────────────────────
-    const orderBy = this.buildOrderBy(sortBy);
+    const sortOrder = this.buildOrderBy(sortBy);
+    const orderBy = eligibleIds === undefined ? sortOrder : Prisma.sql`${sortOrder}, id ASC`;
 
     // ─── Execute ──────────────────────────────────────────────────────────
-    const rows = await this.prismaService.$queryRaw<RawCaregiverRow[]>`
+    const rows = await db.$queryRaw<RawCaregiverRow[]>`
       WITH agg AS (
         SELECT
           c.id,
@@ -128,6 +126,7 @@ export class SearchService {
           c.review_count                            AS review_count,
           c.skills,
           c.other_skills,
+          c.care_level,
           c.profession,                             -- PYG-556: ป้ายวิชาชีพหน้า List (S01-AC3)
           c.service_area_province                   AS province,
           c.service_area_district                   AS district,
@@ -157,6 +156,7 @@ export class SearchService {
 
     const data: CaregiverSummary[] = rows.map((row) => ({
       id:          row.id,
+      careLevel: careLevelFromDb(row.care_level),
       fullName:    row.full_name   ?? '',
       avatarUrl:   avatarByRow.get(row) ?? undefined,
       hourlyRate:  row.hourly_rate ?? 0,

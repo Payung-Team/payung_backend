@@ -6,5 +6,6 @@ import { CommonModule } from '../common/common.module';
 @Module({
   imports: [CommonModule],
   providers: [SearchService, SearchResolver],
+  exports: [SearchService],
 })
 export class SearchModule {}

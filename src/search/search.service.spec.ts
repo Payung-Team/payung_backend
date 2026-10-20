@@ -12,7 +12,7 @@ import { SortByEnum } from './dto/search-caregiver.input';
 type RawRow = {
   id: string; full_name: string | null; avatar_url: string | null;
   hourly_rate: number | null; avg_rating: number | null; review_count: bigint;
-  skills: string[]; profession: string; province: string | null; district: string | null;
+  skills: string[]; care_level?: string | null; profession: string; province: string | null; district: string | null;
   gender: string | null; total_count: bigint;
 };
 
@@ -108,6 +108,22 @@ describe('SearchService', () => {
     service = module.get<SearchService>(SearchService);
   });
 
+  it('S18 maps the shared care level enum and filters IDs before pagination', async () => {
+    prisma.$queryRaw.mockResolvedValue([row({care_level:'intermediate'})]);
+    const result=await service.searchCaregivers({limit:1},['cg-1']);
+    expect(result.data[0].careLevel).toBe('intermediate');
+    const args=prisma.$queryRaw.mock.calls[0];
+    const sql=(args[0] as string[]).map((part,index)=>part+flattenSql(args[index+1])).join('');
+    expect(sql.indexOf('c.id = ANY')).toBeLessThan(sql.indexOf('LIMIT'));
+    expect(sql).toContain('id ASC');
+    expect(getValues(prisma.$queryRaw)).toContainEqual(['cg-1']);
+  });
+  it('S18 reads public rows through the supplied snapshot transaction',async()=>{
+    const query=jest.fn().mockResolvedValue([]);
+    await service.searchCaregivers({},[],{$queryRaw:query} as never);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
   // ── No filters ─────────────────────────────────────────────────────────
 
   it('returns mapped CaregiverSummary with no filters', async () => {

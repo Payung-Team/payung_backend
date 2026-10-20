@@ -1,3 +1,8 @@
+import { BookingNotMatchableError } from '../matching/matching.evaluate';
+import { CaregiverNotEligibleError, assertCaregiverEligible, eligibleIdsForBooking } from '../matching/matching.persistence';
+import { bookingEvidenceReferenceDate } from '../matching/matching.policy';
+import { recalculateBookingRequirements } from './booking-requirements.persistence';
+import { readSavedBookingLevels, bookingLevelForRest } from './level/booking-level.read';
 import {
   ConflictException,
   ForbiddenException,
@@ -9,7 +14,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../common/prisma.service';
 import { assertBookingAssessment } from '../assessment/assessment-booking-gate';
-import { lockRequiredSkillRecipient, recalculateBookingRequiredSkills } from './required-skills/required-skills.persistence';
+import { lockRequiredSkillRecipient } from './required-skills/required-skills.persistence';
 import { readSavedRequiredSkills } from './required-skills/required-skills.read';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { BOOKING_EVENTS, type BookingEvent } from '../notification/events/booking-event';
@@ -285,6 +290,7 @@ export class BookingService {
 
     // PYG-634: CareActivityError เป็น GraphQLError — ทาง REST ต้องแปลงเป็น 422 ที่มี code ไม่งั้นได้ 500
     const booking = await this.createBookingRecord(patientId, dto).catch((err: unknown) => {
+      if (err instanceof BookingNotMatchableError || err instanceof CaregiverNotEligibleError) throw new UnprocessableEntityException({statusCode:422,code:err.extensions.code,message:err.message});
       throw err instanceof CareActivityError ? err.toRestError() : err;
     });
     await this.signCaregiverAvatars([booking]);
@@ -809,9 +815,11 @@ export class BookingService {
       // ⑤ PYG-634: สำเนาชื่อ หมวด ระดับ ณ ตอนจอง (R6) — งานพิมพ์เอง (tasks) ไม่ถูกเขียนที่นี่ (AC6)
       await this.careActivityService.writeForBooking(tx, created.id, activities);
 
-      // ⑥ PYG-643 · S17: ต้องอยู่ "หลัง" ⑤ — การคำนวณอ่านรหัสกิจกรรมจาก booking.activities
-      //   ถ้าคำนวณก่อนบันทึกกิจกรรม ทักษะที่มาจากกิจกรรม (S15) จะหายไปเงียบ ๆ (ลำดับเดียวกับ 70bcad2)
-      await recalculateBookingRequiredSkills(tx, created.id, onBehalf ? 'graphql' : 'rest');
+      // ⑥ S16 + S17 (ระดับ + Required Skills) ต้องอยู่ "หลัง" ⑤ — การคำนวณอ่านรหัสกิจกรรมจาก booking.activities
+      //   ถ้าคำนวณก่อนบันทึกกิจกรรม ทักษะที่มาจากกิจกรรม (S15) จะหายไปเงียบ ๆ (#144)
+      await recalculateBookingRequirements(tx, created.id, onBehalf ? 'graphql' : 'rest');
+      // S18 rechecks the persisted requirements even when the client selects during creation.
+      if (resolvedCaregiverId) await assertCaregiverEligible(tx,created.id,resolvedCaregiverId,bookingEvidenceReferenceDate(bookingDateObj));
 
       // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
       // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
@@ -985,8 +993,9 @@ export class BookingService {
    *
    * ราคาที่คืน = ราคา catalog ของ dto.serviceType (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) — เท่ากับยอดที่จะคิดตอนจองจริง
    */
-  async searchMatchesBasic(dto: SearchMatchesDto): Promise<MatchedCaregiverRest[]> {
+  async searchMatchesBasic(dto: SearchMatchesDto, eligibleIds?: readonly string[]): Promise<MatchedCaregiverRest[]> {
     const where: Record<string, unknown> = {
+      ...(eligibleIds === undefined ? {} : {id: {in: [...eligibleIds]}}),
       isSearchable: true,
       kycStatus:    'verified',
     };
@@ -1086,6 +1095,15 @@ export class BookingService {
       );
     }
 
+    // Validate before resetting status: legacy/unmatchable bookings must not be partially recovered.
+    let eligibleIds: string[];
+    try {
+      eligibleIds = await this.prisma.$transaction(tx => eligibleIdsForBooking(tx, bookingId), {isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead});
+    } catch (error) {
+      if (error instanceof BookingNotMatchableError) throw new UnprocessableEntityException({statusCode:422,code:error.extensions.code,message:error.message});
+      throw error;
+    }
+
     const updated = await this.prisma.booking.update({
       where: { id: bookingId },
       data:  { status: 'unmatched', caregiverId: null },
@@ -1105,7 +1123,7 @@ export class BookingService {
       bookingDate:      booking.bookingDate instanceof Date
                           ? booking.bookingDate.toISOString().slice(0, 10)
                           : String(booking.bookingDate),
-    });
+    }, eligibleIds);
 
     await this.signCaregiverAvatars([updated as unknown as BookingWithIncludes]);
     return {
@@ -1151,8 +1169,9 @@ export class BookingService {
       if (!current) throw new NotFoundException('Booking not found');
       if (current.patientId !== userId) throw new ForbiddenException('Access denied');
       if (current.status !== 'accepted') throw new UnprocessableEntityException('Only bookings with status "accepted" can be confirmed');
-      // Legacy bookings without a recipient keep their unknown skill snapshot.
-      if (current.careRecipientId) await recalculateBookingRequiredSkills(tx, bookingId);
+      // Legacy bookings without a recipient keep their unknown level/skill snapshots.
+      if (current.careRecipientId) await recalculateBookingRequirements(tx, bookingId);
+      if (current.caregiverId) await assertCaregiverEligible(tx,bookingId,current.caregiverId,bookingEvidenceReferenceDate(current.bookingDate));
       return tx.booking.update({
         where: { id: bookingId },
         data: { status: 'confirmed', confirmedAt: new Date() },
@@ -1414,6 +1433,9 @@ export class BookingService {
   /** REST summary (caregiver may be null for unmatched bookings) */
   private async toRestSummary(booking: BookingWithIncludes): Promise<BookingRest> {
     const saved = await readSavedRequiredSkills(this.prisma, [booking.id]);
+    const levels = await readSavedBookingLevels(this.prisma, [booking.id]);
+    const level = levels.get(booking.id);
+    if (!level) throw new NotFoundException('Booking not found');
     if (!saved.has(booking.id)) throw new NotFoundException('Booking not found');
     const caregiver: CaregiverBriefRest | undefined = booking.caregiver
       ? {
@@ -1428,6 +1450,7 @@ export class BookingService {
     return {
       id:               booking.id,
       requiredSkills:   saved.get(booking.id)!,
+      ...bookingLevelForRest(level),
       bookingDate:      booking.bookingDate instanceof Date
                           ? booking.bookingDate.toISOString().slice(0, 10)
                           : String(booking.bookingDate),
