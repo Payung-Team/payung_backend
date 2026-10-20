@@ -9,6 +9,7 @@
  *
  * Real app modules: FamilyGroupModule (→ Booking → Payment / Monitoring / Notification / Consent / CareActivity)
  *   + AssessmentModule (S08) + CareSkillModule (S03/S17) + MatchingModule (S18) + PatientModule (REST care-recipients)
+ *   + KycModule + AdminModule + CaregiverPublicModule + SearchModule (S01–S06)
  * Only 3 external services are mocked — no real Omise / Supabase / SMTP call is ever made:
  *   SupabaseService (auth.getUser) · OmiseService (every method) · EmailService (every method)
  */
@@ -35,6 +36,10 @@ import { AssessmentModule } from '../../src/assessment/assessment.module';
 import { CareSkillModule } from '../../src/care-skill/care-skill.module';
 import { MatchingModule } from '../../src/matching/matching.module';
 import { PatientModule } from '../../src/patient/patient.module';
+import { KycModule } from '../../src/identity/kyc/kyc.module';
+import { AdminModule } from '../../src/admin/admin.module';
+import { CaregiverPublicModule } from '../../src/caregiver-public/caregiver-public.module';
+import { SearchModule } from '../../src/search/search.module';
 import { LICENSE_DOC_TYPE } from '../../src/identity/kyc/license/license.constants';
 import { OmiseService } from '../../src/payment/omise/omise.service';
 import { EmailService } from '../../src/email/email.service';
@@ -261,6 +266,10 @@ export async function bootstrap() {
       CareSkillModule,
       MatchingModule,
       PatientModule,
+      KycModule,
+      AdminModule,
+      CaregiverPublicModule,
+      SearchModule,
     ],
   })
     .overrideProvider(SupabaseService)
