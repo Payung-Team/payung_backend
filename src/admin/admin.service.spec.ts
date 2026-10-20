@@ -21,6 +21,7 @@ import { EmailService } from '../email/email.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
 import { NotificationService } from '../notification/notification.service';
 import { PayoutAccountService } from '../payment/payout-account.service';
+import { ClockService } from '../common/clock.service';
 import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { ROLE_ID } from '../common/constants/roles.constant';
@@ -150,6 +151,7 @@ describe('AdminService — inviteAdmin', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -285,6 +287,7 @@ describe('AdminService — toggleAdminStatus', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -434,6 +437,7 @@ describe('AdminService — scheduleDeleteAdmin', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -603,6 +607,7 @@ describe('AdminService — cancelScheduledDelete', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -726,6 +731,7 @@ describe('AdminService — rejectKyc', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -862,6 +868,7 @@ describe('AdminService — editAdminInfo', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -1110,6 +1117,7 @@ describe('AdminService — toggleFieldLock', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 
@@ -1287,6 +1295,7 @@ describe('AdminService — getLockedFields', () => {
         { provide: NotificationService, useValue: mockNotificationService },
         { provide: PayoutAccountService, useValue: mockPayoutAccountService },
         { provide: DrivingLicenseService, useValue: mockDrivingLicenseService },
+        ClockService,
       ],
     }).compile();
 

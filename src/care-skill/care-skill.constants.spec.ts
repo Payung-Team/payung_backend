@@ -75,7 +75,7 @@ describe('otherSkills ใน KycInput / UpdateCaregiverInput (PYG-652)', () => {
     documentIds: [],
   };
 
-  async function errorsOf<T extends object>(cls: new () => T, plain: object) {
+  async function errorsOf(cls: new () => KycInput | UpdateCaregiverInput, plain: object) {
     const instance = plainToInstance(cls, plain);
     const errors = await validate(instance);
     return { instance, fields: errors.map((e) => e.property) };

@@ -167,9 +167,16 @@ describe('KycDocumentService.create - driving_license (PYG-597)', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> รับ', async () => {
-    await expect(service.create(driving({ expiresAt: new Date('2026-10-18T00:00:00Z') }))).resolves.toBeDefined();
-    expect(create.mock.calls[0][0].data.expiresAt.toISOString()).toBe('2026-10-18T16:59:59.999Z');
+  it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> DRIVING_LICENSE_EXPIRED (ตรงกับ FE ที่ปิดวันนี้) ไม่สร้างแถว', async () => {
+    await expect(service.create(driving({ expiresAt: new Date('2026-10-18T00:00:00Z') }))).rejects.toMatchObject({
+      extensions: { code: 'DRIVING_LICENSE_EXPIRED', statusCode: 422 },
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('พรุ่งนี้ (เวลาไทย) -> รับ และเก็บเป็นสิ้นวัน', async () => {
+    await expect(service.create(driving({ expiresAt: new Date('2026-10-19T00:00:00Z') }))).resolves.toBeDefined();
+    expect(create.mock.calls[0][0].data.expiresAt.toISOString()).toBe('2026-10-19T16:59:59.999Z');
   });
 
   it('สิทธิ์: path ของโฟลเดอร์คนอื่นถูกปฏิเสธ', async () => {

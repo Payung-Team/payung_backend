@@ -42,3 +42,7 @@ The suites reject remote/non-test database URLs. CI adds S16 to the existing dis
 - PYG-640/Sammy must provide the actual five infographic input cases, updated for F03 advanced. The supplied story explicitly contains only their old expected outputs; no fabricated replacement is labelled AC8.
 - BE PYG-639 and S18 contract owner PYG-646 must review/sign off PYG-637, including the proposed field visibility and null/error details. Creating this document/PR does not constitute their approval.
 - Human gate and prerequisite rollout remain required. In particular PYG-638's F03 correction must be present before enabling S16. [Read-only readiness query](../prisma/checks/booking_level_readiness.sql) returns zero rows when all twelve approved rules are active and correct. Run through the existing deployment process; no migration is added or replayed here.
+
+## Integration update
+
+The feature branch subsequently integrated S18 and dev `83ccd4d`. Full unit tests now pass 2680/2680 (dev baseline 2591/2591); the original lock-order failure was fixed upstream by PR #143. Docker S08/S09/S16/S17/S18 passes 55 tests. Full e2e and the four Express.Multer errors remain identical to the fresh current-dev baseline. See the [final S18 integration report](pyg-647-s18-matching-validation.md) for the exact comparison and review of merge resolutions.

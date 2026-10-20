@@ -360,7 +360,25 @@ describe('CaregiverPublicService', () => {
       const result = await service.getPublicProfile('cg-1');
 
       expect(result.driving_license_verified).toBe(verified);
-      expect(drivingLicense.isVerified).toHaveBeenCalledWith({ caregiverId: 'cg-1', userId: 'user-77' });
+      expect(drivingLicense.isVerified).toHaveBeenCalledWith({ caregiverId: 'cg-1', userId: 'user-77', transportMode: null });
+    });
+
+    it.each([['self_drive'], ['hired_ride'], ['none'], [null]])(
+      'PYG-661 E2: ส่ง transport_mode (%s) ของผู้ดูแลให้ตัวคำนวณป้ายตัดสิน (NULL = ยังไม่เคยตอบ)',
+      async (mode) => {
+        const drivingLicense = moduleRef.get(DrivingLicenseService) as unknown as { isVerified: jest.Mock };
+        drivingLicense.isVerified.mockClear();
+        prisma.caregiver.findUnique.mockResolvedValue(makeCaregiver({ userId: 'u', transportMode: mode } as never));
+        await service.getPublicProfile('cg-1');
+        expect(drivingLicense.isVerified).toHaveBeenCalledWith(expect.objectContaining({ transportMode: mode }));
+      },
+    );
+
+    it('PYG-661: select transportMode เฉพาะเพื่อคำนวณป้าย — ไม่อยู่ใน response สาธารณะ', async () => {
+      prisma.caregiver.findUnique.mockResolvedValue(makeCaregiver({ transportMode: 'self_drive' } as never));
+      const result = await service.getPublicProfile('cg-1');
+      expect(JSON.stringify(result)).not.toMatch(/transport|self_drive/i);
+      expect(prisma.caregiver.findUnique.mock.calls[0][0].select.transportMode).toBe(true);
     });
 
     it('R7: ไม่ส่งรูป เลข วันหมดอายุ หรือเหตุผลปฏิเสธออกไป - มีแค่ boolean เดียว', async () => {

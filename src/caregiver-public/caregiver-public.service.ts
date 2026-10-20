@@ -31,6 +31,7 @@ export class CaregiverPublicService {
       select: {
         id: true,
         userId: true,
+        transportMode: true, // PYG-661 E2: ป้ายใบขับขี่หายเมื่อไม่ได้ขับเอง
         fullName: true,
         bio: true,
         experienceYears: true,
@@ -127,6 +128,7 @@ export class CaregiverPublicService {
       driving_license_verified: await this.drivingLicense.isVerified({
         caregiverId: caregiver.id,
         userId: caregiver.userId,
+        transportMode: caregiver.transportMode ?? null,
       }),
     };
   }

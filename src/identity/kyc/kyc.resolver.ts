@@ -22,6 +22,7 @@ import { KycService } from './kyc.service';
 import { KycDocumentService } from './kyc-document.service';
 import { CaregiverService } from './caregiver.service';
 import { KycInput } from './dto/kyc.input';
+import { TransportMode } from './driving-license/transport-mode';
 import { KycStatusPayload } from './dto/kyc-status.payload';
 import { PayoutAccountInput } from './dto/payout-account.input';
 import { PayoutAccountSummary } from './entities/payout-account.entity';
@@ -213,6 +214,22 @@ export class KycResolver {
       licenseNumber: input.licenseNumber,
       expiresAt: input.expiresAt,
     });
+  }
+
+  /**
+   * updateTransportMode — PYG-661: เปลี่ยนวิธีเดินทางรับส่งหลัง KYC ผ่านแล้ว (E1/E2)
+   * ไม่บังคับแนบใบขับขี่ — ผลตรวจใบขับขี่ดูที่ kycStatus.drivingLicense
+   */
+  @Mutation(() => TransportMode, {
+    description:
+      'Verified caregiver only: change how you transport the care recipient. Does not require a driving license upload; the license badge and job gate read the license review result.',
+  })
+  @Roles(ROLE_ID.CAREGIVER)
+  async updateTransportMode(
+    @CurrentUser() user: AuthUser,
+    @Args('mode', { type: () => TransportMode }) mode: TransportMode,
+  ): Promise<TransportMode> {
+    return this.kycService.updateTransportMode(user.id, mode);
   }
 
   /**

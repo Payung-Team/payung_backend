@@ -4,6 +4,22 @@
 
 The backend now evaluates level, canonical skills, profession locks from S17 and approved/unexpired S03 evidence. It exposes the eligible Elder list, an admin-only live report, and an atomic caregiver selector. The user confirmed expiry is checked on the booking's service day. No table, migration, caregiver skill conversion or KYC approval operation is added.
 
+## Final integration with current dev
+
+After the first measurements, dev advanced to `83ccd4d` (including S08/S09, the activity-lock test fix and S03/S10 updates). It was merged into feature/CODE without replacing those changes. A detached checkout of that exact dev commit was measured with a freshly generated Prisma Client and compared with the merged implementation:
+
+| Check | dev 83ccd4d baseline | Final S16/S18 integration |
+| --- | --- | --- |
+| Full unit tests | 2591 pass / 0 fail | 2680 pass / 0 fail across 138 suites |
+| Full e2e without a Docker URL | 30 fail / 4 failed suites / 39 skipped | Same 30 fail / 4 failed suites / 68 skipped |
+| Fresh TypeScript check, incremental disabled | 4 errors | Same 4 Express.Multer errors |
+| Docker S08/S09/S16/S17/S18 | — | 55 pass across 5 suites |
+| Compatibility | — | Schema preserves both previous feature/CODE and current dev fields/arguments/enum values |
+
+The extra 89 unit cases over dev are the previously committed 49 S16 cases plus 40 S18 cases. The extra 29 skipped e2e cases without Docker are 11 S16 plus 18 S18; all run and pass in the Docker invocation. Failure identities in full e2e are unchanged.
+
+The old unit failure disappeared because dev already fixed the activity-lock assertion in PR #143. Merge review also removed the duplicate S17 recalculation introduced by combining PR #144 with the shared S16/S17 hook, retained S10 infectionDisclosure alongside levelBreakdown, and deduplicated test imports. A validation helper in the existing S17 skill test now accepts the explicit union of its two DTO constructors after KYC integration; its 14 tests were rerun and pass, with no runtime validation skipped. No new TypeScript errors remain.
+
 ## Review findings addressed
 
 | Finding | Implementation and evidence |
@@ -20,7 +36,7 @@ The backend now evaluates level, canonical skills, profession locks from S17 and
 
 S03 stores a generic professional_license rather than an explicit profession on each document. Initial evidence therefore continues to rely on S03's administrative approval for the caregiver's current profession; S18 uses existing profession-change associations where available and does not guess from file names or add schema without a DB card.
 
-## Verification
+## Initial verification before dev integration
 
 Baseline: committed S16 `56dc0d6`. Prisma Client 6.19.3 generated successfully before baseline and final measurements. Full-suite failure identities were compared, not only counts.
 

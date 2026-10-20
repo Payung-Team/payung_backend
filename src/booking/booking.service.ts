@@ -805,6 +805,9 @@ export class BookingService {
       // S08: legacy name-only/new-profile flows must assess a persisted profile
       // first. Do not create one here or copy another profile's assessment.
       await assertBookingAssessment(tx, data.careRecipientId, onBehalf ? 'graphql' : 'rest');
+
+      // PYG-634: ตรวจกิจกรรมที่เลือก (มีอยู่ + เปิดใช้งาน · ล็อก FOR SHARE) ก่อนสร้าง booking
+      //   ไม่ผ่าน = โยนออกจาก transaction → ไม่มี booking ค้าง (E2) · ไม่ส่ง/ว่าง = [] (E9) · ซ้ำ = ครั้งเดียว (E8)
       const activities = await this.careActivityService.resolveForBooking(tx, dto.activityIds);
 
       const created = await tx.booking.create({ data, include });
