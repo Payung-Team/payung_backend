@@ -754,7 +754,14 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
           { bookingId: BOOKING_ID, careActivityId: ACT_2, activityName: 'กิจกรรม 2', category: 'หมวด', careLevel: 'basic' },
         ],
       });
-      const lockOrder = tx.$queryRaw.mock.invocationCallOrder.at(-1);
+      // หา call ที่ lock care_activities จริง ๆ — ไม่ใช่ "call สุดท้าย" เพราะงานอื่น (เช่น PYG-643)
+      // เพิ่ม raw query หลัง booking.create ได้ และจะทำให้ test นี้ล้มผิดเหตุ
+      const lockIndex = (tx.$queryRaw.mock.calls as unknown[][]).findIndex(
+        ([strings]) =>
+          (strings as readonly string[]).join('?').includes('care_activities'),
+      );
+      expect(lockIndex).toBeGreaterThanOrEqual(0);
+      const lockOrder = tx.$queryRaw.mock.invocationCallOrder[lockIndex];
       expect(lockOrder).toBeLessThan(tx.booking.create.mock.invocationCallOrder[0]);
       // AC6: งานพิมพ์เองยังเขียนที่เดิม
       expect(tx.booking_tasks.createMany).toHaveBeenCalled();
