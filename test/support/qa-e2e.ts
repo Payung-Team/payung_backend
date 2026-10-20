@@ -8,7 +8,7 @@
  *    - build the DB from schema.prisma (not migrations) — see docs/qa/README-qa-e2e.md
  *
  * Real app modules: FamilyGroupModule (→ Booking → Payment / Monitoring / Notification / Consent / CareActivity)
- *   + AssessmentModule (S08) + CareSkillModule (S03/S17) + MatchingModule (S18)
+ *   + AssessmentModule (S08) + CareSkillModule (S03/S17) + MatchingModule (S18) + PatientModule (REST care-recipients)
  * Only 3 external services are mocked — no real Omise / Supabase / SMTP call is ever made:
  *   SupabaseService (auth.getUser) · OmiseService (every method) · EmailService (every method)
  */
@@ -34,6 +34,7 @@ import { FamilyGroupModule } from '../../src/family-group/family-group.module';
 import { AssessmentModule } from '../../src/assessment/assessment.module';
 import { CareSkillModule } from '../../src/care-skill/care-skill.module';
 import { MatchingModule } from '../../src/matching/matching.module';
+import { PatientModule } from '../../src/patient/patient.module';
 import { LICENSE_DOC_TYPE } from '../../src/identity/kyc/license/license.constants';
 import { OmiseService } from '../../src/payment/omise/omise.service';
 import { EmailService } from '../../src/email/email.service';
@@ -259,6 +260,7 @@ export async function bootstrap() {
       AssessmentModule,
       CareSkillModule,
       MatchingModule,
+      PatientModule,
     ],
   })
     .overrideProvider(SupabaseService)
@@ -289,6 +291,9 @@ export async function bootstrap() {
     }),
   );
   await app.init();
+  // ฟัง port เดียวตลอดชุด — ถ้าไม่ listen, supertest เปิด/ปิด port ชั่วคราวทุก request
+  // ซึ่งเมื่อรันหลายชุดใน process เดียว (แบบ CI) เคยได้ "Parse Error: Expected HTTP/" แบบสุ่ม
+  await app.listen(0, '127.0.0.1');
   const prisma = app.get(PrismaService);
 
   const gqlRaw = (
@@ -314,6 +319,10 @@ export async function bootstrap() {
         .post(path)
         .set('Authorization', `Bearer ${token}`)
         .send(body as object),
+    get: (path: string) =>
+      request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${token}`),
   });
 
   /**
