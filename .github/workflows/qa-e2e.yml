@@ -49,3 +49,4 @@ jobs:
         run: >-
           npm run test:e2e -- --runInBand --runTestsByPath
           test/pyg636-care-activities.e2e-spec.ts
+          test/pyg644-required-skills.e2e-spec.ts

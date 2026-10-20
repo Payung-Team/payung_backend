@@ -360,14 +360,19 @@ export async function bootstrap() {
    * โปรไฟล์ผู้รับบริการของ owner + แบบประเมิน ADL ผ่าน API จริง (submitCareRecipientAssessment)
    * — ผ่านด่าน S08 ASSESSMENT_REQUIRED ของการจอง · คะแนนเต็มทุกข้อ = care group "social"
    */
-  const seedAssessedRecipient = async (
+  /**
+   * ส่ง/แก้แบบประเมิน ADL ผ่าน API จริง (submitCareRecipientAssessment)
+   * adl: คะแนนรายข้อที่ต้องการ (ข้อที่ไม่ระบุ = คะแนนเต็ม · null = "ไม่แน่ใจ")
+   */
+  const submitAssessment = async (
     owner: Seeded,
-    opts: { flags?: string[]; score?: 'max' | 'zero' } = {},
+    careRecipientId: string,
+    opts: {
+      flags?: string[];
+      score?: 'max' | 'zero';
+      adl?: Partial<Record<string, number | null>>;
+    } = {},
   ) => {
-    const recipient = await prisma.careRecipient.create({
-      data: { patientId: owner.id, name: owner.accountName, is_self: true },
-      select: { id: true },
-    });
     const body = await gql(
       owner.token,
       `mutation($input: SubmitCareRecipientAssessmentInput!) {
@@ -375,10 +380,15 @@ export async function bootstrap() {
        }`,
       {
         input: {
-          careRecipientId: recipient.id,
+          careRecipientId,
           answers: ADL_ITEMS.map((item) => ({
             code: item.code,
-            value: opts.score === 'zero' ? 0 : item.maxScore,
+            value:
+              opts.adl && item.code in opts.adl
+                ? opts.adl[item.code]
+                : opts.score === 'zero'
+                  ? 0
+                  : item.maxScore,
           })),
           flags: opts.flags ?? [],
           noSpecialConditions: (opts.flags ?? []).length === 0,
@@ -386,6 +396,24 @@ export async function bootstrap() {
       },
     );
     if (body.errors) throw new Error(JSON.stringify(body.errors));
+    return (
+      body.data as { submitCareRecipientAssessment: { adlTotalScore: number } }
+    ).submitCareRecipientAssessment.adlTotalScore;
+  };
+
+  /**
+   * โปรไฟล์ผู้รับบริการของ owner + แบบประเมิน ADL — ผ่านด่าน S08 ASSESSMENT_REQUIRED ของการจอง
+   * ค่าเริ่มต้น: คะแนนเต็มทุกข้อ ไม่มี Flag (care group "social")
+   */
+  const seedAssessedRecipient = async (
+    owner: Seeded,
+    opts: Parameters<typeof submitAssessment>[2] = {},
+  ) => {
+    const recipient = await prisma.careRecipient.create({
+      data: { patientId: owner.id, name: owner.accountName, is_self: true },
+      select: { id: true },
+    });
+    await submitAssessment(owner, recipient.id, opts);
     return recipient.id;
   };
 
@@ -407,6 +435,7 @@ export async function bootstrap() {
     seedGroup,
     seedAdmin,
     seedAssessedRecipient,
+    submitAssessment,
     close,
   };
 }
