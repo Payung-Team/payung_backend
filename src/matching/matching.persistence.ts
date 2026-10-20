@@ -10,7 +10,10 @@ import { GraphQLError } from 'graphql';
 import { publicCaregiverConditions } from '../caregiver-public/caregiver-public.policy';
 import { readSavedRequiredSkills } from '../booking/required-skills/required-skills.read';
 import { LICENSE_DOC_TYPE } from '../identity/kyc/license/license.constants';
-import { PROFESSION_CHANGE_ACTION } from '../identity/kyc/profession.constants';
+import {
+  PROFESSION_CHANGE_ACTION,
+  parseStoredProfession,
+} from '../identity/kyc/profession.constants';
 import {
   assertMatchableBooking,
   BookingNotMatchableError,
@@ -124,17 +127,18 @@ export async function loadMatchCandidates(
           entry.field !== 'profession'
         )
           continue;
+        // ค่าใน log เป็น JSON string ('"nurse"') — ต้องแปลงก่อนเทียบกับ caregivers.profession (PYG-667)
+        const toProfession: string | null = parseStoredProfession(
+          entry.newValue,
+        );
         if (
           log.action === PROFESSION_CHANGE_ACTION.REQUEST &&
           typeof entry.licenseDocumentId === 'string'
         )
-          docProfession.set(
-            entry.licenseDocumentId,
-            typeof entry.newValue === 'string' ? entry.newValue : 'invalid',
-          );
+          docProfession.set(entry.licenseDocumentId, toProfession ?? 'invalid');
         if (
           log.action === PROFESSION_CHANGE_ACTION.APPROVE &&
-          entry.newValue === c.profession &&
+          toProfession === c.profession &&
           (!approvedProfessionAt || log.created_at > approvedProfessionAt)
         )
           approvedProfessionAt = log.created_at;
