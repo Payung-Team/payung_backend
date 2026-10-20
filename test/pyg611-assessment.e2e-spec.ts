@@ -760,9 +760,8 @@ describeDb('PYG-611 · S08 ADL & Flags assessment (PYG-563)', () => {
       expect(leaking).toEqual([]);
     });
 
-    // บั๊ก PYG-666: ข้อ ADL ที่ไม่รู้จัก / ซ้ำ / ตัวพิมพ์ผิด ตอบ ASSESSMENT_ANSWER_INVALID ถูก แต่ไม่บอกว่าข้อไหน
-    // (contract PYG-607 §8: invalidAnswerCodes / duplicateAnswerCodes) — แก้แล้วเปลี่ยน it.failing → it
-    it.failing.each<
+    // เคยเป็นบั๊ก PYG-666 (แก้ใน #156): contract PYG-607 §8 ต้องบอกรหัสข้อที่ผิด
+    it.each<
       [
         string,
         { code: string; value: number | null }[],
