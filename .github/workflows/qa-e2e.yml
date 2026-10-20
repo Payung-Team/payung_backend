@@ -1,0 +1,54 @@
+name: QA e2e (disposable Postgres)
+
+# QA cards (PYG-5xx/6xx) — real app modules + a throwaway Postgres built from schema.prisma.
+# Never points at Supabase: test/support/qa-e2e.ts refuses any non-localhost QA_DATABASE_URL.
+# Add a spec here when its QA PR lands (one path per card).
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  qa-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: qa
+          POSTGRES_PASSWORD: qa-local-test
+          POSTGRES_DB: qa_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qa -d qa_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://qa:qa-local-test@127.0.0.1:5432/qa_e2e
+      QA_DATABASE_URL: postgresql://qa:qa-local-test@127.0.0.1:5432/qa_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      # Disposable schema from schema.prisma — the migration chain can't replay from empty.
+      - name: Create disposable test schema
+        run: |
+          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > /tmp/qa-schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/qa-schema.sql
+      - name: QA e2e suites
+        run: >-
+          npm run test:e2e -- --runInBand --runTestsByPath
+          test/pyg636-care-activities.e2e-spec.ts
+          test/pyg644-required-skills.e2e-spec.ts
+          test/pyg640-booking-level.e2e-spec.ts
+          test/pyg649-matching.e2e-spec.ts
