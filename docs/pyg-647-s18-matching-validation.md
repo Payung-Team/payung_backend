@@ -1,12 +1,12 @@
 # PYG-647 · S18 validation and code review
 
-20 Oct 2026 · [API contract PYG-646](pyg-646-s18-matching-api-contract.md) · Branch feature/CODE
+20 Oct 2026 · [API contract PYG-646](pyg-646-s18-matching-api-contract.md) · Branch feature/PYG-647 (workspace renamed from feature/CODE)
 
 The backend now evaluates level, canonical skills, profession locks from S17 and approved/unexpired S03 evidence. It exposes the eligible Elder list, an admin-only live report, and an atomic caregiver selector. The user confirmed expiry is checked on the booking's service day. No table, migration, caregiver skill conversion or KYC approval operation is added.
 
 ## Final integration with current dev
 
-After the first measurements, dev advanced to `83ccd4d` (including S08/S09, the activity-lock test fix and S03/S10 updates). It was merged into feature/CODE without replacing those changes. A detached checkout of that exact dev commit was measured with a freshly generated Prisma Client and compared with the merged implementation:
+After the first measurements, dev advanced to `83ccd4d` (including S08/S09, the activity-lock test fix and S03/S10 updates). It was merged into the feature branch without replacing those changes. A detached checkout of that exact dev commit was measured with a freshly generated Prisma Client and compared with the merged implementation:
 
 | Check | dev 83ccd4d baseline | Final S16/S18 integration |
 | --- | --- | --- |
