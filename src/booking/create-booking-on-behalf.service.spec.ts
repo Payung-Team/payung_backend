@@ -1,3 +1,4 @@
+jest.mock('../matching/matching.persistence', () => ({ ...jest.requireActual('../matching/matching.persistence'), assertCaregiverEligible: jest.fn().mockResolvedValue(undefined) }));
 // S16 snapshot serialization is exercised by its contract and Postgres suites.
 jest.mock('./level/booking-level.read', () => ({
   ...jest.requireActual('./level/booking-level.read'),

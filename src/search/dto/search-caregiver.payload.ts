@@ -1,8 +1,12 @@
+import { CareLevel } from '../../common/care-level/care-level';
 import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
 import { CaregiverProfession } from '../../identity/kyc/profession.constants';
 
 @ObjectType()
 export class CaregiverSummary {
+  @Field(() => CareLevel, { nullable: true })
+  careLevel?: CareLevel | null;
+
   @Field(() => ID, { description: 'Caregiver UUID' })
   id: string;
 

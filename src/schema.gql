@@ -406,6 +406,19 @@ type BookingActivity {
   name: String!
 }
 
+type BookingCaregiverMatchResult {
+  caregiver: MatchReportCaregiver!
+  checks: MatchChecks!
+  passed: Boolean!
+  reasons: [MatchRejection!]!
+}
+
+type BookingCaregiverSelection {
+  bookingId: ID!
+  caregiverId: ID!
+  status: String!
+}
+
 input BookingHistoryInput {
   limit: Int = 10
   page: Int = 1
@@ -422,6 +435,14 @@ type BookingLevelBreakdown {
 type BookingListResponse {
   data: [BookingSummary!]!
   pagination: BookingPagination!
+}
+
+type BookingMatchReport {
+  bookingId: ID!
+  evaluatedAt: DateTime!
+  evidenceReferenceDate: DateTime!
+  persisted: Boolean!
+  results: [BookingCaregiverMatchResult!]!
 }
 
 type BookingPagination {
@@ -879,6 +900,7 @@ type CaregiverSummary {
 
   """Average rating (null if no reviews yet)"""
   avgRating: Float
+  careLevel: CareLevel
 
   """Service area district"""
   district: String
@@ -1427,6 +1449,12 @@ enum ElderCareGroup {
   BEDRIDDEN
   HOMEBOUND
   SOCIAL
+}
+
+type EligibleCaregivers {
+  adminContact: MatchingAdminContact
+  caregivers: [CaregiverSummary!]!
+  emptyMessage: String
 }
 
 """Entity types that support field locking"""
@@ -2220,6 +2248,39 @@ input LoginWithPhoneInput {
   phone: String!
 }
 
+type MatchChecks {
+  evidence: Boolean!
+  level: Boolean!
+  profession: Boolean!
+  skills: Boolean!
+}
+
+enum MatchRejectReason {
+  EVIDENCE_EXPIRED
+  EVIDENCE_NOT_APPROVED
+  LEVEL_NOT_SET
+  LEVEL_TOO_LOW
+  PROFESSION_MISMATCH
+  SKILL_MISSING
+}
+
+type MatchRejection {
+  reason: MatchRejectReason!
+  skillCode: String
+}
+
+type MatchReportCaregiver {
+  careLevel: CareLevel
+  fullName: String!
+  id: ID!
+  profession: CaregiverProfession!
+}
+
+type MatchingAdminContact {
+  label: String!
+  url: String!
+}
+
 input MemberDetailsInput {
   age: Int
 
@@ -2558,6 +2619,7 @@ type Mutation {
   Super Admin only: Schedule permanent deletion of an admin account after a grace period. Immediately deactivates the account and bans Supabase Auth. Grace period: 7, 14, 30, or 60 days.
   """
   scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
+  selectBookingCaregiver(bookingId: ID!, caregiverId: ID!): BookingCaregiverSelection!
 
   """
   Admin only: deactivate / reactivate a care activity (there is no delete)
@@ -3168,6 +3230,7 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+  bookingMatchReport(bookingId: ID!): BookingMatchReport!
 
   """
   Active care activities for the booking page, ordered by category then sortOrder
@@ -3218,6 +3281,7 @@ type Query {
     """จุดในแอปที่กำลังขอความยินยอม"""
     source: String
   ): ConsentPolicy!
+  eligibleCaregivers(bookingId: ID!): EligibleCaregivers!
 
   """
   รายละเอียดกลุ่มเดียว — เฉพาะสมาชิกที่ยัง ACTIVE เท่านั้น. คนนอกกลุ่มจะได้ NOT_A_MEMBER เสมอ ไม่ว่ากลุ่มนั้นจะมีอยู่จริงหรือไม่ (กันเดา id).
