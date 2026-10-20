@@ -27,6 +27,7 @@ import { FamilyGroupModule } from './family-group/family-group.module';
 import { ConsentModule } from './consent/consent.module';
 import { AssessmentModule } from './assessment/assessment.module';
 import { CareSkillModule } from './care-skill/care-skill.module';
+import { CareActivityModule } from './care-activity/care-activity.module';
 
 @Module({
   imports: [
@@ -89,6 +90,7 @@ import { CareSkillModule } from './care-skill/care-skill.module';
     ConsentModule,       // PYG-472: ข้อความ PDPA consent + เวอร์ชันนโยบาย (อ่านอย่างเดียว)
     AssessmentModule,    // PYG-609: private ADL assessment API
     CareSkillModule,     // PYG-652: careSkills(profession) + ตรวจทักษะผู้ดูแลก่อนบันทึก
+    CareActivityModule,  // PYG-634: กิจกรรมการดูแลกลาง (แอดมิน + หน้าจอง + snapshot ใน booking)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

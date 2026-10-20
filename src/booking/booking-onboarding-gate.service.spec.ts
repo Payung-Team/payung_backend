@@ -20,6 +20,7 @@ import type { BookingSettlementService } from '../payment/settlement/booking-set
 import type { JobQrService } from '../monitoring/qr/job-qr.service';
 import type { ConsentService } from '../consent/consent.service';
 import type { AvatarUrlService } from '../common/avatar-url.service';
+import type { CareActivityService } from '../care-activity/care-activity.service';
 import { CONSENT_TYPE } from '../consent/consent.constants';
 import { CONSENT_ERROR } from '../consent/consent.errors';
 import { FG_ERROR } from '../family-group/family-group.errors';
@@ -103,6 +104,8 @@ describe('BookingService — ด่าน Onboarding (PYG-499)', () => {
       consent as unknown as ConsentService,
       // PYG-518: ด่านจองไม่ได้ sign รูปผู้ดูแล — stub ไว้ให้ครบ constructor
       { resolve: jest.fn(), resolveMany: jest.fn() } as unknown as AvatarUrlService,
+      // PYG-634: ด่านจองไม่ได้เลือกกิจกรรม — stub ไว้ให้ครบ constructor
+      { resolveForBooking: jest.fn().mockResolvedValue([]), writeForBooking: jest.fn() } as unknown as CareActivityService,
     );
 
     const internals = service as unknown as BookingInternals;

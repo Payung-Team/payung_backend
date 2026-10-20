@@ -36,6 +36,18 @@ input AddGroupCareRecipientInput {
   nickname: String
 }
 
+input AdminCareActivitiesFilter {
+  """BASIC | INTERMEDIATE | ADVANCED"""
+  careLevel: String
+  category: String
+
+  """ไม่ส่ง = ทั้งที่เปิดและปิดใช้งาน"""
+  isActive: Boolean
+
+  """ค้นในชื่อไทย / อังกฤษ / รหัส"""
+  search: String
+}
+
 """
 Admin dashboard data: summary stats, trends, review time, and recent activity
 """
@@ -180,13 +192,17 @@ type AdminProfessionChangeRequest {
   fromProfession: CaregiverProfession!
   id: ID!
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """
+  Attached professional license (no signedUrl here — view it via kycStatus / adminKycDetail)
+  """
   licenseDocument: KycDocument
 
-  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  """
+  Expiry of the attached license 'YYYY-MM-DD' (Asia/Bangkok) · null when none
+  """
   licenseExpiresAt: String
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """License number of the attached professional license (null when none)"""
   licenseNumber: String
   rejectionReason: String
   requestedAt: DateTime!
@@ -378,6 +394,18 @@ input AvailabilitySlotInput {
   timeSlot: String!
 }
 
+"""
+Activity chosen for a booking — snapshot at booking time (does not follow later edits)
+"""
+type BookingActivity {
+  activityId: ID!
+  careLevel: CareLevel!
+  category: String!
+
+  """Thai name at booking time"""
+  name: String!
+}
+
 input BookingHistoryInput {
   limit: Int = 10
   page: Int = 1
@@ -414,6 +442,11 @@ enum BookingStatus {
 }
 
 type BookingSummary {
+  """
+  PYG-634: activities chosen from the central list — snapshot at booking time (name / category / careLevel do not follow later edits)
+  """
+  activities: [BookingActivity!]!
+
   """true เมื่อผู้เรียกเป็นผู้สร้างคำจองในนามกลุ่ม"""
   bookedByMe: Boolean
   bookingDate: String!
@@ -482,6 +515,21 @@ type CancelScheduledDeletePayload {
   """Whether the account was reactivated as part of the cancellation"""
   reactivated: Boolean!
   user: User!
+}
+
+"""Central care activity (care_activities)"""
+type CareActivity {
+  careLevel: CareLevel!
+  category: String!
+
+  """T-01 code (A01…) · null for admin-added activities"""
+  code: String
+  id: ID!
+  isActive: Boolean!
+  nameEn: String
+  nameTh: String!
+  sortOrder: Int!
+  updatedAt: DateTime!
 }
 
 """
@@ -649,6 +697,11 @@ type CaregiverBookingListResponse {
 
 type CaregiverBookingSummary {
   acceptedAt: DateTime
+
+  """
+  PYG-634: activities chosen from the central list — snapshot at booking time
+  """
+  activities: [BookingActivity!]!
   bookingDate: String!
 
   """PYG-361: เหมือนกับฝั่ง patient แต่มุมมอง caregiver"""
@@ -1049,6 +1102,11 @@ type ConsentStatus {
 
 input CreateBookingOnBehalfInput {
   """
+  PYG-634: กิจกรรมจากรายการกลาง (careActivities) · ไม่บังคับ · ปิดใช้งาน = CARE_ACTIVITY_INACTIVE · ไม่มีอยู่ = CARE_ACTIVITY_NOT_FOUND
+  """
+  activityIds: [ID!]
+
+  """
   วันที่ให้บริการ รูปแบบ ISO: "2026-09-15"
   """
   bookingDate: String!
@@ -1116,6 +1174,17 @@ input CreateBookingOnBehalfInput {
   """รายการงาน เช่น ["อาบน้ำ", "ป้อนอาหาร"] อย่างน้อย 1 รายการ"""
   tasks: [String!]!
   timeSlot: String @deprecated(reason: "PYG-523: ส่ง endTime แทน — ใช้เฉพาะเมื่อไม่ส่ง endTime (ช่วงเปลี่ยนผ่าน)")
+}
+
+input CreateCareActivityInput {
+  """BASIC | INTERMEDIATE | ADVANCED"""
+  careLevel: String!
+  category: String!
+  nameEn: String
+  nameTh: String!
+
+  """ไม่ส่ง = ต่อท้ายหมวด"""
+  sortOrder: Int
 }
 
 input CreateFamilyGroupInput {
@@ -2285,6 +2354,11 @@ type Mutation {
   createBookingOnBehalf(input: CreateBookingOnBehalfInput!): BookingSummary!
 
   """
+  Admin only: add a care activity. CARE_ACTIVITY_DUPLICATE when the name exists in the same category.
+  """
+  createCareActivity(input: CreateCareActivityInput!): CareActivity!
+
+  """
   สร้างกลุ่มครอบครัวใหม่ — ผู้สร้างกลายเป็นเจ้าของ (OWNER) ทันที. ผู้ใช้ที่ล็อกอินแล้วทุกคนสร้างได้ และสร้างได้หลายกลุ่ม.
   """
   createFamilyGroup(input: CreateFamilyGroupInput!): FamilyGroup!
@@ -2473,6 +2547,11 @@ type Mutation {
   scheduleDeleteAdmin(input: ScheduleDeleteAdminInput!): ScheduleDeleteAdminPayload!
 
   """
+  Admin only: deactivate / reactivate a care activity (there is no delete)
+  """
+  setCareActivityActive(id: ID!, isActive: Boolean!): CareActivity!
+
+  """
   Admin only: set or change the care level of a VERIFIED caregiver. The first level of a new caregiver is chosen in approveKyc(careLevel). Same level already set by an admin = no-op (changed: false). Errors: CARE_LEVEL_REQUIRED, CARE_LEVEL_INVALID, CARE_LEVEL_REASON_REQUIRED, CARE_LEVEL_KYC_NOT_VERIFIED.
   """
   setCaregiverCareLevel(input: SetCaregiverCareLevelInput!): SetCaregiverCareLevelPayload!
@@ -2521,6 +2600,11 @@ type Mutation {
   Admin only: Transfer a captured payment to the caregiver via a real Omise Transfer, minus the platform fee. Requires paymentStatus = "captured" and a verified payout account.
   """
   transferPaymentToCaregiver(bookingId: ID!): Payment!
+
+  """
+  Admin only: edit a care activity. Existing bookings keep their snapshot.
+  """
+  updateCareActivity(id: ID!, input: UpdateCareActivityInput!): CareActivity!
 
   """Update caregiver profile (verified caregiver only)"""
   updateCaregiverProfile(input: UpdateCaregiverInput!): Caregiver!
@@ -2839,6 +2923,11 @@ type PhoneVerificationPayload {
 }
 
 input ProfessionChangeInput {
+  """
+  kyc_documents.id of an uploaded professional_license. Required when the new profession needs a license (nurse, physiotherapist).
+  """
+  licenseDocumentId: ID
+
   """general_caregiver | nurse | physiotherapist"""
   profession: String!
 }
@@ -2849,13 +2938,17 @@ type ProfessionChangeRequest {
   fromProfession: CaregiverProfession!
   id: ID!
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """
+  Attached professional license (no signedUrl here — view it via kycStatus / adminKycDetail)
+  """
   licenseDocument: KycDocument
 
-  """S03 (PYG-558) — 'YYYY-MM-DD' · ตอนนี้ null เสมอ"""
+  """
+  Expiry of the attached license 'YYYY-MM-DD' (Asia/Bangkok) · null when none
+  """
   licenseExpiresAt: String
 
-  """S03 (PYG-558) — ตอนนี้ null เสมอ"""
+  """License number of the attached professional license (null when none)"""
   licenseNumber: String
   rejectionReason: String
   requestedAt: DateTime!
@@ -2991,6 +3084,11 @@ type ProofOfWorkSummary {
 
 type Query {
   """
+  Admin only: all care activities including inactive ones, filtered by category / careLevel / isActive / search
+  """
+  adminCareActivities(filter: AdminCareActivitiesFilter): [CareActivity!]!
+
+  """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
   """
   adminDashboard: AdminDashboardPayload!
@@ -3057,6 +3155,11 @@ type Query {
   Admin only: Get paginated list of users. Filter by role, search by name/email. Newest users first.
   """
   adminUserList(input: AdminUserListInput!): AdminUserListPayload!
+
+  """
+  Active care activities for the booking page, ordered by category then sortOrder
+  """
+  careActivities: [CareActivity!]!
 
   """
   PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
@@ -3798,6 +3901,17 @@ input TransferOwnershipInput {
   users.id ของเจ้าของคนใหม่ — ต้องเป็นสมาชิก ACTIVE ของกลุ่มนี้อยู่แล้ว (เชิญคนนอกมาเป็นเจ้าของตรง ๆ ไม่ได้)
   """
   newOwnerUserId: ID!
+}
+
+input UpdateCareActivityInput {
+  """BASIC | INTERMEDIATE | ADVANCED"""
+  careLevel: String
+  category: String
+
+  """ส่ง "" = ลบชื่ออังกฤษ"""
+  nameEn: String
+  nameTh: String
+  sortOrder: Int
 }
 
 input UpdateCaregiverInput {

@@ -8,6 +8,8 @@ import {
   PatientBriefDto,
 } from './dto/caregiver-booking.types';
 import { AvatarUrlService } from '../common/avatar-url.service';
+import { CareActivityService } from '../care-activity/care-activity.service';
+import { BookingActivity } from '../care-activity/entities/care-activity.entity';
 import { CaregiverBookingsInput } from './dto/caregiver-bookings.input';
 import { CaregiverBookingHistoryInput } from './dto/caregiver-booking-history.input';
 import { DeclineBookingInput } from './dto/decline-booking.input';
@@ -38,6 +40,7 @@ export class CaregiverBookingResolver {
     private readonly service: CaregiverBookingService,
     private readonly bookingTaskService: BookingTaskService,
     private readonly avatarUrlService: AvatarUrlService,
+    private readonly careActivityService: CareActivityService,
   ) {}
 
   // ─── Queries ──────────────────────────────────────────────────────────────
@@ -131,6 +134,14 @@ export class CaregiverBookingResolver {
   })
   async bookingTasks(@Parent() booking: CaregiverBookingSummary): Promise<BookingTask[]> {
     return this.bookingTaskService.listForBooking(booking.id);
+  }
+
+  // PYG-634: กิจกรรมที่ผู้จองเลือก — สำเนา ณ ตอนจอง (R6)
+  @ResolveField(() => [BookingActivity], {
+    description: 'PYG-634: activities chosen from the central list — snapshot at booking time',
+  })
+  async activities(@Parent() booking: CaregiverBookingSummary): Promise<BookingActivity[]> {
+    return this.careActivityService.listForBooking(booking.id);
   }
 
   @ResolveField(() => String, {
