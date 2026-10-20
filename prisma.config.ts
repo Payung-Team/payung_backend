@@ -3,6 +3,12 @@
 import 'dotenv/config';
 import { defineConfig, env } from 'prisma/config';
 
+const databaseUrl =
+  process.env.DATABASE_URL ??
+  (process.argv.includes('generate')
+    ? 'postgresql://prisma:prisma@127.0.0.1:5432/payung_build'
+    : env('DATABASE_URL'));
+
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
@@ -13,6 +19,8 @@ export default defineConfig({
     seed: 'ts-node --transpile-only -r tsconfig-paths/register prisma/seed.ts',
   },
   datasource: {
-    url: env('DATABASE_URL'),
+    // Client generation only needs a syntactically valid URL and never connects.
+    // Database commands still require the real DATABASE_URL.
+    url: databaseUrl,
   },
 });
