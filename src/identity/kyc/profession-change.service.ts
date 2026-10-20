@@ -39,7 +39,7 @@ import { AuthUser } from '../../common/decorators/current-user.decorator';
 import {
   CaregiverProfession,
   DECISION_ACTION_TO_STATUS,
-  isCaregiverProfession,
+  parseStoredProfession,
   PROFESSION_CHANGE_ACTION,
   ProfessionChangeStatus,
 } from './profession.constants';
@@ -863,8 +863,8 @@ export class ProfessionChangeService {
       ? (fieldChanges as Array<Partial<ProfessionLogEntry>>)
       : [];
     const entry = entries.find((e) => e?.field === 'profession');
-    const from = this.parseStored(entry?.oldValue);
-    const to = this.parseStored(entry?.newValue);
+    const from = parseStoredProfession(entry?.oldValue);
+    const to = parseStoredProfession(entry?.newValue);
 
     if (!from || !to) {
       this.logger.error({
@@ -883,16 +883,5 @@ export class ProfessionChangeService {
           ? entry.licenseDocumentId
           : undefined,
     };
-  }
-
-  /** oldValue/newValue เก็บเป็น JSON string ('"nurse"') → 'nurse' */
-  private parseStored(value: string | undefined): CaregiverProfession | null {
-    if (typeof value !== 'string') return null;
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return isCaregiverProfession(parsed) ? parsed : null;
-    } catch {
-      return null;
-    }
   }
 }
