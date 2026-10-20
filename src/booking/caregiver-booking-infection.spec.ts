@@ -313,7 +313,7 @@ describe('CaregiverBookingService — ข้อมูลโรคติดเช
   // ── ชั้น resolver ──────────────────────────────────────────────────────────
 
   describe('CaregiverBookingResolver.infectionDisclosure (field-level)', () => {
-    const resolver = new CaregiverBookingResolver({} as never, {} as never, {} as never);
+    const resolver = new CaregiverBookingResolver({} as never, {} as never, {} as never, {} as never);
     const summary = (viewer: string | undefined) =>
       ({
         infectionDisclosure: { hasInfectiousDisease: true, acknowledgedAt: null },

@@ -6,6 +6,8 @@ import { Client } from 'pg';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaService } from '../src/common/prisma.service';
+import { CareActivityService } from '../src/care-activity/care-activity.service';
+import { ClockService } from '../src/common/clock.service';
 import { AssessmentService } from '../src/assessment/assessment.service';
 import { ConsentService } from '../src/consent/consent.service';
 import { ADL_ITEMS } from '../src/assessment/assessment.constants';
@@ -70,6 +72,7 @@ describeDb('PYG-643 Required Skills: Postgres transactions and races', () => {
       qr as never,
       new ConsentService(db),
       {} as never,
+      new CareActivityService(db, new ClockService()),
     );
   });
   afterAll(async () => {

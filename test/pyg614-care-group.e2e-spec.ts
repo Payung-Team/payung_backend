@@ -6,6 +6,7 @@ import { Client } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaService } from '../src/common/prisma.service';
+import { ClockService } from '../src/common/clock.service';
 import { AssessmentService } from '../src/assessment/assessment.service';
 import { CareRecipientsService } from '../src/patient/care-recipients.service';
 import { ConsentService } from '../src/consent/consent.service';
@@ -48,7 +49,7 @@ describeDb('PYG-614 care group: real Postgres', () => {
     sql = new Client({ connectionString: DB_URL });
     await sql.connect();
     assessments = new AssessmentService(prisma, new ConsentService(prisma));
-    profiles = new CareRecipientsService(prisma);
+    profiles = new CareRecipientsService(prisma, new ClockService());
   });
   afterAll(async () => {
     if (prisma) {
