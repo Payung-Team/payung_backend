@@ -16,6 +16,7 @@ import { DeclineBookingInput } from './dto/decline-booking.input';
 import { CancelAcceptanceInput } from './dto/cancel-acceptance.input';
 import { SetTaskDoneInput } from './dto/set-task-done.input';
 import { BookingTask } from './dto/booking-task.types';
+import { InfectionDisclosure } from './dto/infection-disclosure.type';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -89,9 +90,12 @@ export class CaregiverBookingResolver {
   })
   async acceptBooking(
     @Args('bookingId', { type: () => ID }) bookingId: string,
+    // PYG-619: optional ใน schema โดยตั้งใจ — client เก่าที่ไม่ส่งจะไม่พังที่ชั้น validation
+    // แต่ได้ INFECTION_ACK_REQUIRED (422) เมื่องานนั้นต้องรับทราบ · ตรวจจริงที่ service
+    @Args('infectionAcknowledged', { type: () => Boolean, nullable: true }) infectionAcknowledged: boolean | undefined,
     @CurrentUser() user: AuthUser,
   ): Promise<CaregiverBookingSummary> {
-    return this.service.acceptBooking(user.id, bookingId);
+    return this.service.acceptBooking(user.id, bookingId, infectionAcknowledged ?? undefined);
   }
 
   @Mutation(() => CaregiverBookingSummary, {
@@ -151,6 +155,27 @@ export class CaregiverBookingResolver {
   })
   recipientAvatarUrl(@Parent() booking: CaregiverBookingSummary): Promise<string | null> {
     return this.avatarUrlService.resolve(booking.recipientAvatarPath);
+  }
+
+  /**
+   * PYG-619 — ข้อมูลโรคติดเชื้อ (ข้อมูลสุขภาพ): ตรวจสิทธิ์ซ้ำที่ระดับ field
+   *
+   * GraphQL เข้าถึง type เดียวกันได้หลายเส้นทาง จึงไม่เชื่อว่า query แม่กรองมาแล้ว:
+   * ส่งต่อเฉพาะเมื่อ service ประกอบค่านี้ให้ "ผู้ใช้คนเดียวกับที่กำลังขอ" (infectionDisclosureViewerUserId)
+   * class นี้มี @Roles(CAREGIVER) อยู่แล้ว — role อื่นที่เข้ามาถึง field นี้ถูก guard ปฏิเสธ
+   */
+  @ResolveField(() => InfectionDisclosure, {
+    nullable: true,
+    name: 'infectionDisclosure',
+    description:
+      'Relative-reported infectious disease info (health data). Only for the caregiver who owns the request and only while it is active; null otherwise.',
+  })
+  infectionDisclosure(
+    @Parent() booking: CaregiverBookingSummary,
+    @CurrentUser() user: AuthUser,
+  ): InfectionDisclosure | null {
+    if (!booking.infectionDisclosure || booking.infectionDisclosureViewerUserId !== user.id) return null;
+    return booking.infectionDisclosure;
   }
 }
 

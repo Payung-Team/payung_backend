@@ -61,6 +61,7 @@ describe('S08 GraphQL contract and global validation compatibility', () => {
           familyGroupId: null,
         }),
       },
+      booking: { findMany: jest.fn().mockResolvedValue([]) },
       careRecipientAssessment: {
         upsert: jest.fn(({ create }) => {
           stored = create;

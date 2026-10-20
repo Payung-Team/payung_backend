@@ -15,6 +15,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { BookingExpiryService } from './booking-expiry.service';
 import { CareActivityModule } from '../care-activity/care-activity.module';
 import { ConsentModule } from '../consent/consent.module';
+import { RequiredSkillsReader, BookingRequiredSkillsResolver, CaregiverRequiredSkillsResolver, GroupRequiredSkillsResolver } from './required-skills/required-skills.resolver';
 
 @Module({
   // PYG-286: PaymentModule ให้ OmiseService + PaymentStateMachine สำหรับ auto-void on cancel
@@ -28,6 +29,10 @@ import { ConsentModule } from '../consent/consent.module';
   // PYG-202: REST controllers (create/cancel booking + task suggestions)
   controllers: [BookingController, BookingTaskSuggestionsController],
   providers: [
+    RequiredSkillsReader,
+    BookingRequiredSkillsResolver,
+    CaregiverRequiredSkillsResolver,
+    GroupRequiredSkillsResolver,
     // ฝั่ง patient (PYG-210): ยืนยัน booking + ดูประวัติ
     BookingService,
     BookingResolver,

@@ -16,6 +16,8 @@ export const DRIVING_LICENSE_ERROR = {
   NOT_VERIFIED: 'DRIVING_LICENSE_NOT_VERIFIED',
   /** ปฏิเสธโดยไม่มีเหตุผล */
   REJECT_REASON_REQUIRED: 'REJECT_REASON_REQUIRED',
+  /** ส่ง transportMode และ selfDriveTransport มาพร้อมกันแต่ขัดกัน */
+  TRANSPORT_MODE_CONFLICT: 'TRANSPORT_MODE_CONFLICT',
 } as const;
 
 export type DrivingLicenseErrorCode =
@@ -27,6 +29,7 @@ const MESSAGE: Record<DrivingLicenseErrorCode, string> = {
   DRIVING_LICENSE_EXPIRED: 'ใบขับขี่หมดอายุแล้ว',
   DRIVING_LICENSE_NOT_VERIFIED: 'ใบขับขี่ยังไม่ผ่านการตรวจสอบหรือหมดอายุ จึงรับงานที่ต้องขับรถรับส่งไม่ได้',
   REJECT_REASON_REQUIRED: 'ต้องระบุเหตุผลที่ปฏิเสธ',
+  TRANSPORT_MODE_CONFLICT: 'transportMode กับ selfDriveTransport ขัดกัน — ส่งอย่างใดอย่างหนึ่ง หรือส่งให้ตรงกัน',
 };
 
 export class DrivingLicenseError extends GraphQLError {

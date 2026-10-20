@@ -41,8 +41,14 @@ describe('DrivingLicenseService', () => {
       );
     });
 
-    it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> รับ (วันหมดอายุเองยังใช้ได้) และเก็บเป็นสิ้นวัน', () => {
-      expect(service.validateExpiry(new Date('2026-10-18T00:00:00Z'))).toEqual(endOfDay('2026-10-18'));
+    it('วันหมดอายุตรงกับวันนี้ (เวลาไทย) -> DRIVING_LICENSE_EXPIRED ตอนอัปโหลด (ตรงกับ FE ที่ปิดวันนี้)', () => {
+      expect(() => service.validateExpiry(new Date('2026-10-18T00:00:00Z'))).toThrow(
+        expect.objectContaining({ extensions: expect.objectContaining({ code: 'DRIVING_LICENSE_EXPIRED', statusCode: 422 }) }),
+      );
+    });
+
+    it('พรุ่งนี้ (เวลาไทย) -> รับ และเก็บเป็นสิ้นวัน', () => {
+      expect(service.validateExpiry(new Date('2026-10-19T00:00:00Z'))).toEqual(endOfDay('2026-10-19'));
     });
 
     it('เทียบด้วยเวลา server + ปฏิทินไทย: 00:30 ไทยของวันที่ 19 (17:30Z) วันหมดอายุ 18 -> EXPIRED', () => {
@@ -136,7 +142,7 @@ describe('DrivingLicenseService', () => {
     it('ผ่าน: ไม่ throw', async () => {
       findMany.mockResolvedValue(rows());
       await expect(service.assertVerified(owner)).resolves.toBeUndefined();
-      expect(await service.isVerified(owner)).toBe(true);
+      expect(await service.isVerified({ ...owner, transportMode: null })).toBe(true);
     });
 
     it.each([
@@ -149,14 +155,14 @@ describe('DrivingLicenseService', () => {
       await expect(service.assertVerified(owner)).rejects.toMatchObject({
         extensions: { code: 'DRIVING_LICENSE_NOT_VERIFIED', statusCode: 422 },
       });
-      expect(await service.isVerified(owner)).toBe(false);
+      expect(await service.isVerified({ ...owner, transportMode: null })).toBe(false);
     });
 
     it('E3: ใบอนุมัติแล้วข้ามวันหมดอายุ -> false โดยไม่แก้ข้อมูล (เรียกซ้ำด้วยเวลาใหม่)', async () => {
       findMany.mockResolvedValue(rows({ expiresAt: endOfDay('2026-10-18') }));
-      expect(await service.isVerified(owner)).toBe(true);
+      expect(await service.isVerified({ ...owner, transportMode: null })).toBe(true);
       NOW = new Date('2026-10-18T17:00:00Z'); // 00:00 ไทยวันที่ 19
-      expect(await service.isVerified(owner)).toBe(false);
+      expect(await service.isVerified({ ...owner, transportMode: null })).toBe(false);
     });
 
     it('จับคู่ทั้ง caregiver_id และ user_id (caregiver_id เป็น NULL ได้)', async () => {

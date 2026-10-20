@@ -118,7 +118,7 @@ export class KycDocumentService {
       ? validateLicenseFields(data.licenseNumber, data.expiresAt, this.clock.now())
       : null;
 
-    // PYG-597: ใบขับขี่ต้องมีวันหมดอายุที่ยังไม่ผ่านมา (วันนี้ยังรับ) · ไม่เก็บเลขใบขับขี่ (ยังไม่เคาะ)
+    // PYG-597: ใบขับขี่ต้องมีวันหมดอายุที่เป็นวันหลังจากวันนี้ · ไม่เก็บเลขใบขับขี่ (ยังไม่เคาะ)
     const isDriving = data.documentType === DRIVING_LICENSE_DOC_TYPE;
     const drivingExpiresAt = isDriving ? this.drivingLicense.validateExpiry(data.expiresAt) : null;
     // ผูกกับผู้ดูแลทันทีถ้ามีแถวผู้ดูแลอยู่แล้ว: ผู้ดูแลที่ KYC อนุมัติแล้วส่ง KYC ซ้ำไม่ได้ (E1)

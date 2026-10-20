@@ -58,7 +58,7 @@ export class UploadDocumentInput {
 
   /**
    * PYG-587/597: วันหมดอายุ — บังคับเมื่อ docType = professional_license หรือ driving_license
-   * (ใบขับขี่: วันหมดอายุเป็นวันนี้ยังรับ · ผ่านมาแล้วตอบ DRIVING_LICENSE_EXPIRED)
+   * (ใบขับขี่: ต้องเป็นวันหลังจากวันนี้ · วันนี้/ย้อนหลังตอบ DRIVING_LICENSE_EXPIRED)
    * ส่ง 'YYYY-MM-DD' หรือ ISO ก็ได้ — server ใช้วันที่ตามปฏิทินไทย (Asia/Bangkok) และเก็บเป็นสิ้นวันนั้น
    */
   @Field({

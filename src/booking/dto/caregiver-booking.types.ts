@@ -1,7 +1,9 @@
+import { BookingRequiredSkill } from '../required-skills/required-skills.types';
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
 import { BookingPagination } from './booking-summary.types';
 import { PatientProfileType } from './patient-profile.type';
+import { InfectionDisclosure } from './infection-disclosure.type';
 
 /**
  * PatientBriefDto — ข้อมูล "ผู้ป่วย/ลูกค้า" แบบย่อ ที่ caregiver เห็นบนการ์ดงาน
@@ -27,6 +29,8 @@ export class PatientBriefDto {
  */
 @ObjectType()
 export class CaregiverBookingSummary {
+  @Field(() => [BookingRequiredSkill], { nullable: true })
+  requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID) id: string;
 
   // สถานะปัจจุบัน: pending | accepted | confirmed | rejected | completed
@@ -84,6 +88,16 @@ export class CaregiverBookingSummary {
    * undefined = booking ที่สร้างก่อน PYG-460 (ไม่มี snapshot ให้แสดง)
    */
   @Field(() => PatientProfileType, { nullable: true }) patientProfile?: PatientProfileType;
+
+  /**
+   * PYG-619 — ข้อมูลโรคติดเชื้อที่ญาติแจ้ง (ข้อมูลสุขภาพ)
+   * null = ไม่ใช่คำขอของผู้ดูแลคนนี้ หรือสถานะที่ไม่ส่งให้แล้ว (ปฏิเสธ/หมดอายุ/ยกเลิก/จบงาน)
+   * ตรวจสิทธิ์ซ้ำที่ @ResolveField ใน CaregiverBookingResolver (ดู infectionDisclosureViewerUserId)
+   */
+  @Field(() => InfectionDisclosure, { nullable: true }) infectionDisclosure?: InfectionDisclosure | null;
+
+  /** (ไม่ใช่ GraphQL field) users.id ของผู้ดูแลที่ service ประกอบ infectionDisclosure ให้ — field resolver ใช้ยืนยันว่าผู้ขอคือคนเดียวกัน */
+  infectionDisclosureViewerUserId?: string;
 
   // ผู้ติดต่อในวันนัดหมาย — หน้ารายละเอียดงาน/หน้าปฏิบัติงานของผู้ดูแลต้องใช้
   // (การ์ด "ผู้ติดต่อในวันนัดหมาย" และ EmergencyContactCard)

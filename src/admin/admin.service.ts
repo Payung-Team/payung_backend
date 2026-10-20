@@ -70,6 +70,7 @@ import { FieldLockResult, LockedField } from './dto/field-lock.payload';
 import { Caregiver } from '../identity/kyc/entities/caregiver.entity';
 import { User } from '../identity/auth/entities/user.entity';
 import { KycReview } from '../identity/kyc/entities/kyc-review.entity';
+import { ClockService } from '../common/clock.service';
 import { DrivingLicenseService } from '../identity/kyc/driving-license/driving-license.service';
 import { buildDrivingLicenseInfo } from '../identity/kyc/driving-license/driving-license-info.entity';
 import { DRIVING_LICENSE_REVIEW_ACTION } from '../identity/kyc/driving-license/driving-license.constants';
@@ -111,6 +112,7 @@ export class AdminService {
     private readonly emailService: EmailService,
     private readonly payoutAccountService: PayoutAccountService,
     private readonly drivingLicenseService: DrivingLicenseService,
+    private readonly clock: ClockService,
   ) { }
 
   /** PYG-597: ประวัติการตรวจใบขับขี่ทุกรอบของผู้ดูแล ใหม่สุดก่อน (kyc_reviews ที่มี document_id) */
@@ -484,7 +486,7 @@ export class AdminService {
       payoutAccount,
       pendingProfilePhotoDocumentId: pendingProfilePhoto?.id,
       profession: raw.profession,
-      license: pickLatestLicense(documents),
+      license: pickLatestLicense(documents, this.clock.now()),
       drivingLicense: buildDrivingLicenseInfo(
         await this.drivingLicenseService.getState({ caregiverId, userId: raw.userId }),
         documents,
