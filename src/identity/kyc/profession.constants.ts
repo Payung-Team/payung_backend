@@ -50,6 +50,24 @@ export function isCaregiverProfession(
 }
 
 /**
+ * ค่า oldValue/newValue ใน caregiver_edit_logs.field_changes เก็บเป็น JSON string ('"nurse"')
+ * ตามกติกา computeFieldChanges → แปลงกลับเป็น 'nurse' · ค่าเสีย/ไม่รู้จัก → null
+ *
+ * ★ ทุกที่ที่อ่าน log เปลี่ยนวิชาชีพต้องใช้ตัวนี้ ห้ามเทียบสตริงดิบกับ caregivers.profession (PYG-667)
+ */
+export function parseStoredProfession(
+  value: unknown,
+): CaregiverProfession | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isCaregiverProfession(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * สถานะของคำขอเปลี่ยนวิชาชีพหลัง KYC อนุมัติ (S01-AC6)
  * ไม่มีคอลัมน์ไหนเก็บค่านี้ตรง ๆ — คำนวณจากแถวใน caregiver_edit_logs (ดู PROFESSION_CHANGE_ACTION)
  */
