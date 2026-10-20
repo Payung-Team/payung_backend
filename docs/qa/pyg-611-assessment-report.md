@@ -5,6 +5,7 @@
 - รัน: 2026-10-20 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg611-assessment.e2e-spec.ts` · harness: `test/support/qa-e2e.ts`
 - **ผล: PASS 32 TC · FAIL 1 TC (3 กรณีย่อย → bug PYG-666 · Low) · BLOCKED 1 · NOT RUN (หน้าจอ) 5**
+- **รันซ้ำ 2026-10-21 หลัง PYG-666 แก้ (#156): PYG-563_33 PASS 3/3 → PASS 33 TC · FAIL 0**
 
 ## 0. ต้นทางของ expected
 
@@ -92,7 +93,7 @@
 | PYG-563_24 (E1) | ออกกลางทาง (ส่ง 5 ข้อ) → ไม่บันทึกอะไร (v1 ไม่มี draft) และยังจองไม่ได้ | PASS |
 | PYG-563_25 (E2) | "ไม่มีเงื่อนไขพิเศษ" + ไม่แน่ใจ 3 ข้อ → บันทึกได้ มี Flag ไม่แน่ใจ | PASS |
 | PYG-563_26 ×4 (E7) | ค่านอกตัวเลือก (grooming=2) / รหัสข้อไม่มี / ซ้ำ / ตัวพิมพ์ผิด → `ASSESSMENT_ANSWER_INVALID` · ผลเดิมไม่ถูกแตะ (ไม่มีการเขียนบางส่วน) | PASS 4/4 |
-| **PYG-563_33 ×3 (E7)** | **รหัสข้อไม่มี / ซ้ำ / ตัวพิมพ์ผิด ระบุรหัสที่ผิดใน metadata (`invalidAnswerCodes` / `duplicateAnswerCodes` ตาม contract §8)** | **FAIL → PYG-666** — extensions มีแค่ `code`/`statusCode` (กรณีคะแนนเกินช่วงส่ง `invalidAnswerCodes` ถูกแล้ว) · ในโค้ดเทสเป็น `it.failing` |
+| **PYG-563_33 ×3 (E7)** | **รหัสข้อไม่มี / ซ้ำ / ตัวพิมพ์ผิด ระบุรหัสที่ผิดใน metadata (`invalidAnswerCodes` / `duplicateAnswerCodes` ตาม contract §8)** | ~~FAIL → PYG-666~~ **PASS (รันซ้ำหลัง #156)** — เดิม extensions มีแค่ `code`/`statusCode` · เปลี่ยน `it.failing` → `it` แล้ว |
 | PYG-563_27 (E9) | ผู้สูงอายุ 2 คน ประเมินแล้ว 1 → จองได้เฉพาะคนที่ประเมิน | PASS |
 | PYG-563_28 (E10) | booking ที่สร้างก่อนฟีเจอร์ (ผู้สูงอายุไม่มีแบบประเมิน) ยังเปิดดูได้ | PASS |
 | PYG-563_29 | ญาติ A อ่าน/บันทึกของผู้สูงอายุญาติ B → `ASSESSMENT_ACCESS_DENIED` ไม่หลุดข้อมูล ผลเดิมไม่เปลี่ยน · id ไม่มีอยู่ / ไม่ใช่ UUID ได้ error และข้อความเดียวกัน | PASS |
@@ -127,4 +128,4 @@ QA_DATABASE_URL=postgresql://postgres:qa@127.0.0.1:5436/<db> npm run test:e2e --
 ```
 - PYG-611 เดี่ยว 5 รอบ: 47/47 ทุกรอบ (รวม `it.failing` 3 ที่ "ผ่าน" เพราะบั๊กยังอยู่)
 - 5 ชุด QA ใน DB เดียว (แบบ CI): ก่อนแก้ harness ได้ `Parse Error: Expected HTTP/` แบบสุ่ม 2 ใน 3 รอบ (supertest เปิด/ปิด port ชั่วคราวทุก request เมื่อแอปไม่ได้ listen) → harness ให้แอป `listen(0)` ครั้งเดียว · หลังแก้ 3 รอบบน DB ใหม่: **201/201 ทุกรอบ**
-- เมื่อ PYG-666 แก้แล้ว: เปลี่ยน `it.failing` → `it` ใน `PYG-563_33`
+- PYG-666 แก้แล้ว (#156): เปลี่ยน `it.failing` → `it` ใน `PYG-563_33` แล้ว
