@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "payung-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-19",
+  "compatibility_flags": ["enable_nodejs_http_server_modules"],
+  "find_additional_modules": true,
+  "base_dir": "./src/consent",
+  "preserve_file_names": true,
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.md"],
+      "fallthrough": true
+    }
+  ],
+  "alias": {
+    "@as-integrations/fastify": "./src/cloudflare/empty-module.ts",
+    "@apollo/subgraph": "./src/cloudflare/empty-module.ts",
+    "@apollo/subgraph/package.json": "./src/cloudflare/empty-module.ts",
+    "@apollo/subgraph/dist/directives": "./src/cloudflare/empty-module.ts",
+    "@apollo/gateway": "./src/cloudflare/empty-module.ts",
+    "@nestjs/websockets/socket-module": "./src/cloudflare/empty-module.ts",
+    "@nestjs/microservices": "./src/cloudflare/empty-module.ts",
+    "@nestjs/microservices/microservices-module": "./src/cloudflare/empty-module.ts",
+    "ts-morph": "./src/cloudflare/empty-module.ts",
+    "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js"
+  },
+  "vars": {
+    "CF_WORKER": "true",
+    "NODE_ENV": "production"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": [
+      "*/10 * * * *",
+      "5,15,35,45 * * * *",
+      "0 0,1,2,3 * * *",
+      "30 4 * * *",
+      "5 17 * * *"
+    ]
+  }
+}

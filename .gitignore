@@ -1,6 +1,9 @@
 # compiled output
 /dist
 /node_modules
+.wrangler
+.wrangler-dist
+.dev.vars
 /build
 
 # Logs

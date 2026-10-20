@@ -4,6 +4,7 @@
     "node_modules",
     "test",
     "dist",
+    "src/worker.ts",
     "**/*spec.ts",
     "prisma",
     "prisma.config.ts",

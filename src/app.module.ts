@@ -38,7 +38,7 @@ import { CareActivityModule } from './care-activity/care-activity.module';
     }),
 
     // ─── Scheduler (PYG-159) ──────────────────────────────────────────────
-    ScheduleModule.forRoot(),
+    ...(process.env.CF_WORKER === 'true' ? [] : [ScheduleModule.forRoot()]),
 
     // ─── Event Emitter ────────────────────────────────────────────────────
     EventEmitterModule.forRoot(),
@@ -49,7 +49,10 @@ import { CareActivityModule } from './care-activity/care-activity.module';
 
       // autoSchemaFile: สร้าง schema.gql อัตโนมัติจาก TypeScript Decorators
       // join(...) = เซฟไฟล์ไว้ที่ src/schema.gql (เอาไว้ดู/debug)
-      autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
+      autoSchemaFile:
+        process.env.CF_WORKER === 'true'
+          ? true
+          : join(process.cwd(), 'src/schema.gql'),
 
       // sortSchema: เรียง field ใน schema ตามตัวอักษร (อ่านง่ายขึ้น)
       sortSchema: true,
