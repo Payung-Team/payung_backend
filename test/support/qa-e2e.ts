@@ -323,6 +323,11 @@ export async function bootstrap() {
       request(app.getHttpServer())
         .get(path)
         .set('Authorization', `Bearer ${token}`),
+    put: (path: string, body: unknown) =>
+      request(app.getHttpServer())
+        .put(path)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body as object),
   });
 
   /**
