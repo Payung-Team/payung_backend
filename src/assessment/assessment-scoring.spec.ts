@@ -15,12 +15,18 @@ const input = (overrides: Record<string, unknown> = {}) => ({
   noSpecialConditions: true,
   ...overrides,
 });
-function expectCode(fn: () => unknown, code: string) {
+function expectCode(
+  fn: () => unknown,
+  code: string,
+  details: Record<string, unknown> = {},
+) {
   try {
     fn();
     throw new Error('Expected assessment error');
   } catch (error) {
-    expect(error).toMatchObject({ extensions: { code, statusCode: 422 } });
+    expect(error).toMatchObject({
+      extensions: { code, statusCode: 422, ...details },
+    });
   }
 }
 
@@ -78,6 +84,7 @@ describe('ADL scoring and validation (PYG-609)', () => {
         () =>
           calculateAdlAssessment([{ code, value: 0 }, ...answers().slice(1)]),
         'ASSESSMENT_ANSWER_INVALID',
+        { invalidAnswerCodes: [code] },
       );
     },
   );
@@ -85,8 +92,45 @@ describe('ADL scoring and validation (PYG-609)', () => {
     expectCode(
       () => calculateAdlAssessment([answers()[1], ...answers().slice(1)]),
       'ASSESSMENT_ANSWER_INVALID',
+      { duplicateAnswerCodes: [answers()[1].code] },
     );
   });
+  it('reports every unknown and duplicate code at once (PYG-666)', () => {
+    const [first, second] = answers();
+    try {
+      calculateAdlAssessment([
+        { code: 'eating', value: 0 },
+        { code: 'Bladder', value: 0 },
+        { code: 'eating', value: 0 },
+        ...answers(),
+        first,
+        second,
+        first,
+      ]);
+      throw new Error('Expected assessment error');
+    } catch (error) {
+      expect((error as { extensions: unknown }).extensions).toEqual({
+        code: 'ASSESSMENT_ANSWER_INVALID',
+        statusCode: 422,
+        invalidAnswerCodes: ['eating', 'Bladder'],
+        duplicateAnswerCodes: [first.code, second.code],
+      });
+    }
+  });
+  it.each([null, 'feeding', { value: 0 }, { code: 1, value: 0 }])(
+    'rejects malformed answer entry %p without code metadata',
+    (entry) => {
+      try {
+        calculateAdlAssessment([entry, ...answers()]);
+        throw new Error('Expected assessment error');
+      } catch (error) {
+        expect((error as { extensions: unknown }).extensions).toEqual({
+          code: 'ASSESSMENT_ANSWER_INVALID',
+          statusCode: 422,
+        });
+      }
+    },
+  );
   it.each([-1, 3, 0.5, '1', 'unsure', true, NaN, Infinity])(
     'rejects feeding value %s in the service',
     (value) => {
