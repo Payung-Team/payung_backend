@@ -1,3 +1,4 @@
+import { BookingLevelReader, BookingLevelResolver, CaregiverBookingLevelResolver, GroupBookingLevelResolver } from './level/booking-level.resolver';
 import { Module } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import { BookingResolver } from './booking.resolver';
@@ -29,6 +30,7 @@ import { RequiredSkillsReader, BookingRequiredSkillsResolver, CaregiverRequiredS
   // PYG-202: REST controllers (create/cancel booking + task suggestions)
   controllers: [BookingController, BookingTaskSuggestionsController],
   providers: [
+    BookingLevelReader, BookingLevelResolver, CaregiverBookingLevelResolver, GroupBookingLevelResolver,
     RequiredSkillsReader,
     BookingRequiredSkillsResolver,
     CaregiverRequiredSkillsResolver,

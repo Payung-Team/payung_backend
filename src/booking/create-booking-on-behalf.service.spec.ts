@@ -1,3 +1,9 @@
+// S16 snapshot serialization is exercised by its contract and Postgres suites.
+jest.mock('./level/booking-level.read', () => ({
+  ...jest.requireActual('./level/booking-level.read'),
+  readSavedBookingLevels: jest.fn(async (_db, ids: string[]) =>
+    new Map(ids.map(id => [id, { requiredLevel: null, levelBreakdown: null }]))),
+}));
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -88,9 +94,10 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
     tx = {
       booking: { create: jest.fn().mockResolvedValue(fakeCreatedBooking()), findUnique: jest.fn().mockResolvedValue({ careRecipientId: RECIPIENT_ID }), findUniqueOrThrow: jest.fn().mockResolvedValue({ careRecipientId: RECIPIENT_ID, status: 'unmatched', confirmedAt: null, activities: [] }), update: jest.fn() },
+      bookingLevelRule: { findMany: jest.fn().mockResolvedValue([]) },
       careSkillRule: { findMany: jest.fn().mockResolvedValue([]) },
       bookingRequiredSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
-      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, flags: [], hasUnsureFlag: false }) },
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, adlTotalScore: 20, dementiaSevere: null, flags: [], hasUnsureFlag: false }) },
       // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
       booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
       familyGroupActivity: { create: jest.fn().mockResolvedValue({}) },

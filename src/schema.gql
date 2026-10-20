@@ -412,6 +412,13 @@ input BookingHistoryInput {
   status: BookingStatus
 }
 
+type BookingLevelBreakdown {
+  adl: CareLevel!
+  calculatedAt: DateTime!
+  flags: CareLevel
+  services: CareLevel
+}
+
 type BookingListResponse {
   data: [BookingSummary!]!
   pagination: BookingPagination!
@@ -470,6 +477,7 @@ type BookingSummary {
   endTime: String
   estimatedCost: Float
   id: ID!
+  levelBreakdown: BookingLevelBreakdown
   locationAddress: String!
   locationLat: Float
   locationLng: Float
@@ -481,6 +489,7 @@ type BookingSummary {
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
   """
   payment: Payment
+  requiredLevel: CareLevel
   requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
@@ -716,6 +725,7 @@ type CaregiverBookingSummary {
   endTime: String
   estimatedCost: Float
   id: ID!
+  levelBreakdown: BookingLevelBreakdown
   locationAddress: String
   locationLat: Float
   locationLng: Float
@@ -730,6 +740,7 @@ type CaregiverBookingSummary {
   """
   recipientAvatarUrl: String
   rejectionReason: String
+  requiredLevel: CareLevel
   requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
   serviceType: String!
@@ -1686,12 +1697,14 @@ type GroupBookingSummary {
   """ราคาประเมิน (บาท)"""
   estimatedCost: Float
   id: ID!
+  levelBreakdown: BookingLevelBreakdown
 
   """ที่อยู่จุดให้บริการ"""
   locationAddress: String
 
   """สถานะการชำระเงิน เช่น 'held' = พักเงินไว้ (escrow)"""
   paymentStatus: String
+  requiredLevel: CareLevel
   requiredSkills: [BookingRequiredSkill!]
 
   """รูปแบบบริการ เช่น at_home / accompany_outside"""

@@ -1,3 +1,4 @@
+import type { RestBookingLevel } from '../level/booking-level.read';
 /**
  * REST-specific response types for the booking REST endpoints.
  *
@@ -15,7 +16,7 @@ export interface CaregiverBriefRest {
 }
 
 /** Booking summary returned from REST endpoints */
-export interface BookingRest {
+export interface BookingRest extends RestBookingLevel {
   requiredSkills: BookingRequiredSkill[] | null;
   id: string;
   bookingDate: string;

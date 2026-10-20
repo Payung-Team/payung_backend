@@ -1,3 +1,9 @@
+// S16 snapshot serialization is exercised by its contract and Postgres suites.
+jest.mock('./level/booking-level.read', () => ({
+  ...jest.requireActual('./level/booking-level.read'),
+  readSavedBookingLevels: jest.fn(async (_db, ids: string[]) =>
+    new Map(ids.map(id => [id, { requiredLevel: null, levelBreakdown: null }]))),
+}));
 import {
   ConflictException,
   ForbiddenException,
@@ -99,7 +105,8 @@ describe('BookingService — new REST methods', () => {
     //     เทสด้านล่างทั้งหมดจึงยัง assert ผ่าน prisma.booking.create ได้เหมือนเดิม ไม่ต้องแก้
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'recipient' }]),
-      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, flags: [], hasUnsureFlag: false }) },
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment', adlAnswers: {}, adlTotalScore: 20, dementiaSevere: null, flags: [], hasUnsureFlag: false }) },
+      bookingLevelRule: { findMany: jest.fn().mockResolvedValue([]) },
       careSkillRule: { findMany: jest.fn().mockResolvedValue([]) },
       bookingRequiredSkill: { deleteMany: jest.fn(), createMany: jest.fn() },
       booking: {

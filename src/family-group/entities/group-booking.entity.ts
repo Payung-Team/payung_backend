@@ -1,3 +1,5 @@
+import { CareLevel } from '../../common/care-level/care-level';
+import { BookingLevelBreakdown } from '../../booking/level/booking-level.types';
 import { BookingRequiredSkill } from '../../booking/required-skills/required-skills.types';
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 import { CaregiverBriefDto } from '../../booking/dto/booking-summary.types';
@@ -11,6 +13,10 @@ import { CaregiverBriefDto } from '../../booking/dto/booking-summary.types';
  */
 @ObjectType()
 export class GroupBookingSummary {
+  @Field(() => CareLevel, { nullable: true })
+  requiredLevel?: CareLevel | null;
+  @Field(() => BookingLevelBreakdown, { nullable: true })
+  levelBreakdown?: BookingLevelBreakdown | null;
   @Field(() => [BookingRequiredSkill], { nullable: true })
   requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID) id: string;

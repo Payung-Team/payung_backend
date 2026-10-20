@@ -1,3 +1,5 @@
+import { CareLevel } from '../../common/care-level/care-level';
+import { BookingLevelBreakdown } from '../level/booking-level.types';
 import { BookingRequiredSkill } from '../required-skills/required-skills.types';
 import { Field, Float, ID, ObjectType } from '@nestjs/graphql';
 // ใช้ BookingPagination ซ้ำจากฝั่ง patient (รูปทรง pagination เหมือนกัน ไม่ต้องสร้างใหม่)
@@ -28,6 +30,10 @@ export class PatientBriefDto {
  */
 @ObjectType()
 export class CaregiverBookingSummary {
+  @Field(() => CareLevel, { nullable: true })
+  requiredLevel?: CareLevel | null;
+  @Field(() => BookingLevelBreakdown, { nullable: true })
+  levelBreakdown?: BookingLevelBreakdown | null;
   @Field(() => [BookingRequiredSkill], { nullable: true })
   requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID) id: string;

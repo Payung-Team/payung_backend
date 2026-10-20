@@ -1,4 +1,4 @@
-name: S08, S09 and S17 database tests
+name: S08, S09, S16 and S17 database tests
 
 on:
   pull_request:
@@ -42,4 +42,4 @@ jobs:
           npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > /tmp/pyg609-schema.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/pyg609-schema.sql
       - name: Check real transactions and concurrent saves
-        run: npm run test:e2e -- --runInBand --runTestsByPath test/pyg609-assessment.e2e-spec.ts test/pyg614-care-group.e2e-spec.ts test/pyg643-required-skills.e2e-spec.ts
+        run: npm run test:e2e -- --runInBand --runTestsByPath test/pyg609-assessment.e2e-spec.ts test/pyg614-care-group.e2e-spec.ts test/pyg643-required-skills.e2e-spec.ts test/pyg639-booking-level.e2e-spec.ts

@@ -44,6 +44,21 @@ export const CARE_LEVELS: readonly CareLevel[] = [
   CareLevel.ADVANCED,
 ];
 
+/** Shared level ordering for S16 and S18; never duplicate a numeric rank map. */
+export function compareCareLevels(left: CareLevel, right: CareLevel): number {
+  const a = CARE_LEVELS.indexOf(left);
+  const b = CARE_LEVELS.indexOf(right);
+  if (a < 0 || b < 0) throw new RangeError('Unknown care level');
+  return a - b;
+}
+export function highestCareLevel(levels: readonly (CareLevel | null)[]): CareLevel | null {
+  return levels.reduce<CareLevel | null>((highest, level) => {
+    if (level === null) return highest;
+    if (!CARE_LEVELS.includes(level)) throw new RangeError('Unknown care level');
+    return highest === null || compareCareLevels(level, highest) > 0 ? level : highest;
+  }, null);
+}
+
 /**
  * ค่าที่ client ส่งเข้ามาได้ = ชื่อ enum ใน GraphQL (ตัวพิมพ์ใหญ่ตรงตัว)
  * ใช้ทั้งตอนแปลงค่าขาเข้า และตอบใน extensions.allowed ของ error
