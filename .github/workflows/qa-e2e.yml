@@ -50,3 +50,5 @@ jobs:
           npm run test:e2e -- --runInBand --runTestsByPath
           test/pyg636-care-activities.e2e-spec.ts
           test/pyg644-required-skills.e2e-spec.ts
+          test/pyg640-booking-level.e2e-spec.ts
+          test/pyg649-matching.e2e-spec.ts

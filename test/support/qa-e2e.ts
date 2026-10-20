@@ -8,11 +8,14 @@
  *    - build the DB from schema.prisma (not migrations) — see docs/qa/README-qa-e2e.md
  *
  * Real app modules: FamilyGroupModule (→ Booking → Payment / Monitoring / Notification / Consent / CareActivity)
- *   + AssessmentModule (S08) + CareSkillModule (S03/S17)
+ *   + AssessmentModule (S08) + CareSkillModule (S03/S17) + MatchingModule (S18)
  * Only 3 external services are mocked — no real Omise / Supabase / SMTP call is ever made:
  *   SupabaseService (auth.getUser) · OmiseService (every method) · EmailService (every method)
  */
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { Client } from 'pg';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -30,6 +33,8 @@ import { SupabaseService } from '../../src/common/supabase.service';
 import { FamilyGroupModule } from '../../src/family-group/family-group.module';
 import { AssessmentModule } from '../../src/assessment/assessment.module';
 import { CareSkillModule } from '../../src/care-skill/care-skill.module';
+import { MatchingModule } from '../../src/matching/matching.module';
+import { LICENSE_DOC_TYPE } from '../../src/identity/kyc/license/license.constants';
 import { OmiseService } from '../../src/payment/omise/omise.service';
 import { EmailService } from '../../src/email/email.service';
 import { ADL_ITEMS } from '../../src/assessment/assessment.constants';
@@ -53,6 +58,53 @@ if (DB_URL) {
 }
 
 export const describeDb = DB_URL ? describe : describe.skip;
+
+/**
+ * ข้อมูลตั้งต้นแบบเดียวกับ production: ล้างตาราง master ของ S15/S16/S17 แล้วรัน migration ข้อมูลตามลำดับจริง
+ * (migration มีหลายคำสั่ง + BEGIN/COMMIT → ใช้ pg simple query ไม่ใช่ Prisma) · รันซ้ำบน DB เดิมได้
+ */
+export const PRODUCTION_SEEDS = [
+  '20261008040000_pyg568_seed_care_activities',
+  '20261008060000_pyg569_seed_booking_level_rules',
+  '20261008070000_pyg569_seed_flag_level_rules',
+  '20261008080000_pyg651_care_activities_align_taxonomy',
+  '20261008090000_pyg651_care_activity_e11_short_name',
+  '20261009000000_pyg570_seed_required_skills',
+  '20261009010000_pyg638_f03_level_advanced',
+];
+
+export async function seedProductionMasterData() {
+  const sql = new Client({ connectionString: DB_URL });
+  await sql.connect();
+  try {
+    await sql.query(
+      'TRUNCATE care_skill_rules, care_skills, booking_level_rules, care_activities CASCADE',
+    );
+    for (const m of PRODUCTION_SEEDS) {
+      await sql.query(
+        readFileSync(
+          join(__dirname, '..', '..', 'prisma/migrations', m, 'migration.sql'),
+          'utf8',
+        ),
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
+/** ทักษะกลาง 15 ตัว (seed PYG-642) ที่ไม่ล็อกวิชาชีพ — ผู้ดูแลทั่วไปถือได้ */
+export const UNLOCKED_SKILLS = [
+  'bathing',
+  'dementia_care',
+  'dressing_assist',
+  'feeding_assist',
+  'glucose_diet_care',
+  'pressure_ulcer_care',
+  'toileting_care',
+  'transfer_assist',
+  'wheelchair_push',
+];
 
 /** ค่า cron flag ที่ใช้รันจริง — รายงานต้องระบุ (PYG-461/462) */
 export const CRON_FLAGS_AT_RUN = {
@@ -206,6 +258,7 @@ export async function bootstrap() {
       FamilyGroupModule,
       AssessmentModule,
       CareSkillModule,
+      MatchingModule,
     ],
   })
     .overrideProvider(SupabaseService)
@@ -304,16 +357,35 @@ export async function bootstrap() {
 
   type Seeded = Awaited<ReturnType<typeof seedUser>>;
 
-  /** ผู้ดูแลที่จองได้ (verified + searchable + มีเรทรายชั่วโมง) */
-  const seedCaregiver = async (hourlyRate = 300) => {
+  /**
+   * ผู้ดูแลที่อยู่ในกลุ่ม public ของ S18 (verified + searchable + เปิดรับทุกวันทุก slot)
+   * ค่าเริ่มต้นผ่านตัวกรอง S18 สำหรับ booking ที่ไม่ต้องการทักษะล็อกวิชาชีพ:
+   *   ระดับสูง · ผู้ดูแลทั่วไป · มีทักษะกลางทุกตัวที่ไม่ล็อกวิชาชีพ
+   * license: ใบประกอบฯ (professional_license) ของ caregiver/user เดียวกัน — ไม่ระบุ = ไม่มีใบ
+   */
+  const seedCaregiver = async (
+    opts: {
+      hourlyRate?: number;
+      careLevel?: 'basic' | 'intermediate' | 'advanced' | null;
+      profession?: 'general_caregiver' | 'nurse' | 'physiotherapist';
+      skills?: string[];
+      searchable?: boolean;
+      kycStatus?: string;
+      license?: { status: string; expiresAt: Date | null } | null;
+    } = {},
+  ) => {
+    const hourlyRate = opts.hourlyRate ?? 300;
     const user = await seedUser('caregiver', 2);
     const cg = await prisma.caregiver.create({
       data: {
         userId: user.id,
         fullName: `ผู้ดูแล ${user.displayName}`,
-        kycStatus: 'verified',
-        isSearchable: true,
+        kycStatus: opts.kycStatus ?? 'verified',
+        isSearchable: opts.searchable ?? true,
         hourlyRate,
+        careLevel: opts.careLevel === undefined ? 'advanced' : opts.careLevel,
+        profession: opts.profession ?? 'general_caregiver',
+        skills: opts.skills ?? UNLOCKED_SKILLS,
       },
       select: { id: true },
     });
@@ -327,8 +399,36 @@ export async function bootstrap() {
         })),
       ),
     });
+    if (opts.license) {
+      await prisma.kycDocument.create({
+        data: {
+          caregiverId: cg.id,
+          userId: user.id,
+          documentType: LICENSE_DOC_TYPE,
+          fileUrl: '',
+          fileName: 'license.jpg',
+          fileSize: 1,
+          mimeType: 'image/jpeg',
+          reviewStatus: opts.license.status,
+          expiresAt: opts.license.expiresAt,
+          licenseNumber: `QA-${user.id.slice(0, 6)}`,
+        },
+      });
+    }
     return { ...user, caregiverId: cg.id, hourlyRate };
   };
+
+  /** S18: เจ้าของ booking เลือกผู้ดูแลผ่าน API จริง (selectBookingCaregiver) */
+  const selectCaregiver = (
+    owner: Seeded,
+    bookingId: string,
+    caregiverId: string,
+  ) =>
+    gql(
+      owner.token,
+      `mutation($b: ID!, $c: ID!) { selectBookingCaregiver(bookingId: $b, caregiverId: $c) { bookingId caregiverId status } }`,
+      { b: bookingId, c: caregiverId },
+    );
 
   /** เจ้าของสร้างกลุ่มผ่าน API จริง แล้วเพิ่มสมาชิกเป็น precondition ตรงลง DB */
   const seedGroup = async (memberCount = 0, memberRole = 1) => {
@@ -371,6 +471,7 @@ export async function bootstrap() {
       flags?: string[];
       score?: 'max' | 'zero';
       adl?: Partial<Record<string, number | null>>;
+      dementiaSevere?: boolean;
     } = {},
   ) => {
     const body = await gql(
@@ -392,6 +493,9 @@ export async function bootstrap() {
           })),
           flags: opts.flags ?? [],
           noSpecialConditions: (opts.flags ?? []).length === 0,
+          ...(opts.dementiaSevere === undefined
+            ? {}
+            : { dementiaSevere: opts.dementiaSevere }),
         },
       },
     );
@@ -432,6 +536,7 @@ export async function bootstrap() {
     rest,
     seedUser,
     seedCaregiver,
+    selectCaregiver,
     seedGroup,
     seedAdmin,
     seedAssessedRecipient,

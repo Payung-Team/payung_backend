@@ -10,188 +10,22 @@
  *
  * ไม่ครอบ (FE): หน้าจอแอดมิน/หน้าจอง การจัดกลุ่มบนจอ ความกว้างมือถือ การกัน URL — ดูรายงาน §ไม่ได้ทดสอบ
  */
-import { createHash, randomUUID } from 'crypto';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { Client } from 'pg';
+import { randomUUID } from 'crypto';
 import {
   bootstrap,
   codeOf,
-  DB_URL,
   describeDb,
   futureDate,
   GqlBody,
   Harness,
+  seedProductionMasterData,
 } from './support/qa-e2e';
-
-const ROOT = join(__dirname, '..');
-const MIGRATIONS = [
-  '20261008040000_pyg568_seed_care_activities',
-  '20261008080000_pyg651_care_activities_align_taxonomy',
-  '20261008090000_pyg651_care_activity_e11_short_name',
-];
-
-const LEVEL_TH: Record<string, string> = {
-  ต้น: 'basic',
-  กลาง: 'intermediate',
-  สูง: 'advanced',
-};
-const LEVEL_API: Record<string, string> = {
-  basic: 'BASIC',
-  intermediate: 'INTERMEDIATE',
-  advanced: 'ADVANCED',
-};
-
-type Row = { code: string; name: string; category: string; level: string };
-
-/** T-01 ร่าง 8 ต.ค. 2026 (43 แถว) — อ่านจาก CSV ต้นทาง */
-function readT01(): Row[] {
-  const lines = readFileSync(
-    join(ROOT, 'docs/pyg568-t01-phase-pilot-20261008.csv'),
-    'utf8',
-  )
-    .trim()
-    .split('\n')
-    .slice(1);
-  return lines.map((line) => {
-    const [code, name, category, level] = line.split(',');
-    return { code, name, category, level: LEVEL_TH[level] };
-  });
-}
-
-/**
- * PYG-651 — ปรับตาม Caregiver Service Taxonomy (Sammy อนุมัติ 8 ต.ค. 2026)
- * เขียนจากคอมเมนต์/ตารางของการ์ด ไม่ได้คัดจาก SQL ทีละบรรทัด เพื่อให้เทียบกับ migration ได้จริง
- */
-const TAXONOMY_LEVEL: Record<string, string> = {
-  A01: 'intermediate',
-  A02: 'basic',
-  A03: 'intermediate',
-  D02: 'basic',
-  E01: 'intermediate',
-  E03: 'advanced',
-  E06: 'intermediate',
-  F04: 'intermediate',
-};
-const TAXONOMY_RENAME: Record<string, string> = {
-  E01: 'วัดสัญญาณชีพครบชุด (ความดัน ชีพจร อุณหภูมิ การหายใจ) และบันทึก',
-  E06: 'ทำแผลทั่วไป (แผลเล็ก แผลตื้น ไม่ติดเชื้อ)',
-  G02: 'ดูแลผู้มีภาวะสมองเสื่อม ป้องกันการพลัดหลง',
-};
-const TAXONOMY_ADDED: Row[] = [
-  {
-    code: 'A10',
-    name: 'โกนหนวด',
-    category: 'สุขอนามัยส่วนบุคคล',
-    level: 'basic',
-  },
-  {
-    code: 'C05',
-    name: 'ดูแลโภชนาการ วางแผนมื้ออาหารตามโรค',
-    category: 'อาหารและโภชนาการ',
-    level: 'intermediate',
-  },
-  {
-    code: 'E08',
-    name: 'ปฐมพยาบาลเบื้องต้นและ CPR / AED',
-    category: 'การเฝ้าระวังสุขภาพ',
-    level: 'intermediate',
-  },
-  {
-    code: 'E09',
-    name: 'ป้องกันการติดเชื้อ (ล้างมือ จัดการของปนเปื้อน)',
-    category: 'การเฝ้าระวังสุขภาพ',
-    level: 'intermediate',
-  },
-  {
-    code: 'E10',
-    name: 'ทำแผลถลอก ล้างแผลด้วยน้ำเกลือ ประคบร้อนเย็น',
-    category: 'การพยาบาลเฉพาะ',
-    level: 'basic',
-  },
-  // ชื่อย่อตามมติ 8 ต.ค. (migration 20261008090000)
-  {
-    code: 'E11',
-    name: 'ทำแผลกดทับรุนแรง',
-    category: 'การพยาบาลเฉพาะ',
-    level: 'advanced',
-  },
-  {
-    code: 'G04',
-    name: 'รับมือพฤติกรรมผู้ป่วยสมองเสื่อม',
-    category: 'ความปลอดภัยและการเฝ้าดู',
-    level: 'advanced',
-  },
-  {
-    code: 'H04',
-    name: 'สอนใช้มือถือ วิดีโอคอลกับครอบครัว',
-    category: 'เพื่อนและสังคม',
-    level: 'basic',
-  },
-  {
-    code: 'H05',
-    name: 'ดูแลอารมณ์ (เหงา ซึม)',
-    category: 'เพื่อนและสังคม',
-    level: 'intermediate',
-  },
-  {
-    code: 'H06',
-    name: 'จัดการเอกสารและสิทธิการรักษา',
-    category: 'เพื่อนและสังคม',
-    level: 'intermediate',
-  },
-  {
-    code: 'J01',
-    name: 'ประเมินความเสี่ยงตาม checklist',
-    category: 'ประเมินและประสานงาน',
-    level: 'intermediate',
-  },
-  {
-    code: 'J02',
-    name: 'สอนญาติทำกิจวัตรพื้นฐาน',
-    category: 'ประเมินและประสานงาน',
-    level: 'intermediate',
-  },
-  {
-    code: 'J03',
-    name: 'ประเมินอาการและทำ care plan',
-    category: 'ประเมินและประสานงาน',
-    level: 'advanced',
-  },
-  {
-    code: 'J04',
-    name: 'สอนญาติงานทางคลินิก',
-    category: 'ประเมินและประสานงาน',
-    level: 'advanced',
-  },
-  {
-    code: 'J05',
-    name: 'ประสานแพทย์หรือนักกายภาพ',
-    category: 'ประเมินและประสานงาน',
-    level: 'advanced',
-  },
-];
-
-function expectedCatalog(): Row[] {
-  const rows = readT01().map((r) => ({
-    ...r,
-    level: TAXONOMY_LEVEL[r.code] ?? r.level,
-    name: TAXONOMY_RENAME[r.code] ?? r.name,
-  }));
-  return [...rows, ...TAXONOMY_ADDED].sort((a, b) =>
-    a.code.localeCompare(b.code),
-  );
-}
-
-/** md5 ของ code|name|category|level เรียงตาม code — ใช้เทียบกับ production แบบอ่านอย่างเดียวในรายงาน */
-export const catalogMd5 = (rows: Row[]) =>
-  createHash('md5')
-    .update(
-      rows
-        .map((r) => `${r.code}|${r.name}|${r.category}|${r.level}`)
-        .join('\n'),
-    )
-    .digest('hex');
+import {
+  catalogMd5,
+  expectedCatalog,
+  LEVEL_API,
+  readT01,
+} from './support/t01-catalog';
 
 type Act = {
   id: string;
@@ -240,22 +74,8 @@ describeDb('PYG-636 · S15 care activities (PYG-568)', () => {
   beforeAll(async () => {
     h = await bootstrap();
     // ข้อมูลเริ่มต้นแบบเดียวกับ production — รันซ้ำได้ (ล้างก่อน)
-    // migration มีหลายคำสั่ง + BEGIN/COMMIT → รันผ่าน pg (simple query) ไม่ใช่ Prisma
-    const sql = new Client({ connectionString: DB_URL });
-    await sql.connect();
-    try {
-      await sql.query('TRUNCATE care_activities CASCADE');
-      for (const m of MIGRATIONS) {
-        await sql.query(
-          readFileSync(
-            join(ROOT, 'prisma/migrations', m, 'migration.sql'),
-            'utf8',
-          ),
-        );
-      }
-    } finally {
-      await sql.end();
-    }
+    // master data แบบ production (S15 กิจกรรม + S16 กติการะดับ + S17 ทักษะ) — ดู seedProductionMasterData
+    await seedProductionMasterData();
     await h.prisma.servicePriceCatalog.upsert({
       where: { serviceType: 'elderly_care' },
       create: { serviceType: 'elderly_care', pricePerHour: 300 },
@@ -278,8 +98,8 @@ describeDb('PYG-636 · S15 care activities (PYG-568)', () => {
     who = patient,
     rid = recipientId,
   ) =>
+    // ไม่ระบุผู้ดูแลตอนสร้าง (unmatched) — ตั้งแต่ S18 การระบุผู้ดูแลถูกตรวจสิทธิ์รับงาน ซึ่งไม่ใช่เป้าของ S15
     h.rest(who.token).post('/api/v1/bookings', {
-      caregiverId: caregiver.caregiverId,
       careRecipientId: rid,
       tasks: ['ดูแลทั่วไป'],
       serviceLocations: ['at_home'],
@@ -680,7 +500,6 @@ describeDb('PYG-636 · S15 care activities (PYG-568)', () => {
             groupId,
             memberUserId: member.id,
             careRecipientId: memberRecipient,
-            caregiverId: caregiver.caregiverId,
             tasks: ['ดูแลทั่วไป'],
             serviceLocations: ['at_home'],
             serviceType: 'elderly_care',
@@ -753,6 +572,13 @@ describeDb('PYG-636 · S15 care activities (PYG-568)', () => {
       ];
       const mine = await myBooking(bookedId(res));
       expect(mine.activities).toEqual(expected);
+      // ผู้จองเลือกผู้ดูแลผ่าน S18 แล้วผู้ดูแลเปิดดูรายละเอียด
+      const picked = await h.selectCaregiver(
+        patient,
+        bookedId(res),
+        caregiver.caregiverId,
+      );
+      expect(picked.errors).toBeUndefined();
       const cg = await h.gql(caregiver.token, CG_BOOKING, {
         id: bookedId(res),
       });
@@ -799,12 +625,23 @@ describeDb('PYG-636 · S15 care activities (PYG-568)', () => {
       );
     });
 
-    it('PYG-568_27 Verify that typed tasks do not set a booking level (S16 not implemented → only checks required_level stays empty)', async () => {
-      const res = await book({ tasks: ['ฉีดยา (พิมพ์เอง)'] });
+    it('PYG-568_27 Verify that typed tasks have no level and do not raise the booking level (S16)', async () => {
+      // ผู้รับบริการคะแนน ADL เต็ม ไม่มี Flag → ระดับมาจาก ADL = ต้น · งานพิมพ์เองที่ฟังดูเป็นงานระดับสูงต้องไม่ดันระดับ
+      const res = await book({
+        tasks: ['ฉีดยา (พิมพ์เอง)', 'ดูดเสมหะ (พิมพ์เอง)'],
+      });
+      expect(res.status).toBe(201);
+      expect(restBody(res)).toMatchObject({
+        requiredLevel: 'BASIC',
+        levelBreakdown: { adl: 'BASIC', flags: null, services: null },
+      });
       const row = await h.prisma.booking.findUniqueOrThrow({
         where: { id: bookedId(res) },
       });
-      expect(row.requiredLevel).toBeNull();
+      expect(row).toMatchObject({
+        requiredLevel: 'basic',
+        levelFromServices: null,
+      });
     });
   });
 

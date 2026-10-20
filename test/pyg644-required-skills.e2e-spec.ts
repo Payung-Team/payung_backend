@@ -14,26 +14,15 @@
  *
  * story นี้ไม่มีหน้าจอ — ตรวจผ่าน API + ค่าในฐานข้อมูล
  */
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { Client } from 'pg';
 import {
   bootstrap,
   codeOf,
-  DB_URL,
   describeDb,
   futureDate,
   GqlBody,
   Harness,
+  seedProductionMasterData,
 } from './support/qa-e2e';
-
-const ROOT = join(__dirname, '..');
-const SEEDS = [
-  '20261008040000_pyg568_seed_care_activities',
-  '20261008080000_pyg651_care_activities_align_taxonomy',
-  '20261008090000_pyg651_care_activity_e11_short_name',
-  '20261009000000_pyg570_seed_required_skills',
-];
 
 type Source = 'ADL' | 'FLAG' | 'SERVICE';
 type ReqSkill = {
@@ -61,23 +50,8 @@ describeDb('PYG-644 · S17 required skills (PYG-570)', () => {
 
   beforeAll(async () => {
     h = await bootstrap();
-    const sql = new Client({ connectionString: DB_URL });
-    await sql.connect();
-    try {
-      await sql.query(
-        'TRUNCATE care_skill_rules, care_skills, care_activities CASCADE',
-      );
-      for (const m of SEEDS) {
-        await sql.query(
-          readFileSync(
-            join(ROOT, 'prisma/migrations', m, 'migration.sql'),
-            'utf8',
-          ),
-        );
-      }
-    } finally {
-      await sql.end();
-    }
+    // master data แบบ production (S15 กิจกรรม + S16 กติการะดับ + S17 ทักษะ) — ดู seedProductionMasterData
+    await seedProductionMasterData();
     for (const serviceType of ['elderly_care', 'physiotherapy']) {
       await h.prisma.servicePriceCatalog.upsert({
         where: { serviceType },
@@ -102,8 +76,8 @@ describeDb('PYG-644 · S17 required skills (PYG-570)', () => {
   type Elder = Awaited<ReturnType<typeof elder>>;
 
   const book = (e: Elder, extra: Record<string, unknown> = {}) =>
+    // ไม่ระบุผู้ดูแลตอนสร้าง (unmatched) — ตั้งแต่ S18 การระบุผู้ดูแลถูกตรวจสิทธิ์รับงาน ซึ่งไม่ใช่เป้าของ S17
     h.rest(e.patient.token).post('/api/v1/bookings', {
-      caregiverId: caregiver.caregiverId,
       careRecipientId: e.recipientId,
       tasks: ['ดูแลทั่วไป'],
       serviceLocations: ['at_home'],
@@ -304,6 +278,9 @@ describeDb('PYG-644 · S17 required skills (PYG-570)', () => {
     it('PYG-570_14 Verify that the caregiver sees the same required skills as the booker', async () => {
       const e = await elder({ adl: { transfers: 1 } });
       const { id, skills } = await bookAndRead(e);
+      expect(
+        (await h.selectCaregiver(e.patient, id, caregiver.caregiverId)).errors,
+      ).toBeUndefined();
       const cg = await h.gql(caregiver.token, CG_BOOKING, { id });
       expect(cg.errors).toBeUndefined();
       expect(
@@ -384,6 +361,9 @@ describeDb('PYG-644 · S17 required skills (PYG-570)', () => {
     it('PYG-570_18 Verify that editing the assessment after confirmation does not change the list', async () => {
       const e = await elder({ adl: { transfers: 1 } });
       const { id } = await bookAndRead(e);
+      expect(
+        (await h.selectCaregiver(e.patient, id, caregiver.caregiverId)).errors,
+      ).toBeUndefined();
       expect(
         (await h.gql(caregiver.token, ACCEPT, { id })).errors,
       ).toBeUndefined();

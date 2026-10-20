@@ -5,6 +5,7 @@
 - รัน: 2026-10-20 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg644-required-skills.e2e-spec.ts` · harness: `test/support/qa-e2e.ts` (เพิ่ม `submitAssessment`)
 - **ผล: รันได้ 28 TC → PASS 28 (30 รอบรวมค่าย่อย) · FAIL 0 · BLOCKED 6 กลุ่ม (รอ infographic / S16 / มติผู้ช่วยพยาบาล / API แก้บริการ)**
+- **รันซ้ำ 2026-10-20 หลัง #147 (`fb20b70`): 30/30 PASS** · ระดับ booking ของ AC7 (S16) ทดสอบแล้วใน PYG-640 (`PYG-569_08`, `_11`) — ตามมติ 9 ต.ค. กายภาพบำบัดได้ระดับสูงเสมอ ไม่ใช่ ต้น/กลาง/สูง ตาม ADL · ปรับ harness: จองแบบไม่ระบุผู้ดูแล แล้วเลือกผ่าน `selectBookingCaregiver` ใน _14 / _18
 - ไม่พบบั๊ก → ไม่มี bug card
 
 ## 0. ต้นทางของ expected result — อ่านก่อน

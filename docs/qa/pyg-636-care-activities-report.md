@@ -4,7 +4,8 @@
 - Commit ที่ทดสอบ: `origin/dev` @ `83ccd4d` (รวม #144 ลำดับ required skills แล้ว)
 - รัน: 2026-10-20 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg636-care-activities.e2e-spec.ts` · harness ร่วม: `test/support/qa-e2e.ts` · CI: `.github/workflows/qa-e2e.yml`
-- **ผล: API/DB 38/38 PASS (35 TC · _02 มี 3 ค่า, _12 มี 2 ค่า) · AC6 ส่วน "ไม่เปลี่ยนระดับ booking" = BLOCKED (S16 ยังไม่มีโค้ดคำนวณ) · เคสหน้าจอ (FE) 4 เคส = NOT RUN (ไม่ได้ทำแบบอัตโนมัติ)**
+- **ผล: API/DB 38/38 PASS (35 TC · _02 มี 3 ค่า, _12 มี 2 ค่า) · เคสหน้าจอ (FE) 4 เคส = NOT RUN (ไม่ได้ทำแบบอัตโนมัติ)**
+- **รันซ้ำ 2026-10-20 หลัง #147 (S16 + S18, `origin/dev` @ `fb20b70`): 38/38 PASS · `_27` เปลี่ยนจาก BLOCKED เป็น PASS** (S16 มีแล้ว) · ปรับ harness: จองแบบไม่ระบุผู้ดูแล (ตั้งแต่ S18 การระบุผู้ดูแลถูกตรวจสิทธิ์รับงาน) แล้วเลือกผ่าน `selectBookingCaregiver` ในเคสที่ต้องมีผู้ดูแล (_24) · ข้อมูลตั้งต้นรวมกติการะดับ S16 ด้วย (`seedProductionMasterData`)
 - ไม่พบบั๊ก → ไม่มี bug card
 
 **รันจริงแค่ไหน:** บูต FamilyGroup → Booking → Payment / Monitoring / Notification / Consent / CareActivity + Assessment + CareSkill ตัวจริง ยิง GraphQL (แอดมิน, รายการ, จองแทน, รายละเอียดการจอง) และ REST `POST /api/v1/bookings` ต่อ Postgres 17 ทิ้งได้ใน Docker ที่สร้างจาก `schema.prisma` · mock แค่ Supabase auth / Omise / Email · ข้อมูลเริ่มต้นได้จากการรัน migration ข้อมูลของ S15 ตามลำดับเดียวกับ production
@@ -66,7 +67,7 @@
 |---|---|---|---|
 | PYG-568_25 | typed tasks only → succeeds and saves no activity | 1. จองด้วย `tasks` อย่างเดียว → 201 · 2. `booking_activities` → 0 · 3. `myBooking` → `tasks` มี, `activities=[]` | PASS |
 | PYG-568_26 | activities and typed tasks are kept separate | 1. จองด้วยทั้งคู่ → 201 · 2. `tasks` = งานพิมพ์เอง · `activities` = กิจกรรม · 3. งานพิมพ์เองไม่อยู่ใน `booking_activities` (ไม่มีระดับ) | PASS |
-| PYG-568_27 | typed tasks do not set a booking level | 1. จองด้วยงานพิมพ์เอง "ฉีดยา" → `bookings.required_level` = NULL | **BLOCKED (บางส่วน)** — ผ่านเท่าที่ตรวจได้ แต่ **ไม่มีโค้ดใดเขียน `required_level` เลย** (S16 · PYG-569 ยังไม่ทำ) จึงพิสูจน์ไม่ได้ว่า "ไม่เปลี่ยน" ต้องรันซ้ำเมื่อ S16 เสร็จ |
+| PYG-568_27 | typed tasks have no level and do not raise the booking level | 1. ADL เต็ม ไม่มี Flag จองด้วยงานพิมพ์เอง "ฉีดยา / ดูดเสมหะ" → 201 · 2. `requiredLevel = BASIC`, `levelBreakdown.services = null` · 3. DB `level_from_services` NULL | **PASS** (รอบ 2026-10-20 หลัง #147 · รอบแรก BLOCKED เพราะยังไม่มี S16) |
 
 ### Edge cases
 | TC | Verify that… | ขั้นตอน → expected | ผล |
@@ -92,8 +93,8 @@
 
 | | จำนวน |
 |---|---|
-| PASS | 34 TC (38 รอบรวมค่าย่อย) |
-| BLOCKED | 1 TC (_27 รอ S16) |
+| PASS | 35 TC (38 รอบรวมค่าย่อย) |
+| BLOCKED | 0 (รอบแรก 1 = _27 รอ S16 · ผ่านแล้วหลัง #147) |
 | NOT RUN (FE) | 4 TC (_36–_39) |
 | FAIL | 0 |
 
