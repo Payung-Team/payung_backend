@@ -1,4 +1,5 @@
 import { Field, Float, ID, Int, ObjectType } from '@nestjs/graphql';
+import { ElderCareGroup } from '../../common/graphql/elder-care-group.enum';
 
 @ObjectType()
 export class GroupCareRecipientDetails {
@@ -18,6 +19,9 @@ export class GroupCareRecipientDetails {
 /** โปรไฟล์ผู้รับบริการของสมาชิกในกลุ่ม พร้อมข้อมูลที่ใช้กรอกฟอร์มจองแทน */
 @ObjectType()
 export class GroupCareRecipient {
+  @Field(() => ElderCareGroup, { nullable: true })
+  careGroup: ElderCareGroup | null;
+
   @Field()
   hasAssessment: boolean;
 

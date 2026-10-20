@@ -1,6 +1,7 @@
 import { Field, ID, InputType, Int, ObjectType } from '@nestjs/graphql';
 import { Allow, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ElderCareGroup } from '../../common/graphql/elder-care-group.enum';
 
 @InputType()
 export class CareRecipientAssessmentAnswerInput {
@@ -29,6 +30,7 @@ export class CareRecipientAssessmentAnswer {
 /** Private: never attach this to public/caregiver/admin projections. */
 @ObjectType()
 export class CareRecipientAssessment {
+  @Field(() => ElderCareGroup) careGroup!: ElderCareGroup;
   @Field(() => ID) careRecipientId!: string;
   @Field(() => [CareRecipientAssessmentAnswer])
   answers!: CareRecipientAssessmentAnswer[];

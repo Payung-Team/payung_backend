@@ -1,4 +1,4 @@
-name: S08 assessment database tests
+name: S08 and S09 assessment database tests
 
 on:
   pull_request:
@@ -42,4 +42,4 @@ jobs:
           npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > /tmp/pyg609-schema.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/pyg609-schema.sql
       - name: Check real transactions and concurrent saves
-        run: npm run test:e2e -- --runInBand pyg609
+        run: npm run test:e2e -- --runInBand 'pyg609|pyg614'

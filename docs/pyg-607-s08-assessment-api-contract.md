@@ -782,3 +782,12 @@ Response (HTTP 200; version เป็นชื่อเสนอของ catalo
 - `prisma/migrations/20261008070000_pyg569_seed_flag_level_rules/migration.sql`: Flags และ system unsure mapping
 - `prisma/migrations/20261009000000_pyg570_seed_required_skills/migration.sql`: exact ADL keys และกติกาทักษะ 7 ข้อ
 - FE `payung-web/src/graphql/familyGroup.ts`, `src/pages/booking/steps/BookingStepPatient.tsx`, `src/lib/bookingSubmitError.ts`: profile queries/REST list และการอ่าน booking errors ที่ต้องรองรับ contract ใหม่
+
+
+## ภาคผนวก S09 · PYG-612 / PYG-614 (17 ต.ค. 2026)
+
+เสนอเพิ่ม `CareRecipientAssessment.careGroup: ElderCareGroup!` ใน response ของทั้ง submit และ read พร้อม `GroupCareRecipient.careGroup: ElderCareGroup` และ `CareRecipientResponse.careGroup` แบบ nullable ใน REST โดยไม่มี input ใหม่ API ใช้ SOCIAL/HOMEBOUND/BEDRIDDEN ส่วน DB ใช้ social/homebound/bedridden ตาม [contract S09](s09-care-group-api-contract.md)
+
+BE คำนวณกลุ่ม 12–20/5–11/0–4 ใน transaction เดียวกับคะแนนทุกครั้งที่บันทึก ขาอ่านส่งค่าที่เก็บไว้ ไม่คำนวณซ้ำ จึงต้อง backfill ผลเก่าและตรวจ readiness ก่อนเปิด non-null field โปรไฟล์ที่ไม่มี assessment เท่านั้นที่คืน careGroup=null ตามสัญญาหลัง rollout พร้อมแล้ว ส่วนสิทธิ์ไม่เปิดเพิ่มแก่ผู้ดูแลที่รับงาน/แอดมิน
+
+ภาคผนวกนี้เป็นข้อเสนอที่เตรียม implementation ใน PYG-614 ยังรอเจ้าของ PYG-607 รับทราบและรับรอง ไม่ใช่หลักฐาน sign-off หรือ deploy

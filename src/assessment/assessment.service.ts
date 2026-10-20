@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import type { CareRecipientAssessment as AssessmentRow } from '@prisma/client';
 import { isUUID } from 'class-validator';
 import { PrismaService } from '../common/prisma.service';
+import { classifyCareGroup, storedCareGroupToApi } from '../common/care-group';
 import { ConsentService } from '../consent/consent.service';
 import { CONSENT_TYPE } from '../consent/consent.constants';
 import { ADL_ITEMS, type AdlAnswers } from './assessment.constants';
@@ -42,6 +43,7 @@ export class AssessmentService {
         const now = new Date();
         const data = {
           ...values,
+          careGroup: classifyCareGroup(values.adlTotalScore),
           assessedBy: actorId,
           assessedAt: now,
           updatedAt: now,
@@ -113,6 +115,7 @@ export class AssessmentService {
       careRecipientId: row.careRecipientId,
       answers: ADL_ITEMS.map(({ code }) => ({ code, value: answers[code] })),
       adlTotalScore: row.adlTotalScore,
+      careGroup: storedCareGroupToApi(row.careGroup),
       unsureCount: row.unsureCount,
       flags: [...row.flags],
       noSpecialConditions: row.noSpecialConditions,
