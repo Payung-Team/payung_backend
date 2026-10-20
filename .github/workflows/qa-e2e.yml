@@ -52,3 +52,4 @@ jobs:
           test/pyg644-required-skills.e2e-spec.ts
           test/pyg640-booking-level.e2e-spec.ts
           test/pyg649-matching.e2e-spec.ts
+          test/pyg611-assessment.e2e-spec.ts
