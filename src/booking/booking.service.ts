@@ -805,10 +805,13 @@ export class BookingService {
       const activities = await this.careActivityService.resolveForBooking(tx, dto.activityIds);
 
       const created = await tx.booking.create({ data, include });
-      await recalculateBookingRequiredSkills(tx, created.id, onBehalf ? 'graphql' : 'rest');
 
       // ⑤ PYG-634: สำเนาชื่อ หมวด ระดับ ณ ตอนจอง (R6) — งานพิมพ์เอง (tasks) ไม่ถูกเขียนที่นี่ (AC6)
       await this.careActivityService.writeForBooking(tx, created.id, activities);
+
+      // ⑥ PYG-643 · S17: ต้องอยู่ "หลัง" ⑤ — การคำนวณอ่านรหัสกิจกรรมจาก booking.activities
+      //   ถ้าคำนวณก่อนบันทึกกิจกรรม ทักษะที่มาจากกิจกรรม (S15) จะหายไปเงียบ ๆ (ลำดับเดียวกับ 70bcad2)
+      await recalculateBookingRequiredSkills(tx, created.id, onBehalf ? 'graphql' : 'rest');
 
       // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
       // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
