@@ -39,6 +39,16 @@ export class CreateBookingDto {
   tasks!: string[];
 
   /**
+   * PYG-634: กิจกรรมจากรายการกลาง (care_activities.id) — ไม่บังคับ (E9 · client เก่าจองได้ตามเดิม)
+   * ตรวจว่ามีอยู่ + เปิดใช้งานที่ CareActivityService ใน transaction เดียวกับการสร้าง booking
+   * งานย่อยที่พิมพ์เอง (tasks) ไม่เกี่ยวกับช่องนี้ (AC6)
+   */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  activityIds?: string[];
+
+  /**
    * สถานที่ให้บริการ (ชื่อสถานที่ เช่น ["บ้าน", "โรงพยาบาล"])
    * ต้องมีอย่างน้อย 1 รายการ
    */

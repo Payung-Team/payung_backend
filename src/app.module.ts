@@ -26,6 +26,7 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { FamilyGroupModule } from './family-group/family-group.module';
 import { ConsentModule } from './consent/consent.module';
 import { CareSkillModule } from './care-skill/care-skill.module';
+import { CareActivityModule } from './care-activity/care-activity.module';
 
 @Module({
   imports: [
@@ -87,6 +88,7 @@ import { CareSkillModule } from './care-skill/care-skill.module';
     FamilyGroupModule,   // PYG-412: กลุ่มครอบครัว — CRUD + FamilyGroupGuard
     ConsentModule,       // PYG-472: ข้อความ PDPA consent + เวอร์ชันนโยบาย (อ่านอย่างเดียว)
     CareSkillModule,     // PYG-652: careSkills(profession) + ตรวจทักษะผู้ดูแลก่อนบันทึก
+    CareActivityModule,  // PYG-634: กิจกรรมการดูแลกลาง (แอดมิน + หน้าจอง + snapshot ใน booking)
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

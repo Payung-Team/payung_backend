@@ -12,6 +12,8 @@ import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { ROLE_ID } from '../common/constants/roles.constant';
 import { Payment } from '../payment/dto/payment.type';
 import { PaymentService } from '../payment/payment.service';
+import { CareActivityService } from '../care-activity/care-activity.service';
+import { BookingActivity } from '../care-activity/entities/care-activity.entity';
 
 @Resolver(() => BookingSummary)
 @UseGuards(SupabaseAuthGuard, RolesGuard)
@@ -21,6 +23,7 @@ export class BookingResolver {
     private readonly bookingService: BookingService,
     private readonly paymentService: PaymentService,
     private readonly bookingTaskService: BookingTaskService,
+    private readonly careActivityService: CareActivityService,
   ) {}
 
   @Mutation(() => BookingSummary, {
@@ -70,5 +73,14 @@ export class BookingResolver {
   })
   async bookingTasks(@Parent() booking: BookingSummary): Promise<BookingTask[]> {
     return this.bookingTaskService.listForBooking(booking.id);
+  }
+
+  // ── PYG-634: กิจกรรมจากรายการกลาง — สำเนา ณ ตอนจอง (R6) ──────────────────────
+
+  @ResolveField(() => [BookingActivity], {
+    description: 'PYG-634: activities chosen from the central list — snapshot at booking time (name / category / careLevel do not follow later edits)',
+  })
+  async activities(@Parent() booking: BookingSummary): Promise<BookingActivity[]> {
+    return this.careActivityService.listForBooking(booking.id);
   }
 }
