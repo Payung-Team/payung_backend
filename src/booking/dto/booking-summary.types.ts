@@ -1,3 +1,5 @@
+import { CareLevel } from '../../common/care-level/care-level';
+import { BookingLevelBreakdown } from '../level/booking-level.types';
 import { Field, Float, ID, Int, ObjectType, registerEnumType } from '@nestjs/graphql';
 import { PatientProfileType } from './patient-profile.type';
 import { BookingRequiredSkill } from '../required-skills/required-skills.types';
@@ -40,6 +42,10 @@ export class CaregiverBriefDto {
 
 @ObjectType()
 export class BookingSummary {
+  @Field(() => CareLevel, { nullable: true })
+  requiredLevel?: CareLevel | null;
+  @Field(() => BookingLevelBreakdown, { nullable: true })
+  levelBreakdown?: BookingLevelBreakdown | null;
   @Field(() => [BookingRequiredSkill], { nullable: true })
   requiredSkills?: BookingRequiredSkill[] | null;
   @Field(() => ID)                                    id: string;

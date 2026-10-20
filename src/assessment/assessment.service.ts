@@ -8,7 +8,8 @@ import { CONSENT_TYPE } from '../consent/consent.constants';
 import { ADL_ITEMS, type AdlAnswers } from './assessment.constants';
 import { AssessmentError, assessmentAccessDenied } from './assessment.errors';
 import { validateAssessmentValues } from './assessment-scoring';
-import { recalculateRecipientRequiredSkills } from '../booking/required-skills/required-skills.persistence';
+import { recalculateRecipientBookingRequirements } from '../booking/booking-requirements.persistence';
+import { BookingLevelError } from '../booking/level/booking-level.errors';
 import { SkillRuleInvalidError } from '../booking/required-skills/required-skills.errors';
 import {
   CareRecipientAssessment,
@@ -55,7 +56,7 @@ export class AssessmentService {
           create: { careRecipientId: input.careRecipientId, ...data },
           update: data,
         });
-        await recalculateRecipientRequiredSkills(tx, input.careRecipientId);
+        await recalculateRecipientBookingRequirements(tx, input.careRecipientId);
         return this.toResponse(row);
       }),
     );
@@ -104,7 +105,7 @@ export class AssessmentService {
     try {
       return await operation();
     } catch (error) {
-      if (error instanceof AssessmentError || error instanceof SkillRuleInvalidError) throw error;
+      if (error instanceof AssessmentError || error instanceof SkillRuleInvalidError || error instanceof BookingLevelError) throw error;
       // Database exceptions can contain query values. Do not expose or log them.
       throw new InternalServerErrorException(
         'ไม่สามารถดำเนินการกับแบบประเมินได้ในขณะนี้',

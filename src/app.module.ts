@@ -1,3 +1,4 @@
+import { MatchingModule } from './matching/matching.module';
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { GraphQLModule } from '@nestjs/graphql';
@@ -75,6 +76,7 @@ import { CareActivityModule } from './care-activity/care-activity.module';
     NotificationModule,  // PYG-95: in-app notifications
     EmailModule,         // PYG-96: Resend email service
     AdminModule,         // Admin dashboard operations (KYC review, etc.)
+    MatchingModule,      // PYG-647: booking-specific eligibility and admin reports
     SearchModule,        // PYG-192: caregiver search with filters + pagination
     CaregiverPublicModule, // GET /api/v1/caregivers/:id/public
     BookingModule,       // PYG-210: patient booking confirmations + history; REST booking APIs

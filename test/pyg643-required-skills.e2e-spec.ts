@@ -1,5 +1,6 @@
 /** Real S17 writes/races against the disposable PYG-609 Docker Postgres only. */
 import { randomUUID } from 'crypto';
+import { seedBookingLevelRules } from './fixtures/booking-level-rules';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Client } from 'pg';
@@ -47,6 +48,7 @@ describeDb('PYG-643 Required Skills: Postgres transactions and races', () => {
       adapter: new PrismaPg({ connectionString: URL_VALUE }),
     }) as PrismaService;
     await db.$connect();
+    await seedBookingLevelRules(db);
     sql = new Client({ connectionString: URL_VALUE });
     await sql.connect();
     // Fixture seed on a strictly local disposable DB; never migrate the real DB.
