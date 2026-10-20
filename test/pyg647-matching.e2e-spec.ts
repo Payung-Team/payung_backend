@@ -407,8 +407,9 @@ describeDb(
           field_changes: [
             {
               field: 'profession',
-              oldValue: 'nurse',
-              newValue: 'physiotherapist',
+              // รูปแบบจริงที่ ProfessionChangeService เขียน: JSON string (PYG-667)
+              oldValue: JSON.stringify('nurse'),
+              newValue: JSON.stringify('physiotherapist'),
               licenseDocumentId: doc.id,
             },
           ],
@@ -521,8 +522,9 @@ describeDb(
           field_changes: [
             {
               field: 'profession',
-              oldValue: 'nurse',
-              newValue: 'physiotherapist',
+              // รูปแบบจริงที่ ProfessionChangeService เขียน: JSON string (PYG-667)
+              oldValue: JSON.stringify('nurse'),
+              newValue: JSON.stringify('physiotherapist'),
             },
           ],
         },
