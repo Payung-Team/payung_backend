@@ -436,61 +436,58 @@ describeDb('PYG-577 · S01 caregiver profession (PYG-556)', () => {
       ).toBe(0);
     });
 
-    // บั๊ก PYG-667 (S18): ใบประกอบฯ ที่แนบกับคำขอเปลี่ยนวิชาชีพไม่ถูกนับเป็นหลักฐาน เพราะ matching เทียบค่า
-    // JSON-stringified ('"nurse"') กับ caregivers.profession ('nurse') — แก้แล้วเปลี่ยน it.failing → it
-    it.failing(
-      'PYG-556_15 Verify that a caregiver who became a nurse through an approved change is eligible for an injection booking (S18)',
-      async () => {
-        const cg = await approved(
-          'general_caregiver',
-          `QA-577-${randomUUID().slice(0, 6)}`,
-        );
-        const doc = await license(cg.id, cg.caregiverId);
-        const reqId = dataOf<{ id: string }>(
-          await h.gql(cg.token, REQUEST_CHANGE, {
-            i: { profession: 'nurse', licenseDocumentId: doc },
-          }),
-          'requestProfessionChange',
-        ).id;
-        expect(
-          (await h.gql(admin.token, APPROVE_CHANGE, { id: reqId })).errors,
-        ).toBeUndefined();
-        await h.prisma.caregiver.update({
-          where: { id: cg.caregiverId },
-          data: { skills: [...UNLOCKED_SKILLS, 'injection'] },
-        });
-        const elder = await h.seedUser('elder');
-        const rid = await h.seedAssessedRecipient(elder, {
-          flags: ['injection'],
-        });
-        const res = (await h.rest(elder.token).post('/api/v1/bookings', {
-          careRecipientId: rid,
-          tasks: ['ดูแลทั่วไป'],
-          serviceLocations: ['at_home'],
-          serviceType: 'elderly_care',
-          startTime: '09:00',
-          endTime: '11:00',
-          locationAddress: 'บ้านทดสอบ QA-577',
-          bookingDate: futureDate(30),
-        })) as Res;
-        const bookingId = (res.body as { id: string }).id;
-        const report = await h.gql(
-          admin.token,
-          `query($b: ID!) { bookingMatchReport(bookingId: $b) { results { caregiver { id } passed reasons { reason } } } }`,
-          { b: bookingId },
-        );
-        const row = dataOf<{
-          results: {
-            caregiver: { id: string };
-            passed: boolean;
-            reasons: { reason: string }[];
-          }[];
-        }>(report, 'bookingMatchReport').results.find(
-          (r) => r.caregiver.id === cg.caregiverId,
-        );
-        expect(row?.reasons).toEqual([]);
-        expect(row?.passed).toBe(true);
-      },
-    );
+    // เคยเป็นบั๊ก PYG-667 (S18 · แก้ใน #155): matching เทียบค่า log JSON-stringified ('"nurse"')
+    // กับ caregivers.profession ('nurse') ตรง ๆ จนใบที่แนบกับคำขอไม่ถูกนับเป็นหลักฐาน
+    it('PYG-556_15 Verify that a caregiver who became a nurse through an approved change is eligible for an injection booking (S18)', async () => {
+      const cg = await approved(
+        'general_caregiver',
+        `QA-577-${randomUUID().slice(0, 6)}`,
+      );
+      const doc = await license(cg.id, cg.caregiverId);
+      const reqId = dataOf<{ id: string }>(
+        await h.gql(cg.token, REQUEST_CHANGE, {
+          i: { profession: 'nurse', licenseDocumentId: doc },
+        }),
+        'requestProfessionChange',
+      ).id;
+      expect(
+        (await h.gql(admin.token, APPROVE_CHANGE, { id: reqId })).errors,
+      ).toBeUndefined();
+      await h.prisma.caregiver.update({
+        where: { id: cg.caregiverId },
+        data: { skills: [...UNLOCKED_SKILLS, 'injection'] },
+      });
+      const elder = await h.seedUser('elder');
+      const rid = await h.seedAssessedRecipient(elder, {
+        flags: ['injection'],
+      });
+      const res = (await h.rest(elder.token).post('/api/v1/bookings', {
+        careRecipientId: rid,
+        tasks: ['ดูแลทั่วไป'],
+        serviceLocations: ['at_home'],
+        serviceType: 'elderly_care',
+        startTime: '09:00',
+        endTime: '11:00',
+        locationAddress: 'บ้านทดสอบ QA-577',
+        bookingDate: futureDate(30),
+      })) as Res;
+      const bookingId = (res.body as { id: string }).id;
+      const report = await h.gql(
+        admin.token,
+        `query($b: ID!) { bookingMatchReport(bookingId: $b) { results { caregiver { id } passed reasons { reason } } } }`,
+        { b: bookingId },
+      );
+      const row = dataOf<{
+        results: {
+          caregiver: { id: string };
+          passed: boolean;
+          reasons: { reason: string }[];
+        }[];
+      }>(report, 'bookingMatchReport').results.find(
+        (r) => r.caregiver.id === cg.caregiverId,
+      );
+      expect(row?.reasons).toEqual([]);
+      expect(row?.passed).toBe(true);
+    });
   });
 });

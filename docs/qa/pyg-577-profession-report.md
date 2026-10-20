@@ -5,6 +5,7 @@
 - รัน: 2026-10-20 · Created By / Execute By: Wasan. R
 - Spec: `test/pyg577-profession.e2e-spec.ts` (DB จริงทั้งเส้นทาง · ต่างจาก `test/pyg575-profession-graphql.e2e-spec.ts` ที่ mock Prisma)
 - **ผล: PASS 13 TC (20 รอบ) + AC5 บน production · FAIL 1 → PYG-667 (High · S18) · NOT RUN (หน้าจอ) 4**
+- **รันซ้ำ 2026-10-21 หลัง PYG-667 แก้ (#155): PYG-556_15 PASS → PASS 14 TC · FAIL 0**
 
 ## 1. Test case sheet
 
@@ -51,7 +52,7 @@
 | PYG-556_11 | ผู้ดูแล A อนุมัติ/ปฏิเสธคำขอของ B ไม่ได้ (`FORBIDDEN`) · input ของคำขอไม่มีช่องระบุผู้ดูแลอื่น | PASS |
 | PYG-556_12 | ผู้ใช้ฝั่ง Elder ขอ/อนุมัติเปลี่ยนวิชาชีพ → `FORBIDDEN` | PASS |
 | PYG-556_13 | ขอเปลี่ยนเป็นพยาบาลโดยไม่แนบใบประกอบฯ → ถูกปฏิเสธ ไม่มี log | PASS |
-| **PYG-556_15** | **ผู้ดูแลที่เปลี่ยนเป็นพยาบาลผ่านคำขอที่อนุมัติแล้ว ผ่านตัวกรอง S18 สำหรับงานฉีดยา** | **FAIL → PYG-667 (High)** · `it.failing` |
+| **PYG-556_15** | **ผู้ดูแลที่เปลี่ยนเป็นพยาบาลผ่านคำขอที่อนุมัติแล้ว ผ่านตัวกรอง S18 สำหรับงานฉีดยา** | ~~FAIL → PYG-667 (High)~~ **PASS (รันซ้ำหลัง #155)** · เปลี่ยน `it.failing` → `it` แล้ว |
 
 **PYG-667 (ต่อเนื่องจาก S01 ถึง S18):** ใบประกอบฯ อนุมัติแล้ว ยังไม่หมดอายุ วิชาชีพเป็นพยาบาลแล้ว แต่ `bookingMatchReport` ให้ `EVIDENCE_NOT_APPROVED (injection)` — `src/matching/matching.persistence.ts` เทียบ `field_changes.newValue` ที่เก็บแบบ JSON-stringified (`'"nurse"'` ตามกติกา `computeFieldChanges`) กับ `caregivers.profession` (`'nurse'`) ตรง ๆ จึงตัดใบที่แนบกับคำขอทิ้ง · ผู้ดูแลที่เลือกพยาบาลตั้งแต่ KYC ไม่โดน · ยังไม่กระทบ production (log เปลี่ยนวิชาชีพบน prod = 0)
 
@@ -72,4 +73,4 @@ QA_DATABASE_URL=postgresql://postgres:qa@127.0.0.1:5436/<db> npm run test:e2e --
 ```
 - harness เพิ่ม `KycModule`, `AdminModule`, `CaregiverPublicModule`, `SearchModule`
 - CHECK ของ `profession` ตรวจบน production (DB ทิ้งได้สร้างจาก `schema.prisma` จึงไม่มี CHECK ที่เขียนมือ)
-- เมื่อ PYG-667 แก้แล้ว: เปลี่ยน `it.failing` → `it` ใน `PYG-556_15`
+- PYG-667 แก้แล้ว (#155): เปลี่ยน `it.failing` → `it` ใน `PYG-556_15` แล้ว
