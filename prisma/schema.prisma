@@ -15,7 +15,9 @@ datasource db {
 model User {
   id                                                      String                 @id @default(uuid())
   supabaseUid                                             String                 @unique @map("supabase_uid")
-  email                                                   String                 @unique
+  /// PYG-602: NULL ได้ — บัญชีที่สมัครด้วยเบอร์โทร (Supabase Auth) ไม่มีอีเมล
+  /// DB มี CHECK users_email_or_phone_check: ต้องมี email หรือ phone ที่ไม่ว่างอย่างน้อยหนึ่งอย่าง
+  email                                                   String?                @unique
   displayName                                             String?                @map("display_name")
   /// PYG-497: ชื่อ-นามสกุลจริง กรอกตอน Onboarding (PYG-496) — NULL = ยังไม่ onboard / บัญชีเดิม
   firstName                                               String?                @map("first_name") @db.VarChar(100)
@@ -91,6 +93,10 @@ model Caregiver {
   idCardNumber        String?                    @map("id_card_number")
   phone               String?
   skills              String[]
+  /// PYG-652: ทักษะที่ไม่อยู่ในรายการกลาง (care_skills) — ข้อความอิสระ
+  otherSkills         String[]                   @default([]) @map("other_skills")
+  /// PYG-652: ค่า skills เดิมก่อนแปลงเป็นรหัสกลาง เก็บไว้ตรวจทานหรือย้อนกลับ — ห้ามใช้ในโค้ดใหม่
+  skillsLegacy        String[]                   @map("skills_legacy")
   experienceYears     Int?                       @map("experience_years")
   hourlyRate          Float?                     @map("hourly_rate")
   bio                 String?
@@ -121,6 +127,9 @@ model Caregiver {
   /// NULL ทั้งที่มี careLevel = ได้ค่าจาก migration ยังไม่ผ่านการทบทวนของแอดมิน
   careLevelSetBy      String?                    @map("care_level_set_by")
   careLevelSetAt      DateTime?                  @map("care_level_set_at") @db.Timestamptz(6)
+  /// PYG-660 (S06 · PYG-561): วิธีเดินทางรับส่งผู้รับการดูแล — 'self_drive' | 'hired_ride' | 'none'
+  /// (DB มี CHECK caregivers_transport_mode_check) · NULL = ยังไม่เคยตอบ (E11) ห้ามตีความว่า 'none'
+  transportMode       String?                    @map("transport_mode")
   bookings            Booking[]
   bookingsInfectionAcked Booking[]              @relation("BookingInfectionAckBy") // PYG-618: booking ที่ผู้ดูแลคนนี้กดรับทราบข้อมูลโรคติดเชื้อ
   availability        CaregiverAvailability[]
@@ -308,6 +317,19 @@ model CaregiverJobType {
   @@index([jobType], map: "idx_caregiver_job_types_type")
   @@index([caregiverId], map: "idx_caregiver_job_types_caregiver")
   @@map("caregiver_job_types")
+}
+
+/// PYG-591 (S04-AC6): สำเนาแถว caregiver_job_types ที่ data migration นำออกเพราะวิชาชีพ/ใบประกอบฯ ไม่ตรง
+/// ใช้เป็นทั้งรายชื่อแจ้งเตือน (JobTypeRemovalNotifier อ่านด้วย SQL ตรง) และข้อมูลกู้คืน · ห้ามเขียนจากโค้ด
+/// ลบทิ้งด้วย migration แยกหลัง story PYG-559 ปิด
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caregiver_job_types_removed_pyg559 {
+  id                    String    @id @db.Uuid
+  caregiver_id          String?
+  job_type              job_type?
+  created_at            DateTime? @db.Timestamptz(6)
+  profession_at_removal String?
+  removed_at            DateTime? @db.Timestamptz(6)
 }
 
 model CaregiverServiceLocation {
@@ -1408,10 +1430,16 @@ enum NotificationType {
   payment_refunded
   payment_voided
   payment_transferred
+  license_approved // PYG-587: แอดมินอนุมัติใบประกอบวิชาชีพ
+  license_rejected // PYG-587: แอดมินปฏิเสธใบประกอบวิชาชีพ (แนบเหตุผล)
+  license_expired // PYG-587: ใบประกอบวิชาชีพหมดอายุ → อัปโหลดใหม่
+  job_type_removed // PYG-592 / PYG-591: ประเภทงานเดิมถูกนำออกเพราะไม่ตรงวิชาชีพ/ใบประกอบฯ
   job_checked_in // PYG-353
   job_care_log_added // มีการบันทึก care log (Christina)
   profile_photo_approved // PYG-508: แอดมินอนุมัติรูปโปรไฟล์ผู้ดูแล
   profile_photo_rejected // PYG-508: แอดมินปฏิเสธรูปโปรไฟล์ผู้ดูแล (แนบเหตุผล)
+  payout_account_verified // Omise accept บัญชีรับเงินแล้ว → ผู้ดูแลเปิดรับงานได้
+  payout_account_failed // Omise ปฏิเสธบัญชีรับเงิน → ผู้ดูแลต้องแก้ไขบัญชี
 }
 
 enum booking_service_type {

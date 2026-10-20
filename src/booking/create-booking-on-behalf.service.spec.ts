@@ -11,6 +11,8 @@ import { ConsentService } from '../consent/consent.service';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 import { AvatarUrlService } from '../common/avatar-url.service';
+import { CareActivityService } from '../care-activity/care-activity.service';
+import { ClockService } from '../common/clock.service';
 import { SupabaseService } from '../common/supabase.service';
 
 /**
@@ -93,6 +95,8 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       // PYG-427_31/_34b: โปรไฟล์ใหม่ของสมาชิกสร้างใน tx — ล็อกแถวสมาชิก แล้วหาใบเดิมซ้ำอีกรอบ
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'member-row-1' }]),
       careRecipient: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      // PYG-634: สำเนากิจกรรมที่เลือกถูกเขียนในทรานแซคชันเดียวกับ booking.create
+      bookingActivity: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
 
     prisma = {
@@ -145,6 +149,9 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
         { provide: ConsentService, useValue: consent },
         // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
         AvatarUrlService,
+        // PYG-634: ตัวจริง — ไม่ส่ง activityIds = ไม่แตะ DB (E9) · เคสกิจกรรมเทสใน care-activity.service.spec.ts
+        CareActivityService,
+        ClockService,
         {
           provide: SupabaseService,
           useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },
@@ -699,6 +706,68 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       ).rejects.toThrow(ConflictException);
 
       expect(jobQr.createForBooking).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── PYG-634: กิจกรรมจากรายการกลาง ─────────────────────────────────────────
+  describe('PYG-634 activityIds', () => {
+    const ACT_1 = '11111111-1111-4111-8111-111111111111';
+    const ACT_2 = '22222222-2222-4222-8222-222222222222';
+    const activityRow = (id: string, isActive = true) => ({
+      id,
+      name_th: `กิจกรรม ${id.slice(0, 1)}`,
+      category: 'หมวด',
+      care_level: 'basic',
+      is_active: isActive,
+    });
+
+    beforeEach(() => {
+      prisma.careRecipient.findUnique.mockResolvedValue({
+        id: RECIPIENT_ID,
+        familyGroupId: GROUP_ID,
+        patientId: OWNER_ID,
+        name: 'คุณยายสมศรี',
+        is_deleted: false,
+      });
+    });
+
+    /** $queryRaw ใน tx: คำถาม care_activities ตอบแถวกิจกรรม · อื่น ๆ (ล็อกสมาชิก) ตอบตามเดิม */
+    function activityRowsInTx(rows: unknown[]) {
+      tx.$queryRaw.mockImplementation((strings: TemplateStringsArray) =>
+        Promise.resolve(strings.join('?').includes('care_activities') ? rows : [{ id: 'member-row-1' }]),
+      );
+    }
+
+    it('E9: ไม่ส่ง activityIds → จองได้ตามเดิม ไม่เขียน booking_activities', async () => {
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput());
+      expect(tx.booking.create).toHaveBeenCalled();
+      expect(tx.bookingActivity.createMany).not.toHaveBeenCalled();
+    });
+
+    it('AC5 + E8: บันทึกสำเนาใน tx เดียวกัน · id ซ้ำบันทึกครั้งเดียว · ตรวจก่อน booking.create', async () => {
+      activityRowsInTx([activityRow(ACT_1), activityRow(ACT_2)]);
+      await service.createBookingOnBehalf(BOOKER_ID, makeInput({ activityIds: [ACT_1, ACT_2, ACT_1] }));
+
+      expect(tx.bookingActivity.createMany).toHaveBeenCalledWith({
+        data: [
+          { bookingId: BOOKING_ID, careActivityId: ACT_1, activityName: 'กิจกรรม 1', category: 'หมวด', careLevel: 'basic' },
+          { bookingId: BOOKING_ID, careActivityId: ACT_2, activityName: 'กิจกรรม 2', category: 'หมวด', careLevel: 'basic' },
+        ],
+      });
+      const lockOrder = tx.$queryRaw.mock.invocationCallOrder.at(-1);
+      expect(lockOrder).toBeLessThan(tx.booking.create.mock.invocationCallOrder[0]);
+      // AC6: งานพิมพ์เองยังเขียนที่เดิม
+      expect(tx.booking_tasks.createMany).toHaveBeenCalled();
+    });
+
+    it('E2: กิจกรรมถูกปิดใช้งาน → CARE_ACTIVITY_INACTIVE และไม่สร้าง booking / ไม่ยิง event', async () => {
+      activityRowsInTx([activityRow(ACT_1, false)]);
+      const err = (await service
+        .createBookingOnBehalf(BOOKER_ID, makeInput({ activityIds: [ACT_1] }))
+        .catch((e: unknown) => e)) as { extensions?: Record<string, unknown> };
+      expect(err.extensions).toMatchObject({ code: 'CARE_ACTIVITY_INACTIVE', activityIds: [ACT_1] });
+      expect(tx.booking.create).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
     });
   });
 });

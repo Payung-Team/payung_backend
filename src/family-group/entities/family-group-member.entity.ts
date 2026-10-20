@@ -26,8 +26,16 @@ export class FamilyGroupMemberItem {
   })
   displayName?: string;
 
-  @Field({ description: 'อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้' })
-  email: string;
+  /**
+   * PYG-603: null ได้ — สมาชิกที่สมัครด้วยเบอร์โทรไม่มีอีเมล
+   * (FE แสดงเบอร์หรือ "—" แทนแล้วใน PR #31 ของ payung_frontend)
+   */
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'อีเมลของสมาชิก — สมาชิกในกลุ่มเห็นกันได้ (null = บัญชีที่สมัครด้วยเบอร์โทร)',
+  })
+  email: string | null;
 
   @Field({ nullable: true, description: 'รูปโปรไฟล์' })
   avatarUrl?: string;

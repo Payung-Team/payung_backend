@@ -17,6 +17,8 @@ import {
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { ConsentService } from '../consent/consent.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
+import { CareActivityService } from '../care-activity/care-activity.service';
+import { ClockService } from '../common/clock.service';
 import { SupabaseService } from '../common/supabase.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { SearchMatchesDto } from './dto/search-matches.dto';
@@ -55,7 +57,7 @@ function fakeCaregiver(overrides: Record<string, unknown> = {}) {
     hourlyRate:          350,
     createdAt:           new Date('2026-01-01T00:00:00Z'),
     experienceYears:     5,
-    skills:              ['elderly_care'],
+    skills:              ['bathing'],
     serviceAreaProvince: 'เชียงใหม่',
     serviceAreaDistrict: 'เมือง',
     patientReviews:      [{ rating: 5 }, { rating: 4 }],
@@ -166,6 +168,9 @@ describe('BookingService — new REST methods', () => {
         },
         // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเรื่อง signing อยู่ที่ booking.service.spec.ts
         AvatarUrlService,
+        // PYG-634: ตัวจริง — ไม่ส่ง activityIds = ไม่แตะ DB (E9) · เคสกิจกรรมเทสใน care-activity.service.spec.ts
+        CareActivityService,
+        ClockService,
         {
           provide: SupabaseService,
           useValue: { getAdminClient: jest.fn().mockReturnValue({ storage: { from: jest.fn() } }) },

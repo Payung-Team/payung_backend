@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 import { InputType, Field, Int, Float } from '@nestjs/graphql';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsInt,
@@ -10,12 +11,18 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { ValidThaiPhone } from '../../../common/validators/valid-thai-phone.validator';
+import {
+  OTHER_SKILLS_MAX,
+  OTHER_SKILL_MAX_LENGTH,
+  normalizeOtherSkills,
+} from '../../../care-skill/care-skill.constants';
 
 /**
  * UpdateCaregiverInput — input สำหรับ updateCaregiverProfile mutation
  *
- * Whitelist fields: bio, skills, experienceYears, phone, address, languages
+ * Whitelist fields: bio, skills, otherSkills, experienceYears, phone, address, languages
  * Locked fields (fullName, idCardNumber, gender, dateOfBirth) ไม่อยู่ใน DTO นี้
  * → GraphQL reject อัตโนมัติถ้า client ส่ง field ที่ไม่มีใน schema
  *
@@ -53,12 +60,37 @@ export class UpdateCaregiverInput {
   @IsNumber({}, { message: 'ค่าบริการต้องเป็นตัวเลข' })
   hourlyRate?: number;
 
-  @Field(() => [String], { nullable: true, description: 'List of caregiver skills' })
+  /** รหัสกลางจาก careSkills(profession) — service ตรวจกับ care_skills และวิชาชีพ (PYG-652) */
+  @Field(() => [String], {
+    nullable: true,
+    description: 'Central skill codes from careSkills(profession)',
+  })
   @IsOptional()
   @IsArray({ message: 'ทักษะต้องเป็น array' })
   @ArrayMinSize(1, { message: 'กรุณาเลือกทักษะอย่างน้อย 1 รายการ' })
   @IsString({ each: true, message: 'ทักษะแต่ละรายการต้องเป็นข้อความ' })
   skills?: string[];
+
+  /**
+   * ทักษะอื่น ๆ (ข้อความอิสระ) สูงสุด 5 รายการ — ตัดช่องว่าง ทิ้งค่าว่าง ตัดค่าซ้ำให้ก่อนตรวจ (PYG-652)
+   * ส่ง [] = ล้างทั้งหมด · ไม่ส่ง = คงค่าเดิม
+   */
+  @Field(() => [String], {
+    nullable: true,
+    description: `Free-text skills not in the central list (max ${OTHER_SKILLS_MAX}; trimmed, de-duplicated). Send [] to clear.`,
+  })
+  @IsOptional()
+  @Transform(({ value }) => normalizeOtherSkills(value))
+  @IsArray({ message: 'ทักษะอื่น ๆ ต้องเป็น array' })
+  @ArrayMaxSize(OTHER_SKILLS_MAX, {
+    message: `ทักษะอื่น ๆ กรอกได้ไม่เกิน ${OTHER_SKILLS_MAX} รายการ`,
+  })
+  @IsString({ each: true, message: 'ทักษะอื่น ๆ แต่ละรายการต้องเป็นข้อความ' })
+  @MaxLength(OTHER_SKILL_MAX_LENGTH, {
+    each: true,
+    message: `ทักษะอื่น ๆ แต่ละรายการยาวได้ไม่เกิน ${OTHER_SKILL_MAX_LENGTH} ตัวอักษร`,
+  })
+  otherSkills?: string[];
 
   @Field(() => Int, { nullable: true, description: 'Years of caregiving experience' })
   @IsOptional()

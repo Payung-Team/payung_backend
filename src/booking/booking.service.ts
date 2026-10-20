@@ -65,6 +65,13 @@ import { JobQrService } from '../monitoring/qr/job-qr.service';
 // PYG-540: ถอนความยินยอมแล้วต้องจองใหม่ไม่ได้ / กลุ่มไม่เห็นนัดหมายของคนที่ถอน
 import { ConsentService } from '../consent/consent.service';
 import {
+  BOOKING_ACTIVITIES_SELECT,
+  CareActivityService,
+  toBookingActivities,
+  type BookingActivityRow,
+} from '../care-activity/care-activity.service';
+import { CareActivityError } from '../care-activity/care-activity.errors';
+import {
   BOOKING_BLOCKING_CONSENTS,
   CONSENT_TYPE,
   ON_BEHALF_BLOCKING_CONSENTS,
@@ -169,6 +176,8 @@ type BookingWithIncludes = {
     user: { avatarUrl: string | null };
   } | null;
   careRecipient: { name: string } | null;
+  /** PYG-634: สำเนากิจกรรม ณ ตอนจอง — มีเฉพาะ query ที่ include BOOKING_ACTIVITIES_SELECT / ตอนสร้าง */
+  activities?: BookingActivityRow[];
 };
 
 /** จำนวนผู้ดูแลสูงสุดที่ searchMatchesBasic คืน (PYG-489: ขยายจาก 20) */
@@ -226,6 +235,8 @@ export class BookingService {
     private readonly consentService: ConsentService,
     // PYG-518: sign avatarUrl ของผู้ดูแลก่อนส่งออก
     private readonly avatarUrlService: AvatarUrlService,
+    // PYG-634: ตรวจ + บันทึกสำเนากิจกรรมที่เลือก (booking_activities) ใน transaction เดียวกับ booking
+    private readonly careActivityService: CareActivityService,
   ) {}
 
   /**
@@ -270,7 +281,10 @@ export class BookingService {
       throw consentWithdrawnHttpError(withdrawn, true);
     }
 
-    const booking = await this.createBookingRecord(patientId, dto);
+    // PYG-634: CareActivityError เป็น GraphQLError — ทาง REST ต้องแปลงเป็น 422 ที่มี code ไม่งั้นได้ 500
+    const booking = await this.createBookingRecord(patientId, dto).catch((err: unknown) => {
+      throw err instanceof CareActivityError ? err.toRestError() : err;
+    });
     await this.signCaregiverAvatars([booking]);
     return this.toRestSummary(booking);
   }
@@ -783,7 +797,15 @@ export class BookingService {
       // S08: legacy name-only/new-profile flows must assess a persisted profile
       // first. Do not create one here or copy another profile's assessment.
       await assertBookingAssessment(tx, data.careRecipientId, onBehalf ? 'graphql' : 'rest');
+
+      // PYG-634: ตรวจกิจกรรมที่เลือก (มีอยู่ + เปิดใช้งาน · ล็อก FOR SHARE) ก่อนสร้าง booking
+      //   ไม่ผ่าน = โยนออกจาก transaction → ไม่มี booking ค้าง (E2) · ไม่ส่ง/ว่าง = [] (E9) · ซ้ำ = ครั้งเดียว (E8)
+      const activities = await this.careActivityService.resolveForBooking(tx, dto.activityIds);
+
       const created = await tx.booking.create({ data, include });
+
+      // ⑤ PYG-634: สำเนาชื่อ หมวด ระดับ ณ ตอนจอง (R6) — งานพิมพ์เอง (tasks) ไม่ถูกเขียนที่นี่ (AC6)
+      await this.careActivityService.writeForBooking(tx, created.id, activities);
 
       // ② PYG-361: booking_tasks ต่อ 1 task — อยู่ใน transaction เดียวกับ booking.create
       // เพื่อไม่ให้เกิด booking ที่มี tasks (TEXT[]) แต่ booking_tasks ว่างเปล่า
@@ -821,7 +843,7 @@ export class BookingService {
       //    ส่ง tx เข้าไปเพื่อให้อยู่ใน transaction เดียวกัน (service บังคับรับ tx)
       await this.jobQrService.createForBooking(tx, created);
 
-      return created;
+      return Object.assign(created, { activities });
     });
 
     this.logger.log({
@@ -907,6 +929,7 @@ export class BookingService {
       include: {
         caregiver:     { include: { user: { select: { avatarUrl: true } } } },
         careRecipient: { select: { name: true } },
+        activities:    BOOKING_ACTIVITIES_SELECT, // PYG-634
       },
     });
 
@@ -974,6 +997,7 @@ export class BookingService {
         createdAt:            true,
         experienceYears:      true,
         skills:               true,
+        otherSkills:          true,
         serviceAreaProvince:  true,
         serviceAreaDistrict:  true,
         patientReviews:       { select: { rating: true } },
@@ -1014,6 +1038,7 @@ export class BookingService {
         hourlyRate:      servicePrice,
         experienceYears: cg.experienceYears ?? undefined,
         skills:          cg.skills,
+        otherSkills:     cg.otherSkills,
         province:        cg.serviceAreaProvince ?? undefined,
         district:        cg.serviceAreaDistrict ?? undefined,
         avgRating,
@@ -1061,6 +1086,7 @@ export class BookingService {
       include: {
         caregiver:     { include: { user: { select: { avatarUrl: true } } } },
         careRecipient: { select: { name: true } },
+        activities:    BOOKING_ACTIVITIES_SELECT, // PYG-634
       },
     });
 
@@ -1402,6 +1428,8 @@ export class BookingService {
                           ? booking.estimatedCost.toNumber()
                           : undefined,
       caregiver,
+      // PYG-634: กิจกรรมจากสำเนา ณ ตอนจอง (ไม่อ่านค่าปัจจุบันของ care_activities)
+      activities:       toBookingActivities(booking.activities),
       careRecipientName: booking.careRecipient?.name ?? undefined,
       confirmedAt:      booking.confirmedAt   ?? undefined,
       createdAt:        booking.createdAt,
