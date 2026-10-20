@@ -36,6 +36,7 @@ export interface CareRecipientResponse {
    *   แต่ FE ไม่ควร assume — บัญชีเก่าก่อน PYG-498 ยังไม่มีสักใบ
    */
   isSelf: boolean;
+  hasAssessment: boolean;
   /** PYG-460: ข้อมูลสุขภาพ — undefined เมื่อโปรไฟล์ยังไม่เคยกรอกช่องไหนเลย */
   details?: PatientProfileDto;
 }
@@ -47,6 +48,7 @@ const RECIPIENT_SELECT = {
   nickname:  true,
   patientId: true,
   is_self:   true,
+  assessment: { select: { id: true } },
   ...PATIENT_PROFILE_SELECT,
 } as const;
 
@@ -56,6 +58,7 @@ type RecipientRow = {
   nickname: string | null;
   patientId: string;
   is_self: boolean;
+  assessment: { id: string } | null;
 } & PatientProfileRow;
 
 @Injectable()
@@ -71,6 +74,7 @@ export class CareRecipientsService {
       nickname:  row.nickname ?? undefined,
       patientId: row.patientId,
       isSelf:    row.is_self,
+      hasAssessment: Boolean(row.assessment),
       details:   toPatientProfile(row),
     };
   }
@@ -203,6 +207,9 @@ export class CareRecipientsService {
         where: { id },
         data:  { is_deleted: true, deleted_at: new Date() },
       });
+      // The parent UPDATE locks the same row as assessment.submit. Delete in
+      // this transaction so a failed cleanup cannot leave a hidden profile.
+      await tx.careRecipientAssessment.deleteMany({ where: { careRecipientId: id } });
       if (familyGroupId) {
         await this.writeGroupActivity(tx, familyGroupId, patientId, id, ACTIVITY_ACTION.RECIPIENT_REMOVED);
       }

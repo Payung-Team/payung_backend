@@ -579,6 +579,28 @@ type CareLog {
   serverTs: DateTime!
 }
 
+type CareRecipientAssessment {
+  adlTotalScore: Int!
+  answers: [CareRecipientAssessmentAnswer!]!
+  assessedAt: DateTime!
+  careRecipientId: ID!
+  dementiaSevere: Boolean
+  flags: [String!]!
+  hasUnsureFlag: Boolean!
+  noSpecialConditions: Boolean!
+  unsureCount: Int!
+}
+
+type CareRecipientAssessmentAnswer {
+  code: String!
+  value: Int
+}
+
+input CareRecipientAssessmentAnswerInput {
+  code: String!
+  value: Int
+}
+
 """Central caregiver skill (care_skills)"""
 type CareSkillItem {
   """
@@ -1667,6 +1689,7 @@ type GroupBookingSummary {
 
 type GroupCareRecipient {
   details: GroupCareRecipientDetails
+  hasAssessment: Boolean!
   id: ID!
 
   """ชื่อ-นามสกุลของผู้รับบริการ"""
@@ -2526,6 +2549,7 @@ type Mutation {
   สร้างบัญชีด้วยเบอร์ที่ยืนยันแล้ว (หลังยอมรับเงื่อนไข) — response รูปเดียวกับ register · error: PHONE_VERIFICATION_EXPIRED, PHONE_ALREADY_IN_USE, CONSENT_*
   """
   signUpWithPhone(input: SignUpWithPhoneInput!): AuthPayload!
+  submitCareRecipientAssessment(input: SubmitCareRecipientAssessmentInput!): CareRecipientAssessment!
 
   """Submit KYC information (caregiver only)"""
   submitKyc(input: KycInput!): Caregiver!
@@ -3122,6 +3146,7 @@ type Query {
   PYG-361: รายการ "บันทึกจากผู้ดูแล" ของ booking หนึ่งใบ เรียงใหม่→เก่า. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
   """
   careLogs(bookingId: ID!, limit: Int, offset: Int): [CareLog!]!
+  careRecipientAssessment(careRecipientId: ID!): CareRecipientAssessment
 
   """
   Central caregiver skills a profession may hold: general_caregiver | nurse | physiotherapist. Basic skills first, then profession-specific ones.
@@ -3718,6 +3743,14 @@ enum SortByEnum {
   PRICE_ASC
   PRICE_DESC
   RATING_DESC
+}
+
+input SubmitCareRecipientAssessmentInput {
+  answers: [CareRecipientAssessmentAnswerInput!]!
+  careRecipientId: ID!
+  dementiaSevere: Boolean
+  flags: [String!]!
+  noSpecialConditions: Boolean!
 }
 
 input ToggleAdminStatusInput {

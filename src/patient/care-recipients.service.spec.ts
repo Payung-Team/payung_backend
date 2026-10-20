@@ -50,6 +50,7 @@ describe('CareRecipientsService', () => {
       update:    jest.Mock;
     };
     familyGroupActivity: { create: jest.Mock };
+    careRecipientAssessment: { deleteMany: jest.Mock };
     $transaction: jest.Mock;
   };
 
@@ -62,6 +63,7 @@ describe('CareRecipientsService', () => {
         update:     jest.fn(),
       },
       familyGroupActivity: { create: jest.fn() },
+      careRecipientAssessment: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       // interactive transaction: ส่ง mock ตัวเดิมเป็น tx — เทสอ่าน call ได้ที่เดียว
       $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
     };
@@ -79,6 +81,16 @@ describe('CareRecipientsService', () => {
   // ── list ───────────────────────────────────────────────────────────────────
 
   describe('list', () => {
+    it('returns hasAssessment from row existence, without attaching health answers', async () => {
+      prisma.careRecipient.findMany.mockResolvedValue([
+        fakeRecipient({ assessment: { id: 'assessment' } }),
+        fakeRecipient({ id: 'unassessed', assessment: null }),
+      ]);
+      const result = await service.list(PATIENT_ID);
+      expect(result.map((r) => r.hasAssessment)).toEqual([true, false]);
+      expect(result[0]).not.toHaveProperty('assessment');
+      expect(result[0]).not.toHaveProperty('answers');
+    });
     it('returns care recipients for the given patient', async () => {
       prisma.careRecipient.findMany.mockResolvedValue([fakeRecipient()]);
 
@@ -308,6 +320,17 @@ describe('CareRecipientsService', () => {
   // ── PYG-460: soft delete ───────────────────────────────────────────────────
 
   describe('remove', () => {
+    it('deletes assessments in the same transaction, including when none exist', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
+      await service.remove(PATIENT_ID, RECIPIENT_ID);
+      expect(prisma.careRecipientAssessment.deleteMany).toHaveBeenCalledWith({ where: { careRecipientId: RECIPIENT_ID } });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+    it('propagates cleanup failure so the transaction rolls back hiding', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
+      prisma.careRecipientAssessment.deleteMany.mockRejectedValue(new Error('cleanup failed'));
+      await expect(service.remove(PATIENT_ID, RECIPIENT_ID)).rejects.toThrow('cleanup failed');
+    });
     it('soft-deletes instead of deleting the row', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ patientId: PATIENT_ID, is_deleted: false });
       prisma.careRecipient.update.mockResolvedValue(fakeRecipient());

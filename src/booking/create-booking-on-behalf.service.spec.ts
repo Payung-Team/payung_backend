@@ -88,6 +88,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     // tx = client ที่ถูกส่งเข้า callback ของ $transaction
     tx = {
       booking: { create: jest.fn().mockResolvedValue(fakeCreatedBooking()) },
+      careRecipientAssessment: { findUnique: jest.fn().mockResolvedValue({ id: 'assessment' }) },
       // PYG-361: booking_tasks ถูกเขียนในทรานแซคชันเดียวกับ booking.create
       booking_tasks: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
       familyGroupActivity: { create: jest.fn().mockResolvedValue({}) },
@@ -99,7 +100,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
     };
 
     prisma = {
-      careRecipient: { findUnique: jest.fn(), findFirst: jest.fn(), create: jest.fn() },
+      careRecipient: { findUnique: jest.fn().mockResolvedValue({ patientId: BOOKER_ID, is_deleted: false }), findFirst: jest.fn(), create: jest.fn() },
       // PYG-516: เจ้าของโปรไฟล์ต้องยัง ACTIVE — เทสที่สนใจเคสตรงข้ามจะ override เอง
       familyGroupMember: {
         findFirst: jest.fn().mockResolvedValue({ userId: OWNER_ID }),
@@ -389,40 +390,22 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(prisma.careRecipient.create).not.toHaveBeenCalled();
     });
 
-    it('★ สมาชิกยังไม่มีโปรไฟล์ → สร้างใบใหม่ด้วยชื่อจากบัญชี ไม่ใช่ชื่อที่พิมพ์', async () => {
+    it('member without a profile must assess a persisted profile before booking (S08)', async () => {
       prisma.careRecipient.findFirst.mockResolvedValue(null);
-      tx.careRecipient.create.mockResolvedValue({ id: 'cr-new' });
-
-      await service.createBookingOnBehalf(
-        BOOKER_ID,
+      await expect(service.createBookingOnBehalf(BOOKER_ID,
         makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
-      );
-
-      const created = tx.careRecipient.create.mock.calls[0][0] as {
-        data: { name: string; patientId: string };
-      };
-      expect(created.data.name).toBe('สมศรี ใจดี');
-      expect(created.data.patientId).toBe(OWNER_ID);
+      )).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED', statusCode: 422 } });
+      expect(tx.careRecipient.create).not.toHaveBeenCalled();
+      expect(tx.booking.create).not.toHaveBeenCalled();
     });
 
-    it('บัญชีมีแต่ display_name (สมัครก่อน Onboarding) → ใช้ display_name', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        firstName: null,
-        lastName: null,
-        displayName: 'ยายศรี',
-      });
+    it('legacy display-name account cannot bypass assessment by provisioning a profile', async () => {
+      prisma.user.findUnique.mockResolvedValue({ firstName: null, lastName: null, displayName: 'ยายศรี' });
       prisma.careRecipient.findFirst.mockResolvedValue(null);
-      tx.careRecipient.create.mockResolvedValue({ id: 'cr-new' });
-
-      await service.createBookingOnBehalf(
-        BOOKER_ID,
+      await expect(service.createBookingOnBehalf(BOOKER_ID,
         makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
-      );
-
-      const created = tx.careRecipient.create.mock.calls[0][0] as {
-        data: { name: string };
-      };
-      expect(created.data.name).toBe('ยายศรี');
+      )).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
+      expect(tx.careRecipient.create).not.toHaveBeenCalled();
     });
 
     it('★ บัญชีไม่มีชื่อเลย → ปฏิเสธ ไม่เดาชื่อให้', async () => {
@@ -555,71 +538,33 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
   });
 
   // ── PYG-427_31 / _34b: โปรไฟล์ใหม่ของสมาชิกเกิดใน tx เดียวกับ booking ─────
-  describe('โปรไฟล์ใหม่ของสมาชิก — สร้างใน transaction ของ booking (PYG-427_31/_34b)', () => {
-    const newMember = () => makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined });
-
-    beforeEach(() => {
-      prisma.careRecipient.findFirst.mockResolvedValue(null); // ไม่มีใบเดิม ไม่มีโปรไฟล์ส่วนตัว → สาขา ③
-      tx.careRecipient.create.mockResolvedValue({ id: 'cr-new' });
-    });
-
-    it('★ สร้างผ่าน tx ก่อน booking.create และผูก booking กับใบนั้น', async () => {
-      await service.createBookingOnBehalf(BOOKER_ID, newMember());
-
-      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
-      expect(tx.careRecipient.create).toHaveBeenCalledTimes(1);
-      expect(tx.careRecipient.create.mock.invocationCallOrder[0]).toBeLessThan(
-        tx.booking.create.mock.invocationCallOrder[0],
-      );
-      expect(tx.booking.create.mock.calls[0][0].data.careRecipientId).toBe('cr-new');
-    });
-
-    it('★ _34b: booking ล้มใน tx → error ออกจาก tx เดียวกับที่สร้างโปรไฟล์ (rollback ทั้งคู่)', async () => {
-      tx.booking.create.mockRejectedValue(new Error('tx failed'));
-
-      await expect(service.createBookingOnBehalf(BOOKER_ID, newMember())).rejects.toThrow('tx failed');
-      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
-    });
-
-    it('★ _34b: ไม่พบผู้ดูแล → ล้มก่อนเข้า tx ไม่มีโปรไฟล์เกิดขึ้นเลย', async () => {
-      prisma.caregiver.findUnique.mockResolvedValue(null);
-
-      await expect(
-        service.createBookingOnBehalf(BOOKER_ID, { ...newMember(), caregiverId: 'cg-missing' }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
-      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
-    });
-
-    it('★ _31: ล็อกแถวสมาชิกแล้วเจอใบที่คำขอก่อนหน้าเพิ่งสร้าง → ใช้ใบนั้น ไม่สร้างซ้ำ', async () => {
-      tx.careRecipient.findFirst.mockResolvedValue({ id: 'cr-winner' });
-
-      await service.createBookingOnBehalf(BOOKER_ID, newMember());
-
-      const [sql, ...values] = tx.$queryRaw.mock.calls[0];
-      expect(sql.join('?')).toContain('FOR UPDATE');
-      expect(values).toEqual([GROUP_ID, OWNER_ID]);
-      expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
-        tx.careRecipient.findFirst.mock.invocationCallOrder[0],
-      );
+  describe('S08 replaces provisioning-during-booking with assessment first', () => {
+    it('does not create a profile, booking, QR, tasks or event when member has no profile', async () => {
+      prisma.careRecipient.findFirst.mockResolvedValue(null);
+      await expect(service.createBookingOnBehalf(BOOKER_ID,
+        makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
+      )).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
       expect(tx.careRecipient.create).not.toHaveBeenCalled();
-      expect(tx.booking.create.mock.calls[0][0].data.careRecipientId).toBe('cr-winner');
+      expect(tx.booking.create).not.toHaveBeenCalled();
+      expect(tx.booking_tasks.createMany).not.toHaveBeenCalled();
+      expect(tx.familyGroupActivity.create).not.toHaveBeenCalled();
+      expect(jobQr.createForBooking).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
     });
-
-    it('สมาชิกถูกเตะ/ออกระหว่างทาง (ล็อกแล้วไม่เจอแถว ACTIVE) → MEMBER_NOT_FOUND ไม่สร้างอะไร', async () => {
-      tx.$queryRaw.mockResolvedValue([]);
-
-      await expect(service.createBookingOnBehalf(BOOKER_ID, newMember())).rejects.toMatchObject({
-        extensions: { code: FG_ERROR.MEMBER_NOT_FOUND },
-      });
+    it('does not copy a personal profile or its assessment implicitly into the group', async () => {
+      prisma.careRecipient.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ name: 'Personal profile' });
+      await expect(service.createBookingOnBehalf(BOOKER_ID,
+        makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
+      )).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
       expect(tx.careRecipient.create).not.toHaveBeenCalled();
       expect(tx.booking.create).not.toHaveBeenCalled();
     });
-
-    it('ไม่เอานัดของ "คนกดจอง" มาเช็คเวลาชน — โปรไฟล์ที่ยังไม่เกิดไม่มีนัดให้ชน', async () => {
-      await service.createBookingOnBehalf(BOOKER_ID, newMember());
-
-      expect(prisma.booking.findMany).not.toHaveBeenCalled();
+    it('a selected profile without assessment is rejected even when the booker has one', async () => {
+      prisma.careRecipient.findUnique.mockResolvedValue({ id: RECIPIENT_ID, name: 'Relative', patientId: OWNER_ID, familyGroupId: GROUP_ID, is_deleted: false });
+      tx.careRecipientAssessment.findUnique.mockResolvedValue(null);
+      await expect(service.createBookingOnBehalf(BOOKER_ID, makeInput())).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
+      expect(tx.careRecipientAssessment.findUnique).toHaveBeenCalledWith({ where: { careRecipientId: RECIPIENT_ID }, select: { id: true } });
+      expect(tx.booking.create).not.toHaveBeenCalled();
     });
   });
 
@@ -683,15 +628,10 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
   // ── กันการจองปกติพัง (regression) ────────────────────────────────────────
 
   describe('การจองปกติต้องไม่เปลี่ยนพฤติกรรม', () => {
-    it('ไม่มี careRecipientId → ยังกรองนัดชนด้วย patientId เหมือนเดิม', async () => {
-      await service.createBooking(BOOKER_ID, makeInput({
-        careRecipientId: undefined,
-        groupId: undefined,
-      }));
-
-      const where = prisma.booking.findMany.mock.calls[0][0].where;
-      expect(where.patientId).toBe(BOOKER_ID);
-      expect(where.careRecipientId).toBeUndefined();
+    it('REST booking without careRecipientId is rejected instead of using booker assessment', async () => {
+      await expect(service.createBooking(BOOKER_ID, makeInput({ careRecipientId: undefined, groupId: undefined })))
+        .rejects.toMatchObject({ response: { code: 'ASSESSMENT_REQUIRED', statusCode: 422 } });
+      expect(tx.booking.create).not.toHaveBeenCalled();
     });
 
     /**
@@ -704,7 +644,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
      */
     it('จองปกติไม่เขียนฟีดกิจกรรม (แต่ยังอยู่ใน transaction เพราะต้องสร้างใบ QR)', async () => {
       await service.createBooking(BOOKER_ID, makeInput({
-        careRecipientId: undefined,
+        careRecipientId: RECIPIENT_ID,
         groupId: undefined,
       }));
 
@@ -744,7 +684,7 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
 
     it('★ จองปกติ (ไม่ผ่านกลุ่ม) → ก็ต้องได้ใบ QR เหมือนกัน', async () => {
       await service.createBooking(BOOKER_ID, makeInput({
-        careRecipientId: undefined,
+        careRecipientId: RECIPIENT_ID,
         groupId: undefined,
       }));
 
