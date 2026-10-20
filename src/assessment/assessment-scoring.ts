@@ -25,21 +25,38 @@ export function calculateAdlAssessment(answers: unknown) {
     );
   }
   const byCode = new Map<string, Record<string, unknown>>();
+  // เก็บรหัสที่ผิดทั้งหมดก่อนโยน ให้ FE ชี้ข้อที่ผิดได้ (contract PYG-607 §8 · PYG-666)
+  const invalidAnswerCodes: string[] = [];
+  const duplicateAnswerCodes: string[] = [];
+  let malformed = false;
   for (const answer of answers as unknown[]) {
     if (
       !answer ||
       typeof answer !== 'object' ||
       !('code' in answer) ||
-      typeof answer.code !== 'string' ||
-      !ADL_ITEMS.some((item) => item.code === answer.code) ||
-      byCode.has(answer.code)
+      typeof answer.code !== 'string'
     ) {
-      throw new AssessmentError(
-        ASSESSMENT_ERROR.ANSWER_INVALID,
-        'รหัสข้อ ADL ไม่ถูกต้องหรือซ้ำกัน',
-      );
+      malformed = true;
+      continue;
     }
-    byCode.set(answer.code, answer as Record<string, unknown>);
+    const code = answer.code;
+    if (!ADL_ITEMS.some((item) => item.code === code)) {
+      if (!invalidAnswerCodes.includes(code)) invalidAnswerCodes.push(code);
+    } else if (byCode.has(code)) {
+      if (!duplicateAnswerCodes.includes(code)) duplicateAnswerCodes.push(code);
+    } else {
+      byCode.set(code, answer as Record<string, unknown>);
+    }
+  }
+  if (malformed || invalidAnswerCodes.length || duplicateAnswerCodes.length) {
+    throw new AssessmentError(
+      ASSESSMENT_ERROR.ANSWER_INVALID,
+      'รหัสข้อ ADL ไม่ถูกต้องหรือซ้ำกัน',
+      {
+        ...(invalidAnswerCodes.length && { invalidAnswerCodes }),
+        ...(duplicateAnswerCodes.length && { duplicateAnswerCodes }),
+      },
+    );
   }
   const missingAnswerCodes = ADL_ITEMS.filter((item) => {
     const answer = byCode.get(item.code);
