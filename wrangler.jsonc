@@ -3,7 +3,11 @@
   "name": "payung-api",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-19",
-  "compatibility_flags": ["enable_nodejs_http_server_modules"],
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env",
+    "enable_nodejs_http_server_modules"
+  ],
   "find_additional_modules": true,
   "base_dir": "./src/consent",
   "preserve_file_names": true,
@@ -27,7 +31,9 @@
     "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js"
   },
   "vars": {
+    "APP_PUBLIC_BASE_URL": "https://payung-care.com",
     "CF_WORKER": "true",
+    "FRONTEND_URL": "https://payung-care.com,https://www.payung-care.com",
     "NODE_ENV": "production"
   },
   "observability": {

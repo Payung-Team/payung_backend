@@ -16,6 +16,7 @@ function getNestApp(): Promise<INestApplication> {
     const app = await NestFactory.create(
       AppModule,
       new ExpressAdapter(expressApp),
+      { abortOnError: false },
     );
     configureApp(app);
     await app.init();
