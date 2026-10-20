@@ -184,6 +184,16 @@ export class CreateBookingOnBehalfInput {
   @IsNotEmpty({ each: true })
   tasks: string[];
 
+  @Field(() => [ID], {
+    nullable: true,
+    description:
+      'PYG-634: กิจกรรมจากรายการกลาง (careActivities) · ไม่บังคับ · ปิดใช้งาน = CARE_ACTIVITY_INACTIVE · ไม่มีอยู่ = CARE_ACTIVITY_NOT_FOUND',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  activityIds?: string[];
+
   @Field(() => [String], { description: 'สถานที่ให้บริการ เช่น ["บ้าน"] อย่างน้อย 1 รายการ' })
   @IsArray()
   @ArrayMinSize(1)

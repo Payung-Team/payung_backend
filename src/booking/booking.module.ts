@@ -13,6 +13,7 @@ import { PaymentModule } from '../payment/payment.module';
 import { MonitoringModule } from '../monitoring/monitoring.module';
 import { NotificationModule } from '../notification/notification.module';
 import { BookingExpiryService } from './booking-expiry.service';
+import { CareActivityModule } from '../care-activity/care-activity.module';
 import { ConsentModule } from '../consent/consent.module';
 
 @Module({
@@ -23,7 +24,7 @@ import { ConsentModule } from '../consent/consent.module';
   // PYG-461/462: NotificationModule ให้ NotificationService กับ cron หมดอายุ booking
   // PYG-540: ConsentModule ให้ ConsentService — ด่าน "ถอนความยินยอมแล้วจองใหม่ไม่ได้"
   //          ทิศทางเดียว ConsentModule ไม่รู้จัก BookingModule → ไม่มี circular dependency
-  imports: [CommonModule, PaymentModule, MonitoringModule, NotificationModule, ConsentModule],
+  imports: [CommonModule, PaymentModule, MonitoringModule, NotificationModule, ConsentModule, CareActivityModule],
   // PYG-202: REST controllers (create/cancel booking + task suggestions)
   controllers: [BookingController, BookingTaskSuggestionsController],
   providers: [

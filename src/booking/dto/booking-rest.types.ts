@@ -33,6 +33,8 @@ export interface BookingRest {
   estimatedCost?: number;
   caregiver?: CaregiverBriefRest; // undefined when booking is unmatched
   careRecipientName?: string;
+  /** PYG-634: กิจกรรมจากรายการกลางที่เลือก — สำเนา ณ ตอนจอง ([] = ไม่ได้เลือก / ไม่ได้โหลด) */
+  activities: Array<{ activityId: string; name: string; category: string; careLevel: string }>;
   confirmedAt?: Date;
   createdAt: Date;
 }

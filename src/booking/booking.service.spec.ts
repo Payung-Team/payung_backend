@@ -18,6 +18,8 @@ import {
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 import { BookingStatusEnum } from './dto/booking-summary.types';
 import { AvatarUrlService } from '../common/avatar-url.service';
+import { CareActivityService } from '../care-activity/care-activity.service';
+import { ClockService } from '../common/clock.service';
 import { PROFILE_PHOTOS_BUCKET } from '../identity/kyc/profile-photo.constants';
 import { SupabaseService } from '../common/supabase.service';
 
@@ -131,6 +133,9 @@ describe('BookingService', () => {
         },
         // PYG-518: sign avatarUrl ของผู้ดูแล — เทสเฉพาะเรื่อง signing อยู่ท้ายไฟล์นี้
         AvatarUrlService,
+        // PYG-634: ตัวจริง — ไม่ส่ง activityIds = ไม่แตะ DB (E9) · เคสกิจกรรมเทสใน care-activity.service.spec.ts
+        CareActivityService,
+        ClockService,
         {
           provide: SupabaseService,
           useValue: {
