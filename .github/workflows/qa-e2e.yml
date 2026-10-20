@@ -54,3 +54,4 @@ jobs:
           test/pyg649-matching.e2e-spec.ts
           test/pyg611-assessment.e2e-spec.ts
           test/pyg615-care-group.e2e-spec.ts
+          test/pyg621-infection.e2e-spec.ts
