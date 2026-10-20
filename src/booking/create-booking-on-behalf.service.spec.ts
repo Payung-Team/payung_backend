@@ -770,6 +770,24 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(tx.booking_tasks.createMany).toHaveBeenCalled();
     });
 
+    it('S17: คำนวณ required skills หลังบันทึกกิจกรรมแล้ว (รหัสกิจกรรมเป็น input ของการคำนวณ)', async () => {
+      activityRowsInTx([activityRow(ACT_1)]);
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
+        makeInput({ activityIds: [ACT_1] }),
+      );
+
+      // recalculateBookingRequiredSkills อ่าน booking.activities ผ่าน findUniqueOrThrow
+      // ถ้าอ่านก่อน writeForBooking จะไม่เห็นกิจกรรม → ทักษะที่มาจากกิจกรรม (S15) หายไปเงียบ ๆ
+      const writeOrder =
+        tx.bookingActivity.createMany.mock.invocationCallOrder[0];
+      const readOrder =
+        tx.booking.findUniqueOrThrow.mock.invocationCallOrder[0];
+      expect(writeOrder).toBeDefined();
+      expect(readOrder).toBeDefined();
+      expect(writeOrder).toBeLessThan(readOrder);
+    });
+
     it('E2: กิจกรรมถูกปิดใช้งาน → CARE_ACTIVITY_INACTIVE และไม่สร้าง booking / ไม่ยิง event', async () => {
       activityRowsInTx([activityRow(ACT_1, false)]);
       const err = (await service
