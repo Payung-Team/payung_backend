@@ -597,6 +597,7 @@ describeDb('PYG-649 · S18 caregiver matching (PYG-571)', () => {
       const e = await elder({ flags: ['injection'] });
       const b = await booking(e);
       // ผู้ดูแลทั่วไปยื่นขอเป็นพยาบาลพร้อมใบที่ "อนุมัติแล้ว" — แต่คำขอยังรอ → ยังเป็นผู้ดูแลทั่วไป
+      // field_changes ใช้รูปแบบจริง: ค่าเป็น JSON-stringified (กติกา computeFieldChanges · ดูบั๊ก PYG-667)
       const g = await caregiver({
         skills: [...UNLOCKED_SKILLS, 'injection'],
         license: { status: 'approved', expiresAt: inYears(1) },
@@ -612,8 +613,8 @@ describeDb('PYG-649 · S18 caregiver matching (PYG-571)', () => {
           field_changes: [
             {
               field: 'profession',
-              oldValue: 'general_caregiver',
-              newValue: 'nurse',
+              oldValue: JSON.stringify('general_caregiver'),
+              newValue: JSON.stringify('nurse'),
               licenseDocumentId: doc.id,
             },
           ],
