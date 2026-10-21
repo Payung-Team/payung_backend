@@ -7,7 +7,7 @@ interface SendSmsHookPayload {
   sms?: {
     otp?: string;
   };
-}
+} 
 
 interface ThaiBulkSmsResponse {
   phone_number_list?: Array<{
