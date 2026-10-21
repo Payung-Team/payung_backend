@@ -6,7 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat",
     "nodejs_compat_populate_process_env",
-    "enable_nodejs_http_server_modules"
+    "enable_nodejs_http_server_modules",
   ],
   "find_additional_modules": true,
   "base_dir": "./src/consent",
@@ -15,8 +15,8 @@
     {
       "type": "Text",
       "globs": ["**/*.md"],
-      "fallthrough": true
-    }
+      "fallthrough": true,
+    },
   ],
   "alias": {
     "@as-integrations/fastify": "./.worker-build/cloudflare/empty-module.js",
@@ -28,22 +28,34 @@
     "@nestjs/microservices": "./.worker-build/cloudflare/empty-module.js",
     "@nestjs/microservices/microservices-module": "./.worker-build/cloudflare/empty-module.js",
     "ts-morph": "./.worker-build/cloudflare/empty-module.js",
-    "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js"
+    "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js",
   },
   "vars": {
     "APP_PUBLIC_BASE_URL": "https://payung-care.com",
     "CF_WORKER": "true",
     "FRONTEND_URL": "https://payung-care.com,https://www.payung-care.com",
     "NODE_ENV": "production",
-    "PAYOUT_KILLSWITCH_ENABLED": "true"
+    "PAYOUT_KILLSWITCH_ENABLED": "true",
+    "PAYOUT_RECIPIENT_SYNC_ENABLED": "false",
+    "BOOKING_EXPIRY_CRON_ENABLED": "false",
+    "HOLD_REFRESH_CRON_ENABLED": "false",
   },
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "161de314a4b74c61af5f145f5d2c13dc"
-    }
+      "id": "161de314a4b74c61af5f145f5d2c13dc",
+    },
   ],
   "observability": {
-    "enabled": true
-  }
+    "enabled": true,
+  },
+  "triggers": {
+    "crons": [
+      "*/10 * * * *",
+      "5,15,35,45 * * * *",
+      "0 0,1,2,3 * * *",
+      "30 4 * * *",
+      "5 17 * * *",
+    ],
+  },
 }

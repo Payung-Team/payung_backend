@@ -1,4 +1,5 @@
-import type { INestApplication } from '@nestjs/common';
+import type { INestApplication, Type } from '@nestjs/common';
+import { ContextIdFactory } from '@nestjs/core';
 import { AdminCleanupService } from '../admin/admin-cleanup.service';
 import { UserCleanupService } from '../admin/user-cleanup.service';
 import { BookingExpiryService } from '../booking/booking-expiry.service';
@@ -11,12 +12,163 @@ import { PayoutAccountService } from '../payment/payout-account.service';
 import { PayoutReaperService } from '../payout/payout-reaper.service';
 import { PayoutWorkerService } from '../payout/payout-worker.service';
 import { ReconciliationCron } from '../reconciliation/reconciliation.cron';
+import { PrismaService } from '../common/prisma.service';
 
-async function runTask(name: string, task: () => Promise<unknown>): Promise<void> {
+type ResolveCronService = <T>(token: Type<T>) => Promise<T>;
+
+async function runTask(
+  name: string,
+  task: () => Promise<unknown>,
+  failures: Error[],
+): Promise<void> {
   try {
     await task();
   } catch (error) {
     console.error(`[cloudflare-cron] ${name} failed`, error);
+    failures.push(
+      error instanceof Error ? error : new Error(`${name}: ${String(error)}`),
+    );
+  }
+}
+
+async function dispatchScheduledTasks(
+  resolve: ResolveCronService,
+  cron: string,
+  scheduledTime: number,
+  failures: Error[],
+): Promise<void> {
+  const scheduled = new Date(scheduledTime);
+  const minute = scheduled.getUTCMinutes();
+  const hour = scheduled.getUTCHours();
+
+  if (cron === '*/10 * * * *') {
+    await runTask(
+      'payout-worker',
+      async () => (await resolve(PayoutWorkerService)).run(),
+      failures,
+    );
+    await runTask(
+      'payout-reaper',
+      async () => (await resolve(PayoutReaperService)).run(),
+      failures,
+    );
+    await runTask(
+      'payout-recipient-sync',
+      () =>
+        resolve(PayoutAccountService).then((service) =>
+          service.syncPendingRecipients(),
+        ),
+      failures,
+    );
+
+    if (minute === 0) {
+      await runTask(
+        'promptpay-reconciliation',
+        () =>
+          resolve(PaymentCronService).then((service) =>
+            service.reconcileAbandonedPromptPay(),
+          ),
+        failures,
+      );
+    }
+    if (minute === 10) {
+      await runTask(
+        'job-type-removal-notifier',
+        () => resolve(JobTypeRemovalNotifier).then((service) => service.run()),
+        failures,
+      );
+    }
+    return;
+  }
+
+  if (cron === '5,15,35,45 * * * *') {
+    if (minute === 5 || minute === 35) {
+      await runTask(
+        'no-checkout-sweeper',
+        () =>
+          resolve(NoCheckoutSweeperService).then((service) => service.run()),
+        failures,
+      );
+    }
+    if (minute === 15 || minute === 45) {
+      await runTask(
+        'booking-expiry',
+        () => resolve(BookingExpiryService).then((service) => service.run()),
+        failures,
+      );
+    }
+    return;
+  }
+
+  if (cron === '0 0,1,2,3 * * *') {
+    if (hour === 0) {
+      await runTask(
+        'admin-cleanup',
+        () =>
+          resolve(AdminCleanupService).then((service) =>
+            service.handleAdminCleanup(),
+          ),
+        failures,
+      );
+      await runTask(
+        'user-cleanup',
+        () =>
+          resolve(UserCleanupService).then((service) =>
+            service.handleUserCleanup(),
+          ),
+        failures,
+      );
+    } else if (hour === 1) {
+      await runTask(
+        'hold-refresh',
+        () =>
+          resolve(PaymentCronService).then((service) =>
+            service.refreshExpiringHolds(),
+          ),
+        failures,
+      );
+    } else if (hour === 2) {
+      await runTask(
+        'expired-holds',
+        () =>
+          resolve(PaymentCronService).then((service) =>
+            service.handleExpiredHolds(),
+          ),
+        failures,
+      );
+    } else if (hour === 3) {
+      await runTask(
+        'payment-reconciliation',
+        () => resolve(ReconciliationCron).then((service) => service.run()),
+        failures,
+      );
+      await runTask(
+        'idempotency-prune',
+        () =>
+          resolve(PaymentCronService).then((service) =>
+            service.pruneIdempotencyKeys(),
+          ),
+        failures,
+      );
+    }
+    return;
+  }
+
+  if (cron === '30 4 * * *') {
+    await runTask(
+      'kyc-storage-audit',
+      () => resolve(KycStorageAuditCron).then((service) => service.run()),
+      failures,
+    );
+    return;
+  }
+
+  if (cron === '5 17 * * *') {
+    await runTask(
+      'license-expiry',
+      () => resolve(LicenseExpiryCron).then((service) => service.run()),
+      failures,
+    );
   }
 }
 
@@ -25,75 +177,27 @@ export async function runScheduledTasks(
   cron: string,
   scheduledTime: number,
 ): Promise<void> {
-  const scheduled = new Date(scheduledTime);
-  const minute = scheduled.getUTCMinutes();
-  const hour = scheduled.getUTCHours();
+  const contextId = ContextIdFactory.create();
+  app.registerRequestByContextId(
+    { type: 'scheduled', cron, scheduledTime },
+    contextId,
+  );
 
-  if (cron === '*/10 * * * *') {
-    await runTask('payout-worker', () => app.get(PayoutWorkerService).run());
-    await runTask('payout-reaper', () => app.get(PayoutReaperService).run());
-    await runTask('payout-recipient-sync', () =>
-      app.get(PayoutAccountService).syncPendingRecipients(),
+  const resolve: ResolveCronService = <T>(token: Type<T>) =>
+    app.resolve(token, contextId, { strict: false });
+  const prisma = await resolve(PrismaService);
+  const failures: Error[] = [];
+
+  try {
+    await dispatchScheduledTasks(resolve, cron, scheduledTime, failures);
+  } finally {
+    await prisma.onModuleDestroy();
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `[cloudflare-cron] ${failures.length} task(s) failed for ${cron}`,
     );
-
-    if (minute === 0) {
-      await runTask('promptpay-reconciliation', () =>
-        app.get(PaymentCronService).reconcileAbandonedPromptPay(),
-      );
-    }
-    if (minute === 10) {
-      await runTask('job-type-removal-notifier', () =>
-        app.get(JobTypeRemovalNotifier).run(),
-      );
-    }
-    return;
-  }
-
-  if (cron === '5,15,35,45 * * * *') {
-    if (minute === 5 || minute === 35) {
-      await runTask('no-checkout-sweeper', () =>
-        app.get(NoCheckoutSweeperService).run(),
-      );
-    }
-    if (minute === 15 || minute === 45) {
-      await runTask('booking-expiry', () => app.get(BookingExpiryService).run());
-    }
-    return;
-  }
-
-  if (cron === '0 0,1,2,3 * * *') {
-    if (hour === 0) {
-      await runTask('admin-cleanup', () =>
-        app.get(AdminCleanupService).handleAdminCleanup(),
-      );
-      await runTask('user-cleanup', () =>
-        app.get(UserCleanupService).handleUserCleanup(),
-      );
-    } else if (hour === 1) {
-      await runTask('hold-refresh', () =>
-        app.get(PaymentCronService).refreshExpiringHolds(),
-      );
-    } else if (hour === 2) {
-      await runTask('expired-holds', () =>
-        app.get(PaymentCronService).handleExpiredHolds(),
-      );
-    } else if (hour === 3) {
-      await runTask('payment-reconciliation', () =>
-        app.get(ReconciliationCron).run(),
-      );
-      await runTask('idempotency-prune', () =>
-        app.get(PaymentCronService).pruneIdempotencyKeys(),
-      );
-    }
-    return;
-  }
-
-  if (cron === '30 4 * * *') {
-    await runTask('kyc-storage-audit', () => app.get(KycStorageAuditCron).run());
-    return;
-  }
-
-  if (cron === '5 17 * * *') {
-    await runTask('license-expiry', () => app.get(LicenseExpiryCron).run());
   }
 }
