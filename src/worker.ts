@@ -41,9 +41,25 @@ const httpHandler = httpServerHandler(
   server as Parameters<typeof httpServerHandler>[0],
 );
 
+interface WorkerEnv {
+  HYPERDRIVE: Hyperdrive;
+}
+
+function useWorkerDatabase(env: WorkerEnv): void {
+  // Hyperdrive bindings are objects, so Cloudflare cannot copy them into
+  // process.env through nodejs_compat_populate_process_env. Prisma and pg read
+  // DATABASE_URL, therefore expose Hyperdrive's per-environment URL before
+  // Nest resolves the request-scoped PrismaService.
+  process.env.DATABASE_URL = env.HYPERDRIVE.connectionString;
+}
+
 export default {
-  fetch: httpHandler.fetch,
-  scheduled(controller: ScheduledController, _env: unknown, ctx: ExecutionContext) {
+  fetch(...args: Parameters<NonNullable<typeof httpHandler.fetch>>) {
+    useWorkerDatabase(args[1] as unknown as WorkerEnv);
+    return httpHandler.fetch!(...args);
+  },
+  scheduled(controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext) {
+    useWorkerDatabase(env);
     ctx.waitUntil(
       getNestApp().then((app) =>
         runScheduledTasks(app, controller.cron, controller.scheduledTime),

@@ -37,6 +37,12 @@
     "NODE_ENV": "production",
     "PAYOUT_KILLSWITCH_ENABLED": "true"
   },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "161de314a4b74c61af5f145f5d2c13dc"
+    }
+  ],
   "observability": {
     "enabled": true
   }
