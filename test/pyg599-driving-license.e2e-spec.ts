@@ -278,21 +278,34 @@ describeDb('PYG-599 · S06 driving license (PYG-561)', () => {
     },
   );
 
-  // บั๊ก PYG-671 (Low): getState หาใบด้วย caregiver_id OR user_id → ใบที่อัปโหลดทิ้งไว้ยังนับเป็นใบล่าสุด
-  // — แก้แล้วเปลี่ยน it.failing → it
-  it.failing(
-    'PYG-561_06 (AC2) Verify that a caregiver who uploaded a license then switched to NONE before submitting has no driving license on record',
-    async () => {
-      const u = await applicant();
-      // FE ตัดเอกสารใบขับขี่ออกจาก documentIds เมื่อไม่ได้เลือกขับเอง (KycStep4) — ส่งแบบเดียวกัน
-      await uploaded(u);
-      const body = await submit(u, { transportMode: 'NONE' });
-      expect(body.errors).toBeUndefined();
-      const cg = (await caregiverOf(u))!;
-      expect((await mine(u)).drivingLicense.status).toBe('none');
-      expect((await detail(cg.id)).drivingLicense.status).toBe('none');
-    },
-  );
+  // เคยเป็นบั๊ก PYG-671 (Low · แก้แล้ว): ใบที่อัปโหลดทิ้งไว้ (ไม่ผูก + รอตรวจ) เคยนับเป็นใบล่าสุด
+  it('PYG-561_06 (AC2) Verify that a caregiver who uploaded a license then switched to NONE before submitting has no driving license on record', async () => {
+    const u = await applicant();
+    // FE ตัดเอกสารใบขับขี่ออกจาก documentIds เมื่อไม่ได้เลือกขับเอง (KycStep4) — ส่งแบบเดียวกัน
+    await uploaded(u);
+    const body = await submit(u, { transportMode: 'NONE' });
+    expect(body.errors).toBeUndefined();
+    const cg = (await caregiverOf(u))!;
+    expect((await mine(u)).drivingLicense.status).toBe('none');
+    expect((await detail(cg.id)).drivingLicense.status).toBe('none');
+  });
+
+  it('PYG-561_25 (PYG-671) Verify that a reviewed license unlinked by a resubmission still counts (only unreviewed orphans are ignored)', async () => {
+    const c = await driver('approved', { mode: null });
+    // ยื่นซ้ำแล้วแถวเดิมถูกปลด caregiver_id — ใบที่ตรวจแล้วยังต้องนับ (ป้ายไม่หาย)
+    await h.prisma.kycDocument.update({
+      where: { id: c.docId! },
+      data: { caregiverId: null },
+    });
+    expect((await mine(c)).drivingLicense).toMatchObject({
+      documentId: c.docId,
+      status: 'approved',
+      verified: true,
+    });
+    expect(
+      (await publicProfile(c.caregiverId)).body.driving_license_verified,
+    ).toBe(true);
+  });
 
   // ─── AC3 · วันหมดอายุ ──────────────────────────────────────────────────
 
