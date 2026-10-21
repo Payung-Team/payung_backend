@@ -992,10 +992,8 @@ model KycDocument {
   user         User        @relation(fields: [userId], references: [id])
   reviews      KycReview[]
 
-  // หมายเหตุ: index จริงเป็น partial (WHERE review_status IS NOT NULL) — มีเฉพาะใน migration SQL
-  @@index([reviewStatus], map: "idx_kyc_documents_review_status")
-  // หมายเหตุ: index จริงเป็น partial (WHERE expires_at IS NOT NULL) — มีเฉพาะใน migration SQL
-  @@index([expiresAt])
+  // หมายเหตุ: partial indexes ของ review_status และ expires_at มีเฉพาะใน migration SQL
+  // ไม่ประกาศ @@index ที่นี่ เพราะ Prisma ยังแทน WHERE ... IS NOT NULL ไม่ได้
   @@map("kyc_documents")
 }
 
@@ -1013,8 +1011,8 @@ model KycReview {
   reviewer    User         @relation(fields: [reviewerId], references: [id])
   document    KycDocument? @relation(fields: [documentId], references: [id])
 
-  // หมายเหตุ: index จริงเป็น partial (WHERE document_id IS NOT NULL) — มีเฉพาะใน migration SQL
-  @@index([documentId], map: "idx_kyc_reviews_document")
+  // หมายเหตุ: partial index ของ document_id มีเฉพาะใน migration SQL
+  // ไม่ประกาศ @@index ที่นี่ เพราะ Prisma ยังแทน WHERE ... IS NOT NULL ไม่ได้
   @@map("kyc_reviews")
 }
 
