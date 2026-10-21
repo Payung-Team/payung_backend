@@ -203,6 +203,61 @@ describe('KycService.submitKyc — ใบประกอบวิชาชีพ
     });
   });
 
+  // PYG-670: ยื่นซ้ำโดยสลับพยาบาล ↔ นักกายภาพฯ — ใบที่ผูกกับรอบก่อน (caregiver_id = แถวเดิม) เป็นของวิชาชีพเดิม
+  describe('E2 · ยื่นซ้ำสลับวิชาชีพที่ต้องมีใบ (PYG-670)', () => {
+    const resubmitAs = (from: string, to: string) => {
+      caregiverFindUnique.mockResolvedValue({
+        id: 'cg-1',
+        kycStatus: 'rejected',
+        profession: from,
+        resubmitCount: 0,
+      });
+      submittedProfession = to;
+    };
+
+    it.each([
+      ['nurse', 'physiotherapist'],
+      ['physiotherapist', 'nurse'],
+    ])(
+      '%s → %s ด้วยใบที่ผูกกับรอบก่อน (client ส่ง id เดิมกลับมา) → LICENSE_FILE_REQUIRED ไม่เขียน DB',
+      async (from, to) => {
+        resubmitAs(from, to);
+        setDocs([licenseDoc({ caregiverId: 'cg-1' })]);
+        await expect(service.submitKyc(USER, input())).rejects.toMatchObject({
+          extensions: { code: 'LICENSE_FILE_REQUIRED', statusCode: 422 },
+        });
+        expect(tx.caregiver.upsert).not.toHaveBeenCalled();
+      },
+    );
+
+    it('nurse → physiotherapist ด้วยใบที่อัปโหลดใหม่ (ยังไม่ผูก) → ส่งได้', async () => {
+      resubmitAs('nurse', 'physiotherapist');
+      setDocs([licenseDoc({ caregiverId: null })]);
+      await expect(service.submitKyc(USER, input())).resolves.toBeDefined();
+    });
+
+    it('ส่งทั้งใบเดิมและใบใหม่มาพร้อมกัน → ใช้ใบใหม่ ส่งได้', async () => {
+      resubmitAs('nurse', 'physiotherapist');
+      setDocs([
+        licenseDoc({ id: 'old', caregiverId: 'cg-1' }),
+        licenseDoc({ id: 'new', caregiverId: null }),
+      ]);
+      await expect(service.submitKyc(USER, input())).resolves.toBeDefined();
+    });
+
+    it('วิชาชีพเดิม (nurse → nurse) ใช้ใบที่ผูกกับรอบก่อนได้ตามเดิม', async () => {
+      resubmitAs('nurse', 'nurse');
+      setDocs([licenseDoc({ caregiverId: 'cg-1' })]);
+      await expect(service.submitKyc(USER, input())).resolves.toBeDefined();
+    });
+
+    it('general_caregiver → nurse ใช้ใบที่แนบไว้กับรอบก่อนได้ (รอบก่อนไม่ได้ใช้ใบเป็นหลักฐานวิชาชีพใด · E1)', async () => {
+      resubmitAs('general_caregiver', 'nurse');
+      setDocs([licenseDoc({ caregiverId: 'cg-1' })]);
+      await expect(service.submitKyc(USER, input())).resolves.toBeDefined();
+    });
+  });
+
   describe('general_caregiver', () => {
     it('ไม่ตรวจใบประกอบฯ — ส่งได้โดยไม่มีใบ', async () => {
       asProfession('general_caregiver');
