@@ -58,3 +58,4 @@ jobs:
           test/pyg577-profession.e2e-spec.ts
           test/pyg583-care-level.e2e-spec.ts
           test/pyg589-license.e2e-spec.ts
+          test/pyg594-job-type.e2e-spec.ts
