@@ -34,18 +34,10 @@
     "APP_PUBLIC_BASE_URL": "https://payung-care.com",
     "CF_WORKER": "true",
     "FRONTEND_URL": "https://payung-care.com,https://www.payung-care.com",
-    "NODE_ENV": "production"
+    "NODE_ENV": "production",
+    "PAYOUT_KILLSWITCH_ENABLED": "true"
   },
   "observability": {
     "enabled": true
-  },
-  "triggers": {
-    "crons": [
-      "*/10 * * * *",
-      "5,15,35,45 * * * *",
-      "0 0,1,2,3 * * *",
-      "30 4 * * *",
-      "5 17 * * *"
-    ]
   }
 }
