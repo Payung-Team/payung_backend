@@ -3,6 +3,7 @@
 /node_modules
 .wrangler
 .wrangler-dist
+.worker-build
 .dev.vars
 /build
 

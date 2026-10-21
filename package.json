@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "prisma generate && nest build",
+    "build": "prisma generate && nest build && tsc -p tsconfig.worker.json",
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
     "cf:dry-run": "wrangler deploy --dry-run --outdir .wrangler-dist",

@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "payung-api",
-  "main": "src/worker.ts",
+  "main": ".worker-build/worker.js",
   "compatibility_date": "2026-10-19",
   "compatibility_flags": [
     "nodejs_compat",
@@ -19,15 +19,15 @@
     }
   ],
   "alias": {
-    "@as-integrations/fastify": "./src/cloudflare/empty-module.ts",
-    "@apollo/subgraph": "./src/cloudflare/empty-module.ts",
-    "@apollo/subgraph/package.json": "./src/cloudflare/empty-module.ts",
-    "@apollo/subgraph/dist/directives": "./src/cloudflare/empty-module.ts",
-    "@apollo/gateway": "./src/cloudflare/empty-module.ts",
-    "@nestjs/websockets/socket-module": "./src/cloudflare/empty-module.ts",
-    "@nestjs/microservices": "./src/cloudflare/empty-module.ts",
-    "@nestjs/microservices/microservices-module": "./src/cloudflare/empty-module.ts",
-    "ts-morph": "./src/cloudflare/empty-module.ts",
+    "@as-integrations/fastify": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph/package.json": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph/dist/directives": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/gateway": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/websockets/socket-module": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/microservices": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/microservices/microservices-module": "./.worker-build/cloudflare/empty-module.js",
+    "ts-morph": "./.worker-build/cloudflare/empty-module.js",
     "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js"
   },
   "vars": {

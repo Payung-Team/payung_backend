@@ -37,7 +37,9 @@ const server = createServer((request, response) => {
       response.end(JSON.stringify({ message: 'Internal server error' }));
     });
 });
-const httpHandler = httpServerHandler(server);
+const httpHandler = httpServerHandler(
+  server as Parameters<typeof httpServerHandler>[0],
+);
 
 export default {
   fetch: httpHandler.fetch,
