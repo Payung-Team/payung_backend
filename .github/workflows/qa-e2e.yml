@@ -56,3 +56,4 @@ jobs:
           test/pyg615-care-group.e2e-spec.ts
           test/pyg621-infection.e2e-spec.ts
           test/pyg577-profession.e2e-spec.ts
+          test/pyg583-care-level.e2e-spec.ts
