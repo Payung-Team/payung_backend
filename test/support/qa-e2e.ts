@@ -203,6 +203,8 @@ export type OmiseMock = ReturnType<typeof createOmiseMock>;
 export async function bootstrap() {
   process.env.DATABASE_URL = DB_URL;
   process.env.APP_PUBLIC_BASE_URL = 'https://qa.test';
+  // KYC document upload/sign อ่านค่านี้ด้วย getOrThrow (PYG-589) — ค่าปลอม ไม่มีการยิงออกไปจริง
+  process.env.SUPABASE_URL ??= 'https://qa-project.supabase.co';
   delete process.env.BOOKING_EXPIRY_CRON_ENABLED;
   delete process.env.HOLD_REFRESH_CRON_ENABLED;
 
@@ -219,8 +221,34 @@ export async function bootstrap() {
       },
     }),
     getAdminClient: () => {
-      throw new Error('Supabase admin client ไม่ควรถูกเรียกในชุดทดสอบนี้');
+      if (!storageEnabled)
+        throw new Error('Supabase admin client ไม่ควรถูกเรียกในชุดทดสอบนี้');
+      // เปิดเฉพาะ storage (signed URL ของเอกสาร KYC) — ส่วนอื่นของ admin client ยังห้ามเรียก
+      return {
+        storage: {
+          from: (bucket: string) => ({
+            createSignedUrl: (path: string, ttl: number) => {
+              signedUrlCalls.push({ bucket, path, ttl });
+              return Promise.resolve({
+                data: {
+                  signedUrl: `https://storage.qa.test/${bucket}/${path}?ttl=${ttl}`,
+                },
+                error: null,
+              });
+            },
+          }),
+        },
+      };
     },
+  };
+  /**
+   * opt-in (PYG-589): spec ที่ต้องอ่านเอกสาร KYC เรียก enableStorage() — ชุดอื่นยังได้ error เดิม
+   * signedUrlCalls เก็บทุกครั้งที่ระบบขอ signed URL ไว้ตรวจ bucket/path
+   */
+  let storageEnabled = false;
+  const signedUrlCalls: { bucket: string; path: string; ttl: number }[] = [];
+  const enableStorage = () => {
+    storageEnabled = true;
   };
   const omise = createOmiseMock();
   // นาฬิกาเซิร์ฟเวอร์ปลอม — ไม่ตั้ง = เวลาจริง · ตั้งแล้วทุกที่ที่ใช้ ClockService เห็นเวลานี้
@@ -554,6 +582,8 @@ export async function bootstrap() {
     prisma,
     omise,
     clock,
+    enableStorage,
+    signedUrlCalls,
     gql,
     gqlRaw,
     rest,
