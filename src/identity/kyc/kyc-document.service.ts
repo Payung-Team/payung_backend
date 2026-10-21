@@ -130,6 +130,13 @@ export class KycDocumentService {
         }))?.id ?? null)
       : null;
 
+    // PYG-669: ผู้ดูแลที่ KYC อนุมัติแล้วต่ออายุใบประกอบฯ — ส่ง KYC ซ้ำไม่ได้ จึงต้องผูกตอนอัปโหลด
+    //   ไม่งั้นใบใหม่ไม่โผล่ทั้ง kycStatus และหน้า review (loadDocs อ่านด้วย caregiver_id) แอดมินอนุมัติไม่ได้
+    //   เฉพาะ verified: ผู้ดูแลที่ยังไม่ผ่านถูกผูกตอน submit/resubmit ตามเดิม (resubmit ปลดแล้วผูกตาม documentIds)
+    const licenseCaregiverId = isLicense
+      ? await this.findVerifiedCaregiverId(data.userId)
+      : null;
+
     const doc = await this.prismaService.kycDocument.create({
       data: {
         userId: data.userId,
@@ -143,6 +150,7 @@ export class KycDocumentService {
           licenseNumber: license.licenseNumber,
           expiresAt: license.expiresAt,
           reviewStatus: LICENSE_STATUS.PENDING,
+          ...(licenseCaregiverId && { caregiverId: licenseCaregiverId }),
         }),
         ...(isDriving && {
           expiresAt: drivingExpiresAt,
@@ -156,6 +164,17 @@ export class KycDocumentService {
     });
 
     return this.mapToEntity(doc);
+  }
+
+  /** caregivers.id ของผู้ใช้นี้ ถ้า KYC อนุมัติแล้ว · ยังไม่มีแถว/ยังไม่อนุมัติ → null */
+  private async findVerifiedCaregiverId(
+    userId: string,
+  ): Promise<string | null> {
+    const caregiver = await this.prismaService.caregiver.findUnique({
+      where: { userId },
+      select: { id: true, kycStatus: true },
+    });
+    return caregiver?.kycStatus === 'verified' ? caregiver.id : null;
   }
 
 
