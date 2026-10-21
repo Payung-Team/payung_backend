@@ -99,6 +99,34 @@ describe('KycDocumentService.create — professional_license (PYG-587)', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(create).not.toHaveBeenCalled();
   });
+
+  // PYG-669: ผู้ดูแลที่ verified แล้วส่ง KYC ซ้ำไม่ได้ → ใบต่ออายุต้องผูกตอนอัปโหลด ไม่งั้นแอดมินไม่เห็น
+  it('PYG-669: ผู้ดูแลที่ KYC อนุมัติแล้ว → ผูก caregiverId ตอนอัปโหลด (ค้นจาก userId ของ session)', async () => {
+    caregiverFindUnique.mockResolvedValue({
+      id: 'cg-1',
+      kycStatus: 'verified',
+    });
+    await service.create(base());
+    expect(caregiverFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'user-1' } }),
+    );
+    expect(create.mock.calls[0][0].data.caregiverId).toBe('cg-1');
+  });
+
+  it.each(['pending', 'rejected', 'none'])(
+    'PYG-669: ผู้ดูแลที่ KYC เป็น %s → ไม่ผูก (ผูกตอน submit/resubmit ตาม documentIds เหมือนเดิม)',
+    async (kycStatus) => {
+      caregiverFindUnique.mockResolvedValue({ id: 'cg-1', kycStatus });
+      await service.create(base());
+      expect(create.mock.calls[0][0].data.caregiverId).toBeUndefined();
+    },
+  );
+
+  it('PYG-669: ผู้สมัครใหม่ที่ยังไม่มีแถวผู้ดูแล → ไม่ผูก', async () => {
+    caregiverFindUnique.mockResolvedValue(null);
+    await service.create(base());
+    expect(create.mock.calls[0][0].data.caregiverId).toBeUndefined();
+  });
 });
 
 describe('KycDocumentService.create - driving_license (PYG-597)', () => {
