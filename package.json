@@ -6,7 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "prisma generate && nest build && tsc -p tsconfig.worker.json",
+    "generate:consent-documents": "node scripts/generate-consent-documents.mjs",
+    "build": "npm run generate:consent-documents && prisma generate && nest build && tsc -p tsconfig.worker.json",
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
     "cf:dry-run": "wrangler deploy --dry-run --outdir .wrangler-dist",
@@ -16,7 +17,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
+    "test": "npm run generate:consent-documents && jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
