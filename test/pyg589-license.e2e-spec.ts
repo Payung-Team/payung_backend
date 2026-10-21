@@ -534,50 +534,61 @@ describeDb('PYG-589 · S03 professional license in KYC (PYG-558)', () => {
       expect(await notificationsOf(c.u.id, 'license_expired')).toHaveLength(0);
     });
 
-    // บั๊ก PYG-669 (High): ใบที่ผู้ดูแล verified อัปโหลดใหม่ไม่ถูกผูก caregiver_id → ไม่โผล่ทั้ง kycStatus และหน้า review
-    // (ผูกได้แค่ตอน submitKyc ซึ่ง verified ส่งซ้ำไม่ได้) — แก้แล้วเปลี่ยน it.failing → it
-    it.failing(
-      'PYG-558_21 (AC7/R7) Verify that a verified caregiver whose license expired can upload a new one and it goes back to review',
-      async () => {
-        const c = await submitted('nurse', bkk('2026-11-25'));
-        await h.gql(admin.token, APPROVE, { id: c.docId });
-        await h.prisma.caregiver.update({
-          where: { id: c.caregiverId },
-          data: { kycStatus: 'verified', careLevel: 'basic' },
-        });
-        h.clock.set(new Date('2026-11-26T09:00:00+07:00'));
-        await cron.run();
-        expect((await doc(c.docId)).reviewStatus).toBe('expired');
+    // เคยเป็นบั๊ก PYG-669 (High · แก้แล้ว): ใบที่ผู้ดูแล verified อัปโหลดใหม่ไม่ถูกผูก caregiver_id
+    // → ไม่โผล่ทั้ง kycStatus และหน้า review · ตอนนี้ผูกตอนอัปโหลด
+    it('PYG-558_21 (AC7/R7) Verify that a verified caregiver whose license expired can upload a new one and it goes back to review', async () => {
+      const c = await submitted('nurse', bkk('2026-11-25'));
+      await h.gql(admin.token, APPROVE, { id: c.docId });
+      await h.prisma.caregiver.update({
+        where: { id: c.caregiverId },
+        data: { kycStatus: 'verified', careLevel: 'basic' },
+      });
+      h.clock.set(new Date('2026-11-26T09:00:00+07:00'));
+      await cron.run();
+      expect((await doc(c.docId)).reviewStatus).toBe('expired');
 
-        const fresh = await upload(c.u, {
-          number: 'ว.ใหม่-1',
-          expiry: '2028-11-25',
-        });
-        expect(fresh.errors).toBeUndefined();
-        const freshId = dataOf<{ id: string }>(fresh, 'uploadKycDocument').id;
+      const fresh = await upload(c.u, {
+        number: 'ว.ใหม่-1',
+        expiry: '2028-11-25',
+      });
+      expect(fresh.errors).toBeUndefined();
+      const freshId = dataOf<{ id: string }>(fresh, 'uploadKycDocument').id;
 
-        // ผู้ดูแลเห็นใบใหม่รอตรวจ และแอดมินเห็นใบใหม่ในหน้า review เพื่ออนุมัติได้
-        const mine = dataOf<{ license: License }>(
-          await h.gql(c.u.token, MINE),
-          'kycStatus',
-        );
-        expect(mine.license).toMatchObject({
-          documentId: freshId,
-          status: 'pending',
-        });
-        const detail = dataOf<{ license: License }>(
-          await h.gql(admin.token, DETAIL, { id: c.caregiverId }),
-          'adminKycDetail',
-        );
-        expect(detail.license).toMatchObject({
-          documentId: freshId,
-          status: 'pending',
-        });
-      },
-    );
+      // ผู้ดูแลเห็นใบใหม่รอตรวจ และแอดมินเห็นใบใหม่ในหน้า review เพื่ออนุมัติได้
+      const mine = dataOf<{ license: License }>(
+        await h.gql(c.u.token, MINE),
+        'kycStatus',
+      );
+      expect(mine.license).toMatchObject({
+        documentId: freshId,
+        status: 'pending',
+      });
+      const detail = dataOf<{ license: License }>(
+        await h.gql(admin.token, DETAIL, { id: c.caregiverId }),
+        'adminKycDetail',
+      );
+      expect(detail.license).toMatchObject({
+        documentId: freshId,
+        status: 'pending',
+      });
 
-    it('PYG-558_32 (AC7) Verify that the profession-change route cannot be used to renew a license for the same profession', async () => {
-      // ทางเดียวที่ผูกใบใหม่ให้ผู้ดูแล verified คือ requestProfessionChange — ยืนยันว่าใช้ต่ออายุไม่ได้ (หลักฐานของ PYG-669)
+      // แอดมินอนุมัติใบใหม่ได้ → ผู้ดูแลกลับมามีใบที่ใช้ได้
+      expect(
+        (await h.gql(admin.token, APPROVE, { id: freshId })).errors,
+      ).toBeUndefined();
+      const after = dataOf<{ license: License }>(
+        await h.gql(c.u.token, MINE),
+        'kycStatus',
+      );
+      expect(after.license).toMatchObject({
+        documentId: freshId,
+        status: 'approved',
+        isExpired: false,
+      });
+    });
+
+    it('PYG-558_32 (AC7) Verify that the profession-change route rejects a same-profession request, so renewal goes through upload', async () => {
+      // คำขอเปลี่ยนวิชาชีพเดิมถูกปฏิเสธ — การต่ออายุจึงเป็นทางอัปโหลด (PYG-669) ซึ่งผูกใบให้ผู้ดูแล verified แล้ว
       const c = await submitted('nurse');
       await h.prisma.caregiver.update({
         where: { id: c.caregiverId },
@@ -590,7 +601,7 @@ describeDb('PYG-589 · S03 professional license in KYC (PYG-558)', () => {
         { i: { profession: 'nurse', licenseDocumentId: freshId } },
       );
       expect(codeOf(body)).toBe('PROFESSION_UNCHANGED');
-      expect((await doc(freshId)).caregiverId).toBeNull();
+      expect((await doc(freshId)).caregiverId).toBe(c.caregiverId);
     });
   });
 
