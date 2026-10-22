@@ -26,6 +26,7 @@ import { GraphQLError } from 'graphql';
 import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
+import { runInBackground } from '../../common/background-task';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
@@ -90,10 +91,12 @@ export class AuthService {
     }
 
     // ขั้นตอนที่ 5: บันทึก last_login_at (fire-and-forget)
-    void this.prismaService.user.update({
-      where: { id: user.id },
-      data: { last_login_at: new Date() },
-    }).catch(() => {/* non-critical */});
+    runInBackground(
+      this.prismaService.user.update({
+        where: { id: user.id },
+        data: { last_login_at: new Date() },
+      }).catch(() => {/* non-critical */}),
+    );
 
     // ขั้นตอนที่ 6: ส่งผลลัพธ์กลับให้ client
     return {

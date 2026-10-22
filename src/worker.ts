@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { httpServerHandler } from 'cloudflare:node';
+import { waitUntil } from 'cloudflare:workers';
 import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
@@ -7,6 +8,10 @@ import express from 'express';
 import { AppModule } from './app.module';
 import { configureApp } from './configure-app';
 import { runScheduledTasks } from './cloudflare/run-scheduled';
+import { registerBackgroundWaitUntil } from './common/background-task';
+
+// งาน fire-and-forget (runInBackground) ต้องผูกกับ waitUntil ไม่งั้น Workers ตัดทิ้งหลังส่ง response
+registerBackgroundWaitUntil(waitUntil);
 
 const expressApp = express();
 let nestAppPromise: Promise<INestApplication> | undefined;

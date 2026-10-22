@@ -33,6 +33,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma.service';
+import { runInBackground } from '../common/background-task';
 import { PayoutEncryptionService } from '../common/crypto/payout-encryption.service';
 import { OmiseService } from './omise/omise.service';
 import { PaymentError } from './errors/omise-error-mapper';
@@ -174,7 +175,7 @@ export class PayoutAccountService {
             where: { caregiverId },
             data: { recipientStatus: 'failed', status: 'pending' },
           });
-          void this.notifyCaregiver(caregiverId, 'failed');
+          runInBackground(this.notifyCaregiver(caregiverId, 'failed'));
         } catch (markErr) {
           const m = markErr instanceof Error ? markErr.message : String(markErr);
           this.logger.error(
@@ -293,9 +294,9 @@ export class PayoutAccountService {
 
     // แจ้งเฉพาะตอนเปลี่ยนเข้าสถานะ active / failed จริง (early-return ด้านบนกันซ้ำจาก webhook ซ้ำ)
     if (status === 'active' && account.status !== 'active') {
-      void this.notifyCaregiver(account.caregiverId, 'verified');
+      runInBackground(this.notifyCaregiver(account.caregiverId, 'verified'));
     } else if (recipientStatus === 'failed' && account.recipientStatus !== 'failed') {
-      void this.notifyCaregiver(account.caregiverId, 'failed');
+      runInBackground(this.notifyCaregiver(account.caregiverId, 'failed'));
     }
 
     return { recipientStatus, status };

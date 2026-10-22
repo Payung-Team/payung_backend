@@ -23,6 +23,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
+import { runInBackground } from '../common/background-task';
 import { SupabaseService } from '../common/supabase.service';
 import { AvatarUrlService } from '../common/avatar-url.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
@@ -260,12 +261,14 @@ export class AdminProfilePhotoService {
       adminId: admin.id,
     });
 
-    void this.notify(
-      userId,
-      NotificationType.profile_photo_approved,
-      'รูปโปรไฟล์ได้รับการอนุมัติแล้ว',
-      'ผู้ใช้บริการจะเห็นรูปโปรไฟล์ใหม่ของคุณตั้งแต่ตอนนี้',
-      { documentId, link: '/caregiver/edit-profile' },
+    runInBackground(
+      this.notify(
+        userId,
+        NotificationType.profile_photo_approved,
+        'รูปโปรไฟล์ได้รับการอนุมัติแล้ว',
+        'ผู้ใช้บริการจะเห็นรูปโปรไฟล์ใหม่ของคุณตั้งแต่ตอนนี้',
+        { documentId, link: '/caregiver/edit-profile' },
+      ),
     );
 
     return {
@@ -311,12 +314,14 @@ export class AdminProfilePhotoService {
       adminId: admin.id,
     });
 
-    void this.notify(
-      userId,
-      NotificationType.profile_photo_rejected,
-      'รูปโปรไฟล์ไม่ผ่านการตรวจสอบ',
-      `เหตุผล: ${reason} — กรุณาอัปโหลดรูปใหม่`,
-      { documentId: input.documentId, link: '/caregiver/edit-profile' },
+    runInBackground(
+      this.notify(
+        userId,
+        NotificationType.profile_photo_rejected,
+        'รูปโปรไฟล์ไม่ผ่านการตรวจสอบ',
+        `เหตุผล: ${reason} — กรุณาอัปโหลดรูปใหม่`,
+        { documentId: input.documentId, link: '/caregiver/edit-profile' },
+      ),
     );
 
     return {
