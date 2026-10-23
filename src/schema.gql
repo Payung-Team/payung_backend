@@ -3435,6 +3435,7 @@ type Query {
   สรุปหลักฐานการทำงานของงาน 1 ใบ — เป็น "แหล่งความจริงเดียว" ที่ระบบเงินอ่านก่อนตัดสินใจโอน. เปิดให้เจ้าของงานทั้งสองฝ่ายและแอดมิน.
   """
   proofOfWork(bookingId: ID!): ProofOfWorkSummary!
+  recommendedServicePackages(careRecipientId: ID!, selectedServiceType: String): RecommendedServicePackages!
 
   """
   Admin only: reconciliation report (payments vs Omise vs payouts) for a date window.
@@ -3470,6 +3471,11 @@ type RecentActivity {
 
   """Activity type (e.g. "kyc_review")"""
   type: String!
+}
+
+type RecommendedServicePackages {
+  careGroup: ElderCareGroup
+  packages: [ServicePackage!]!
 }
 
 enum ReconFlag {
@@ -3830,6 +3836,23 @@ input ServiceAreaInput {
 
   """Service area province (จังหวัด)"""
   province: String
+}
+
+type ServicePackage {
+  code: String!
+  containsSelectedServiceType: Boolean
+  descriptionEn: String
+  descriptionTh: String
+  id: ID!
+  items: [ServicePackageItem!]!
+  nameEn: String!
+  nameTh: String!
+}
+
+type ServicePackageItem {
+  nameEn: String!
+  nameTh: String!
+  serviceType: String!
 }
 
 """Admin sets or changes the care level of a verified caregiver"""

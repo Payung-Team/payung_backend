@@ -29,6 +29,7 @@ import { ConsentModule } from './consent/consent.module';
 import { AssessmentModule } from './assessment/assessment.module';
 import { CareSkillModule } from './care-skill/care-skill.module';
 import { CareActivityModule } from './care-activity/care-activity.module';
+import { ServicePackageModule } from './service-package/service-package.module';
 
 @Module({
   imports: [
@@ -96,6 +97,7 @@ import { CareActivityModule } from './care-activity/care-activity.module';
     AssessmentModule,    // PYG-609: private ADL assessment API
     CareSkillModule,     // PYG-652: careSkills(profession) + ตรวจทักษะผู้ดูแลก่อนบันทึก
     CareActivityModule,  // PYG-634: กิจกรรมการดูแลกลาง (แอดมิน + หน้าจอง + snapshot ใน booking)
+    ServicePackageModule, // PYG-628 (S14): ชุดบริการที่แนะนำตามกลุ่มของผู้สูงอายุ
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })

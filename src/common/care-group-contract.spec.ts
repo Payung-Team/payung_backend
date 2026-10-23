@@ -18,7 +18,19 @@ describe('S09 contract boundaries', () => {
         .filter((type) => type.getFields().careGroup)
         .map((type) => type.name)
         .sort(),
-    ).toEqual(['CareRecipientAssessment', 'GroupCareRecipient']);
+    ).toEqual([
+      'CareRecipientAssessment',
+      'GroupCareRecipient',
+      // S14 · PYG-628: ชุดบริการที่แนะนำบอกกลุ่มที่ใช้เลือกชุด — ผ่านกติกาสิทธิ์เดียวกับการอ่านแบบประเมิน
+      'RecommendedServicePackages',
+    ]);
+    expect(
+      String(
+        types
+          .find((type) => type.name === 'RecommendedServicePackages')!
+          .getFields().careGroup.type,
+      ),
+    ).toBe('ElderCareGroup'); // E1: ยังไม่มีผลประเมิน = null
     expect(
       String(
         types.find((type) => type.name === 'GroupCareRecipient')!.getFields()
