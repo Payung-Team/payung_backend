@@ -13,7 +13,8 @@
 --   3. PRIMARY KEY บนตารางสำเนา (prisma db pull ไม่ข้ามตาราง)
 --   4. ลบด้วย id ของแถวที่สำเนาไว้เท่านั้น
 --
--- GUARD: ทบทวน 18–19 ต.ค. 2026 = 11 แถว (physiotherapy ล้วน, ผู้ดูแล 11 คน) — จำนวนไม่ตรง = ล้มทั้งไฟล์
+-- GUARD: ทบทวน 18–19 ต.ค. 2026 = 11 แถว (physiotherapy ล้วน, ผู้ดูแล 11 คน)
+-- ฐานข้อมูลใหม่ที่ยังไม่มีผู้ดูแลต้องได้ 0 แถว; ค่าอื่นหมายถึงข้อมูลเปลี่ยนและต้องหยุดทบทวน
 --   (ข้อมูลเปลี่ยนระหว่างทบทวนกับรัน → หยุดและทบทวนใหม่ แล้วแก้เลขในไฟล์นี้ก่อน deploy)
 --   ทั้งไฟล์รันเป็น transaction เดียว — ล้มตรงไหนไม่มีอะไรค้าง
 --
@@ -47,7 +48,7 @@ DECLARE
 BEGIN
   SELECT count(*), count(*) FILTER (WHERE job_type <> 'physiotherapy') INTO n, n_other
     FROM "caregiver_job_types_removed_pyg559";
-  IF n <> expected OR n_other <> 0 THEN
+  IF n NOT IN (0, expected) OR n_other <> 0 THEN
     RAISE EXCEPTION 'PYG-591 guard: จะนำออก % แถว (ไม่ใช่ physiotherapy % แถว) แต่ยืนยันไว้ % แถว — หยุด ทบทวนใหม่', n, n_other, expected;
   END IF;
 END
