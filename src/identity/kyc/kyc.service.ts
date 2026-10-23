@@ -159,7 +159,12 @@ export class KycService {
     // ★ ใช้วิชาชีพที่ส่งมาในรอบนี้ (PYG-575) ไม่ใช่ค่าเดิมในแถว — ค่านี้คือค่าที่จะถูกเขียนลงตารางข้างล่าง
     //   ถ้าอ่านจากแถวเดิม ผู้ดูแลใหม่ (ยังไม่มีแถว = general_caregiver) หรือคนที่ยื่นซ้ำแล้วเปลี่ยนเป็น nurse
     //   จะข้ามการตรวจใบประกอบฯ ได้
-    await this.assertLicenseForKyc(user.id, profession, input.documentIds);
+    await this.assertLicenseForKyc(
+      user.id,
+      profession,
+      input.documentIds,
+      existing ? { id: existing.id, profession: existing.profession } : null,
+    );
 
     // PYG-597: ขับรถรับส่งเอง -> ต้องมีใบขับขี่ที่ใช้ได้ในรอบส่งนี้ (ตรวจที่ service ก่อนเขียนอะไรลง DB)
     //   PYG-661: transportMode (ใหม่) หรือ selfDriveTransport (เดิม) → ค่าเดียว · ขัดกัน = 422
@@ -326,14 +331,24 @@ export class KycService {
    * "ใช้ได้" = อยู่ใน documentIds ของรอบนี้ + เป็นของผู้ใช้คนนี้ + ไม่ใช่ rejected/expired
    * + มีเลข + มีวันหมดอายุ + วันหมดอายุเป็นอนาคตตามเวลาไทย
    * ใบที่ผ่านการตรวจมาก่อนแต่ไม่ได้ส่งมาในรอบนี้ไม่นับ (E2: เปลี่ยนวิชาชีพต้องมีใบใหม่ที่ส่งมาพร้อมกัน)
+   * E2 (PYG-670): ยื่นซ้ำโดยสลับพยาบาล ↔ นักกายภาพฯ — ใบที่ผูกกับรอบก่อน (caregiver_id = แถวเดิม) เป็นของวิชาชีพเดิม
+   *   ใช้ไม่ได้แม้ client ส่ง id เดิมกลับมา ต้องเป็นใบที่อัปโหลดใหม่ (ยังไม่ผูก — resubmit ปลด/ผูกทีหลังใน transaction)
    * ขาดหลายช่อง → ตอบครบในครั้งเดียว (extensions.codes) · code = ช่องแรก (FILE → NUMBER → EXPIRY)
+   *
+   * @param previous แถวผู้ดูแลเดิม (ยื่นซ้ำ) — ไม่มี = ผู้สมัครใหม่
    */
   private async assertLicenseForKyc(
     userId: string,
     profession: string,
     documentIds: string[],
+    previous: { id: string; profession: string } | null = null,
   ): Promise<void> {
     if (!LICENSE_REQUIRED_PROFESSIONS.has(profession)) return;
+
+    const switchedLicensedProfession =
+      previous !== null &&
+      previous.profession !== profession &&
+      LICENSE_REQUIRED_PROFESSIONS.has(previous.profession);
 
     const licenseDocs =
       documentIds.length > 0
@@ -341,6 +356,7 @@ export class KycService {
             where: { id: { in: documentIds }, userId, documentType: LICENSE_DOC_TYPE },
             select: {
               id: true,
+              caregiverId: true,
               licenseNumber: true,
               expiresAt: true,
               reviewStatus: true,
@@ -353,7 +369,9 @@ export class KycService {
     // ใบที่ถูกปฏิเสธ/หมดอายุแล้วใช้ส่งซ้ำไม่ได้ — ต้องอัปโหลดใบใหม่ (E6)
     const usable = licenseDocs.find(
       (d) =>
-        d.reviewStatus !== LICENSE_STATUS.REJECTED && d.reviewStatus !== LICENSE_STATUS.EXPIRED,
+        d.reviewStatus !== LICENSE_STATUS.REJECTED &&
+        d.reviewStatus !== LICENSE_STATUS.EXPIRED &&
+        !(switchedLicensedProfession && d.caregiverId === previous.id),
     );
 
     if (!usable) throw new LicenseError(LICENSE_ERROR.FILE_REQUIRED);

@@ -60,3 +60,4 @@ jobs:
           test/pyg589-license.e2e-spec.ts
           test/pyg594-job-type.e2e-spec.ts
           test/pyg599-driving-license.e2e-spec.ts
+          test/pyg630-service-packages.e2e-spec.ts

@@ -41,11 +41,28 @@ export class DrivingLicenseService {
     private readonly clock: ClockService,
   ) {}
 
+  /**
+   * PYG-671: ใบที่ไม่ผูกกับผู้ดูแล (caregiver_id NULL) นับเฉพาะที่ตรวจแล้ว (ถูกปลดตอนยื่นซ้ำ)
+   *   ใบที่ไม่ผูกและยังรอตรวจ = อัปโหลดแล้วไม่เคยส่งในรอบ KYC ใด (เช่นเปลี่ยนใจเป็นไม่รับส่ง · AC2)
+   *   ไม่ใช่ใบของผู้ดูแลคนนี้ในความหมายของ S06 และแอดมินก็อนุมัติไม่ได้อยู่แล้ว (approve ต้องการ caregiver)
+   */
   async getState(owner: DrivingLicenseOwner, db: Db = this.prisma): Promise<DrivingLicenseState> {
     const rows = await db.kycDocument.findMany({
       where: {
         documentType: DRIVING_LICENSE_DOC_TYPE,
-        OR: [{ caregiverId: owner.caregiverId }, { userId: owner.userId }],
+        OR: [
+          { caregiverId: owner.caregiverId },
+          {
+            userId: owner.userId,
+            caregiverId: null,
+            reviewStatus: {
+              in: [
+                DRIVING_LICENSE_REVIEW_STATUS.APPROVED,
+                DRIVING_LICENSE_REVIEW_STATUS.REJECTED,
+              ],
+            },
+          },
+        ],
       },
       select: { id: true, reviewStatus: true, expiresAt: true, uploadedAt: true },
     });
