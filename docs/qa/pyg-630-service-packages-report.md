@@ -100,3 +100,4 @@ QA_DATABASE_URL=postgresql://…@127.0.0.1:…/qa630 DATABASE_URL=$QA_DATABASE_U
 ```
 
 harness (`test/support/qa-e2e.ts`) เพิ่ม `ServicePackageModule` ในการ์ดนี้ · spec อยู่ใน CI `qa-e2e` แล้ว
+· ผลข้างเคียง: `PYG-564_13` (QA S09) ตรวจว่า type ไหนมี `careGroup` → เพิ่ม `RecommendedServicePackages` ในรายการที่อนุญาต ตรงกับ `src/common/care-group-contract.spec.ts` ที่ PR #163 อนุญาตไว้แล้ว
