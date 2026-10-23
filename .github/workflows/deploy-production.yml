@@ -1,0 +1,84 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Production: prisma migrate deploy → build → wrangler deploy (เรียงในงานเดียว)
+#
+# ★ ทำไมรวม deploy ไว้ที่นี่
+#   Cloudflare Workers Builds deploy เองทันทีที่ push `deploy` — ถ้า Action นี้ทำแค่ migrate
+#   จะวิ่งแข่งกับ Cloudflare และโค้ดใหม่อาจขึ้นก่อน column ใหม่ · ลำดับจะแน่นอนก็ต่อเมื่อ
+#   deploy จากงานนี้หลัง migrate สำเร็จ และปิด Git build ฝั่ง Cloudflare
+#
+# ★ ระหว่างเปลี่ยนผ่าน (ยังไม่ปิด Git build ฝั่ง Cloudflare)
+#   ตั้ง repo variable DEPLOY_VIA_ACTIONS ≠ 'true' → งานนี้ migrate อย่างเดียว ไม่ deploy ซ้ำ
+#   ปิด Git build ใน Cloudflare แล้วค่อยตั้ง DEPLOY_VIA_ACTIONS = 'true'
+#
+# ★ ต้องตั้งใน GitHub (Settings) ก่อนใช้
+#   Environment `production` + Required reviewers → ทุกรอบต้องมีคนกดอนุมัติก่อน migrate
+#   Secret ของ environment:
+#     PROD_DATABASE_URL      connection ตรงของ payung-prod-db (ไม่ใช่ Hyperdrive / ไม่ใช่ pooler โหมด transaction)
+#     CLOUDFLARE_API_TOKEN   สิทธิ์ Workers Scripts: Edit (ใช้เมื่อ DEPLOY_VIA_ACTIONS = 'true')
+#     CLOUDFLARE_ACCOUNT_ID
+#
+# migration ที่ลบข้อมูลยังต้องผ่าน dry-run + rollback ตามขั้นตอนการ์ด [DB] ก่อน merge เข้า deploy
+# ═══════════════════════════════════════════════════════════════════════════
+name: deploy-production
+
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+# ห้ามสองรอบ migrate พร้อมกัน · ไม่ยกเลิกรอบที่กำลังรัน (migration ครึ่งทางแย่กว่ารอ)
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check required secrets
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL is not set on the production environment"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npx prisma generate
+
+      # exit 1 เมื่อมี migration ค้าง — ปกติของรอบที่มีไฟล์ใหม่ จึงไม่ให้ล้มที่นี่ แค่บันทึกไว้ใน log
+      - name: Migration status (before)
+        run: npx prisma migrate status || true
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      # หลัง deploy ต้องไม่มีค้าง — ถ้ายังค้าง (เช่นประวัติไม่ตรง) หยุดก่อนขึ้นโค้ด
+      - name: Migration status (after)
+        run: npx prisma migrate status
+
+      - name: Build
+        if: vars.DEPLOY_VIA_ACTIONS == 'true'
+        run: npm run build
+
+      - name: Deploy Worker
+        if: vars.DEPLOY_VIA_ACTIONS == 'true'
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
