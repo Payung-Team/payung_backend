@@ -4,7 +4,7 @@ import { isUUID } from 'class-validator';
 import { PrismaService } from '../common/prisma.service';
 import { classifyCareGroup, storedCareGroupToApi } from '../common/care-group';
 import { ConsentService } from '../consent/consent.service';
-import { CONSENT_TYPE } from '../consent/consent.constants';
+import { assertAssessmentReadAccess } from './assessment-read-access';
 import { ADL_ITEMS, type AdlAnswers } from './assessment.constants';
 import { AssessmentError, assessmentAccessDenied } from './assessment.errors';
 import { validateAssessmentValues } from './assessment-scoring';
@@ -69,32 +69,13 @@ export class AssessmentService {
   }
 
   private async readAuthorized(actorId: string, careRecipientId: string) {
-    if (!isUUID(careRecipientId)) throw assessmentAccessDenied();
-    const recipient = await this.prisma.careRecipient.findUnique({
-      where: { id: careRecipientId },
-      select: { patientId: true, is_deleted: true, familyGroupId: true },
-    });
-    if (!recipient || recipient.is_deleted) throw assessmentAccessDenied();
-    if (recipient.patientId !== actorId) {
-      if (!recipient.familyGroupId) throw assessmentAccessDenied();
-      const members = await this.prisma.familyGroupMember.findMany({
-        where: {
-          groupId: recipient.familyGroupId,
-          userId: { in: [actorId, recipient.patientId] },
-          status: 'ACTIVE',
-        },
-        select: { userId: true },
-      });
-      if (new Set(members.map((member) => member.userId)).size !== 2)
-        throw assessmentAccessDenied();
-      if (
-        await this.consent.findWithdrawnType(recipient.patientId, [
-          CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
-        ])
-      ) {
-        throw assessmentAccessDenied();
-      }
-    }
+    // กติกาอ่านตัวเดียวกับชุดบริการที่แนะนำ (S14 · PYG-628) — แยกออกมาเพื่อไม่ให้สองที่เพี้ยนกัน
+    await assertAssessmentReadAccess(
+      this.prisma,
+      this.consent,
+      actorId,
+      careRecipientId,
+    );
     const row = await this.prisma.careRecipientAssessment.findUnique({
       where: { careRecipientId },
     });
