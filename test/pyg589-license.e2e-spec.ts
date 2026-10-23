@@ -625,22 +625,31 @@ describeDb('PYG-589 · S03 professional license in KYC (PYG-558)', () => {
       });
     });
 
-    // บั๊ก PYG-670 (Medium): ใบไม่บันทึกว่าแนบเพื่อวิชาชีพไหน → resubmit เปลี่ยนวิชาชีพด้วยใบเดิมผ่าน
-    // — แก้แล้วเปลี่ยน it.failing → it
-    it.failing(
-      'PYG-558_23 (E2) Verify that a nurse license cannot be reused when resubmitting as a physiotherapist',
-      async () => {
-        const { u, docId, caregiverId } = await submitted('nurse');
-        await h.gql(admin.token, REJECT_KYC, {
-          i: { caregiverId, reasons: [{ title: 'ข้อมูลไม่ตรงกัน' }] },
-        });
-        const body = await h.gql(u.token, RESUBMIT, {
-          i: kycInput('physiotherapist', [docId]),
-        });
-        expect(codeOf(body)).toBe('LICENSE_FILE_REQUIRED');
-        expect((await caregiverOf(u))?.profession).toBe('nurse');
-      },
-    );
+    // เคยเป็นบั๊ก PYG-670 (Medium · แก้แล้ว): resubmit สลับพยาบาล ↔ นักกายภาพฯ ด้วยใบเดิมเคยผ่าน
+    it('PYG-558_23 (E2) Verify that a nurse license cannot be reused when resubmitting as a physiotherapist, and a new one is accepted', async () => {
+      const { u, docId, caregiverId } = await submitted('nurse');
+      await h.gql(admin.token, REJECT_KYC, {
+        i: { caregiverId, reasons: [{ title: 'ข้อมูลไม่ตรงกัน' }] },
+      });
+      const body = await h.gql(u.token, RESUBMIT, {
+        i: kycInput('physiotherapist', [docId]),
+      });
+      expect(codeOf(body)).toBe('LICENSE_FILE_REQUIRED');
+      expect((await caregiverOf(u))?.profession).toBe('nurse');
+
+      // แนบใบใหม่แล้วส่งได้ · ใบเดิมถูกปลดจากรอบนี้
+      const freshId = await validLicense(u);
+      const ok = await h.gql(u.token, RESUBMIT, {
+        i: kycInput('physiotherapist', [freshId]),
+      });
+      expect(ok.errors).toBeUndefined();
+      expect(await caregiverOf(u)).toMatchObject({
+        kycStatus: 'pending',
+        profession: 'physiotherapist',
+      });
+      expect(await doc(freshId)).toMatchObject({ caregiverId });
+      expect((await doc(docId)).caregiverId).toBeNull();
+    });
 
     it('PYG-558_24 (E6) Verify that after a rejection the old license cannot be resubmitted, a new one queues for review, and the rejection history stays', async () => {
       const { u, docId, caregiverId } = await submitted('nurse');
