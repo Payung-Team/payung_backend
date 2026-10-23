@@ -209,6 +209,8 @@ describeDb('PYG-594 · S04 job type restriction (PYG-559)', () => {
         reviewStatus: 'pending',
         expiresAt: NEXT_YEAR,
         licenseNumber: `QA-${randomUUID().slice(0, 6)}`,
+        // uploaded_at เก็บถึงมิลลิวินาที — สร้างติดกันใน CI ได้เวลาเท่ากับใบเก่า แล้วการเรียงตัดสินผิดใบ
+        uploadedAt: new Date(Date.now() + 60_000),
       },
     });
     expect(await optionOf(cg.token, 'physiotherapy')).toMatchObject({
