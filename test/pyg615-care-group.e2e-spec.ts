@@ -375,9 +375,11 @@ describeDb('PYG-615 · S09 care group (PYG-564)', () => {
         .filter((t) => (t.fields ?? []).some((f) => f.name === 'careGroup'))
         .map((t) => t.name)
         .sort();
+      // S14 (PR #163): RecommendedServicePackages ตอบกลุ่มที่ใช้เลือกชุด — อนุญาตตาม src/common/care-group-contract.spec.ts
       expect(withGroup).toEqual([
         'CareRecipientAssessment',
         'GroupCareRecipient',
+        'RecommendedServicePackages',
       ]);
       const o = await owner();
       expect(codeOf(await h.gql(null, READ, { id: o.created.id }))).toBe(
