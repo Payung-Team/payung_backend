@@ -165,14 +165,21 @@ describe('DrivingLicenseService', () => {
       expect(await service.isVerified({ ...owner, transportMode: null })).toBe(false);
     });
 
-    it('จับคู่ทั้ง caregiver_id และ user_id (caregiver_id เป็น NULL ได้)', async () => {
+    it('จับคู่ใบที่ผูกกับผู้ดูแล + ใบที่ไม่ผูกแต่ตรวจแล้ว (ถูกปลดตอนยื่นซ้ำ) · ไม่นับใบไม่ผูกที่ยังรอตรวจ (PYG-671)', async () => {
       findMany.mockResolvedValue([]);
       await service.getState(owner);
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
             documentType: 'driving_license',
-            OR: [{ caregiverId: 'cg-1' }, { userId: 'u1' }],
+            OR: [
+              { caregiverId: 'cg-1' },
+              {
+                userId: 'u1',
+                caregiverId: null,
+                reviewStatus: { in: ['approved', 'rejected'] },
+              },
+            ],
           },
         }),
       );
