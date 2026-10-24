@@ -26,7 +26,7 @@ describe('PayoutAccountService (PYG-266)', () => {
     caregiver: { findUnique: jest.Mock };
   };
   let notifications: { create: jest.Mock };
-  let omise: { createRecipient: jest.Mock; retrieveRecipient: jest.Mock };
+  let omise: { createRecipient: jest.Mock; retrieveRecipient: jest.Mock; verifyRecipient: jest.Mock; isTestMode: boolean };
   let payoutEncryption: { decrypt: jest.Mock };
 
   beforeEach(async () => {
@@ -40,7 +40,7 @@ describe('PayoutAccountService (PYG-266)', () => {
       caregiver: { findUnique: jest.fn().mockResolvedValue({ userId: 'user-1' }) },
     };
     notifications = { create: jest.fn().mockResolvedValue({}) };
-    omise = { createRecipient: jest.fn(), retrieveRecipient: jest.fn() };
+    omise = { createRecipient: jest.fn(), retrieveRecipient: jest.fn(), verifyRecipient: jest.fn(), isTestMode: false };
     payoutEncryption = { decrypt: jest.fn().mockReturnValue('1234566789') };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -209,6 +209,34 @@ describe('PayoutAccountService (PYG-266)', () => {
         expect.any(String),
         expect.objectContaining({ caregiverId: CAREGIVER_ID }),
       );
+    });
+
+    it('test mode + ยังไม่ verified → เรียก Mark as verified แล้วตั้ง active', async () => {
+      omise.isTestMode = true;
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce(pendingRow);
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID, verified: false, active: true, failureCode: null, bankAccount,
+      });
+      omise.verifyRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID, verified: true, active: true, failureCode: null, bankAccount,
+      });
+
+      const r = await service.reconcileRecipient(RECIPIENT_ID, 'cron.sync');
+
+      expect(omise.verifyRecipient).toHaveBeenCalledWith(RECIPIENT_ID);
+      expect(r).toEqual({ recipientStatus: 'verified', status: 'active' });
+    });
+
+    it('live mode + verified แต่ยังไม่ active → ยังเป็น pending และไม่เรียก verify', async () => {
+      prisma.caregiverPayoutAccount.findFirst.mockResolvedValueOnce(pendingRow);
+      omise.retrieveRecipient.mockResolvedValueOnce({
+        id: RECIPIENT_ID, verified: true, active: false, failureCode: null, bankAccount,
+      });
+
+      const r = await service.reconcileRecipient(RECIPIENT_ID, 'recipient.verify');
+
+      expect(omise.verifyRecipient).not.toHaveBeenCalled();
+      expect(r).toEqual({ recipientStatus: 'verified', status: 'pending' });
     });
 
     it('Omise ส่ง failure_code → แจ้ง payout_account_failed ให้ caregiver', async () => {
