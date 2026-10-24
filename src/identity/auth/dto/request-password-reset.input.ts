@@ -1,9 +1,9 @@
 import { Field, InputType } from '@nestjs/graphql';
-import { IsEmail } from 'class-validator';
+import { ValidAppEmail } from '../../../common/validators/valid-app-email.validator';
 
 @InputType()
 export class RequestPasswordResetInput {
   @Field({ description: 'Email address to send the password reset link to' })
-  @IsEmail({}, { message: 'Invalid email format' })
+  @ValidAppEmail()
   email!: string;
 }

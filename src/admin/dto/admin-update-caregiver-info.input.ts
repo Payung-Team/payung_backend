@@ -1,6 +1,5 @@
 import { InputType, Field, Float, ID } from '@nestjs/graphql';
 import {
-  IsEmail,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -10,6 +9,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { ValidAppEmail } from '../../common/validators/valid-app-email.validator';
 
 @InputType()
 export class AdminUpdateCaregiverInfoInput {
@@ -40,7 +40,7 @@ export class AdminUpdateCaregiverInfoInput {
 
   @Field({ nullable: true, description: 'Email address (must be unique)' })
   @IsOptional()
-  @IsEmail()
+  @ValidAppEmail()
   email?: string;
 
   /**

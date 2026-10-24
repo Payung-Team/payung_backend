@@ -1,13 +1,14 @@
 import { InputType, Field, Int } from '@nestjs/graphql';
-import { IsEmail, IsIn, IsString, MinLength } from 'class-validator';
+import { IsIn, IsString, MinLength } from 'class-validator';
 import { ROLE_ID } from '../../common/constants/roles.constant';
+import { ValidAppEmail } from '../../common/validators/valid-app-email.validator';
 
 const INVITABLE_ROLES = [ROLE_ID.ADMIN, ROLE_ID.SUPER_ADMIN] as const;
 
 @InputType()
 export class InviteAdminInput {
   @Field({ description: 'Email address of the new admin' })
-  @IsEmail()
+  @ValidAppEmail()
   email: string;
 
   @Field({ description: 'First name' })
