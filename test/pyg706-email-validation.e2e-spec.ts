@@ -92,9 +92,9 @@ const VALID: [string, string, string][] = [
   // edge: copy-paste — ตัดหัวท้ายให้ (การ์ด: "ควร trim หรือแจ้ง error")
   ['PYG-706_18', ' user@example.com', 'user@example.com'],
   ['PYG-706_19', 'user@example.com ', 'user@example.com'],
-  ['PYG-706_20', 'user@example.com ', 'user@example.com'],
-  ['PYG-706_24', 'user@example.com​', 'user@example.com'],
-  ['PYG-706_25', '﻿user@example.com', 'user@example.com'],
+  ['PYG-706_20', 'user@example.com\u00a0', 'user@example.com'],
+  ['PYG-706_24', 'user@example.com\u200b', 'user@example.com'],
+  ['PYG-706_25', '\ufeffuser@example.com', 'user@example.com'],
 ];
 
 const INVALID: [string, string, string][] = [
@@ -112,7 +112,7 @@ const INVALID: [string, string, string][] = [
   ['PYG-706_21', 'ตัวอักษร !#', 'user!#@example.com'],
   ['PYG-706_22', 'ภาษาไทยใน local part', 'ผู้ใช้@example.com'],
   ['PYG-706_23', 'ภาษาไทยใน domain', 'user@ตัวอย่าง.com'],
-  ['PYG-706_28', 'zero-width space ข้างใน', 'us​er@example.com'],
+  ['PYG-706_28', 'zero-width space ข้างใน', 'us\u200ber@example.com'],
   ['PYG-706_29', 'domain จุดติดกัน', 'user@example..com'],
   ['PYG-706_30', 'IP แทน domain', 'user@[192.168.0.1]'],
   [
