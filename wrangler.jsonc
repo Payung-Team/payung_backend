@@ -32,13 +32,13 @@
   },
   "vars": {
     "APP_PUBLIC_BASE_URL": "https://payung-care.com",
+    "BOOKING_EXPIRY_CRON_ENABLED": "false",
     "CF_WORKER": "true",
     "FRONTEND_URL": "https://payung-care.com,https://www.payung-care.com",
+    "HOLD_REFRESH_CRON_ENABLED": "false",
     "NODE_ENV": "production",
     "PAYOUT_KILLSWITCH_ENABLED": "true",
-    "PAYOUT_RECIPIENT_SYNC_ENABLED": "false",
-    "BOOKING_EXPIRY_CRON_ENABLED": "false",
-    "HOLD_REFRESH_CRON_ENABLED": "false",
+    "PAYOUT_RECIPIENT_SYNC_ENABLED": "true"
   },
   "hyperdrive": [
     {
