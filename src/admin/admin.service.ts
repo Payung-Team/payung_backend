@@ -95,6 +95,7 @@ import {
   toCareLevelInfo,
   writeCareLevelChange,
 } from './admin-care-level.helpers';
+import { maskEmail } from '../common/utils/mask-email';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -969,7 +970,7 @@ export class AdminService {
     });
 
     if (authError || !authData.user) {
-      this.logger.error(`Supabase admin.createUser failed for ${input.email}: ${authError?.message ?? 'no user returned'}`);
+      this.logger.error(`Supabase admin.createUser failed for ${maskEmail(input.email)}: ${authError?.message ?? 'no user returned'}`);
       throw new InternalServerErrorException('Failed to create auth user');
     }
 
