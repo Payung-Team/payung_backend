@@ -62,3 +62,4 @@ jobs:
           test/pyg599-driving-license.e2e-spec.ts
           test/pyg630-service-packages.e2e-spec.ts
           test/pyg691-physio-price.e2e-spec.ts
+          test/pyg706-email-validation.e2e-spec.ts
