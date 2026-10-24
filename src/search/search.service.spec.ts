@@ -290,6 +290,17 @@ describe('SearchService', () => {
     expect(jobTypeParams).toHaveLength(2);
   });
 
+  it('priceJobTypes → คิดราคาจาก catalog ของประเภทนั้นอย่างเดียว ไม่เพิ่มตัวกรองรายชื่อ', async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await service.searchCaregivers({}, undefined, undefined, ['physiotherapy']);
+
+    const sql = getSql(prisma.$queryRaw);
+    expect(sql).not.toContain('jt.job_type');
+    expect(sql).toContain('spc.service_type = ANY(');
+    expect(getValues(prisma.$queryRaw)).toContainEqual(['physiotherapy']);
+  });
+
   it('passes minRating as parameter and adds outer COALESCE filter', async () => {
     prisma.$queryRaw.mockResolvedValue([]);
 

@@ -40,7 +40,9 @@ const MIGRATION = join(
 
 const SEARCH = `query($p: String, $j: String) {
   searchCaregivers(input: { province: $p, jobType: $j, limit: 50 }) { data { id hourlyRate } } }`;
-const ACCEPT = `mutation($id: ID!) { acceptBooking(bookingId: $id) { id } }`;
+const ELIGIBLE = `query($b: ID!) {
+  eligibleCaregivers(bookingId: $b) { caregivers { id hourlyRate } } }`;
+const ACCEPT =`mutation($id: ID!) { acceptBooking(bookingId: $id) { id } }`;
 const PAY = `mutation($input: CreatePaymentInput!) { createPayment(input: $input) { id } }`;
 
 type Seeded = Awaited<ReturnType<Harness['seedUser']>>;
@@ -293,8 +295,47 @@ describeDb('PYG-691 · physiotherapy price 800 (PYG-693)', () => {
     });
   });
 
+  // ───────────────────── S18 รายชื่อผู้ดูแลที่ผ่านเงื่อนไข ─────────────────────
+  it('PYG-691_11 Verify that eligibleCaregivers of a physiotherapy booking shows 800 for everyone without changing the list', async () => {
+    const mixed = await physioCaregiver(['general_care', 'physiotherapy']);
+    const only = await physioCaregiver(['physiotherapy']);
+    const general = await physioCaregiver(['general_care']); // รับแต่งานทั่วไป → เดิมโชว์ 300
+    const e = await elder();
+    const b = await bookOk(e.patient, e.recipientId, 'physiotherapy');
+    const list = async () => {
+      const body: GqlBody = await h.gql(e.patient.token, ELIGIBLE, {
+        b: b.id,
+      });
+      expect(body.errors).toBeUndefined();
+      return (
+        body.data as {
+          eligibleCaregivers: {
+            caregivers: { id: string; hourlyRate: number }[];
+          };
+        }
+      ).eligibleCaregivers.caregivers;
+    };
+    const rows = await list();
+    const ids = rows.map((r) => r.id);
+    for (const cg of [mixed, only, general]) {
+      expect(ids).toContain(cg.caregiverId);
+    }
+    expect(rows.length).toBeGreaterThan(0);
+    expect(new Set(rows.map((r) => r.hourlyRate))).toEqual(new Set([PHYSIO]));
+
+    // บริการอื่นคง 300 · จำนวนคนไม่เปลี่ยน
+    const g = await bookOk(e.patient, e.recipientId, 'general_care');
+    const body: GqlBody = await h.gql(e.patient.token, ELIGIBLE, { b: g.id });
+    const gRows = (
+      body.data as {
+        eligibleCaregivers: { caregivers: { hourlyRate: number }[] };
+      }
+    ).eligibleCaregivers.caregivers;
+    expect(gRows.every((r) => r.hourlyRate === OTHER)).toBe(true);
+  });
+
   // ───────────────────────────── ชำระเงิน ─────────────────────────────
-  it('PYG-691_10 Verify that payment charges the stored 1600.00 (160000 satang) for a 2-hour physiotherapy booking', async () => {
+  it('PYG-691_10 Verify that payment charges the stored 1600.00 plus 10% platform fee (1760.00 = 176000 satang) for a 2-hour physiotherapy booking', async () => {
     const e = await elder();
     const b = await bookOk(e.patient, e.recipientId, 'physiotherapy');
     const cg = await physioCaregiver();
@@ -313,11 +354,17 @@ describeDb('PYG-691 · physiotherapy price 800 (PYG-693)', () => {
       },
     });
     expect(paid.errors).toBeUndefined();
-    expect(h.omise.createCharge).toHaveBeenCalledWith(160000, 'tokn_test_691');
+    expect(h.omise.createCharge).toHaveBeenCalledWith(176000, 'tokn_test_691');
     const payment = await h.prisma.payment.findFirstOrThrow({
       where: { bookingId: b.id },
       select: { amount: true },
     });
-    expect(Number(payment.amount)).toBe(1600);
+    expect(Number(payment.amount)).toBe(1760);
+    const booking = await h.prisma.booking.findUniqueOrThrow({
+      where: { id: b.id },
+      select: { estimatedCost: true, platformFee: true },
+    });
+    expect(booking.estimatedCost!.toFixed(2)).toBe('1600.00'); // ราคาบริการ = ที่ผู้ดูแลได้เต็ม
+    expect(booking.platformFee!.toFixed(2)).toBe('160.00'); // fee 10% เก็บเพิ่มจากลูกค้า
   });
 });

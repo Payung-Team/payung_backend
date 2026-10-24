@@ -510,6 +510,7 @@ type BookingSummary {
   PYG-278: ข้อมูลการชำระเงินของ booking นี้ (null ถ้ายังไม่มี payment record)
   """
   payment: Payment
+  platformFee: Float
   requiredLevel: CareLevel
   requiredSkills: [BookingRequiredSkill!]
   serviceLocations: [String!]!
@@ -520,6 +521,7 @@ type BookingSummary {
   status: String!
   tasks: [String!]!
   timeSlot: String! @deprecated(reason: "PYG-526: อย่าแสดงชื่อ slot ให้ผู้ใช้เห็น — ใช้ startTime / endTime / durationHours แทน")
+  totalCost: Float
 }
 
 type BookingTask {

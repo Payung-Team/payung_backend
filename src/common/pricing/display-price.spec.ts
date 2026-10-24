@@ -33,6 +33,22 @@ describe('startingHourlyPrices', () => {
     expect(prices.get('a')).toBe(300);
   });
 
+  it('ส่ง priceJobTypes มา → ทุกคนได้ราคา catalog ของประเภทนั้น ไม่ขึ้นกับประเภทที่รับ และชนะ jobTypes', async () => {
+    const prices = await startingHourlyPrices(
+      prisma,
+      ['a', 'b'],
+      ['general_care'],
+      ['physiotherapy'],
+    );
+    expect(prices.get('a')).toBe(280);
+    expect(prices.get('b')).toBe(280);
+    expect(prisma.servicePriceCatalog.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { isActive: true, serviceType: { in: ['physiotherapy'] } },
+      }),
+    );
+  });
+
   it('ไม่มี caregiverIds → ไม่ query เลย', async () => {
     prisma.caregiverJobType.findMany.mockClear();
     const prices = await startingHourlyPrices(prisma, []);

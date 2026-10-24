@@ -35,6 +35,10 @@ export interface BookingRest extends RestBookingLevel {
   locationAddress: string;
   notes?: string;
   estimatedCost?: number;
+  /** ค่าธรรมเนียมแพลตฟอร์ม (ลูกค้าจ่ายเพิ่ม) */
+  platformFee?: number;
+  /** ยอดที่ลูกค้าจ่ายจริง = estimatedCost + platformFee */
+  totalCost?: number;
   caregiver?: CaregiverBriefRest; // undefined when booking is unmatched
   careRecipientName?: string;
   /** PYG-634: กิจกรรมจากรายการกลางที่เลือก — สำเนา ณ ตอนจอง ([] = ไม่ได้เลือก / ไม่ได้โหลด) */
