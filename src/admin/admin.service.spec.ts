@@ -31,6 +31,8 @@ import { ROLE_ID } from '../common/constants/roles.constant';
 const mockPrisma = {
   user: {
     findUnique: jest.fn(),
+    // PYG-707: เช็คอีเมลซ้ำแบบไม่สนตัวพิมพ์ (findFirst + mode insensitive)
+    findFirst: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     count: jest.fn(),
@@ -160,7 +162,7 @@ describe('AdminService — inviteAdmin', () => {
 
   // ─── Case 1: Successfully invite admin (role=3) ───────────────────────────
   it('creates admin (role=3) and returns tempPasswordSent=true', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
     mockSupabaseAdminClient.auth.admin.createUser.mockResolvedValue({
       data: { user: { id: 'supabase-new-uid' } },
       error: null,
@@ -192,7 +194,7 @@ describe('AdminService — inviteAdmin', () => {
     const superAdminInput = { ...inviteAdminInput, role: ROLE_ID.SUPER_ADMIN };
     const createdSuperAdmin = { ...createdUserBase, role: ROLE_ID.SUPER_ADMIN };
 
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
     mockSupabaseAdminClient.auth.admin.createUser.mockResolvedValue({
       data: { user: { id: 'supabase-new-uid' } },
       error: null,
@@ -207,7 +209,7 @@ describe('AdminService — inviteAdmin', () => {
 
   // ─── Case 3: Duplicate email → ConflictException ─────────────────────────
   it('throws ConflictException when email is already registered', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue({ id: 'existing-user-id' });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: 'existing-user-id' });
 
     await expect(service.inviteAdmin(inviteAdminInput, superAdmin)).rejects.toThrow(
       ConflictException,
@@ -222,7 +224,7 @@ describe('AdminService — inviteAdmin', () => {
     [ROLE_ID.CAREGIVER, 'caregiver'],
   ])('throws BadRequestException for invalid role=%i (%s)', async (invalidRole, _label) => {
     const badInput = { ...inviteAdminInput, role: invalidRole };
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
 
     await expect(service.inviteAdmin(badInput, superAdmin)).rejects.toThrow(BadRequestException);
     expect(mockSupabaseAdminClient.auth.admin.createUser).not.toHaveBeenCalled();
@@ -230,7 +232,7 @@ describe('AdminService — inviteAdmin', () => {
 
   // ─── Case 5: Supabase Auth failure → InternalServerErrorException ─────────
   it('throws InternalServerErrorException when Supabase auth.admin.createUser fails', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
     mockSupabaseAdminClient.auth.admin.createUser.mockResolvedValue({
       data: { user: null },
       error: { message: 'Supabase error' },
@@ -897,9 +899,8 @@ describe('AdminService — editAdminInfo', () => {
 
   // ─── Case 2: Edit email → DB + Supabase Auth updated ─────────────────────
   it('updates email in DB and syncs Supabase Auth when email changes', async () => {
-    mockPrisma.user.findUnique
-      .mockResolvedValueOnce(editTarget)       // find target
-      .mockResolvedValueOnce(null);            // email uniqueness check → available
+    mockPrisma.user.findUnique.mockResolvedValueOnce(editTarget); // find target
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null); // email uniqueness check → available
     const updated = { ...editTarget, email: 'newemail@payung.app' };
     mockPrisma.user.update.mockResolvedValue(updated);
 
@@ -941,9 +942,8 @@ describe('AdminService — editAdminInfo', () => {
 
   // ─── Case 4: Edit multiple fields at once ────────────────────────────────
   it('updates name, email, and role together in a single call', async () => {
-    mockPrisma.user.findUnique
-      .mockResolvedValueOnce(editTarget)
-      .mockResolvedValueOnce(null); // email uniqueness
+    mockPrisma.user.findUnique.mockResolvedValueOnce(editTarget);
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null); // email uniqueness
     const updated = {
       ...editTarget,
       displayName: 'ใหม่ มาก',
@@ -970,9 +970,8 @@ describe('AdminService — editAdminInfo', () => {
 
   // ─── Case 5: Duplicate email → ConflictException ─────────────────────────
   it('throws ConflictException when the new email is already taken', async () => {
-    mockPrisma.user.findUnique
-      .mockResolvedValueOnce(editTarget)
-      .mockResolvedValueOnce({ id: 'other-user-uuid' }); // email already taken
+    mockPrisma.user.findUnique.mockResolvedValueOnce(editTarget);
+    mockPrisma.user.findFirst.mockResolvedValueOnce({ id: 'other-user-uuid' }); // email already taken
 
     await expect(
       service.editAdminInfo(
@@ -1043,9 +1042,8 @@ describe('AdminService — editAdminInfo', () => {
 
   // ─── Case 10: Audit log — $executeRaw called after update ────────────────
   it('fires $executeRaw for audit log after a successful update', async () => {
-    mockPrisma.user.findUnique
-      .mockResolvedValueOnce(editTarget)
-      .mockResolvedValueOnce(null);
+    mockPrisma.user.findUnique.mockResolvedValueOnce(editTarget);
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null);
     mockPrisma.user.update.mockResolvedValue({ ...editTarget, email: 'audit@payung.app' });
 
     await service.editAdminInfo(

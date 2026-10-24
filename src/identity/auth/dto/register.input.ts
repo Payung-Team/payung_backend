@@ -4,18 +4,18 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
-  IsEmail,
   IsIn,
   IsOptional,
   MinLength,
   ValidateNested,
 } from 'class-validator';
 import { ConsentAnswerInput } from '../../../consent/dto/consent-answer.input';
+import { ValidAppEmail } from '../../../common/validators/valid-app-email.validator';
 
 @InputType()
 export class RegisterInput {
   @Field()
-  @IsEmail({}, { message: 'Invalid email format' })
+  @ValidAppEmail()
   email!: string;
 
   @Field()
