@@ -442,6 +442,7 @@ export class BookingNotificationListener {
                 bookingId: event.bookingId,
                 frontendUrl,
               } satisfies BookingEmailContext),
+            event.eventType, // PYG-714: email_logs.template
           );
         } else {
           // generic fallback — ใช้เมื่อ event ยังไม่มี per-event template
@@ -457,6 +458,7 @@ export class BookingNotificationListener {
             //   ทำให้ผู้ดูแลที่ได้อีเมล fallback (เช่น payment_transferred) กดแล้วไม่เห็นงานของตัวเอง
             ctaPath: bookingDetailPath(event.bookingId, role),
             ctaLabel: config.ctaLabel ?? 'ดูรายละเอียด',
+            template: event.eventType, // PYG-714: email_logs.template
           });
         }
       }

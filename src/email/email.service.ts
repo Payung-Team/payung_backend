@@ -1,5 +1,17 @@
 /**
- * EmailService — ส่ง email ผ่าน Gmail SMTP (nodemailer)
+ * EmailService — ส่ง email ผ่าน Resend HTTP API (PYG-714)
+ *
+ * ★ PYG-714: เดิมส่งผ่าน Gmail SMTP (nodemailer) ซึ่งบน Cloudflare Worker ส่งไม่ออก → ผู้ใช้ไม่ได้อีเมลเลย
+ *   ตอนนี้ POST https://api.resend.com/emails ด้วย fetch ตรง ๆ (ไม่ใช้ SDK `resend` — SDK import
+ *   React Email แบบ dynamic ซึ่งเสี่ยงต่อ bundle ของ Worker · API มีแค่ endpoint เดียวที่เราใช้)
+ * ★ ทุกฉบับบันทึกลงตาราง email_logs (sent / failed / skipped + เหตุผล + id ของ Resend)
+ *   ทีมตอบได้ว่า "ทำไมคนนี้ไม่ได้อีเมล" จาก DB โดยไม่ต้องค้น log ของ Worker
+ *
+ * Config (ไม่ตั้ง = แอปยังขึ้นได้ · ทุกฉบับบันทึกเป็น failed reason not_configured):
+ *   RESEND_API_KEY   — secret ของ Worker
+ *   EMAIL_FROM       — เช่น "Payung <noreply@payung-care.com>" (โดเมนต้องยืนยันใน Resend แล้ว)
+ *   RESEND_BASE_URL  — ไม่ต้องตั้ง (ใช้ตอนเทสต์ชี้ไป server ปลอม)
+ *   ลิงก์ในอีเมล: APP_PUBLIC_BASE_URL → ถ้าไม่มี ใช้ค่าแรกของ FRONTEND_URL (ดู resolveEmailLinkBaseUrl)
  *
  * Methods:
  * - sendKycSubmitted(userId)         — รับเอกสารแล้ว กำลังตรวจสอบ
@@ -16,11 +28,10 @@
  *
  * Behaviors:
  * - ถ้า user.emailPreferences = false → skip + log (ไม่ throw)
- * - ถ้า SMTP error → log + ไม่ throw (email failure ไม่ควรทำให้ business flow พัง)
+ * - ถ้าส่งไม่สำเร็จ → log + บันทึก failed + ไม่ throw (email failure ไม่ควรทำให้ business flow พัง)
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../common/prisma.service';
 import { ConsentService } from '../consent/consent.service';
 import { CONSENT_TYPE } from '../consent/consent.constants';
@@ -45,6 +56,59 @@ import {
   type BookingEmailParams,
 } from './templates/booking.templates';
 import { maskEmail } from '../common/utils/mask-email';
+import { escapeHtml } from './templates/layout';
+
+/** ชื่อ template ที่บันทึกใน email_logs.template (booking ใช้ชื่อ event เช่น 'booking.confirmed') */
+export const EMAIL_TEMPLATE_KEYS = {
+  KYC_SUBMITTED: 'kyc_submitted',
+  KYC_VERIFIED: 'kyc_verified',
+  KYC_REJECTED: 'kyc_rejected',
+  KYC_RESUBMITTED: 'kyc_resubmitted',
+  ADMIN_INVITE: 'admin_invite',
+  ADMIN_DEACTIVATED: 'admin_deactivated',
+  ADMIN_ACTIVATED: 'admin_activated',
+  ADMIN_SCHEDULE_DELETE: 'admin_schedule_delete',
+  ADMIN_CANCEL_DELETE: 'admin_cancel_delete',
+  ADMIN_AUTO_DELETED: 'admin_auto_deleted',
+  USER_AUTO_DELETED: 'user_auto_deleted',
+  ADMIN_ALERT: 'admin_alert',
+  MARKETING: 'marketing',
+} as const;
+
+/** ผู้ให้บริการที่บันทึกใน email_logs.provider */
+const PROVIDER = 'resend';
+const RESEND_DEFAULT_BASE_URL = 'https://api.resend.com';
+/** Resend ตอบช้ากว่านี้ = ถือว่าล้ม (ไม่ให้ request ของผู้ใช้ค้างเพราะอีเมล) */
+const SEND_TIMEOUT_MS = 10_000;
+const MAX_REASON_LENGTH = 1000;
+
+type EmailLogStatus = 'sent' | 'failed' | 'skipped';
+
+/** ใครเป็นผู้รับ / template อะไร — ใช้บันทึก email_logs */
+type SendMeta = { template: string; userId?: string | null };
+
+/**
+ * base URL ของลิงก์ในอีเมล
+ *
+ * PYG-714: เดิมใช้ FRONTEND_URL ตรง ๆ แต่บน Worker ค่านั้นคือ
+ *   "https://payung-care.com,https://www.payung-care.com" (รายการ origin สำหรับ CORS)
+ *   → ทุกลิงก์ในอีเมลกลายเป็น "https://payung-care.com,https://www.payung-care.com/kyc" เปิดไม่ได้
+ *   ตอนนี้ใช้ APP_PUBLIC_BASE_URL (URL สาธารณะของเว็บ — ลิงก์เชิญกลุ่มครอบครัวใช้ค่าเดียวกัน)
+ *   ไม่มีค่อยใช้ origin แรกของ FRONTEND_URL
+ */
+export function resolveEmailLinkBaseUrl(
+  appPublicBaseUrl: string | undefined,
+  frontendUrl: string | undefined,
+): string {
+  const candidate =
+    appPublicBaseUrl?.trim() ||
+    frontendUrl
+      ?.split(',')
+      .map((origin) => origin.trim())
+      .find(Boolean) ||
+    'https://payung-care.com';
+  return candidate.replace(/\/+$/, '');
+}
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
 type EmailUser = {
@@ -56,8 +120,9 @@ type EmailUser = {
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private readonly transporter: nodemailer.Transporter;
-  private readonly fromAddress: string;
+  private readonly fromAddress: string | undefined;
+  private readonly resendApiKey: string | undefined;
+  private readonly resendBaseUrl: string;
   private readonly frontendUrl: string;
 
   constructor(
@@ -66,55 +131,78 @@ export class EmailService {
     // PYG-540: เช็คความยินยอม marketing ก่อนส่งอีเมลข่าวสารทุกฉบับ
     private readonly consentService: ConsentService,
   ) {
-    this.fromAddress = this.configService.getOrThrow<string>('EMAIL_FROM');
-    this.frontendUrl = this.configService.get<string>(
-      'FRONTEND_URL',
-      'https://payung.app',
+    this.fromAddress =
+      this.configService.get<string>('EMAIL_FROM')?.trim() || undefined;
+    this.resendApiKey =
+      this.configService.get<string>('RESEND_API_KEY')?.trim() || undefined;
+    this.resendBaseUrl = (
+      this.configService.get<string>('RESEND_BASE_URL')?.trim() ||
+      RESEND_DEFAULT_BASE_URL
+    ).replace(/\/+$/, '');
+    this.frontendUrl = resolveEmailLinkBaseUrl(
+      this.configService.get<string>('APP_PUBLIC_BASE_URL'),
+      this.configService.get<string>('FRONTEND_URL'),
     );
 
-    this.transporter = nodemailer.createTransport({
-      host: this.configService.getOrThrow<string>('SMTP_HOST'),
-      port: this.configService.get<number>('SMTP_PORT', 587),
-      secure: false, // TLS (port 587)
-      auth: {
-        user: this.configService.getOrThrow<string>('SMTP_USER'),
-        pass: this.configService.getOrThrow<string>('SMTP_PASS'),
-      },
-    });
+    // ไม่ throw ตอนขึ้นแอป — API ต้องทำงานได้แม้ยังไม่ได้ตั้ง Resend (ทุกฉบับจะถูกบันทึกเป็น failed)
+    if (!this.isConfigured()) {
+      this.logger.error({
+        event: 'email.not_configured',
+        missing: this.missingConfig(),
+      });
+    }
   }
 
   // ─── Public methods ───────────────────────────────────────────────────
 
   /** KYC submitted — รับเอกสารแล้ว กำลังตรวจสอบ */
   async sendKycSubmitted(userId: string): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(
+      userId,
+      EMAIL_TEMPLATE_KEYS.KYC_SUBMITTED,
+    );
     if (!user) return;
     const tpl = kycSubmittedTemplate(user.displayName, this.frontendUrl);
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.KYC_SUBMITTED,
+      userId,
+    });
   }
 
   /** KYC verified — ผ่านแล้ว เปิดรับงานได้ */
   async sendKycVerified(userId: string): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(userId, EMAIL_TEMPLATE_KEYS.KYC_VERIFIED);
     if (!user) return;
     const tpl = kycVerifiedTemplate(user.displayName, this.frontendUrl);
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.KYC_VERIFIED,
+      userId,
+    });
   }
 
   /** KYC rejected — ไม่ผ่าน + เหตุผลจาก admin */
   async sendKycRejected(userId: string, reason: string): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(userId, EMAIL_TEMPLATE_KEYS.KYC_REJECTED);
     if (!user) return;
     const tpl = kycRejectedTemplate(user.displayName, reason, this.frontendUrl);
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.KYC_REJECTED,
+      userId,
+    });
   }
 
   /** KYC resubmitted — รับเอกสารใหม่แล้ว */
   async sendKycResubmitted(userId: string): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(
+      userId,
+      EMAIL_TEMPLATE_KEYS.KYC_RESUBMITTED,
+    );
     if (!user) return;
     const tpl = kycResubmittedTemplate(user.displayName, this.frontendUrl);
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.KYC_RESUBMITTED,
+      userId,
+    });
   }
 
   /**
@@ -132,7 +220,7 @@ export class EmailService {
       tempPassword,
       this.frontendUrl,
     );
-    await this.send(email, tpl);
+    await this.send(email, tpl, { template: EMAIL_TEMPLATE_KEYS.ADMIN_INVITE });
   }
 
   /** แจ้ง admin ว่าบัญชีถูกระงับ */
@@ -141,7 +229,9 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = adminDeactivatedTemplate(displayName, this.frontendUrl);
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.ADMIN_DEACTIVATED,
+    });
   }
 
   /** แจ้ง admin ว่าบัญชีถูกเปิดใช้งานอีกครั้ง */
@@ -150,7 +240,9 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = adminActivatedTemplate(displayName, this.frontendUrl);
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.ADMIN_ACTIVATED,
+    });
   }
 
   /** แจ้ง admin ว่าบัญชีถูกกำหนดให้ลบถาวรพร้อมวันที่ */
@@ -166,7 +258,9 @@ export class EmailService {
       gracePeriodDays,
       this.frontendUrl,
     );
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.ADMIN_SCHEDULE_DELETE,
+    });
   }
 
   /** แจ้ง admin ว่าการกำหนดลบบัญชีถูกยกเลิก */
@@ -175,7 +269,9 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = adminCancelDeleteTemplate(displayName, this.frontendUrl);
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.ADMIN_CANCEL_DELETE,
+    });
   }
 
   /** แจ้ง admin ว่าบัญชีถูกลบถาวรแล้วโดย cron job (PYG-159) */
@@ -184,7 +280,9 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = adminAutoDeletedTemplate(displayName, this.frontendUrl);
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.ADMIN_AUTO_DELETED,
+    });
   }
 
   /** แจ้ง user/caregiver ว่าบัญชีถูกลบถาวรแล้วโดย cron job */
@@ -193,7 +291,9 @@ export class EmailService {
     displayName: string | null,
   ): Promise<void> {
     const tpl = userAutoDeletedTemplate(displayName, this.frontendUrl);
-    await this.send(email, tpl);
+    await this.send(email, tpl, {
+      template: EMAIL_TEMPLATE_KEYS.USER_AUTO_DELETED,
+    });
   }
 
   /**
@@ -208,11 +308,16 @@ export class EmailService {
    */
   async sendBookingNotification(
     userId: string,
-    params: Omit<BookingEmailParams, 'recipientName' | 'frontendUrl' | 'ctaUrl'> & {
+    params: Omit<
+      BookingEmailParams,
+      'recipientName' | 'frontendUrl' | 'ctaUrl'
+    > & {
       ctaPath?: string;
+      /** ชื่อ event (เช่น 'payment.transferred') — บันทึกเป็น email_logs.template */
+      template: string;
     },
   ): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(userId, params.template);
     if (!user) return;
 
     const tpl = bookingNotificationTemplate({
@@ -225,11 +330,13 @@ export class EmailService {
       timeText: params.timeText, // PYG-526: แถว "เวลา" แบบ "09:00 – 13:00 (4 ชม.)"
       serviceText: params.serviceText,
       amountText: params.amountText,
-      ctaUrl: params.ctaPath ? `${this.frontendUrl}${params.ctaPath}` : undefined,
+      ctaUrl: params.ctaPath
+        ? `${this.frontendUrl}${params.ctaPath}`
+        : undefined,
       ctaLabel: params.ctaLabel,
     });
 
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, { template: params.template, userId });
   }
 
   /**
@@ -247,14 +354,16 @@ export class EmailService {
       recipientName: string | null;
       frontendUrl: string;
     }) => EmailTemplate,
+    /** ชื่อ event (เช่น 'booking.confirmed') — บันทึกเป็น email_logs.template */
+    template: string,
   ): Promise<void> {
-    const user = await this.fetchUser(userId);
+    const user = await this.fetchUser(userId, template);
     if (!user) return;
     const tpl = build({
       recipientName: user.displayName,
       frontendUrl: this.frontendUrl,
     });
-    await this.send(user.email, tpl);
+    await this.send(user.email, tpl, { template, userId });
   }
 
   /**
@@ -280,8 +389,15 @@ export class EmailService {
     tpl: EmailTemplate,
   ): Promise<boolean> {
     // ★ log แค่ userId + เหตุผล — ไม่ log อีเมล (ข้อมูลส่วนบุคคล)
-    const skip = (reason: string): false => {
+    const skip = async (reason: string): Promise<false> => {
       this.logger.log({ event: 'email.marketing_skipped', userId, reason });
+      await this.record({
+        template: EMAIL_TEMPLATE_KEYS.MARKETING,
+        userId: reason === 'user_not_found' ? null : userId,
+        status: 'skipped',
+        reason,
+        subject: tpl.subject,
+      });
       return false;
     };
 
@@ -308,18 +424,28 @@ export class EmailService {
       );
       if (!consented) return skip('no_marketing_consent');
 
-      await this.send(user.email, tpl);
+      await this.send(user.email, tpl, {
+        template: EMAIL_TEMPLATE_KEYS.MARKETING,
+        userId,
+      });
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error({ event: 'email.marketing_failed', userId, error: msg });
+      this.logger.error({
+        event: 'email.marketing_failed',
+        userId,
+        error: msg,
+      });
       return false;
     }
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────
 
-  private async fetchUser(userId: string): Promise<EmailUser | null> {
+  private async fetchUser(
+    userId: string,
+    template: string,
+  ): Promise<EmailUser | null> {
     const user = await this.prismaService.user.findUnique({
       where: { id: userId },
       select: { email: true, displayName: true, emailPreferences: true },
@@ -327,6 +453,13 @@ export class EmailService {
 
     if (!user) {
       this.logger.warn(`User ${userId} not found — skipping email`);
+      // user_id ไม่มีจริง → บันทึกเป็น NULL (ใส่ id ที่ไม่มีอยู่จะชน foreign key)
+      await this.record({
+        template,
+        userId: null,
+        status: 'skipped',
+        reason: 'user_not_found',
+      });
       return null;
     }
     // PYG-603 (E13): บัญชีที่สมัครด้วยเบอร์โทรไม่มีอีเมล → ข้าม ไม่ throw
@@ -334,37 +467,163 @@ export class EmailService {
     //   การส่งทาง SMS แทนไม่อยู่ในขอบเขตของ PYG-603 (รอผลเคาะของ story PYG-562)
     if (!user.email) {
       this.logger.log({ event: 'email.skipped', userId, reason: 'no_email' });
+      await this.record({
+        template,
+        userId,
+        status: 'skipped',
+        reason: 'no_email',
+      });
       return null;
     }
     if (!user.emailPreferences) {
       this.logger.log(`User ${userId} opted out of email — skipping`);
+      await this.record({
+        template,
+        userId,
+        recipient: user.email,
+        status: 'skipped',
+        reason: 'email_opt_out',
+      });
       return null;
     }
     // สร้าง object ใหม่ให้ TypeScript รู้ว่า email เป็น string แน่นอนหลังผ่านการตรวจข้างบน
     return { ...user, email: user.email };
   }
 
-  private async send(to: string, tpl: EmailTemplate): Promise<void> {
-    try {
-      const info = await this.transporter.sendMail({
-        from: this.fromAddress,
-        to,
-        subject: tpl.subject,
-        html: tpl.html,
-        text: tpl.text,
-      });
-      this.logger.log(
-        `Email sent to ${maskEmail(to)} (subject: "${tpl.subject}", messageId: ${info.messageId})`,
+  private isConfigured(): boolean {
+    return this.missingConfig().length === 0;
+  }
+
+  private missingConfig(): string[] {
+    return [
+      ...(this.resendApiKey ? [] : ['RESEND_API_KEY']),
+      ...(this.fromAddress ? [] : ['EMAIL_FROM']),
+    ];
+  }
+
+  /**
+   * ส่งผ่าน Resend + บันทึก email_logs — ไม่ throw ทุกกรณี
+   * (อีเมลพังต้องไม่ทำให้ mutation / cron ที่เรียกล่ม)
+   */
+  private async send(
+    to: string | string[],
+    tpl: EmailTemplate,
+    meta: SendMeta,
+  ): Promise<void> {
+    const recipients = Array.isArray(to) ? to : [to];
+    const masked = recipients.map((r) => maskEmail(r)).join(', ');
+    const base = {
+      template: meta.template,
+      userId: meta.userId ?? null,
+      recipient: recipients.join(', '),
+      subject: tpl.subject,
+    };
+
+    if (!this.isConfigured()) {
+      const reason = `not_configured: ${this.missingConfig().join(', ')}`;
+      this.logger.error(
+        `Email not sent to ${masked} (${meta.template}): ${reason}`,
       );
+      await this.record({ ...base, status: 'failed', reason });
+      return;
+    }
+
+    try {
+      const res = await fetch(`${this.resendBaseUrl}/emails`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: this.fromAddress,
+          to: recipients,
+          subject: tpl.subject,
+          html: tpl.html,
+          text: tpl.text,
+        }),
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        id?: string;
+        name?: string;
+        message?: string;
+      } | null;
+
+      if (!res.ok || !body?.id) {
+        // Resend ตอบ { statusCode, name, message } เช่น 403 validation_error "domain is not verified"
+        const reason = `resend ${res.status}${body?.name ? ` ${body.name}` : ''}: ${body?.message ?? 'no message id in response'}`;
+        this.logger.error(
+          `Failed to send email to ${masked} (${meta.template}): ${reason}`,
+        );
+        await this.record({ ...base, status: 'failed', reason });
+        return;
+      }
+
+      this.logger.log(
+        `Email sent to ${masked} (${meta.template}, subject: "${tpl.subject}", id: ${body.id})`,
+      );
+      await this.record({
+        ...base,
+        status: 'sent',
+        providerMessageId: body.id,
+      });
+    } catch (err) {
+      // network / timeout (AbortSignal) / DNS
+      const msg =
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      this.logger.error(
+        `Failed to send email to ${masked} (${meta.template}): ${msg}`,
+      );
+      await this.record({ ...base, status: 'failed', reason: msg });
+    }
+  }
+
+  /**
+   * บันทึก email_logs — พังเองก็ไม่ throw (ประวัติหาย ดีกว่าอีเมลหรือ flow หลักพัง)
+   * ★ เก็บแค่อีเมลแบบปิดบางส่วน ไม่เก็บเนื้อหา (อีเมลเชิญแอดมินมีรหัสผ่านชั่วคราว)
+   */
+  private async record(row: {
+    template: string;
+    userId: string | null;
+    status: EmailLogStatus;
+    recipient?: string;
+    subject?: string;
+    reason?: string;
+    providerMessageId?: string;
+  }): Promise<void> {
+    try {
+      await this.prismaService.email_logs.create({
+        data: {
+          user_id: row.userId,
+          recipient_masked: row.recipient
+            ? row.recipient
+                .split(',')
+                .map((r) => maskEmail(r.trim()))
+                .join(', ')
+                .slice(0, 320)
+            : null,
+          template: row.template.slice(0, 64),
+          subject: row.subject ?? null,
+          status: row.status,
+          reason: row.reason?.slice(0, MAX_REASON_LENGTH) ?? null,
+          provider: row.status === 'skipped' ? null : PROVIDER,
+          provider_message_id: row.providerMessageId ?? null,
+        },
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to send email to ${maskEmail(to)}: ${msg}`);
+      this.logger.warn({
+        event: 'email.log_write_failed',
+        template: row.template,
+        error: msg,
+      });
     }
   }
 
   /**
    * PYG-376 — plain operational alert to admins (reconciliation, etc.).
-   * Reuses the same SMTP transporter as every other mail; text-only is fine for internal alerts.
+   * Reuses the same sender as every other mail; text-only is fine for internal alerts.
    */
   async sendAdminAlert(
     recipients: string[],
@@ -372,13 +631,20 @@ export class EmailService {
     textBody: string,
   ): Promise<void> {
     if (recipients.length === 0) {
-      this.logger.warn(`No admin recipients for alert "${subject}" — skipping send`);
+      this.logger.warn(
+        `No admin recipients for alert "${subject}" — skipping send`,
+      );
       return;
     }
-    await this.send(recipients.join(', '), {
-      subject,
-      text: textBody,
-      html: `<pre style="font-family:monospace;white-space:pre-wrap">${textBody}</pre>`,
-    });
+    await this.send(
+      recipients,
+      {
+        subject,
+        text: textBody,
+        // PYG-714: escape — เนื้อหา alert มาจากข้อมูลในระบบ (เดิมใส่ลง HTML ตรง ๆ)
+        html: `<pre style="font-family:monospace;white-space:pre-wrap">${escapeHtml(textBody)}</pre>`,
+      },
+      { template: EMAIL_TEMPLATE_KEYS.ADMIN_ALERT },
+    );
   }
 }
