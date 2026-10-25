@@ -2335,6 +2335,11 @@ type Mutation {
   acceptBooking(bookingId: ID!, infectionAcknowledged: Boolean): CaregiverBookingSummary!
 
   """
+  บันทึกคำตอบความยินยอมของหน้าสมัคร (source register) สำหรับบัญชีที่สมัครด้วย Google · ส่งทุกข้อที่แสดงรวมข้อที่ไม่ยินยอม · คืนสถานะความยินยอมทั้งหมดของฉัน
+  """
+  acceptSignupConsents(consents: [ConsentAnswerInput!]!): [ConsentStatus!]!
+
+  """
   Admin only: Activate a suspended user (set isActive = true, is_deleted = false). Records audit log.
   """
   activateUser(

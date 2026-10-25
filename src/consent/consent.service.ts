@@ -423,6 +423,28 @@ export class ConsentService {
   }
 
   /**
+   * บันทึกคำตอบหน้าความยินยอมตอนสมัครของบัญชีที่ "มีอยู่แล้ว" — สมัครด้วย Google
+   *
+   * ★ บัญชี Google ถูกสร้างโดย trigger ของ auth.users ก่อนที่ผู้ใช้จะกลับมาถึงแอป
+   *   จึงส่งคำตอบไปพร้อมการสร้างบัญชีแบบ register() ไม่ได้ — FE เปิดกล่องความยินยอม
+   *   ที่ /auth/callback แล้วส่งคำตอบมาที่นี่แทน
+   * ★ ตรวจกติกาเดียวกับ register (assertAnswersForSource) และบันทึกทุกข้อรวมข้อที่ปฏิเสธ
+   */
+  async recordSignupAnswers(
+    userId: string,
+    role: number,
+    answers: ConsentAnswerInput[],
+    evidence: RequestEvidence,
+  ): Promise<MyConsentStatus[]> {
+    this.assertAnswersForSource(answers, CONSENT_SOURCE.REGISTER);
+    await this.recordMany(this.prisma, userId, answers, {
+      ...evidence,
+      source: CONSENT_SOURCE.REGISTER,
+    });
+    return this.getMyConsents(userId, role);
+  }
+
+  /**
    * ข้อแรกใน `types` ที่ผู้ใช้ "ถอนไว้" (แถวล่าสุด granted = false) — ไม่มีคืน null
    *
    * ใช้เป็นด่านก่อนจองใหม่ (BOOKING_BLOCKING_CONSENTS) — PYG-540
