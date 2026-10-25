@@ -11,14 +11,16 @@
  *   constructor(private prisma: PrismaService) {}
  *   const user = await this.prisma.user.findUnique({ where: { id: '123' } });
  */
-import { Injectable, OnModuleDestroy, Scope } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
+import { RequestScopedPool, requestPoolConfig } from './request-db-scope';
 
-@Injectable({ scope: Scope.REQUEST })
+// ★ PYG-716 singleton — การเชื่อมต่อต่อคำขอบน Worker จัดการโดย RequestScopedPool (ดู request-db-scope.ts)
+//   เดิม Scope.REQUEST: ประกอบ service ทั้งชุด + PrismaClient ใหม่ทุกคำขอ และไม่เคยปิด → CPU/หน่วยความจำเกินลิมิต
+@Injectable()
 export class PrismaService extends PrismaClient implements OnModuleDestroy {
-  private readonly pool: Pool;
+  private readonly pool: RequestScopedPool;
 
   constructor() {
     const databaseUrl = process.env.DATABASE_URL;
@@ -26,13 +28,11 @@ export class PrismaService extends PrismaClient implements OnModuleDestroy {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
-    // Create a PostgreSQL connection pool
-    const pool = new Pool({
-      connectionString: databaseUrl,
-      max: 1,
-      connectionTimeoutMillis: 10_000,
-      idleTimeoutMillis: 5_000,
-      allowExitOnIdle: true,
+    // ใน scope ของคำขอบน Worker: query ไปที่ pool ของคำขอนั้น · นอก scope (Node/jest): ใช้ pool นี้เอง
+    //   บน Worker pool นี้ไม่ควรถูกใช้เลย (ทุกคำขอ/cron อยู่ใน scope) — Node ใช้ได้หลายการเชื่อมต่อ
+    const pool = new RequestScopedPool({
+      ...requestPoolConfig(),
+      max: process.env.CF_WORKER === 'true' ? 1 : 10,
     });
 
     // Initialize PrismaClient with the PostgreSQL adapter for Prisma 7
@@ -43,7 +43,7 @@ export class PrismaService extends PrismaClient implements OnModuleDestroy {
     this.pool = pool;
   }
 
-  /** Close the request's database resources after Nest releases its scope. */
+  /** ปิด pool ของตัวเอง (นอก scope) ตอนแอปปิด — pool ต่อคำขอปิดใน runInRequestDbScope */
   async onModuleDestroy() {
     await this.$disconnect();
     await this.pool.end();
