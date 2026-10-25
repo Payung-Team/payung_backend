@@ -35,6 +35,7 @@ import {
   type RecipientRole,
 } from '../../email/templates/booking';
 import {
+  bookingDetailPath,
   formatBaht as formatBahtEmail,
   formatPriceBreakdown,
   formatRating,
@@ -452,7 +453,9 @@ export class BookingNotificationListener {
             timeText: ctx.timeText, // PYG-526: generic template เคยมีแต่วันที่
             serviceText: ctx.serviceText,
             amountText: ctx.amountText,
-            ctaPath: data.link as string,
+            // PYG-703: path ตามบทบาทผู้รับ — เดิมใช้ data.link (/bookings/{id} หน้าของ patient)
+            //   ทำให้ผู้ดูแลที่ได้อีเมล fallback (เช่น payment_transferred) กดแล้วไม่เห็นงานของตัวเอง
+            ctaPath: bookingDetailPath(event.bookingId, role),
             ctaLabel: config.ctaLabel ?? 'ดูรายละเอียด',
           });
         }

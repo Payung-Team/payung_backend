@@ -1,15 +1,23 @@
 /**
  * booking.confirmed (PYG-293) — แจ้งทั้งสองฝ่ายว่าจองยืนยันแล้ว (หลังชำระเงินสำเร็จ)
- * Subject: "[Payung] การจองยืนยันแล้ว"
+ * Subject: "การจองยืนยันแล้ว — Payung"
  *
  * Render ต่างกันตาม recipientRole:
  *   - patient   → "เราได้ยืนยันการจองของคุณแล้ว"
  *   - caregiver → "ลูกค้าชำระเงินแล้ว เตรียมตัวให้บริการ"
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+  BRAND,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -19,7 +27,7 @@ import {
 export const bookingConfirmedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] การจองยืนยันแล้ว';
+  const subject = emailSubject('การจองยืนยันแล้ว');
   const heading = 'การจองของคุณได้รับการยืนยันแล้ว';
 
   const intro =
@@ -30,7 +38,7 @@ export const bookingConfirmedTemplate: BookingTemplateFn = (
   // CG เห็นเบอร์ติดต่อลูกค้า (จาก patientName); PT เห็นเบอร์ผู้ดูแล
   const contactRow =
     ctx.recipientRole === 'patient' && ctx.caregiverPhone
-      ? `<p style="margin:8px 0 0; font-size:14px; color:#6B7773;">ติดต่อผู้ดูแล: <strong style="color:#1A2422;">${escapeHtml(ctx.caregiverPhone)}</strong></p>`
+      ? `<p style="margin:8px 0 0; font-size:14px; color:${BRAND.mutedColor};">ติดต่อผู้ดูแล: <strong style="color:${BRAND.textColor};">${escapeHtml(ctx.caregiverPhone)}</strong></p>`
       : '';
 
   const summary = formatBookingSummary({
@@ -44,17 +52,17 @@ export const bookingConfirmedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summary}
     ${contactRow}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = 'ดูรายละเอียด';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 ${

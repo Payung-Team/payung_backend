@@ -1,15 +1,22 @@
 /**
  * booking.completed (PYG-293) — แจ้งทั้งสองฝ่ายว่าบริการเสร็จสิ้น
- * Subject: "[Payung] บริการเสร็จสิ้น"
+ * Subject: "บริการเสร็จสิ้น — Payung"
  *
  * Render ต่างกันตาม recipientRole:
- *   - patient   → CTA "ให้คะแนนผู้ดูแล" → /bookings/{id}/review
- *   - caregiver → CTA "ดูสรุปงาน" → /bookings/{id} (จะแจ้งเรื่อง payout แยก ticket)
+ *   - patient   → CTA "ให้คะแนนผู้ดูแล" → /bookings/{id} (ฟอร์มให้คะแนนอยู่ในหน้านี้)
+ *   - caregiver → CTA "ดูสรุปงาน" → /caregiver/bookings/{id} (จะแจ้งเรื่อง payout แยก ticket)
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -19,7 +26,7 @@ import {
 export const bookingCompletedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] บริการเสร็จสิ้น';
+  const subject = emailSubject('บริการเสร็จสิ้น');
   const heading = 'บริการเสร็จสิ้นแล้ว ขอบคุณที่ใช้บริการ Payung';
 
   const intro =
@@ -37,20 +44,19 @@ export const bookingCompletedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summary}
   `;
 
-  const ctaUrl =
-    ctx.recipientRole === 'patient'
-      ? `${ctx.frontendUrl}/bookings/${ctx.bookingId}/review`
-      : `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  // PYG-703: เดิม patient → /bookings/{id}/review ซึ่งไม่มี route ใน FE (404)
+  //   ฟอร์มให้คะแนนอยู่ในหน้ารายละเอียดการจองอยู่แล้ว · caregiver ไปหน้างานของผู้ดูแล
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel =
     ctx.recipientRole === 'patient' ? 'ให้คะแนนผู้ดูแล' : 'ดูสรุปงาน';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 ${

@@ -1,13 +1,20 @@
 /**
  * booking.accepted (PYG-293) — แจ้ง Patient ว่าผู้ดูแลรับคำขอแล้ว
- * Subject: "[Payung] ผู้ดูแลรับคำขอแล้ว"
+ * Subject: "ผู้ดูแลรับคำขอแล้ว — Payung"
  *
  * ความสำคัญ: ปุ่ม CTA = "ชำระเงินเพื่อยืนยัน" (จองยังไม่ confirmed จนกว่าจะ pay)
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -17,7 +24,7 @@ import {
 export const bookingAcceptedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] ผู้ดูแลรับคำขอแล้ว';
+  const subject = emailSubject('ผู้ดูแลรับคำขอแล้ว');
   const heading = 'ผู้ดูแลรับคำขอจองของคุณแล้ว';
   const intro = `คุณ${escapeHtml(ctx.caregiverName)} ตอบรับคำขอของคุณแล้ว — กรุณาชำระเงินเพื่อยืนยันการจองภายในเวลาที่กำหนด`;
 
@@ -32,16 +39,16 @@ export const bookingAcceptedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summary}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = 'ชำระเงินเพื่อยืนยัน';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 คุณ${ctx.caregiverName} ตอบรับคำขอของคุณแล้ว — กรุณาชำระเงินเพื่อยืนยัน

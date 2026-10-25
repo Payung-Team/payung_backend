@@ -1,13 +1,14 @@
 /**
  * refund.issued (PYG-293) — แจ้ง Patient ว่าคืนเงินเรียบร้อย
- * Subject: "[Payung] คืนเงินเรียบร้อย ฿{amount}"
+ * Subject: "คืนเงินเรียบร้อย ฿{amount} — Payung"
  *
  * payment_method: "บัตรเครดิต" + chargeId (จำเป็นต้องอ้างอิงถึง charge เดิม)
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import { wrapHtml, plainTextFooter, escapeHtml, emailSubject, HEADING_STYLE } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   summaryRow,
@@ -16,7 +17,7 @@ import {
 
 export const refundIssuedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
   const amountText = ctx.refundAmountText ?? ctx.paymentAmountText;
-  const subject = `[Payung] คืนเงินเรียบร้อย ${amountText}`;
+  const subject = emailSubject(`คืนเงินเรียบร้อย ${amountText}`);
   const heading = 'คืนเงินเรียบร้อยแล้ว';
   const intro = `เราได้คืนเงิน <strong>${escapeHtml(amountText)}</strong> กลับไปยังบัตรของคุณเรียบร้อย — ยอดเงินจะแสดงในรายการบัตรของคุณภายใน 5-10 วันทำการ`;
 
@@ -34,16 +35,16 @@ export const refundIssuedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
   );
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${breakdown}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = 'ดูรายละเอียด';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 คืนเงิน ${amountText} กลับไปยังบัตรของคุณแล้ว

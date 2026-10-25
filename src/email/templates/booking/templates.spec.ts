@@ -44,11 +44,14 @@ const baseCtx: BookingEmailContext = {
 describe('Booking per-event templates', () => {
   describe('booking.created', () => {
     const tpl = bookingCreatedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
-    it('subject = "[Payung] คุณมีคำขอจองใหม่"', () => {
-      expect(tpl.subject).toBe('[Payung] คุณมีคำขอจองใหม่');
+    it('subject = "คุณมีคำขอจองใหม่ — Payung"', () => {
+      expect(tpl.subject).toBe('คุณมีคำขอจองใหม่ — Payung');
     });
-    it('CTA → /bookings/{id}', () => {
-      expect(tpl.html).toContain('https://payung.app/bookings/booking-uuid-1');
+    // PYG-703: ผู้รับคือผู้ดูแล → หน้างานของผู้ดูแล (เดิม /bookings/{id} = หน้าของผู้รับบริการ)
+    it('CTA → /caregiver/bookings/{id}', () => {
+      expect(tpl.html).toContain(
+        'https://payung.app/caregiver/bookings/booking-uuid-1',
+      );
       expect(tpl.html).toContain('ดูคำขอจอง');
     });
     it('render booking details', () => {
@@ -60,7 +63,7 @@ describe('Booking per-event templates', () => {
   describe('booking.accepted', () => {
     const tpl = bookingAcceptedTemplate(baseCtx);
     it('subject', () => {
-      expect(tpl.subject).toBe('[Payung] ผู้ดูแลรับคำขอแล้ว');
+      expect(tpl.subject).toBe('ผู้ดูแลรับคำขอแล้ว — Payung');
     });
     it('CTA = "ชำระเงินเพื่อยืนยัน"', () => {
       expect(tpl.html).toContain('ชำระเงินเพื่อยืนยัน');
@@ -76,7 +79,7 @@ describe('Booking per-event templates', () => {
         ...baseCtx,
         declineReason: '<img src=x onerror=alert(1)>',
       });
-      expect(tpl.subject).toBe('[Payung] ผู้ดูแลปฏิเสธคำขอ');
+      expect(tpl.subject).toBe('ผู้ดูแลปฏิเสธคำขอ — Payung');
       expect(tpl.html).not.toContain('<img src=x');
       expect(tpl.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     });
@@ -90,7 +93,7 @@ describe('Booking per-event templates', () => {
   describe('booking.confirmed (role-aware)', () => {
     it('patient เห็นเบอร์ติดต่อ caregiver', () => {
       const tpl = bookingConfirmedTemplate({ ...baseCtx, recipientRole: 'patient' });
-      expect(tpl.subject).toBe('[Payung] การจองยืนยันแล้ว');
+      expect(tpl.subject).toBe('การจองยืนยันแล้ว — Payung');
       expect(tpl.html).toContain('ติดต่อผู้ดูแล');
       expect(tpl.html).toContain('0812345678');
     });
@@ -103,16 +106,23 @@ describe('Booking per-event templates', () => {
   });
 
   describe('booking.completed (role-aware)', () => {
-    it('patient → CTA = review link', () => {
+    // PYG-703: เดิม /bookings/{id}/review ไม่มี route ใน FE — ฟอร์มให้คะแนนอยู่ในหน้ารายละเอียดการจอง
+    it('patient → CTA ให้คะแนน → หน้ารายละเอียดการจอง', () => {
       const tpl = bookingCompletedTemplate({ ...baseCtx, recipientRole: 'patient' });
-      expect(tpl.subject).toBe('[Payung] บริการเสร็จสิ้น');
-      expect(tpl.html).toContain('/bookings/booking-uuid-1/review');
+      expect(tpl.subject).toBe('บริการเสร็จสิ้น — Payung');
+      expect(tpl.html).toContain(
+        'href="https://payung.app/bookings/booking-uuid-1"',
+      );
+      expect(tpl.html).not.toContain('/review');
       expect(tpl.html).toContain('ให้คะแนนผู้ดูแล');
     });
 
     it('caregiver → CTA = ดูสรุปงาน (no review link)', () => {
       const tpl = bookingCompletedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
       expect(tpl.html).not.toContain('/review');
+      expect(tpl.html).toContain(
+        'https://payung.app/caregiver/bookings/booking-uuid-1',
+      );
       expect(tpl.html).toContain('ดูสรุปงาน');
     });
   });
@@ -120,7 +130,7 @@ describe('Booking per-event templates', () => {
   describe('payment.held', () => {
     const tpl = paymentHeldTemplate(baseCtx); // platform_fee NULL → ไม่มี breakdown
     it('subject', () => {
-      expect(tpl.subject).toBe('[Payung] ชำระเงินเรียบร้อย');
+      expect(tpl.subject).toBe('ชำระเงินเรียบร้อย — Payung');
     });
     // 🔴 regression (booking-email-total-amount): platform_fee NULL → ซ่อนบรรทัดค่าธรรมเนียม
     it('platform_fee NULL → ไม่มีบรรทัดค่าบริการ/ค่าธรรมเนียม (ไม่ ฿0.00) แต่มียอดรวมจริง', () => {
@@ -153,7 +163,7 @@ describe('Booking per-event templates', () => {
   describe('payment.captured (role-aware)', () => {
     it('patient เห็น "วิธีชำระเงิน"', () => {
       const tpl = paymentCapturedTemplate({ ...baseCtx, recipientRole: 'patient' });
-      expect(tpl.subject).toBe('[Payung] เรียกเก็บเงินแล้ว');
+      expect(tpl.subject).toBe('เรียกเก็บเงินแล้ว — Payung');
       expect(tpl.html).toContain('วิธีชำระเงิน');
       expect(tpl.html).toContain('ดูใบเสร็จ');
     });
@@ -172,7 +182,7 @@ describe('Booking per-event templates', () => {
         ...baseCtx,
         refundAmountText: '฿500',
       });
-      expect(tpl.subject).toBe('[Payung] คืนเงินเรียบร้อย ฿500');
+      expect(tpl.subject).toBe('คืนเงินเรียบร้อย ฿500 — Payung');
       expect(tpl.html).toContain('฿500');
     });
 
@@ -190,14 +200,16 @@ describe('Booking per-event templates', () => {
   describe('booking.cancelled', () => {
     const tpl = bookingCancelledTemplate({ ...baseCtx, recipientRole: 'caregiver' });
     it('subject', () => {
-      expect(tpl.subject).toBe('[Payung] การจองถูกยกเลิก');
+      expect(tpl.subject).toBe('การจองถูกยกเลิก — Payung');
     });
     it('แสดงชื่อผู้ใช้บริการที่ยกเลิก', () => {
       expect(tpl.html).toContain('มาลี ใจดี');
       expect(tpl.html).toContain('ยกเลิก');
     });
-    it('CTA → /bookings/{id}', () => {
-      expect(tpl.html).toContain('https://payung.app/bookings/booking-uuid-1');
+    it('CTA → /caregiver/bookings/{id} (ผู้รับคือผู้ดูแล)', () => {
+      expect(tpl.html).toContain(
+        'https://payung.app/caregiver/bookings/booking-uuid-1',
+      );
     });
   });
 
@@ -209,7 +221,7 @@ describe('Booking per-event templates', () => {
         recipientName: 'แอดมิน',
         declineReason: 'บริการไม่ตรงตามที่ตกลงและผู้ดูแลมาสาย',
       });
-      expect(tpl.subject).toBe('[Payung] แจ้งปัญหาใหม่');
+      expect(tpl.subject).toBe('แจ้งปัญหาใหม่ — Payung');
       expect(tpl.html).toContain('/admin/disputes');
       expect(tpl.html).toContain('ดูคิวปัญหา');
       expect(tpl.html).toContain('รายละเอียดปัญหา');
@@ -229,14 +241,14 @@ describe('Booking per-event templates', () => {
   describe('dispute.resolved', () => {
     it('patient CTA → /bookings/{id}', () => {
       const tpl = disputeResolvedTemplate({ ...baseCtx, recipientRole: 'patient' });
-      expect(tpl.subject).toBe('[Payung] ผลตรวจสอบปัญหา');
+      expect(tpl.subject).toBe('ผลตรวจสอบปัญหา — Payung');
       expect(tpl.html).toContain('ดูผลการตรวจสอบ');
       expect(tpl.html).toContain('https://payung.app/bookings/booking-uuid-1');
     });
 
     it('caregiver ก็ได้ subject เดียวกัน', () => {
       const tpl = disputeResolvedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
-      expect(tpl.subject).toBe('[Payung] ผลตรวจสอบปัญหา');
+      expect(tpl.subject).toBe('ผลตรวจสอบปัญหา — Payung');
       expect(tpl.html).toContain('ดูผลการตรวจสอบ');
     });
   });
@@ -269,8 +281,10 @@ describe('Booking per-event templates', () => {
       ];
       for (const tpl of all) {
         expect(tpl.html).toContain('Payung');
-        expect(tpl.html).toContain('settings/email'); // unsubscribe link
-        expect(tpl.text).toContain('support@payung.app');
+        // PYG-703: ลิงก์ตั้งค่าการรับอีเมลไปหน้าการแจ้งเตือน (เดิม /settings/email ไม่มีใน FE)
+        expect(tpl.html).toContain('https://payung.app/notifications');
+        expect(tpl.html).not.toContain('settings/email');
+        expect(tpl.text).toContain('payung.care@gmail.com');
       }
     });
   });
