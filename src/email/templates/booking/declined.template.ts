@@ -1,11 +1,18 @@
 /**
  * booking.declined (PYG-293) — แจ้ง Patient ว่าผู้ดูแลปฏิเสธคำขอ
- * Subject: "[Payung] ผู้ดูแลปฏิเสธคำขอ"
+ * Subject: "ผู้ดูแลปฏิเสธคำขอ — Payung"
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -15,7 +22,7 @@ import {
 export const bookingDeclinedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] ผู้ดูแลปฏิเสธคำขอ';
+  const subject = emailSubject('ผู้ดูแลปฏิเสธคำขอ');
   const heading = 'ผู้ดูแลไม่สามารถรับคำขอของคุณได้';
   const intro = `เราต้องเสียใจที่จะแจ้งให้ทราบว่า คุณ${escapeHtml(ctx.caregiverName)} ไม่สามารถรับงานนี้ได้ — กรุณาลองค้นหาผู้ดูแลท่านอื่นจากระบบของเรา`;
 
@@ -35,17 +42,19 @@ export const bookingDeclinedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${reasonBlock}
     ${summary}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/caregivers`;
-  const ctaLabel = 'ค้นหาผู้ดูแลท่านอื่น';
+  // PYG-703: เดิม /caregivers ซึ่งไม่มี route ใน FE (404) — หน้ารายละเอียดการจองของ patient
+  //   แสดงสถานะ "ปฏิเสธแล้ว" พร้อมทางไปเลือกผู้ดูแลท่านอื่นอยู่แล้ว
+  const ctaUrl = bookingDetailUrl(ctx);
+  const ctaLabel = 'เลือกผู้ดูแลท่านอื่น';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 คุณ${ctx.caregiverName} ไม่สามารถรับงานนี้ได้ — ลองค้นหาผู้ดูแลท่านอื่น${ctx.declineReason ? `\n\nเหตุผล: ${ctx.declineReason}` : ''}

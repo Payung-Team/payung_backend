@@ -1,15 +1,16 @@
 /**
  * payment.captured (PYG-293) — แจ้งทั้งสองฝ่ายว่าระบบเรียกเก็บเงินสำเร็จ (หลังบริการเสร็จ)
- * Subject: "[Payung] เรียกเก็บเงินแล้ว"
+ * Subject: "เรียกเก็บเงินแล้ว — Payung"
  *
  * Render ต่างกันตาม recipientRole:
  *   - patient   → "เราเรียกเก็บเงินจากบัตรของคุณเรียบร้อย"
  *   - caregiver → "ระบบเรียกเก็บเงินจากลูกค้าเรียบร้อย เตรียมโอนค่าตอบแทน"
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import { wrapHtml, plainTextFooter, escapeHtml, emailSubject, HEADING_STYLE } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   summaryRow,
@@ -17,7 +18,7 @@ import {
 } from './helpers';
 
 export const paymentCapturedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
-  const subject = '[Payung] เรียกเก็บเงินแล้ว';
+  const subject = emailSubject('เรียกเก็บเงินแล้ว');
   const heading = 'เรียกเก็บเงินสำเร็จ';
 
   const intro =
@@ -39,16 +40,16 @@ export const paymentCapturedTemplate: BookingTemplateFn = (ctx): EmailTemplate =
   }
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summaryTable(rows.join(''))}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = ctx.recipientRole === 'patient' ? 'ดูใบเสร็จ' : 'ดูรายละเอียดงาน';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 ${ctx.recipientRole === 'patient'

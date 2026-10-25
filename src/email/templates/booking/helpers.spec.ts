@@ -130,16 +130,16 @@ describe('booking template helpers', () => {
   describe('greeting (XSS guard)', () => {
     it('escape ชื่อที่มี HTML tag', () => {
       const out = greeting('<script>alert(1)</script>');
-      expect(out).toBe('สวัสดีค่ะ คุณ&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(out).toBe('สวัสดีคุณ&lt;script&gt;alert(1)&lt;/script&gt;');
       expect(out).not.toContain('<script>');
     });
 
     it('escape quote ในชื่อ', () => {
-      expect(greeting(`O'Brien`)).toBe('สวัสดีค่ะ คุณO&#39;Brien');
+      expect(greeting(`O'Brien`)).toBe('สวัสดีคุณO&#39;Brien');
     });
 
     it('คืน fallback ถ้า name = null', () => {
-      expect(greeting(null)).toBe('สวัสดีค่ะ คุณผู้ใช้');
+      expect(greeting(null)).toBe('สวัสดี');
     });
   });
 });

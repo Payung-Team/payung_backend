@@ -1,11 +1,18 @@
 /**
  * booking.cancelled — แจ้ง Caregiver ว่าผู้ใช้บริการยกเลิกการจอง
- * Subject: "[Payung] การจองถูกยกเลิก"
+ * Subject: "การจองถูกยกเลิก — Payung"
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -15,7 +22,7 @@ import {
 export const bookingCancelledTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] การจองถูกยกเลิก';
+  const subject = emailSubject('การจองถูกยกเลิก');
   const heading = 'การจองถูกยกเลิกโดยผู้ใช้บริการ';
   const intro = ctx.patientName
     ? `คุณ${escapeHtml(ctx.patientName)} ได้ยกเลิกการจองบริการ${escapeHtml(ctx.serviceText)} วันที่ ${escapeHtml(ctx.dateText)} แล้ว`
@@ -30,16 +37,16 @@ export const bookingCancelledTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summary}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = 'ดูรายละเอียด';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 ${
