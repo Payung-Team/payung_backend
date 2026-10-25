@@ -36,6 +36,7 @@ import { CaregiverService } from '../kyc/caregiver.service';
 import { ConsentService } from '../../consent/consent.service';
 import { CONSENT_SOURCE } from '../../consent/consent.constants';
 import type { RequestEvidence } from '../../common/utils/request-evidence';
+import { maskEmail } from '../../common/utils/mask-email';
 
 @Injectable()
 export class AuthService {
@@ -436,7 +437,7 @@ export class AuthService {
     });
 
     if (error) {
-      this.logger.error({ event: 'password_reset.request_failed', email, msg: error.message });
+      this.logger.error({ event: 'password_reset.request_failed', email: maskEmail(email), msg: error.message });
     }
 
     return {

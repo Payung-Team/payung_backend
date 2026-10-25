@@ -1,5 +1,5 @@
 import { MatchingModule } from './matching/matching.module';
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
@@ -101,4 +101,12 @@ import { ServicePackageModule } from './service-package/service-package.module';
   ],
   providers: [AppResolver], // ← ลงทะเบียน Resolver ที่นี่
 })
-export class AppModule {}
+export class AppModule {
+  constructor() {
+    // PYG-700: production (Cloudflare Worker · NODE_ENV=production ใน wrangler.jsonc) ไม่พิมพ์ debug/verbose
+    //   เช่น cron payout/expiry ที่ log "no due …" ทุกรอบ · ตอน dev ยังเห็นครบ
+    if (process.env.NODE_ENV === 'production') {
+      Logger.overrideLogger(['fatal', 'error', 'warn', 'log']);
+    }
+  }
+}

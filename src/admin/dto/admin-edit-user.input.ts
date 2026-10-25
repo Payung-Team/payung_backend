@@ -1,5 +1,6 @@
 import { InputType, Field, ID } from '@nestjs/graphql';
-import { IsEmail, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { ValidAppEmail } from '../../common/validators/valid-app-email.validator';
 
 @InputType()
 export class AdminEditUserInput {
@@ -16,7 +17,7 @@ export class AdminEditUserInput {
 
   @Field({ nullable: true, description: 'Email address' })
   @IsOptional()
-  @IsEmail()
+  @ValidAppEmail()
   email?: string;
 
   @Field({ nullable: true, description: 'Phone number' })

@@ -96,6 +96,7 @@ import {
   toCareLevelInfo,
   writeCareLevelChange,
 } from './admin-care-level.helpers';
+import { maskEmail } from '../common/utils/mask-email';
 
 /** Default pagination constants */
 const DEFAULT_PAGE = 1;
@@ -947,8 +948,9 @@ export class AdminService {
    */
   async inviteAdmin(input: InviteAdminInput, currentUser: AuthUser): Promise<InviteAdminPayload> {
     // ─── 1. Validate email uniqueness ─────────────────────────────────────
-    const existing = await this.prismaService.user.findUnique({
-      where: { email: input.email },
+    const existing = await this.prismaService.user.findFirst({
+      // PYG-707: input เป็นตัวเล็กแล้ว แต่แถวเก่าอาจเก็บตัวพิมพ์ใหญ่ — เทียบแบบไม่สนตัวพิมพ์
+      where: { email: { equals: input.email, mode: 'insensitive' } },
     });
     if (existing) {
       throw new ConflictException('Email already registered');
@@ -971,7 +973,7 @@ export class AdminService {
     });
 
     if (authError || !authData.user) {
-      this.logger.error(`Supabase admin.createUser failed for ${input.email}: ${authError?.message ?? 'no user returned'}`);
+      this.logger.error(`Supabase admin.createUser failed for ${maskEmail(input.email)}: ${authError?.message ?? 'no user returned'}`);
       throw new InternalServerErrorException('Failed to create auth user');
     }
 
@@ -1458,9 +1460,9 @@ export class AdminService {
     const linkedUser = caregiver.user;
 
     // ─── 2. Validate email uniqueness ─────────────────────────────────────
-    if (input.email && input.email !== linkedUser.email) {
-      const existing = await this.prismaService.user.findUnique({
-        where: { email: input.email },
+    if (input.email && input.email !== linkedUser.email?.toLowerCase()) {
+      const existing = await this.prismaService.user.findFirst({
+        where: { email: { equals: input.email, mode: 'insensitive' } },
       });
       if (existing) {
         throw new ConflictException('Email already in use');
@@ -1490,7 +1492,7 @@ export class AdminService {
 
     // ─── 5. Update user email + Supabase Auth ─────────────────────────────
     let finalEmail = linkedUser.email;
-    if (input.email && input.email !== linkedUser.email) {
+    if (input.email && input.email !== linkedUser.email?.toLowerCase()) {
       await this.prismaService.user.update({
         where: { id: linkedUser.id },
         data: { email: input.email },
@@ -1591,9 +1593,9 @@ export class AdminService {
     }
 
     // ─── 3. Validate email uniqueness ─────────────────────────────────────
-    if (input.email && input.email !== target.email) {
-      const existing = await this.prismaService.user.findUnique({
-        where: { email: input.email },
+    if (input.email && input.email !== target.email?.toLowerCase()) {
+      const existing = await this.prismaService.user.findFirst({
+        where: { email: { equals: input.email, mode: 'insensitive' } },
       });
       if (existing) {
         throw new ConflictException('Email already in use');
@@ -1615,7 +1617,7 @@ export class AdminService {
     });
 
     // ─── 6. Sync Supabase Auth email ──────────────────────────────────────
-    if (input.email && input.email !== target.email) {
+    if (input.email && input.email !== target.email?.toLowerCase()) {
       const supabaseAdmin = this.supabaseService.getAdminClient();
       try {
         await supabaseAdmin.auth.admin.updateUserById(target.supabaseUid, {
@@ -2009,9 +2011,9 @@ export class AdminService {
     }
 
     // ─── 4. Validate email uniqueness ─────────────────────────────────────
-    if (input.email && input.email !== target.email) {
-      const existing = await this.prismaService.user.findUnique({
-        where: { email: input.email },
+    if (input.email && input.email !== target.email?.toLowerCase()) {
+      const existing = await this.prismaService.user.findFirst({
+        where: { email: { equals: input.email, mode: 'insensitive' } },
       });
       if (existing) {
         throw new ConflictException('Email already in use');
@@ -2037,7 +2039,7 @@ export class AdminService {
     });
 
     // ─── 7. Sync Supabase Auth email ──────────────────────────────────────
-    if (input.email && input.email !== target.email) {
+    if (input.email && input.email !== target.email?.toLowerCase()) {
       const supabaseAdmin = this.supabaseService.getAdminClient();
       try {
         await supabaseAdmin.auth.admin.updateUserById(target.supabaseUid, {
@@ -2054,7 +2056,7 @@ export class AdminService {
     if (newDisplayName !== undefined && newDisplayName !== target.displayName) {
       changedFields.displayName = { from: target.displayName, to: newDisplayName };
     }
-    if (input.email && input.email !== target.email) {
+    if (input.email && input.email !== target.email?.toLowerCase()) {
       changedFields.email = { from: target.email, to: input.email };
     }
     if (input.role !== undefined && input.role !== target.role) {

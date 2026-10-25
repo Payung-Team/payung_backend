@@ -481,10 +481,6 @@ export class CaregiverService {
       23, 59, 59, 999
     ));
 
-    this.logger.debug(
-      `[generateCaregiverNumber] Counting caregivers between ${startOfDayUTC.toISOString()} and ${endOfDayUTC.toISOString()}`,
-    );
-
     const countToday = await client.caregiver.count({
       where: {
         createdAt: {
@@ -494,14 +490,11 @@ export class CaregiverService {
       },
     });
 
-    this.logger.debug(`[generateCaregiverNumber] Found ${countToday} caregivers today`);
-
     // ── 3: สร้าง running number (XXXX) ──────────────────────────
     const xxxx = String(countToday + 1).padStart(4, '0');
 
     // ── 4: รวม format ────────────────────────────────────────────
     const result = `CG-${yymmdd}-${xxxx}`;
-    this.logger.debug(`[generateCaregiverNumber] Generated: ${result}`);
 
     return result;
   }

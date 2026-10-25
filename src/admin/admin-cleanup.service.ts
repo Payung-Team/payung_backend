@@ -20,6 +20,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma.service';
 import { SupabaseService } from '../common/supabase.service';
 import { EmailService } from '../email/email.service';
+import { maskEmail } from '../common/utils/mask-email';
 
 @Injectable()
 export class AdminCleanupService {
@@ -54,10 +55,10 @@ export class AdminCleanupService {
       for (const admin of adminsToDelete) {
         try {
           await this.deleteAdmin(admin);
-          this.logger.log(`Auto-deleted admin: ${admin.email} (${admin.id})`);
+          this.logger.log(`Auto-deleted admin: ${maskEmail(admin.email)} (${admin.id})`);
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Failed to auto-delete admin ${admin.email}: ${msg}`);
+          this.logger.error(`Failed to auto-delete admin ${maskEmail(admin.email)}: ${msg}`);
         }
       }
 
@@ -93,7 +94,7 @@ export class AdminCleanupService {
       await supabaseAdmin.auth.admin.deleteUser(admin.supabaseUid);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Failed to delete Supabase auth for ${admin.email}: ${msg}`);
+      this.logger.warn(`Failed to delete Supabase auth for ${maskEmail(admin.email)}: ${msg}`);
     }
 
     // ─── 3. Audit log ─────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ export class AdminCleanupService {
       `;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Failed to create audit log for ${admin.email}: ${msg}`);
+      this.logger.warn(`Failed to create audit log for ${maskEmail(admin.email)}: ${msg}`);
     }
 
     // ─── 4. ส่ง email สุดท้าย ────────────────────────────────────────────
@@ -125,7 +126,7 @@ export class AdminCleanupService {
       await this.emailService.sendAdminAutoDeleted(admin.email, admin.displayName);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Failed to send deletion email to ${admin.email}: ${msg}`);
+      this.logger.warn(`Failed to send deletion email to ${maskEmail(admin.email)}: ${msg}`);
     }
   }
 }

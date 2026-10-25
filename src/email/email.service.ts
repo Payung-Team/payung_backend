@@ -44,6 +44,7 @@ import {
   bookingNotificationTemplate,
   type BookingEmailParams,
 } from './templates/booking.templates';
+import { maskEmail } from '../common/utils/mask-email';
 
 /** ข้อมูล user ที่ EmailService ต้องการ — select เฉพาะที่ใช้ */
 type EmailUser = {
@@ -353,11 +354,11 @@ export class EmailService {
         text: tpl.text,
       });
       this.logger.log(
-        `Email sent to ${to} (subject: "${tpl.subject}", messageId: ${info.messageId})`,
+        `Email sent to ${maskEmail(to)} (subject: "${tpl.subject}", messageId: ${info.messageId})`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to send email to ${to}: ${msg}`);
+      this.logger.error(`Failed to send email to ${maskEmail(to)}: ${msg}`);
     }
   }
 
