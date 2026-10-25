@@ -11,13 +11,15 @@
  *   constructor(private prisma: PrismaService) {}
  *   const user = await this.prisma.user.findUnique({ where: { id: '123' } });
  */
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, Scope } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 
-@Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit {
+@Injectable({ scope: Scope.REQUEST })
+export class PrismaService extends PrismaClient implements OnModuleDestroy {
+  private readonly pool: Pool;
+
   constructor() {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) {
@@ -27,19 +29,23 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     // Create a PostgreSQL connection pool
     const pool = new Pool({
       connectionString: databaseUrl,
+      max: 1,
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 5_000,
+      allowExitOnIdle: true,
     });
 
     // Initialize PrismaClient with the PostgreSQL adapter for Prisma 7
     super({
       adapter: new PrismaPg(pool),
     });
+
+    this.pool = pool;
   }
 
-  /**
-   * OnModuleInit = NestJS จะเรียก method นี้อัตโนมัติตอน module เริ่มทำงาน
-   * $connect() = เปิดการเชื่อมต่อกับ database
-   */
-  async onModuleInit() {
-    await this.$connect();
+  /** Close the request's database resources after Nest releases its scope. */
+  async onModuleDestroy() {
+    await this.$disconnect();
+    await this.pool.end();
   }
 }

@@ -20,6 +20,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
+import { runInBackground } from '../../common/background-task';
 import { KycInput } from './dto/kyc.input';
 import { KycStatusPayload } from './dto/kyc-status.payload';
 import { PayoutAccountInput } from './dto/payout-account.input';
@@ -432,10 +433,12 @@ export class KycService {
 
     // Fire-and-forget: สร้าง Omise recipient ใหม่เสมอ (upsertPayoutAccountInTx reset
     // omiseRecipientId เป็น null ทุกครั้งที่แตะบัญชีนี้ — no-op ถ้าดันมี id อยู่แล้ว)
-    void this.payoutAccountService.createRecipientForCaregiver(
-      caregiver.id,
-      caregiver.fullName ?? '',
-      user.email,
+    runInBackground(
+      this.payoutAccountService.createRecipientForCaregiver(
+        caregiver.id,
+        caregiver.fullName ?? '',
+        user.email,
+      ),
     );
 
     return this.mapPayoutAccountSummary(account);

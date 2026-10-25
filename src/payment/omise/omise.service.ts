@@ -1124,6 +1124,56 @@ export class OmiseService {
     return this.normalizeRecipient(body);
   }
 
+  /** key ชุดทดสอบ (skey_test_...) — ใช้เปิดทางลัด "Mark a recipient as verified" เฉพาะ test mode */
+  get isTestMode(): boolean {
+    return (this.secretKey ?? '').startsWith('skey_test_');
+  }
+
+  /**
+   * verifyRecipient — PATCH /recipients/:id/verify ("Mark a recipient as verified")
+   * https://docs.omise.co/recipients-api · ใช้ทดสอบแทนการกด verify เองใน Dashboard
+   * (ห้ามเรียกกับ key จริง — เรียกเฉพาะตอน isTestMode)
+   */
+  async verifyRecipient(recipientId: string): Promise<OmiseRecipientResult> {
+    if (!this.secretKey) {
+      throw mapOmiseError('config_error', 'ยังไม่ได้ตั้งค่า OMISE_SECRET_KEY');
+    }
+    if (!recipientId) {
+      throw mapOmiseError('invalid_request', 'ไม่มี recipientId — ไม่สามารถ verify ได้');
+    }
+
+    const url = `${this.apiBase}/recipients/${encodeURIComponent(recipientId)}/verify`;
+    const authHeader = 'Basic ' + Buffer.from(`${this.secretKey}:`).toString('base64');
+
+    let res: Response;
+    try {
+      res = await fetch(url, { method: 'PATCH', headers: { Authorization: authHeader } });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Omise] verifyRecipient network error recipientId=${recipientId}: ${message}`);
+      throw mapOmiseError('network_error', 'ติดต่อ Omise ไม่สำเร็จขณะยืนยันบัญชีรับเงิน', {
+        omiseMessage: message,
+      });
+    }
+
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (!res.ok || body.object === 'error') {
+      const omiseCode = typeof body.code === 'string' ? body.code : undefined;
+      const omiseMessage = typeof body.message === 'string' ? body.message : `HTTP ${res.status}`;
+      this.logger.error(
+        `[Omise] verifyRecipient failed recipientId=${recipientId} status=${res.status} code=${omiseCode} message=${omiseMessage}`,
+      );
+      throw mapOmiseError(omiseCode ?? 'recipient_verify_failed', omiseMessage, {
+        omiseCode,
+        omiseMessage,
+        httpStatus: res.status,
+      });
+    }
+
+    return this.normalizeRecipient(body);
+  }
+
   /**
    * retrieveRecipient — PYG-266: GET /recipients/:id (read-only)
    *

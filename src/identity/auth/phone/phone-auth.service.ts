@@ -25,6 +25,7 @@ import {
 import { GraphQLError } from 'graphql';
 import type { User as PrismaUserRow } from '@prisma/client';
 import { PrismaService } from '../../../common/prisma.service';
+import { runInBackground } from '../../../common/background-task';
 import { ROLE_ID } from '../../../common/constants/roles.constant';
 import type { AuthUser } from '../../../common/decorators/current-user.decorator';
 import type { RequestEvidence } from '../../../common/utils/request-evidence';
@@ -448,11 +449,13 @@ export class PhoneAuthService {
     }
 
     // บันทึก last_login_at แบบเดียวกับ login อีเมล (fire-and-forget)
-    void this.prisma.user
-      .update({ where: { id: user.id }, data: { last_login_at: new Date() } })
-      .catch(() => {
-        /* non-critical */
-      });
+    runInBackground(
+      this.prisma.user
+        .update({ where: { id: user.id }, data: { last_login_at: new Date() } })
+        .catch(() => {
+          /* non-critical */
+        }),
+    );
 
     this.logger.log({ event: 'auth.phone_login', userId: user.id });
     return {

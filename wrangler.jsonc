@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "payung-api",
+  "main": ".worker-build/worker.js",
+  "compatibility_date": "2026-10-19",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env",
+    "enable_nodejs_http_server_modules",
+  ],
+  "find_additional_modules": true,
+  "base_dir": "./src/consent",
+  "preserve_file_names": true,
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.md"],
+      "fallthrough": true,
+    },
+  ],
+  "alias": {
+    "@as-integrations/fastify": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph/package.json": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/subgraph/dist/directives": "./.worker-build/cloudflare/empty-module.js",
+    "@apollo/gateway": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/websockets/socket-module": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/microservices": "./.worker-build/cloudflare/empty-module.js",
+    "@nestjs/microservices/microservices-module": "./.worker-build/cloudflare/empty-module.js",
+    "ts-morph": "./.worker-build/cloudflare/empty-module.js",
+    "class-transformer/storage": "./node_modules/class-transformer/cjs/storage.js",
+  },
+  "vars": {
+    "APP_PUBLIC_BASE_URL": "https://payung-care.com",
+    "BOOKING_EXPIRY_CRON_ENABLED": "false",
+    "CF_WORKER": "true",
+    "FRONTEND_URL": "https://payung-care.com,https://www.payung-care.com",
+    "HOLD_REFRESH_CRON_ENABLED": "false",
+    "NODE_ENV": "production",
+    "PAYOUT_KILLSWITCH_ENABLED": "true",
+    "PAYOUT_RECIPIENT_SYNC_ENABLED": "true"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "261675a1ee034cacb02379e60dedb077",
+    },
+  ],
+  "observability": {
+    "enabled": true,
+  },
+  "triggers": {
+    "crons": [
+      "*/10 * * * *",
+      "5,15,35,45 * * * *",
+      "0 0,1,2,3 * * *",
+      "30 4 * * *",
+      "5 17 * * *",
+    ],
+  },
+}

@@ -26,6 +26,7 @@ import { GraphQLError } from 'graphql';
 import { createClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../../common/supabase.service';
 import { PrismaService } from '../../common/prisma.service';
+import { runInBackground } from '../../common/background-task';
 import { LoginInput } from './dto/login.input';
 import { AuthPayload } from '../models/auth-payload.model';
 import { RegisterInput } from './dto/register.input';
@@ -91,10 +92,12 @@ export class AuthService {
     }
 
     // ขั้นตอนที่ 5: บันทึก last_login_at (fire-and-forget)
-    void this.prismaService.user.update({
-      where: { id: user.id },
-      data: { last_login_at: new Date() },
-    }).catch(() => {/* non-critical */});
+    runInBackground(
+      this.prismaService.user.update({
+        where: { id: user.id },
+        data: { last_login_at: new Date() },
+      }).catch(() => {/* non-critical */}),
+    );
 
     // ขั้นตอนที่ 6: ส่งผลลัพธ์กลับให้ client
     return {
@@ -266,7 +269,8 @@ export class AuthService {
       if (err.code === 'P2002') {
         throw new ConflictException('Email is already in use');
       }
-      throw new InternalServerErrorException('Failed to create user account in database: ' + err.message);
+      // รายละเอียด error จริงถูก log ไว้ด้านบนแล้ว — ไม่ส่งข้อความภายใน (Prisma/DB) ไปถึงผู้ใช้
+      throw new InternalServerErrorException('Registration failed');
     }
 
     // ── ขั้นตอนที่ 4: คืนผลลัพธ์เหมือน login ──────────────────────────
@@ -391,7 +395,8 @@ export class AuthService {
     const { error } = await tempClient.auth.signOut();
 
     if (error) {
-      throw new InternalServerErrorException('Logout failed: ' + error.message);
+      this.logger.error({ event: 'logout.failed', msg: error.message });
+      throw new InternalServerErrorException('Logout failed');
     }
 
     // ขั้นตอนที่ 2: หา user และบันทึก logout event (optional)

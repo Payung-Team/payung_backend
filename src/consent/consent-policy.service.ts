@@ -7,9 +7,7 @@
  *   ถ้าอ่านทุกคำขอ จะมี disk I/O ต่อทุกครั้งที่มีคนเปิดหน้าสมัคร ทั้งที่ไฟล์ไม่เคยเปลี่ยน
  *   ระหว่างรัน (เปลี่ยนเมื่อ deploy เท่านั้น)
  */
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import {
   CONSENT_SOURCE,
   type ConsentSource,
@@ -28,28 +26,37 @@ import {
   ConsentPolicy,
   ConsentScreenCopy,
 } from './entities/consent-policy.entity';
+import {
+  PRIVACY_NOTICE_EN,
+  PRIVACY_NOTICE_TH,
+  TERMS_OF_SERVICE_EN,
+  TERMS_OF_SERVICE_TH,
+} from './consent-policy.documents.generated';
 
 /** จุดที่มีหัวข้อ/คำนำเตรียมไว้ — จุดอื่นคืน screen = null ให้ FE ใช้ข้อความของตัวเอง */
-const SCREEN_COPY_BY_SOURCE: Partial<Record<ConsentSource, ConsentScreenCopy>> = {
-  [CONSENT_SOURCE.REGISTER]: CONSENT_SCREEN_COPY.register,
-  [CONSENT_SOURCE.ONBOARDING]: CONSENT_SCREEN_COPY.onboarding,
-  [CONSENT_SOURCE.BOOKING]: CONSENT_SCREEN_COPY.booking,
-  [CONSENT_SOURCE.FAMILY_GROUP]: CONSENT_SCREEN_COPY.family_group,
-};
+const SCREEN_COPY_BY_SOURCE: Partial<Record<ConsentSource, ConsentScreenCopy>> =
+  {
+    [CONSENT_SOURCE.REGISTER]: CONSENT_SCREEN_COPY.register,
+    [CONSENT_SOURCE.ONBOARDING]: CONSENT_SCREEN_COPY.onboarding,
+    [CONSENT_SOURCE.BOOKING]: CONSENT_SCREEN_COPY.booking,
+    [CONSENT_SOURCE.FAMILY_GROUP]: CONSENT_SCREEN_COPY.family_group,
+  };
 
 @Injectable()
 export class ConsentPolicyService implements OnModuleInit {
-  private readonly logger = new Logger(ConsentPolicyService.name);
   private privacyNoticeTh = '';
   private privacyNoticeEn = '';
   private termsOfServiceTh = '';
   private termsOfServiceEn = '';
 
   onModuleInit(): void {
-    this.privacyNoticeTh = this.readNotice('privacy-notice.th.md');
-    this.privacyNoticeEn = this.readNotice('privacy-notice.en.md');
-    this.termsOfServiceTh = this.readNotice('terms-of-service.th.md');
-    this.termsOfServiceEn = this.readNotice('terms-of-service.en.md');
+    // Cloudflare Workers do not expose the deployed source tree as a normal
+    // filesystem. These constants are generated from the Markdown sources at
+    // build time so the complete legal documents are bundled with the Worker.
+    this.privacyNoticeTh = PRIVACY_NOTICE_TH;
+    this.privacyNoticeEn = PRIVACY_NOTICE_EN;
+    this.termsOfServiceTh = TERMS_OF_SERVICE_TH;
+    this.termsOfServiceEn = TERMS_OF_SERVICE_EN;
   }
 
   /**
@@ -89,25 +96,5 @@ export class ConsentPolicyService implements OnModuleInit {
       termsOfServiceTh: this.termsOfServiceTh,
       termsOfServiceEn: this.termsOfServiceEn,
     };
-  }
-
-  /**
-   * อ่านไฟล์ประกาศ — ล้มแล้วคืนสตริงว่างแทนการ throw
-   *
-   * ★ ตั้งใจไม่ทำให้แอปไม่ขึ้น: ไฟล์หายเป็นปัญหา deploy ไม่ใช่ปัญหาข้อมูล
-   *   ถ้า throw ระบบทั้งระบบล่มรวมถึงการจองและการชำระเงินที่ไม่เกี่ยวกับ consent เลย
-   *   FE เห็นข้อความว่าง = โชว์ลิงก์ไปหน้าเว็บนโยบายแทนได้ และ log ดังพอให้เรารู้
-   */
-  private readNotice(fileName: string): string {
-    try {
-      return readFileSync(join(__dirname, fileName), 'utf8');
-    } catch (err) {
-      this.logger.error({
-        event: 'consent.privacy_notice_missing',
-        fileName,
-        reason: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
   }
 }

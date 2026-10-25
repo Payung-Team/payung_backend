@@ -365,6 +365,11 @@ inspector_port = 8083
 # The Deno major version to use.
 deno_version = 2
 
+# Supabase Auth เรียก function นี้ในฐานะ HTTP hook โดยไม่มี user JWT
+# ตัว function ตรวจลายเซ็น Standard Webhooks ด้วย SEND_SMS_HOOK_SECRET แทน
+[functions.send-sms]
+verify_jwt = false
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

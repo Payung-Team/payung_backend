@@ -31,6 +31,7 @@ import {
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { PrismaService } from '../common/prisma.service';
+import { runInBackground } from '../common/background-task';
 import { Prisma } from '@prisma/client';
 import { SupabaseService } from '../common/supabase.service';
 import { CaregiverService } from '../identity/kyc/caregiver.service';
@@ -844,12 +845,14 @@ export class AdminService {
     });
 
     // ─── 3. Side-effects (fire-and-forget) ───────────────────────────────
-    void this.triggerApproveNotify(updated.userId, caregiverId);
+    runInBackground(this.triggerApproveNotify(updated.userId, caregiverId));
     // PYG-266: สร้าง Omise recipient ถ้า caregiver เคยกรอกบัญชีรับเงินไว้ (no-op ถ้ายังไม่มี)
-    void this.payoutAccountService.createRecipientForCaregiver(
-      caregiverId,
-      updated.fullName ?? '',
-      existing.user.email,
+    runInBackground(
+      this.payoutAccountService.createRecipientForCaregiver(
+        caregiverId,
+        updated.fullName ?? '',
+        existing.user.email,
+      ),
     );
 
     return this.mapToCaregiver(updated);
@@ -918,7 +921,7 @@ export class AdminService {
     });
 
     // ─── 4. Side-effects (fire-and-forget) ───────────────────────────────
-    void this.triggerRejectNotify(updated.userId, input.caregiverId, input.reasons);
+    runInBackground(this.triggerRejectNotify(updated.userId, input.caregiverId, input.reasons));
 
     return this.mapToCaregiver(updated);
   }
@@ -991,11 +994,13 @@ export class AdminService {
     // ─── 6. Send invitation email (fire-and-forget) ───────────────────────
     // PYG-603: created.email มี type เป็น string | null แล้ว — ใช้ input.email ที่เพิ่งสร้างบัญชีด้วย
     //   (แอดมินถูกเชิญด้วยอีเมลเสมอ ค่าสองตัวนี้คือค่าเดียวกัน)
-    void this.emailService
-      .sendAdminInvite(input.email, created.displayName, tempPassword)
-      .catch((err: unknown) => {
-      this.logSideEffectError('email admin_invite', created.id, err);
-    });
+    runInBackground(
+      this.emailService
+        .sendAdminInvite(input.email, created.displayName, tempPassword)
+        .catch((err: unknown) => {
+          this.logSideEffectError('email admin_invite', created.id, err);
+        }),
+    );
 
     // ─── 7. Audit log placeholder ─────────────────────────────────────────
     // TODO: replace with admin_audit_logs table insert when table is created (PYG-127)
@@ -1524,11 +1529,13 @@ export class AdminService {
     }
 
     const changedFieldsJson = JSON.stringify(changedFields);
-    void this.prismaService.$executeRaw`
-      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
-      VALUES (gen_random_uuid(), ${admin.id}, 'CAREGIVER_INFO_UPDATED', ${linkedUser.id}, ${changedFieldsJson}::jsonb, NOW())
-    `.catch((err: unknown) =>
-      this.logSideEffectError('audit CAREGIVER_INFO_UPDATED', input.caregiverId, err),
+    runInBackground(
+      this.prismaService.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${admin.id}, 'CAREGIVER_INFO_UPDATED', ${linkedUser.id}, ${changedFieldsJson}::jsonb, NOW())
+      `.catch((err: unknown) =>
+        this.logSideEffectError('audit CAREGIVER_INFO_UPDATED', input.caregiverId, err),
+      ),
     );
 
     this.logger.log({
@@ -1641,10 +1648,12 @@ export class AdminService {
     }
 
     const changedFieldsJson = JSON.stringify(changedFields);
-    void this.prismaService.$executeRaw`
-      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
-      VALUES (gen_random_uuid(), ${admin.id}, 'USER_INFO_UPDATED', ${input.userId}, ${changedFieldsJson}::jsonb, NOW())
-    `.catch((err: unknown) => this.logSideEffectError('audit USER_INFO_UPDATED', input.userId, err));
+    runInBackground(
+      this.prismaService.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${admin.id}, 'USER_INFO_UPDATED', ${input.userId}, ${changedFieldsJson}::jsonb, NOW())
+      `.catch((err: unknown) => this.logSideEffectError('audit USER_INFO_UPDATED', input.userId, err)),
+    );
 
     this.logger.log({
       event: 'admin.user_info_updated',
@@ -1852,16 +1861,18 @@ export class AdminService {
     // ─── 8. Email (fire-and-forget) ───────────────────────────────────────
     // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
     if (updated.email) {
-      void this.emailService
-        .sendAdminScheduleDelete(
-          updated.email,
-          updated.displayName,
-          scheduledDeleteAt,
-          gracePeriodDays,
-        )
-        .catch((err: unknown) =>
-          this.logSideEffectError('email schedule_delete', updated.id, err),
-        );
+      runInBackground(
+        this.emailService
+          .sendAdminScheduleDelete(
+            updated.email,
+            updated.displayName,
+            scheduledDeleteAt,
+            gracePeriodDays,
+          )
+          .catch((err: unknown) =>
+            this.logSideEffectError('email schedule_delete', updated.id, err),
+          ),
+      );
     }
 
     // ─── 9. Audit log placeholder ─────────────────────────────────────────
@@ -1930,11 +1941,13 @@ export class AdminService {
     // ─── 4. Email (fire-and-forget) ───────────────────────────────────────
     // PYG-603: ไม่มีอีเมล = ข้าม (ดูเหตุผลที่ toggleAdminStatus)
     if (updated.email) {
-      void this.emailService
-        .sendAdminCancelDelete(updated.email, updated.displayName)
-        .catch((err: unknown) =>
-          this.logSideEffectError('email cancel_delete', updated.id, err),
-        );
+      runInBackground(
+        this.emailService
+          .sendAdminCancelDelete(updated.email, updated.displayName)
+          .catch((err: unknown) =>
+            this.logSideEffectError('email cancel_delete', updated.id, err),
+          ),
+      );
     }
 
     // ─── 5. Audit log placeholder ─────────────────────────────────────────
@@ -2051,10 +2064,12 @@ export class AdminService {
     }
 
     const changedFieldsJson = JSON.stringify(changedFields);
-    void this.prismaService.$executeRaw`
-      INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
-      VALUES (gen_random_uuid(), ${currentUser.id}, 'ADMIN_INFO_UPDATED', ${input.adminId}, ${changedFieldsJson}::jsonb, NOW())
-    `.catch((err: unknown) => this.logSideEffectError('audit ADMIN_INFO_UPDATED', input.adminId, err));
+    runInBackground(
+      this.prismaService.$executeRaw`
+        INSERT INTO admin_audit_logs (id, admin_id, action, target_user_id, details, created_at)
+        VALUES (gen_random_uuid(), ${currentUser.id}, 'ADMIN_INFO_UPDATED', ${input.adminId}, ${changedFieldsJson}::jsonb, NOW())
+      `.catch((err: unknown) => this.logSideEffectError('audit ADMIN_INFO_UPDATED', input.adminId, err)),
+    );
 
     this.logger.log({
       event: 'admin.info_updated',
@@ -2134,8 +2149,10 @@ export class AdminService {
       });
 
       // ─── 5. Audit log (fire-and-forget) ───────────────────────────────
-      void this.auditFieldLock('FIELD_LOCK', admin.id, entityId, { entityType, entityId, fieldName })
-        .catch((err: unknown) => this.logSideEffectError('audit FIELD_LOCK', entityId, err));
+      runInBackground(
+        this.auditFieldLock('FIELD_LOCK', admin.id, entityId, { entityType, entityId, fieldName })
+          .catch((err: unknown) => this.logSideEffectError('audit FIELD_LOCK', entityId, err)),
+      );
 
       return {
         success: true,
@@ -2165,8 +2182,10 @@ export class AdminService {
       });
 
       // ─── 4. Audit log (fire-and-forget) ───────────────────────────────
-      void this.auditFieldLock('FIELD_UNLOCK', admin.id, entityId, { entityType, entityId, fieldName })
-        .catch((err: unknown) => this.logSideEffectError('audit FIELD_UNLOCK', entityId, err));
+      runInBackground(
+        this.auditFieldLock('FIELD_UNLOCK', admin.id, entityId, { entityType, entityId, fieldName })
+          .catch((err: unknown) => this.logSideEffectError('audit FIELD_UNLOCK', entityId, err)),
+      );
 
       return { success: true, fieldName, locked: false };
     }

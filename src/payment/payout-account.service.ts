@@ -33,6 +33,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma.service';
+import { runInBackground } from '../common/background-task';
 import { PayoutEncryptionService } from '../common/crypto/payout-encryption.service';
 import { OmiseService } from './omise/omise.service';
 import { PaymentError } from './errors/omise-error-mapper';
@@ -157,6 +158,11 @@ export class PayoutAccountService {
       this.logger.log(
         `[PayoutAccount] created Omise recipient ${recipient.id} for caregiver ${caregiverId}`,
       );
+
+      // test mode: Mark as verified ทันที (reconcileRecipient เรียก PATCH /verify ให้) ไม่ต้องรอกดใน Dashboard
+      if (this.omiseService.isTestMode) {
+        await this.reconcileRecipient(recipient.id, 'create.test_auto_verify');
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const httpStatus =
@@ -174,7 +180,7 @@ export class PayoutAccountService {
             where: { caregiverId },
             data: { recipientStatus: 'failed', status: 'pending' },
           });
-          void this.notifyCaregiver(caregiverId, 'failed');
+          runInBackground(this.notifyCaregiver(caregiverId, 'failed'));
         } catch (markErr) {
           const m = markErr instanceof Error ? markErr.message : String(markErr);
           this.logger.error(
@@ -255,12 +261,25 @@ export class PayoutAccountService {
 
     // Never trust the webhook name as the final state. Verify and activate can
     // arrive separately or out of order; the retrieved object is authoritative.
-    const fresh = await this.omiseService.retrieveRecipient(recipientId);
+    let fresh = await this.omiseService.retrieveRecipient(recipientId);
+    // test mode เท่านั้น: ใช้ "Mark a recipient as verified" (PATCH /recipients/:id/verify)
+    // แทนการรอ/กด verify เองใน Dashboard · key จริงไม่เข้าทางนี้ (Omise ตรวจบัญชีจริงเอง)
+    const testMode = this.omiseService.isTestMode === true;
+    if (testMode && !fresh.verified && !fresh.failureCode) {
+      try {
+        fresh = await this.omiseService.verifyRecipient(recipientId);
+        this.logger.log(`[PayoutAccount] recipientId=${recipientId} marked verified via Omise API (test mode)`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`[PayoutAccount] test-mode verify failed recipientId=${recipientId}: ${msg}`);
+      }
+    }
     const recipientStatus = fresh.verified
       ? 'verified'
       : fresh.failureCode
         ? 'failed'
         : 'pending';
+    // test mode: recipient active อัตโนมัติอยู่แล้ว ขาดแค่ verified (ซึ่งเรา mark ให้ข้างบน)
     const status = fresh.verified && fresh.active ? 'active' : 'pending';
 
     if (
@@ -293,9 +312,9 @@ export class PayoutAccountService {
 
     // แจ้งเฉพาะตอนเปลี่ยนเข้าสถานะ active / failed จริง (early-return ด้านบนกันซ้ำจาก webhook ซ้ำ)
     if (status === 'active' && account.status !== 'active') {
-      void this.notifyCaregiver(account.caregiverId, 'verified');
+      runInBackground(this.notifyCaregiver(account.caregiverId, 'verified'));
     } else if (recipientStatus === 'failed' && account.recipientStatus !== 'failed') {
-      void this.notifyCaregiver(account.caregiverId, 'failed');
+      runInBackground(this.notifyCaregiver(account.caregiverId, 'failed'));
     }
 
     return { recipientStatus, status };
