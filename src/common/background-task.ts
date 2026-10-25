@@ -11,8 +11,6 @@
  *
  * caller ยังต้อง catch error เอง — helper นี้ไม่กลืน error ให้
  */
-import { trackRequestTask } from './request-db-scope';
-
 type WaitUntil = (promise: Promise<unknown>) => void;
 
 let registeredWaitUntil: WaitUntil | undefined;
@@ -22,8 +20,6 @@ export function registerBackgroundWaitUntil(waitUntil: WaitUntil): void {
 }
 
 export function runInBackground(task: Promise<unknown>): void {
-  // ปิดการเชื่อมต่อฐานข้อมูลของคำขอหลังงานนี้จบ (Worker) — นอก scope ไม่มีผล
-  trackRequestTask(task);
   if (registeredWaitUntil) {
     registeredWaitUntil(task);
     return;

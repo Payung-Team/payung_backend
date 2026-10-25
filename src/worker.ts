@@ -9,7 +9,6 @@ import { AppModule } from './app.module';
 import { configureApp } from './configure-app';
 import { runScheduledTasks } from './cloudflare/run-scheduled';
 import { registerBackgroundWaitUntil } from './common/background-task';
-import { runInRequestDbScope } from './common/request-db-scope';
 
 // งาน fire-and-forget (runInBackground) ต้องผูกกับ waitUntil ไม่งั้น Workers ตัดทิ้งหลังส่ง response
 registerBackgroundWaitUntil(waitUntil);
@@ -55,27 +54,21 @@ function useWorkerDatabase(env: WorkerEnv): void {
   // Hyperdrive bindings are objects, so Cloudflare cannot copy them into
   // process.env through nodejs_compat_populate_process_env. Prisma and pg read
   // DATABASE_URL, therefore expose Hyperdrive's per-environment URL before
-  // the request opens its database connection (see request-db-scope.ts).
+  // Nest resolves the request-scoped PrismaService.
   process.env.DATABASE_URL = env.HYPERDRIVE.connectionString;
 }
 
 export default {
   fetch(...args: Parameters<NonNullable<typeof httpHandler.fetch>>) {
     useWorkerDatabase(args[1] as unknown as WorkerEnv);
-    // การเชื่อมต่อฐานข้อมูลของคำขอนี้ปิดหลังส่ง response + งานเบื้องหลังจบ (ไม่หน่วง response)
-    const { result, disposed } = runInRequestDbScope(() =>
-      Promise.resolve(httpHandler.fetch!(...args)),
-    );
-    (args[2] as ExecutionContext).waitUntil(disposed);
-    return result;
+    return httpHandler.fetch!(...args);
   },
   scheduled(controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext) {
     useWorkerDatabase(env);
-    const { disposed } = runInRequestDbScope(() =>
+    ctx.waitUntil(
       getNestApp().then((app) =>
         runScheduledTasks(app, controller.cron, controller.scheduledTime),
       ),
     );
-    ctx.waitUntil(disposed);
   },
 };
