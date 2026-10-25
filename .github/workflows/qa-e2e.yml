@@ -63,3 +63,4 @@ jobs:
           test/pyg630-service-packages.e2e-spec.ts
           test/pyg691-physio-price.e2e-spec.ts
           test/pyg706-email-validation.e2e-spec.ts
+          test/pyg714-email-delivery.e2e-spec.ts
