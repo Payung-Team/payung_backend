@@ -31,6 +31,9 @@ import { CareSkillModule } from './care-skill/care-skill.module';
 import { CareActivityModule } from './care-activity/care-activity.module';
 import { ServicePackageModule } from './service-package/service-package.module';
 
+const IS_PRODUCTION =
+  process.env.NODE_ENV === 'production' || process.env.CF_WORKER === 'true';
+
 @Module({
   imports: [
     // ─── 1. Config Module (โหลด .env ทั่วทั้งโปรเจกต์) ───────────────────
@@ -63,8 +66,12 @@ import { ServicePackageModule } from './service-package/service-package.module';
       // → src/schema.gql ขึ้น modified ค้าง และขวาง git pull ทุกครั้งที่มี commit แตะไฟล์นี้
       buildSchemaOptions: { addNewlineAtEnd: true },
 
-      // playground: เปิดหน้า UI ทดสอบ API ที่ localhost:3000/graphql
-      playground: true,
+      // เครื่องมือสำหรับ dev (หน้า UI ทดสอบ API / introspection / stacktrace ใน error response)
+      // เปิดเฉพาะนอก production — บน production ปิดทั้งหมดไม่ให้เปิดเผยโครงสร้าง API หรือข้อมูลภายในระบบ
+      // (CF_WORKER ใช้เป็นตัวชี้ซ้ำ เพราะ process.env ของ Workers อาจยังไม่ถูกเติมตอน decorator ทำงาน)
+      playground: !IS_PRODUCTION,
+      introspection: !IS_PRODUCTION,
+      includeStacktraceInErrorResponses: !IS_PRODUCTION,
 
       // context: ส่ง HTTP request/response เข้าไปใน GraphQL Context
       // (จำเป็นตอนทำ Auth Guard ในอนาคต)
