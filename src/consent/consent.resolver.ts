@@ -15,6 +15,7 @@ import { ConsentPolicyService } from './consent-policy.service';
 import { ConsentService, type MyConsentStatus } from './consent.service';
 import { ConsentPolicy } from './entities/consent-policy.entity';
 import { ConsentStatus } from './entities/consent-status.entity';
+import { ConsentAnswerInput } from './dto/consent-answer.input';
 import { CONSENT_SOURCE, type ConsentSource } from './consent.constants';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import {
@@ -143,6 +144,34 @@ export class ConsentResolver {
       requestEvidenceOf(ctx.req),
     );
     return toGraphql(status);
+  }
+
+  /**
+   * acceptSignupConsents — คำตอบหน้าความยินยอมตอนสมัครด้วย Google
+   *
+   * บัญชี Google ถูกสร้างก่อนกลับมาถึงแอป (ส่ง consents ไปกับ register ไม่ได้)
+   * AuthCallback จึงเปิดกล่องความยินยอมแล้วส่งคำตอบทุกข้อมาที่นี่ — กติกาเดียวกับ register
+   */
+  @Mutation(() => [ConsentStatus], {
+    name: 'acceptSignupConsents',
+    description:
+      'บันทึกคำตอบความยินยอมของหน้าสมัคร (source register) สำหรับบัญชีที่สมัครด้วย Google · ' +
+      'ส่งทุกข้อที่แสดงรวมข้อที่ไม่ยินยอม · คืนสถานะความยินยอมทั้งหมดของฉัน',
+  })
+  @UseGuards(SupabaseAuthGuard)
+  async acceptSignupConsents(
+    @CurrentUser() user: AuthUser,
+    @Args('consents', { type: () => [ConsentAnswerInput] })
+    consents: ConsentAnswerInput[],
+    @Context() ctx: GqlContext,
+  ): Promise<ConsentStatus[]> {
+    const statuses = await this.consentService.recordSignupAnswers(
+      user.id,
+      user.role,
+      consents,
+      requestEvidenceOf(ctx.req),
+    );
+    return statuses.map(toGraphql);
   }
 }
 

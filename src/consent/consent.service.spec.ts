@@ -577,6 +577,53 @@ describe('ConsentService (PYG-474)', () => {
     });
   });
 
+  describe('recordSignupAnswers (สมัครด้วย Google)', () => {
+    it('★ บันทึกทุกข้อรวมข้อที่ปฏิเสธ ด้วย source register', async () => {
+      await service.recordSignupAnswers(
+        USER_ID,
+        PATIENT,
+        VALID_REGISTER_ANSWERS,
+        EVIDENCE,
+      );
+
+      const [args] = prisma.user_consents.createMany.mock.calls[0] as [
+        { data: Record<string, unknown>[] },
+      ];
+      expect(args.data).toHaveLength(VALID_REGISTER_ANSWERS.length);
+      expect(args.data.every((r) => r.source === CONSENT_SOURCE.REGISTER)).toBe(true);
+      expect(args.data).toContainEqual(
+        expect.objectContaining({ consent_type: CONSENT_TYPE.MARKETING, granted: false }),
+      );
+    });
+
+    it('★ ไม่ติ๊กข้อบังคับ → CONSENT_REQUIRED และไม่เขียน', async () => {
+      await expect(
+        service.recordSignupAnswers(
+          USER_ID,
+          PATIENT,
+          [
+            answer(CONSENT_TYPE.TERMS_OF_SERVICE),
+            answer(CONSENT_TYPE.PRIVACY_POLICY, false),
+          ],
+          EVIDENCE,
+        ),
+      ).rejects.toMatchObject({ extensions: { code: CONSENT_ERROR.REQUIRED } });
+      expect(prisma.user_consents.createMany).not.toHaveBeenCalled();
+    });
+
+    it('ข้อที่หน้าสมัครไม่ได้ขอ → CONSENT_TYPE_INVALID และไม่เขียน', async () => {
+      await expect(
+        service.recordSignupAnswers(
+          USER_ID,
+          PATIENT,
+          [...VALID_REGISTER_ANSWERS, answer(CONSENT_TYPE.SENSITIVE_HEALTH_DATA)],
+          EVIDENCE,
+        ),
+      ).rejects.toMatchObject({ extensions: { code: CONSENT_ERROR.TYPE_INVALID } });
+      expect(prisma.user_consents.createMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getMyConsents (PYG-540)', () => {
     it('★ ผู้รับบริการเห็นครบ 6 ข้อตามลำดับ — ข้อที่ไม่เคยตอบก็อยู่ในรายการ', async () => {
       prisma.user_consents.findMany.mockResolvedValue([
