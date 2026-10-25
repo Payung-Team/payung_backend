@@ -1,5 +1,5 @@
 /**
- * EmailModule — Module สำหรับส่ง email ผ่าน SMTP (nodemailer) (PYG-96)
+ * EmailModule — Module สำหรับส่ง email ผ่าน Resend HTTP API (PYG-96 · PYG-714 เลิกใช้ SMTP)
  *
  * ทำไม export EmailService?
  * - service อื่น (เช่น KycService, future AdminService) ต้องเรียก
@@ -11,10 +11,11 @@
  * - ★ ไม่เกิด import วน: ConsentModule import แค่ CommonModule (@Global)
  *   และไม่ได้ import EmailModule กลับมา
  *
- * ENV ที่ต้องตั้ง (อ่านใน EmailService constructor):
- * - SMTP_HOST, SMTP_USER, SMTP_PASS = ค่าเชื่อมต่อ SMTP (SMTP_PORT ไม่ตั้ง = 587)
- * - EMAIL_FROM      = sender address เช่น 'Payung <noreply@payung.app>'
- * - FRONTEND_URL    = (optional) base URL สำหรับสร้าง CTA link, default 'https://payung.app'
+ * ENV (อ่านใน EmailService constructor — ไม่ตั้งแอปยังขึ้นได้ แต่ทุกฉบับถูกบันทึกเป็น failed not_configured):
+ * - RESEND_API_KEY      = API key ของ Resend (secret)
+ * - EMAIL_FROM          = ผู้ส่ง เช่น 'Payung <noreply@payung-care.com>' — โดเมนต้องยืนยันใน Resend แล้ว
+ * - APP_PUBLIC_BASE_URL = base URL ของลิงก์ในอีเมล (ไม่ตั้ง = origin แรกของ FRONTEND_URL)
+ * - SMTP_* ไม่ใช้แล้ว (PYG-714)
  */
 import { Module } from '@nestjs/common';
 import { ConsentModule } from '../consent/consent.module';

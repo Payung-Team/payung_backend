@@ -1,8 +1,14 @@
 /**
  * dispute.created — แจ้ง Admin ว่ามีปัญหาใหม่ที่ต้องตรวจสอบ
- * Subject: "[Payung] แจ้งปัญหาใหม่"
+ * Subject: "แจ้งปัญหาใหม่ — Payung"
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
@@ -17,7 +23,7 @@ import {
 export const disputeCreatedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] แจ้งปัญหาใหม่';
+  const subject = emailSubject('แจ้งปัญหาใหม่');
   const heading = 'มีการแจ้งปัญหาใหม่ที่ต้องตรวจสอบ';
   const intro = `มีการแจ้งปัญหาสำหรับการจองบริการ${escapeHtml(ctx.serviceText)} วันที่ ${escapeHtml(ctx.dateText)} — กรุณาตรวจสอบและดำเนินการ`;
 
@@ -45,8 +51,8 @@ export const disputeCreatedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${parties}
     ${reasonBlock}
@@ -56,7 +62,7 @@ export const disputeCreatedTemplate: BookingTemplateFn = (
   const ctaUrl = `${ctx.frontendUrl}/admin/disputes`;
   const ctaLabel = 'ดูคิวปัญหา';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 มีการแจ้งปัญหาสำหรับการจองบริการ${ctx.serviceText} วันที่ ${ctx.dateText}

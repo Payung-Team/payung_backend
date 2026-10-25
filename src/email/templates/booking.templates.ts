@@ -10,7 +10,16 @@
  * - ทุก event ใช้ layout เดียวกัน ต่างกันแค่ heading/เนื้อหา/ตาราง/ปุ่ม → ส่งเป็น param
  * - DRY: แก้ดีไซน์ที่เดียว เปลี่ยนทุกอีเมล booking
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from './layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  greetingHtml,
+  greetingText,
+  HEADING_STYLE,
+} from './layout';
+import { summaryRow, summaryTable } from './booking/helpers';
 import type { EmailTemplate } from './kyc.templates';
 
 /** ค่าที่ใช้สร้างอีเมล booking notification */
@@ -40,11 +49,6 @@ export type BookingEmailParams = {
   ctaLabel?: string;
 };
 
-/** greeting — escape ชื่อกัน XSS (ชื่อมาจาก user-supplied display name) */
-function greeting(name: string | null): string {
-  return name ? `สวัสดีคุณ ${escapeHtml(name)}` : 'สวัสดีคุณผู้ใช้';
-}
-
 /** สร้างตารางรายละเอียด — คืน '' ถ้าไม่มีข้อมูลสักแถว */
 function detailsTable(p: BookingEmailParams): string {
   const rows: Array<[string, string]> = [];
@@ -53,23 +57,10 @@ function detailsTable(p: BookingEmailParams): string {
   if (p.timeText) rows.push(['เวลา', p.timeText]);
   if (p.serviceText) rows.push(['บริการ', p.serviceText]);
   if (p.amountText) rows.push(['ยอดรวม', p.amountText]);
-  if (rows.length === 0) return '';
-
-  const trs = rows
-    .map(
-      ([label, value]) => `
-        <tr>
-          <td style="padding:8px 0; color:#6B7773; font-size:14px;">${escapeHtml(label)}</td>
-          <td style="padding:8px 0; color:#1A2422; font-size:14px; font-weight:600; text-align:right;">${escapeHtml(value)}</td>
-        </tr>`,
-    )
-    .join('');
-
-  return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-           style="margin:16px 0; border:1px solid #E5E7E9; border-radius:8px; padding:8px 16px;">
-      ${trs}
-    </table>`;
+  // PYG-703: ใช้แถว/ตารางเดียวกับ per-event template (เดิมเขียน HTML ซ้ำ สีคนละชุด)
+  return summaryTable(
+    rows.map(([label, value]) => summaryRow(label, value)).join(''),
+  );
 }
 
 /** plain-text version ของตาราง (สำหรับ email client ที่ block HTML) */
@@ -88,16 +79,16 @@ function detailsText(p: BookingEmailParams): string {
  * (ใช้ heading/intro จาก notification เดียวกับ in-app เพื่อให้ข้อความตรงกัน)
  */
 export function bookingNotificationTemplate(p: BookingEmailParams): EmailTemplate {
-  const subject = `${p.heading} — Payung`;
+  const subject = emailSubject(p.heading);
 
   const bodyHtml = `
-    <p>${greeting(p.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(p.heading)}</h2>
+    <p>${greetingHtml(p.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(p.heading)}</h2>
     <p>${escapeHtml(p.intro)}</p>
     ${detailsTable(p)}
   `;
 
-  const text = `${greeting(p.recipientName).replace(/<[^>]+>/g, '')},
+  const text = `${greetingText(p.recipientName)}
 
 ${p.heading}
 ${p.intro}

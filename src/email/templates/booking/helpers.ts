@@ -6,7 +6,8 @@
  * - input ที่เป็น Decimal/Date จาก Prisma → normalize ก่อนคำนวณ
  */
 import type { Prisma } from '@prisma/client';
-import { escapeHtml } from '../layout';
+import { escapeHtml, greetingHtml, greetingText, BRAND } from '../layout';
+import type { BookingEmailContext } from './types';
 // PYG-526: รูปแบบเวลาใบจองกลางของระบบ — อีเมลต้องแสดงเหมือนหน้าเว็บ
 import { formatBookingTimeRange } from '../../../booking/booking-time-display';
 
@@ -122,11 +123,11 @@ export function formatPriceBreakdown(
 /** ── HTML row builder (escape ภายใน) ── */
 export function summaryRow(label: string, value: string, opts?: { bold?: boolean }): string {
   const valStyle = opts?.bold
-    ? 'color:#1A2422; font-size:14px; font-weight:700; text-align:right;'
-    : 'color:#1A2422; font-size:14px; font-weight:600; text-align:right;';
+    ? `color:${BRAND.textColor}; font-size:14px; font-weight:700; text-align:right;`
+    : `color:${BRAND.textColor}; font-size:14px; font-weight:600; text-align:right;`;
   return `
     <tr>
-      <td style="padding:8px 0; color:#6B7773; font-size:14px;">${escapeHtml(label)}</td>
+      <td style="padding:8px 12px 8px 0; color:${BRAND.mutedColor}; font-size:14px; white-space:nowrap; vertical-align:top;">${escapeHtml(label)}</td>
       <td style="padding:8px 0; ${valStyle}">${escapeHtml(value)}</td>
     </tr>`;
 }
@@ -136,7 +137,7 @@ export function summaryTable(rowsHtml: string): string {
   if (!rowsHtml.trim()) return '';
   return `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-           style="margin:16px 0; border:1px solid #E5E7E9; border-radius:8px; padding:8px 16px;">
+           style="margin:16px 0; border:1px solid ${BRAND.borderColor}; border-radius:12px; padding:8px 16px; background:#FBFDFC;">
       ${rowsHtml}
     </table>`;
 }
@@ -186,12 +187,34 @@ export function plainBookingSummary(args: {
   return lines.length ? `\n${lines.join('\n')}\n` : '';
 }
 
-/** "สวัสดีค่ะ คุณ{name}" (escape ชื่อ) */
+/** "สวัสดีคุณ{name}" (escape ชื่อ) — PYG-703: ใช้คำทักทายกลางจาก layout ให้ทุกอีเมลเหมือนกัน */
 export function greeting(name: string | null | undefined): string {
-  return name ? `สวัสดีค่ะ คุณ${escapeHtml(name)}` : 'สวัสดีค่ะ คุณผู้ใช้';
+  return greetingHtml(name);
 }
 
 /** plain-text greeting (ไม่ escape เพราะไม่ render เป็น HTML) */
 export function plainGreeting(name: string | null | undefined): string {
-  return name ? `สวัสดีค่ะ คุณ${name}` : 'สวัสดีค่ะ คุณผู้ใช้';
+  return greetingText(name);
+}
+
+/**
+ * ลิงก์หน้ารายละเอียดการจองตามบทบาทผู้รับ
+ * PYG-703: เดิมทุก template ใช้ /bookings/{id} ซึ่งเป็นหน้าของผู้รับบริการ
+ *   ผู้ดูแลที่กดจากอีเมล (คำขอใหม่ ยืนยัน เสร็จสิ้น ยกเลิก ฯลฯ) จึงไม่เห็นงานของตัวเอง
+ *   หน้าของผู้ดูแลคือ /caregiver/bookings/{id} · admin ไม่มีหน้ารายละเอียดการจอง → ใช้ของ patient ไม่ได้
+ *   (dispute_created ส่ง admin ไปคิว /admin/disputes เองอยู่แล้ว)
+ */
+export function bookingDetailPath(
+  bookingId: string,
+  role: BookingEmailContext['recipientRole'],
+): string {
+  return role === 'caregiver'
+    ? `/caregiver/bookings/${bookingId}`
+    : `/bookings/${bookingId}`;
+}
+
+export function bookingDetailUrl(
+  ctx: Pick<BookingEmailContext, 'frontendUrl' | 'bookingId' | 'recipientRole'>,
+): string {
+  return `${ctx.frontendUrl}${bookingDetailPath(ctx.bookingId, ctx.recipientRole)}`;
 }

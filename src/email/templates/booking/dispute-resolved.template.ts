@@ -1,15 +1,22 @@
 /**
  * dispute.resolved — แจ้งทั้งสองฝ่ายว่าผลการตรวจสอบพร้อมแล้ว
- * Subject: "[Payung] ผลตรวจสอบปัญหา"
+ * Subject: "ผลตรวจสอบปัญหา — Payung"
  *
  * Render ต่างกันตาม recipientRole:
  *   - patient   → เน้นผลสำหรับผู้ใช้บริการ
  *   - caregiver → เน้นผลสำหรับผู้ดูแล
  */
-import { wrapHtml, plainTextFooter, escapeHtml } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  HEADING_STYLE,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
 import {
+  bookingDetailUrl,
   greeting,
   plainGreeting,
   formatBookingSummary,
@@ -19,7 +26,7 @@ import {
 export const disputeResolvedTemplate: BookingTemplateFn = (
   ctx,
 ): EmailTemplate => {
-  const subject = '[Payung] ผลตรวจสอบปัญหา';
+  const subject = emailSubject('ผลตรวจสอบปัญหา');
   const heading = 'ผลการตรวจสอบปัญหาพร้อมแล้ว';
 
   const intro =
@@ -38,16 +45,16 @@ export const disputeResolvedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)},</p>
-    <h2 style="font-size:20px; color:#1A2422; margin:8px 0 12px;">${escapeHtml(heading)}</h2>
+    <p>${greeting(ctx.recipientName)}</p>
+    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
     <p>${intro}</p>
     ${summary}
   `;
 
-  const ctaUrl = `${ctx.frontendUrl}/bookings/${ctx.bookingId}`;
+  const ctaUrl = bookingDetailUrl(ctx);
   const ctaLabel = 'ดูผลการตรวจสอบ';
 
-  const text = `${plainGreeting(ctx.recipientName)},
+  const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
 ผลการตรวจสอบปัญหาสำหรับการจองบริการ${ctx.serviceText} วันที่ ${ctx.dateText} พร้อมแล้ว

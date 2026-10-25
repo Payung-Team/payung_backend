@@ -69,6 +69,8 @@ model User {
   documents                                               KycDocument[]
   /// PYG-473: ประวัติการให้/ถอนความยินยอมตาม PDPA — append-only
   consents                                                user_consents[]
+  /// PYG-714: ประวัติการส่งอีเมลถึงผู้ใช้คนนี้
+  email_logs                                              email_logs[]
   kycReviews                                              KycReview[]
   notifications                                           Notification[]
   paymentStatusChanges                                    PaymentStatusHistory[] @relation("PaymentStatusChanges")
@@ -1544,4 +1546,40 @@ model user_consents {
   @@index([user_id, consent_type], map: "idx_user_consents_user_type")
   @@index([user_id, consent_type, granted_at(sort: Desc)], map: "idx_user_consents_latest")
   @@map("user_consents")
+}
+
+/// PYG-714 — ประวัติการส่งอีเมลทุกฉบับ (ส่งสำเร็จ / ล้ม / ข้ามโดยตั้งใจ)
+/// ไว้ตอบคำถาม "ทำไมผู้ใช้คนนี้ไม่ได้อีเมล" โดยไม่ต้องไปค้น log ของ Worker (เก็บไม่นาน ค้นตามผู้ใช้ไม่ได้)
+/// ★ ไม่เก็บอีเมลเต็มและไม่เก็บเนื้อหาอีเมล — มีรหัสผ่านชั่วคราว/ข้อมูลการจองอยู่ในนั้น (PYG-700: ห้าม log อีเมลเต็ม)
+///   หาตัวผู้รับจาก user_id · ผู้รับที่ไม่มี user (แอดมินที่ส่งด้วยอีเมลตรง ๆ, alert) ดูจาก recipient_masked
+/// ชื่อ model snake_case ตามกลุ่ม user_consents / care_logs
+model email_logs {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// ผู้รับ — NULL เมื่อส่งด้วยอีเมลตรง ๆ หรือผู้ใช้ถูกลบภายหลัง (ประวัติยังอยู่)
+  user_id String? @map("user_id")
+  user    User?   @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  /// อีเมลผู้รับแบบปิดบางส่วน (maskEmail: s***@domain) — NULL เมื่อไม่มีอีเมลให้ส่ง
+  recipient_masked String? @db.VarChar(320)
+
+  /// ชื่อ template เช่น 'kyc_verified' · 'booking.confirmed' (ค่าคุมด้วยโค้ด ไม่ใช่ CHECK)
+  template String  @db.VarChar(64)
+  subject  String?
+
+  /// 'sent' = ผู้ให้บริการรับแล้ว · 'failed' = ส่งไม่สำเร็จ · 'skipped' = ระบบตั้งใจไม่ส่ง (ดู reason)
+  status String  @db.VarChar(16)
+  /// skipped: no_email / email_opt_out / user_not_found / not_configured · failed: ข้อความ error (ตัดที่ 1000 ตัวอักษร)
+  reason String?
+
+  /// 'resend' — เผื่อเปลี่ยนผู้ให้บริการ
+  provider            String? @db.VarChar(32)
+  /// id ของอีเมลฝั่ง Resend — ใช้ค้นใน dashboard ของ Resend (delivered / bounced / spam)
+  provider_message_id String? @db.VarChar(128)
+
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, created_at(sort: Desc)], map: "idx_email_logs_user_created")
+  @@index([status, created_at(sort: Desc)], map: "idx_email_logs_status_created")
+  @@map("email_logs")
 }
