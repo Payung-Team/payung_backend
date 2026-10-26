@@ -6,16 +6,18 @@
  * แสดงยอดรวม (= ยอดที่เรียกเก็บจริง) เสมอ; บรรทัดค่าบริการ/ค่าธรรมเนียมแสดงเฉพาะเมื่อมี
  * platform_fee จริง (ตอนนี้ NULL ทุกแถว → ซ่อน — ดู formatPriceBreakdown)
  */
-import { wrapHtml, plainTextFooter, escapeHtml, emailSubject, HEADING_STYLE } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  titleBlock,
+  moneySummary,
+  detailTable,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
-import {
-  bookingDetailUrl,
-  greeting,
-  plainGreeting,
-  summaryRow,
-  summaryTable,
-} from './helpers';
+import { bookingDetailUrl, greeting, plainGreeting } from './helpers';
 
 export const paymentHeldTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
   const subject = emailSubject('ชำระเงินเรียบร้อย');
@@ -26,24 +28,28 @@ export const paymentHeldTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
     ? `บัตรเครดิต (ref: ${ctx.chargeId})`
     : 'บัตรเครดิต';
 
-  const breakdown = summaryTable(
-    [
-      summaryRow('การจอง', ctx.serviceText),
-      summaryRow('วันที่', ctx.dateText),
-      summaryRow('เวลา', ctx.timeText),
-      // ค่าบริการ/ค่าธรรมเนียม: แสดงเฉพาะเมื่อมี platform_fee จริง (undefined = ซ่อน)
-      ctx.serviceCostText ? summaryRow('ค่าบริการ', ctx.serviceCostText) : '',
-      ctx.platformFeeText ? summaryRow('ค่าดำเนินการ', ctx.platformFeeText) : '',
-      summaryRow('ยอดรวม', ctx.totalText, { bold: true }),
-      summaryRow('วิธีชำระเงิน', paymentMethodText),
-    ].join(''),
-  );
+  // ค่าบริการ/ค่าธรรมเนียม: แสดงเฉพาะเมื่อมี platform_fee จริง (undefined = ซ่อน)
+  const breakdown = moneySummary({
+    rows: [
+      ...(ctx.serviceCostText
+        ? [['ค่าบริการ', ctx.serviceCostText] as [string, string]]
+        : []),
+      ...(ctx.platformFeeText
+        ? [['ค่าดำเนินการ', ctx.platformFeeText] as [string, string]]
+        : []),
+    ],
+    total: ['ยอดรวม', ctx.totalText],
+    note: `ชำระด้วย${paymentMethodText}`,
+  });
+  const booking = detailTable([
+    { label: 'บริการ', value: ctx.serviceText },
+    { label: 'วันและเวลา', value: `${ctx.dateText} · ${ctx.timeText}` },
+  ]);
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${breakdown}
+    ${booking}
   `;
 
   const ctaUrl = bookingDetailUrl(ctx);
@@ -69,7 +75,13 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, ctaUrl, ctaLabel, frontendUrl: ctx.frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      ctaUrl,
+      ctaLabel,
+      frontendUrl: ctx.frontendUrl,
+      badge: { label: 'ชำระแล้ว', tone: 'success' },
+    }),
     text,
   };
 };
