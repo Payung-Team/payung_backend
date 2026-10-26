@@ -30,6 +30,31 @@ export type UploadedProfilePhoto = Pick<
   'buffer' | 'mimetype' | 'size' | 'originalname'
 >;
 
+/**
+ * ตรวจไฟล์รูปแล้วตัด EXIF/GPS ทิ้ง — ใช้ร่วมกับรูปกลุ่มครอบครัว (family-group-avatar.service)
+ *
+ * MIME จาก client ปลอมได้ — signature จาก buffer คือด่านจริง แล้วค่อยตัด EXIF/GPS ทิ้ง
+ */
+export function prepareProfilePhotoJpeg(photo: UploadedProfilePhoto): Buffer {
+  if (photo.mimetype !== PROFILE_PHOTO_MIME) {
+    throw new UnsupportedMediaTypeException('รองรับเฉพาะรูป JPEG');
+  }
+  if (!photo.buffer || photo.buffer.length === 0) {
+    throw new BadRequestException('ไฟล์รูปว่างเปล่า');
+  }
+  if (!hasJpegSignature(photo.buffer)) {
+    throw new UnsupportedMediaTypeException('ไฟล์ไม่ใช่รูป JPEG');
+  }
+  try {
+    return stripJpegMetadata(photo.buffer);
+  } catch (err) {
+    if (err instanceof InvalidJpegError) {
+      throw new UnsupportedMediaTypeException('ไฟล์ JPEG เสียหาย');
+    }
+    throw err;
+  }
+}
+
 export interface ProfilePhotoResult {
   /** 'approved' = แสดงต่อผู้ใช้อื่นแล้ว (role อื่น), 'pending' = รอแอดมินอนุมัติ (ผู้ดูแล) */
   reviewStatus: string;
@@ -221,25 +246,8 @@ export class ProfilePhotoService {
     }
   }
 
-  /** MIME จาก client ปลอมได้ — signature จาก buffer คือด่านจริง แล้วค่อยตัด EXIF/GPS ทิ้ง */
   private prepare(photo: UploadedProfilePhoto): Buffer {
-    if (photo.mimetype !== PROFILE_PHOTO_MIME) {
-      throw new UnsupportedMediaTypeException('รองรับเฉพาะรูป JPEG');
-    }
-    if (!photo.buffer || photo.buffer.length === 0) {
-      throw new BadRequestException('ไฟล์รูปว่างเปล่า');
-    }
-    if (!hasJpegSignature(photo.buffer)) {
-      throw new UnsupportedMediaTypeException('ไฟล์ไม่ใช่รูป JPEG');
-    }
-    try {
-      return stripJpegMetadata(photo.buffer);
-    } catch (err) {
-      if (err instanceof InvalidJpegError) {
-        throw new UnsupportedMediaTypeException('ไฟล์ JPEG เสียหาย');
-      }
-      throw err;
-    }
+    return prepareProfilePhotoJpeg(photo);
   }
 
   private async uploadToStorage(
