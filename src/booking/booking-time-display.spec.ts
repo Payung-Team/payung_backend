@@ -38,6 +38,12 @@ describe('booking-time-display (PYG-526)', () => {
       expect(computeEndTime(time(21, 58), 4)).toBe('01:58');
     });
 
+    it('จบเที่ยงคืนพอดี → "23:59" ตามที่ผู้ใช้เลือก ไม่ใช่ "00:00" (feature/booking-24h)', () => {
+      expect(computeEndTime(time(23), 1)).toBe('23:59');
+      expect(computeEndTime(time(20), new Prisma.Decimal('4'))).toBe('23:59');
+      expect(computeEndTime(time(22, 30), 1.5)).toBe('23:59');
+    });
+
     it('ชั่วโมง ≤ 0 / null / ไม่มีเวลาเริ่ม → undefined (ไม่เดาเวลาสิ้นสุด)', () => {
       expect(computeEndTime(time(9), 0)).toBeUndefined();
       expect(computeEndTime(time(9), null)).toBeUndefined();
@@ -73,6 +79,11 @@ describe('booking-time-display (PYG-526)', () => {
 
     it('ชั่วโมงไม่ถูกต้อง → แสดงแค่เวลาเริ่ม', () => {
       expect(formatBookingTimeRange(time(9), null)).toBe('09:00');
+    });
+
+    it('งานดึกจบเที่ยงคืน: "23:00 – 23:59 (1 ชม.)" · เช้ามืด: "00:00 – 03:00 (3 ชม.)"', () => {
+      expect(formatBookingTimeRange(time(23), 1)).toBe('23:00 – 23:59 (1 ชม.)');
+      expect(formatBookingTimeRange(time(0), 3)).toBe('00:00 – 03:00 (3 ชม.)');
     });
 
     it('ไม่มีเวลาเริ่ม → undefined', () => {
