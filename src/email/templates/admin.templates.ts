@@ -1,11 +1,15 @@
 import {
   wrapHtml,
   plainTextFooter,
-  escapeHtml,
   emailSubject,
   greetingHtml,
   greetingText,
   BRAND,
+  titleBlock,
+  detailTable,
+  warningBox,
+  bulletBox,
+  amountHero,
 } from './layout';
 import { type EmailTemplate } from './kyc.templates';
 
@@ -27,15 +31,15 @@ export function adminInviteTemplate(
   const loginUrl = `${frontendUrl}${loginPath}`;
 
   const bodyHtml = `
-    <p>${greetingHtml(name)}</p>
-    <p>คุณได้รับเชิญให้เป็นผู้ดูแลระบบ (Admin) ของแพลตฟอร์ม <strong>Payung</strong></p>
-    <p>ข้อมูลเข้าสู่ระบบของคุณ:</p>
-    <div style="background:#F0FAF4; border-left:4px solid ${BRAND.primaryColor}; padding:12px 16px; margin:16px 0; font-family:monospace;">
-      <p style="margin:0;"><strong>Email:</strong> ${escapeHtml(email)}</p>
-      <p style="margin:8px 0 0;"><strong>รหัสผ่านชั่วคราว:</strong> ${escapeHtml(tempPassword)}</p>
-    </div>
-    <p style="color:#e53935; font-weight:600;">⚠️ กรุณาเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก</p>
-    <p>หากคุณไม่ได้คาดหวังที่จะได้รับอีเมลนี้ กรุณาติดต่อทีมงาน</p>
+    ${titleBlock(
+      'คุณได้รับเชิญเข้าทีมแอดมิน',
+      `${greetingHtml(name)} บัญชีของคุณถูกเพิ่มเป็นผู้ดูแลระบบ (Admin) ของ Payung ใช้ข้อมูลด้านล่างเข้าสู่ระบบ แล้วตั้งรหัสผ่านใหม่`,
+    )}
+    ${detailTable([
+      { label: 'อีเมล', value: email },
+      { label: 'รหัสผ่านชั่วคราว', value: tempPassword, emphasis: 'strong' },
+    ])}
+    ${warningBox(`<strong>ต้องเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก</strong> · ไม่รู้จักผู้เชิญ? อย่าใช้รหัสนี้ และแจ้ง <a href="mailto:${BRAND.contactEmail}" style="color:#6B3E06;">${BRAND.contactEmail}</a> ทันที`)}
   `;
 
   const text = `${greetingText(name)}
@@ -55,8 +59,10 @@ Email: ${email}
     html: wrapHtml({
       bodyHtml,
       ctaUrl: loginUrl,
-      ctaLabel: 'เข้าสู่ระบบ Admin',
+      ctaLabel: 'เข้าสู่ระบบและตั้งรหัสผ่านใหม่',
       frontendUrl,
+      audience: 'admin',
+      badge: { label: 'คำเชิญ', tone: 'info' },
     }),
     text,
   };
@@ -69,10 +75,14 @@ export function adminDeactivatedTemplate(
   const subject = emailSubject('บัญชี Admin ของคุณถูกระงับ');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)}</p>
-    <p>เราขอแจ้งให้ทราบว่าบัญชีผู้ดูแลระบบของคุณ <strong>ถูกระงับการใช้งาน</strong> เรียบร้อยแล้ว</p>
-    <p>คุณจะไม่สามารถเข้าสู่ระบบได้จนกว่าบัญชีจะได้รับการเปิดใช้งานอีกครั้ง</p>
-    <p>หากคุณเชื่อว่านี่เป็นข้อผิดพลาด กรุณาติดต่อ Super Admin ของทีม</p>
+    ${titleBlock(
+      'บัญชีของคุณถูกระงับ',
+      `${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)} บัญชีผู้ดูแลระบบของคุณถูกระงับการใช้งานแล้ว`,
+    )}
+    ${bulletBox('ระหว่างถูกระงับ', [
+      'เข้าสู่ระบบแอดมินไม่ได้ จนกว่าบัญชีจะถูกเปิดใช้งานอีกครั้ง',
+      'ข้อมูลของคุณยังอยู่ครบ ไม่ถูกลบ',
+    ])}
   `;
 
   const text = `${greetingText(displayName, ADMIN_FALLBACK_GREETING)}
@@ -84,7 +94,13 @@ export function adminDeactivatedTemplate(
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      frontendUrl,
+      audience: 'admin',
+      badge: { label: 'ถูกระงับ', tone: 'danger' },
+      supportHtml: `คิดว่าเป็นความผิดพลาด? ติดต่อ Super Admin ของทีม หรือ <a href="mailto:${BRAND.contactEmail}" style="color:${BRAND.primaryColor};">${BRAND.contactEmail}</a>`,
+    }),
     text,
   };
 }
@@ -105,14 +121,15 @@ export function adminScheduleDeleteTemplate(
   });
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)}</p>
-    <p>บัญชีผู้ดูแลระบบของคุณถูก<strong>กำหนดให้ลบถาวร</strong>ในอีก <strong>${gracePeriodDays} วัน</strong></p>
-    <div style="background:#fff5f5; border-left:4px solid #e53935; padding:12px 16px; margin:16px 0;">
-      <p style="margin:0; font-weight:600; color:#c62828;">วันที่จะถูกลบถาวร:</p>
-      <p style="margin:8px 0 0; font-size:18px;">${deleteDate}</p>
-    </div>
-    <p>หากคุณต้องการยกเลิกการลบบัญชี กรุณาติดต่อ Super Admin ของทีมก่อนวันดังกล่าว</p>
-    <p>หากไม่มีการดำเนินการใดๆ บัญชีของคุณจะถูกลบถาวรโดยอัตโนมัติ</p>
+    ${titleBlock(
+      'บัญชีของคุณถูกตั้งเวลาลบ',
+      `${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)} บัญชีผู้ดูแลระบบของคุณถูกกำหนดให้ลบถาวร และถูกระงับการใช้งานตั้งแต่ตอนนี้`,
+    )}
+    ${amountHero('ลบถาวรในอีก', `${gracePeriodDays} วัน`, deleteDate)}
+    ${bulletBox('ต้องการยกเลิกการลบ?', [
+      'ติดต่อ Super Admin ของทีมก่อนวันดังกล่าว',
+      'หากไม่มีการดำเนินการใด ๆ บัญชีจะถูกลบถาวรโดยอัตโนมัติ',
+    ])}
   `;
 
   const text = `${greetingText(displayName, ADMIN_FALLBACK_GREETING)}
@@ -124,7 +141,12 @@ export function adminScheduleDeleteTemplate(
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      frontendUrl,
+      audience: 'admin',
+      badge: { label: 'รอลบ', tone: 'warning' },
+    }),
     text,
   };
 }
@@ -137,9 +159,10 @@ export function adminCancelDeleteTemplate(
   const loginUrl = `${frontendUrl}${loginPath}`;
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)}</p>
-    <p>เราขอแจ้งให้ทราบว่า <strong>การกำหนดลบบัญชี</strong>ผู้ดูแลระบบของคุณ<strong>ถูกยกเลิกแล้ว</strong></p>
-    <p>บัญชีของคุณได้รับการเปิดใช้งานอีกครั้ง สามารถเข้าสู่ระบบได้ตามปกติ</p>
+    ${titleBlock(
+      'บัญชีของคุณจะไม่ถูกลบ',
+      `${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)} การลบบัญชีผู้ดูแลระบบของคุณถูกยกเลิกแล้ว บัญชีกลับมาใช้งานได้ตามปกติ และข้อมูลทั้งหมดยังอยู่ครบ`,
+    )}
   `;
 
   const text = `${greetingText(displayName, ADMIN_FALLBACK_GREETING)}
@@ -154,8 +177,10 @@ export function adminCancelDeleteTemplate(
     html: wrapHtml({
       bodyHtml,
       ctaUrl: loginUrl,
-      ctaLabel: 'เข้าสู่ระบบ Admin',
+      ctaLabel: 'เข้าสู่ระบบ',
       frontendUrl,
+      audience: 'admin',
+      badge: { label: 'ยกเลิกการลบแล้ว', tone: 'success' },
     }),
     text,
   };
@@ -168,10 +193,10 @@ export function adminAutoDeletedTemplate(
   const subject = emailSubject('บัญชี Admin ของคุณถูกลบเรียบร้อยแล้ว');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)}</p>
-    <p>บัญชีผู้ดูแลระบบของคุณใน <strong>Payung</strong> ถูก<strong>ลบถาวร</strong>ตามกำหนดเรียบร้อยแล้ว</p>
-    <p>ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว</p>
-    <p>หากคุณมีข้อสงสัย กรุณาติดต่อ Super Admin ของทีม</p>
+    ${titleBlock(
+      'บัญชีแอดมินของคุณถูกลบแล้ว',
+      `${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)} บัญชีผู้ดูแลระบบของคุณถูกลบถาวรตามกำหนดเวลา สิทธิ์เข้าถึงทั้งหมดถูกเพิกถอนแล้ว`,
+    )}
   `;
 
   const text = `${greetingText(displayName, ADMIN_FALLBACK_GREETING)}
@@ -183,7 +208,14 @@ export function adminAutoDeletedTemplate(
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      frontendUrl,
+      audience: 'admin',
+      badge: { label: 'ลบแล้ว', tone: 'neutral' },
+      supportHtml: `คิดว่าเป็นความผิดพลาด? ติดต่อ Super Admin ของทีม หรือ <a href="mailto:${BRAND.contactEmail}" style="color:${BRAND.primaryColor};">${BRAND.contactEmail}</a>`,
+      footerNote: 'อีเมลแจ้งเตือนครั้งสุดท้าย',
+    }),
     text,
   };
 }
@@ -195,10 +227,14 @@ export function userAutoDeletedTemplate(
   const subject = emailSubject('บัญชีของคุณถูกลบเรียบร้อยแล้ว');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName)}</p>
-    <p>บัญชีของคุณใน <strong>Payung</strong> ถูก<strong>ลบถาวร</strong>ตามกำหนดเรียบร้อยแล้ว</p>
-    <p>ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว</p>
-    <p>หากคุณมีข้อสงสัย กรุณาติดต่อทีมสนับสนุนของ Payung</p>
+    ${titleBlock(
+      'บัญชีของคุณถูกลบแล้ว',
+      `${greetingHtml(displayName)} บัญชีของคุณใน Payung ถูกลบถาวรตามกำหนดเรียบร้อยแล้ว ขอบคุณที่ไว้วางใจ Payung`,
+    )}
+    ${bulletBox('สิ่งที่เกิดขึ้นกับบัญชี', [
+      'ข้อมูลและสิทธิ์การเข้าถึงทั้งหมดของบัญชีนี้ถูกยกเลิกแล้ว',
+      'อยากกลับมาใช้งาน? สมัครบัญชีใหม่ได้ทุกเมื่อ',
+    ])}
   `;
 
   const text = `${greetingText(displayName)}
@@ -210,7 +246,13 @@ export function userAutoDeletedTemplate(
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      frontendUrl,
+      badge: { label: 'ลบแล้ว', tone: 'neutral' },
+      hideEmailSettings: true,
+      footerNote: 'อีเมลฉบับสุดท้าย',
+    }),
     text,
   };
 }
@@ -223,9 +265,10 @@ export function adminActivatedTemplate(
   const loginUrl = `${frontendUrl}${loginPath}`;
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)}</p>
-    <p>บัญชีผู้ดูแลระบบของคุณ <strong>ได้รับการเปิดใช้งานอีกครั้ง</strong> เรียบร้อยแล้ว</p>
-    <p>คุณสามารถเข้าสู่ระบบและดำเนินการต่างๆ ได้ตามปกติ</p>
+    ${titleBlock(
+      'บัญชีของคุณถูกเปิดใช้งานอีกครั้ง',
+      `${greetingHtml(displayName, ADMIN_FALLBACK_GREETING)} บัญชีผู้ดูแลระบบของคุณกลับมาใช้งานได้แล้ว ข้อมูลและประวัติทั้งหมดยังอยู่ครบ`,
+    )}
   `;
 
   const text = `${greetingText(displayName, ADMIN_FALLBACK_GREETING)}
@@ -240,8 +283,10 @@ export function adminActivatedTemplate(
     html: wrapHtml({
       bodyHtml,
       ctaUrl: loginUrl,
-      ctaLabel: 'เข้าสู่ระบบ Admin',
+      ctaLabel: 'เข้าสู่ระบบ',
       frontendUrl,
+      audience: 'admin',
+      badge: { label: 'ใช้งานได้', tone: 'success' },
     }),
     text,
   };

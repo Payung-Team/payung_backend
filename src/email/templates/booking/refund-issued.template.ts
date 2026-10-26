@@ -4,16 +4,18 @@
  *
  * payment_method: "บัตรเครดิต" + chargeId (จำเป็นต้องอ้างอิงถึง charge เดิม)
  */
-import { wrapHtml, plainTextFooter, escapeHtml, emailSubject, HEADING_STYLE } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  titleBlock,
+  amountHero,
+  detailTable,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
-import {
-  bookingDetailUrl,
-  greeting,
-  plainGreeting,
-  summaryRow,
-  summaryTable,
-} from './helpers';
+import { bookingDetailUrl, greeting, plainGreeting } from './helpers';
 
 export const refundIssuedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
   const amountText = ctx.refundAmountText ?? ctx.paymentAmountText;
@@ -25,19 +27,15 @@ export const refundIssuedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
     ? `บัตรเครดิต (ref: ${ctx.chargeId})`
     : 'บัตรเครดิต';
 
-  const breakdown = summaryTable(
+  const breakdown = `${amountHero('ยอดคืนเงิน', amountText, `คืนเข้า${paymentMethodText}`)}${detailTable(
     [
-      summaryRow('การจอง', ctx.serviceText),
-      summaryRow('วันที่', ctx.dateText),
-      summaryRow('ยอดคืนเงิน', amountText, { bold: true }),
-      summaryRow('คืนเข้าบัตร', paymentMethodText),
-    ].join(''),
-  );
+      { label: 'บริการ', value: ctx.serviceText },
+      { label: 'วันที่', value: ctx.dateText },
+    ],
+  )}`;
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${breakdown}
   `;
 
@@ -59,7 +57,13 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, ctaUrl, ctaLabel, frontendUrl: ctx.frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      ctaUrl,
+      ctaLabel,
+      frontendUrl: ctx.frontendUrl,
+      badge: { label: 'คืนเงินแล้ว', tone: 'success' },
+    }),
     text,
   };
 };

@@ -6,18 +6,21 @@
  *   - patient   → "เราเรียกเก็บเงินจากบัตรของคุณเรียบร้อย"
  *   - caregiver → "ระบบเรียกเก็บเงินจากลูกค้าเรียบร้อย เตรียมโอนค่าตอบแทน"
  */
-import { wrapHtml, plainTextFooter, escapeHtml, emailSubject, HEADING_STYLE } from '../layout';
+import {
+  wrapHtml,
+  plainTextFooter,
+  escapeHtml,
+  emailSubject,
+  titleBlock,
+  moneySummary,
+} from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
-import {
-  bookingDetailUrl,
-  greeting,
-  plainGreeting,
-  summaryRow,
-  summaryTable,
-} from './helpers';
+import { bookingDetailUrl, greeting, plainGreeting } from './helpers';
 
-export const paymentCapturedTemplate: BookingTemplateFn = (ctx): EmailTemplate => {
+export const paymentCapturedTemplate: BookingTemplateFn = (
+  ctx,
+): EmailTemplate => {
   const subject = emailSubject('เรียกเก็บเงินแล้ว');
   const heading = 'เรียกเก็บเงินสำเร็จ';
 
@@ -30,31 +33,36 @@ export const paymentCapturedTemplate: BookingTemplateFn = (ctx): EmailTemplate =
     ? `บัตรเครดิต (ref: ${ctx.chargeId})`
     : 'บัตรเครดิต';
 
-  const rows = [
-    summaryRow('การจอง', ctx.serviceText),
-    summaryRow('วันที่', ctx.dateText),
-    summaryRow('ยอดที่เรียกเก็บ', ctx.paymentAmountText, { bold: true }),
-  ];
-  if (ctx.recipientRole === 'patient') {
-    rows.push(summaryRow('วิธีชำระเงิน', paymentMethodText));
-  }
+  const breakdown = moneySummary({
+    rows: [
+      ['บริการ', ctx.serviceText],
+      ['วันที่', ctx.dateText],
+    ],
+    total: ['ยอดที่เรียกเก็บ', ctx.paymentAmountText],
+    // วิธีชำระเงินเป็นข้อมูลของผู้จ่าย — ผู้ดูแลไม่ต้องเห็น
+    note:
+      ctx.recipientRole === 'patient'
+        ? `ชำระด้วย${paymentMethodText}`
+        : undefined,
+  });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
-    ${summaryTable(rows.join(''))}
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
+    ${breakdown}
   `;
 
   const ctaUrl = bookingDetailUrl(ctx);
-  const ctaLabel = ctx.recipientRole === 'patient' ? 'ดูใบเสร็จ' : 'ดูรายละเอียดงาน';
+  const ctaLabel =
+    ctx.recipientRole === 'patient' ? 'ดูใบเสร็จ' : 'ดูรายละเอียดงาน';
 
   const text = `${plainGreeting(ctx.recipientName)}
 
 ${heading}
-${ctx.recipientRole === 'patient'
-  ? `เราเรียกเก็บเงิน ${ctx.paymentAmountText} จากบัตรของคุณแล้ว — บริการกับคุณ${ctx.caregiverName}`
-  : `เรียกเก็บเงิน ${ctx.paymentAmountText} จากลูกค้าเรียบร้อย — ค่าตอบแทนจะถูกโอนตามรอบ`}
+${
+  ctx.recipientRole === 'patient'
+    ? `เราเรียกเก็บเงิน ${ctx.paymentAmountText} จากบัตรของคุณแล้ว — บริการกับคุณ${ctx.caregiverName}`
+    : `เรียกเก็บเงิน ${ctx.paymentAmountText} จากลูกค้าเรียบร้อย — ค่าตอบแทนจะถูกโอนตามรอบ`
+}
 
 การจอง: ${ctx.serviceText}
 วันที่: ${ctx.dateText}
@@ -64,7 +72,13 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 
   return {
     subject,
-    html: wrapHtml({ bodyHtml, ctaUrl, ctaLabel, frontendUrl: ctx.frontendUrl }),
+    html: wrapHtml({
+      bodyHtml,
+      ctaUrl,
+      ctaLabel,
+      frontendUrl: ctx.frontendUrl,
+      badge: { label: 'เรียกเก็บแล้ว', tone: 'info' },
+    }),
     text,
   };
 };

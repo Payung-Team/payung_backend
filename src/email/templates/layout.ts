@@ -19,8 +19,8 @@
 export const BRAND = {
   name: 'Payung',
   primaryColor: '#009265',
-  textColor: '#1A1A1A',
-  mutedColor: '#6B7773',
+  textColor: '#1F2A29',
+  mutedColor: '#4B5857',
   pageBackground: '#F6FAF9',
   borderColor: '#E3EFEA',
   // PYG-703: เดิม https://payung.app/logo.png ตอบ 404 → ทุกอีเมลเห็นรูปแตก
@@ -75,16 +75,190 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// ─── PYG-732: ระบบหน้าตาอีเมลตาม design (canvas "Payung Email Templates") ─────────
+// โทนสีกลาง/พื้นผิวตาม design · สีหลัก (ปุ่ม/ลิงก์/โลโก้) ตามแอป #009265 · ฟอนต์ตามแอป
+// ★ อีเมลใช้ flex/grid ไม่ได้ (Outlook/Gmail) — ทุก layout เป็น <table> + inline style
+const UI = {
+  pageBackground: '#E9EFEE',
+  text: '#1F2A29',
+  muted: '#4B5857',
+  cardBorder: '#D5DEDD',
+  divider: '#E2E8E7',
+  surface: '#F3F7F6',
+  warningBg: '#FFF7E6',
+  warningText: '#6B3E06',
+  dangerBorder: '#F3C6C6',
+  dangerText: '#7A1F1F',
+};
+
+/** โทนของป้ายสถานะมุมขวาบน */
+export type BadgeTone = 'success' | 'info' | 'warning' | 'danger' | 'neutral';
+export type EmailBadge = { label: string; tone: BadgeTone };
+
+const BADGE_COLORS: Record<BadgeTone, { bg: string; fg: string }> = {
+  success: { bg: '#DCF2E6', fg: '#0F5132' },
+  info: { bg: '#E0E9FB', fg: '#1E3A8A' },
+  warning: { bg: '#FFF1D6', fg: '#7A4A00' },
+  danger: { bg: '#FDECEC', fg: '#7A1F1F' },
+  neutral: { bg: '#E6EAEA', fg: '#3F4A49' },
+};
+
 /** options สำหรับ wrapHtml */
 export type LayoutOptions = {
-  /** เนื้อหา body (HTML escaped แล้ว) */
+  /** เนื้อหา body (HTML escaped แล้ว) — ประกอบจาก titleBlock / detailTable / … ด้านล่าง */
   bodyHtml: string;
   /** URL ที่ปุ่ม CTA จะพาไป — undefined = ไม่แสดงปุ่ม */
   ctaUrl?: string;
   /** ข้อความบนปุ่ม CTA (ไทย) */
   ctaLabel?: string;
+  /** ลิงก์ข้อความใต้ปุ่มหลัก (เช่น "จองอีกครั้ง") */
+  secondaryLinks?: { label: string; url: string }[];
   /** frontend base URL — ใช้สร้าง link สำหรับ unsubscribe */
   frontendUrl: string;
+  /** ป้ายสถานะมุมขวาบน เช่น { label: 'ยืนยันแล้ว', tone: 'success' } */
+  badge?: EmailBadge;
+  /** 'admin' = อีเมลถึงทีมแอดมิน: ป้าย "Admin" ข้างโลโก้ · ไม่มีลิงก์ตั้งค่าการรับอีเมล */
+  audience?: 'user' | 'admin';
+  /** แถบล่างในการ์ด (HTML escaped แล้ว) — ไม่ส่ง = "มีคำถาม? ติดต่อ <อีเมลทีม>" */
+  supportHtml?: string;
+  /** ข้อความบรรทัดท้ายนอกการ์ด (ต่อท้าย "Payung · ") เช่น "อีเมลฉบับสุดท้าย" */
+  footerNote?: string;
+  /** ซ่อนลิงก์ตั้งค่าการรับอีเมล — เช่น อีเมลแจ้งว่าบัญชีถูกลบแล้ว (ผู้รับเข้าระบบไม่ได้อีก) */
+  hideEmailSettings?: boolean;
+};
+
+const FONT = `font-family:${BRAND.fontFamily};`;
+
+/** หัวข้อใหญ่ + ย่อหน้านำ (introHtml escaped แล้ว — ใส่คำทักทายไว้ในประโยคแรก) */
+export function titleBlock(heading: string, introHtml?: string): string {
+  return `
+            <h1 style="margin:0 0 8px; font-size:26px; line-height:1.35; font-weight:700; color:${UI.text}; ${FONT}">${escapeHtml(heading)}</h1>
+            ${introHtml ? `<p style="margin:0 0 24px; font-size:16px; line-height:1.6; color:${UI.muted};">${introHtml}</p>` : '<div style="height:16px;"></div>'}`;
+}
+
+/** แถวของ detailTable — value เป็นข้อความดิบ (escape ให้) */
+export type DetailRow = {
+  label: string;
+  value: string;
+  /** 'strong' = ตัวใหญ่หนา (ยอดเงิน) · 'strike' = ขีดฆ่า (นัดเดิมที่ยกเลิก) */
+  emphasis?: 'strong' | 'strike';
+};
+
+/** ตารางรายละเอียด: ป้ายซ้าย (เทา) · ค่าขวา (หนา) · เส้นคั่นระหว่างแถว */
+export function detailTable(rows: DetailRow[]): string {
+  if (rows.length === 0) return '';
+  const trs = rows
+    .map((r, i) => {
+      const border = i === 0 ? '' : `border-top:1px solid ${UI.divider};`;
+      const valueStyle =
+        r.emphasis === 'strong'
+          ? `font-size:18px; font-weight:700; color:${UI.text};`
+          : r.emphasis === 'strike'
+            ? `font-size:15px; font-weight:600; color:${UI.muted}; text-decoration:line-through;`
+            : `font-size:15px; font-weight:600; color:${UI.text};`;
+      return `
+              <tr>
+                <td style="${border} padding:12px 12px 12px 0; width:112px; font-size:15px; color:${UI.muted}; vertical-align:top;">${escapeHtml(r.label)}</td>
+                <td style="${border} padding:12px 0; ${valueStyle} vertical-align:top;">${escapeHtml(r.value)}</td>
+              </tr>`;
+    })
+    .join('');
+  return `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px; border:1px solid ${UI.cardBorder}; border-radius:10px; border-collapse:separate;">
+              <tr><td style="padding:4px 20px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${trs}
+                </table>
+              </td></tr>
+            </table>`;
+}
+
+/** กล่องพื้นเทาอ่อน — หมายเหตุ/ข้อความประกอบ (html escaped แล้ว) */
+export function noteBox(html: string): string {
+  return `
+            <div style="margin:0 0 24px; background:${UI.surface}; border-radius:8px; padding:14px 16px; font-size:14px; line-height:1.6; color:${UI.text};">${html}</div>`;
+}
+
+/** กล่องเตือนสีเหลือง (html escaped แล้ว) */
+export function warningBox(html: string): string {
+  return `
+            <div style="margin:0 0 24px; background:${UI.warningBg}; border-radius:8px; padding:14px 16px; font-size:14px; line-height:1.6; color:${UI.warningText};">${html}</div>`;
+}
+
+/** การ์ดขอบแดง — เรื่องที่ต้องแก้ (เช่น เหตุผลที่เอกสารไม่ผ่าน) · ข้อความดิบ (escape ให้) */
+export function issueCard(title: string, detail: string): string {
+  return `
+            <div style="margin:0 0 24px; border:1px solid ${UI.dangerBorder}; border-radius:10px; padding:16px 20px;">
+              <div style="font-size:16px; font-weight:700; color:${UI.text};">${escapeHtml(title)}</div>
+              <div style="margin-top:4px; font-size:15px; line-height:1.6; color:${UI.dangerText}; white-space:pre-line;">${escapeHtml(detail)}</div>
+            </div>`;
+}
+
+/** ยอดเงินตัวใหญ่ตรงกลาง (เช่น ยอดคืนเงิน) · ข้อความดิบ */
+export function amountHero(
+  label: string,
+  amount: string,
+  sub?: string,
+): string {
+  return `
+            <div style="margin:0 0 24px; background:${UI.surface}; border-radius:10px; padding:24px; text-align:center;">
+              <div style="font-size:14px; color:${UI.muted};">${escapeHtml(label)}</div>
+              <div style="font-size:36px; line-height:1.3; font-weight:700; color:${UI.text};">${escapeHtml(amount)}</div>
+              ${sub ? `<div style="font-size:14px; color:${UI.muted};">${escapeHtml(sub)}</div>` : ''}
+            </div>`;
+}
+
+/** สรุปยอดเงิน: รายการ + บรรทัดรวมตัวหนา · ข้อความดิบ */
+export function moneySummary(opts: {
+  title?: string;
+  rows: [string, string][];
+  total: [string, string];
+  note?: string;
+}): string {
+  const line = (l: string, v: string, strong = false) => `
+                <tr>
+                  <td style="padding:${strong ? '10px 0 0' : '5px 0'}; ${strong ? `border-top:1px solid ${UI.cardBorder}; font-size:18px; font-weight:700; color:${UI.text};` : `font-size:15px; color:${UI.muted};`}">${escapeHtml(l)}</td>
+                  <td align="right" style="padding:${strong ? '10px 0 0' : '5px 0'}; ${strong ? `border-top:1px solid ${UI.cardBorder}; font-size:18px; font-weight:700;` : 'font-size:15px;'} color:${UI.text};">${escapeHtml(v)}</td>
+                </tr>`;
+  return `
+            <div style="margin:0 0 24px; background:${UI.surface}; border-radius:10px; padding:20px;">
+              ${opts.title ? `<div style="margin:0 0 6px; font-size:17px; font-weight:700; color:${UI.text};">${escapeHtml(opts.title)}</div>` : ''}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${opts.rows.map(([l, v]) => line(l, v)).join('')}${line(opts.total[0], opts.total[1], true)}
+              </table>
+              ${opts.note ? `<div style="margin-top:10px; font-size:14px; line-height:1.6; color:${UI.muted};">${escapeHtml(opts.note)}</div>` : ''}
+            </div>`;
+}
+
+/** รายการหัวข้อ + จุด (เช่น "ระหว่างถูกระงับ") · ข้อความดิบ */
+export function bulletBox(title: string, items: string[]): string {
+  return `
+            <div style="margin:0 0 24px; background:${UI.surface}; border-radius:10px; padding:16px 20px;">
+              <div style="margin:0 0 6px; font-size:15px; font-weight:700; color:${UI.text};">${escapeHtml(title)}</div>
+              ${items.map((i) => `<div style="font-size:14px; line-height:1.7; color:${UI.muted};">· ${escapeHtml(i)}</div>`).join('')}
+            </div>`;
+}
+
+/** ขั้นตอนมีเลขกำกับ (เช่น สิ่งที่ต้องทำต่อ) · ข้อความดิบ [หัวข้อ, คำอธิบาย] */
+export function stepList(steps: [string, string][]): string {
+  const rows = steps
+    .map(
+      ([title, desc], i) => `
+                <tr>
+                  <td style="width:36px; padding:8px 0; vertical-align:top;">
+                    <span style="display:inline-block; width:26px; height:26px; line-height:26px; text-align:center; border-radius:999px; background:#DCF2E6; color:#0F5132; font-size:13px; font-weight:700;">${i + 1}</span>
+                  </td>
+                  <td style="padding:8px 0; font-size:15px; line-height:1.6; color:${UI.muted};"><strong style="color:${UI.text};">${escapeHtml(title)}</strong> — ${escapeHtml(desc)}</td>
+                </tr>`,
+    )
+    .join('');
+  return `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">${rows}
+            </table>`;
+}
+
+/** ข้อความเล็กสีเทาท้ายเนื้อหา · ข้อความดิบ */
+export function smallPrint(text: string): string {
+  return `
+            <p style="margin:0 0 8px; font-size:13px; line-height:1.6; color:${UI.muted};">${escapeHtml(text)}</p>`;
 }
 
 /**
@@ -96,24 +270,49 @@ export type LayoutOptions = {
  * PYG-703: กล่องเนื้อหาเดิม width="600" ตายตัว → บนมือถือ (375px) ต้องเลื่อนซ้าย-ขวา
  *   ตอนนี้ width 100% + max-width 600px · Outlook บน Windows ไม่รู้จัก max-width จึงมี
  *   ตารางครอบ 600px ใน conditional comment ให้เฉพาะ Outlook
+ * PYG-732: โครงตาม design — ป้ายสถานะมุมขวาบน · ปุ่มเต็มความกว้าง + ลิงก์รอง · แถบติดต่อในการ์ด
  */
 export function wrapHtml(opts: LayoutOptions): string {
+  const isAdmin = opts.audience === 'admin';
+  const badge = opts.badge ? BADGE_COLORS[opts.badge.tone] : undefined;
+
   const ctaButton = opts.ctaUrl
     ? `
-        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px auto 4px;">
-          <tr>
-            <td style="border-radius:12px; background:${BRAND.primaryColor};">
-              <a href="${escapeHtml(opts.ctaUrl)}"
-                 style="display:inline-block; padding:14px 32px; color:#ffffff; text-decoration:none;
-                        border-radius:12px; font-weight:600; font-size:16px; font-family:${BRAND.fontFamily};">
-                ${escapeHtml(opts.ctaLabel ?? 'เปิดแอป Payung')}
-              </a>
-            </td>
-          </tr>
-        </table>`
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 ${opts.secondaryLinks?.length ? '12px' : '8px'};">
+              <tr>
+                <td align="center" style="border-radius:8px; background:${BRAND.primaryColor};">
+                  <a href="${escapeHtml(opts.ctaUrl)}"
+                     style="display:block; padding:14px 20px; color:#ffffff; text-decoration:none; border-radius:8px; font-weight:600; font-size:16px; ${FONT}">
+                    ${escapeHtml(opts.ctaLabel ?? 'เปิดแอป Payung')}
+                  </a>
+                </td>
+              </tr>
+            </table>`
+    : '';
+
+  const secondary = opts.secondaryLinks?.length
+    ? `
+            <p style="margin:0 0 8px; text-align:center; font-size:14px;">${opts.secondaryLinks
+              .map(
+                (l) =>
+                  `<a href="${escapeHtml(l.url)}" style="color:${BRAND.primaryColor}; margin:0 12px;">${escapeHtml(l.label)}</a>`,
+              )
+              .join('')}</p>`
     : '';
 
   const settingsUrl = `${opts.frontendUrl}${EMAIL_SETTINGS_PATH}`;
+  const support =
+    opts.supportHtml ??
+    `มีคำถาม? ติดต่อทีม Payung ที่ <a href="mailto:${BRAND.contactEmail}" style="color:${BRAND.primaryColor};">${BRAND.contactEmail}</a>`;
+  const footerParts = [
+    BRAND.name,
+    ...(opts.footerNote ? [escapeHtml(opts.footerNote)] : []),
+    ...(isAdmin || opts.hideEmailSettings
+      ? []
+      : [
+          `<a href="${escapeHtml(settingsUrl)}" style="color:${UI.muted};">ตั้งค่าการรับอีเมล</a>`,
+        ]),
+  ];
 
   return `
 <!DOCTYPE html>
@@ -126,28 +325,38 @@ export function wrapHtml(opts: LayoutOptions): string {
   <!-- ฟอนต์เดียวกับแอป — Apple Mail/iOS โหลดได้ · Gmail/Outlook ข้ามแล้วใช้ฟอนต์สำรองใน fontFamily -->
   <link href="https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
-<body style="margin:0; padding:0; background:${BRAND.pageBackground}; font-family:${BRAND.fontFamily}; color:${BRAND.textColor}; -webkit-text-size-adjust:100%;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BRAND.pageBackground}; padding:24px 12px;">
+<body style="margin:0; padding:0; background:${UI.pageBackground}; ${FONT} color:${UI.text}; -webkit-text-size-adjust:100%;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${UI.pageBackground}; padding:24px 12px;">
     <tr><td align="center">
 
       <!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0"><tr><td><![endif]-->
-      <!-- ─── Container ───────────────────────────────────────────── -->
+      <!-- ─── Card ───────────────────────────────────────────────── -->
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-             style="width:100%; max-width:600px; background:#ffffff; border-radius:16px; overflow:hidden;
-                    border:1px solid ${BRAND.borderColor};">
+             style="width:100%; max-width:600px; background:#ffffff; border-radius:12px; overflow:hidden;">
 
-        <!-- Header: แถบสีแบรนด์ + โลโก้บนพื้นขาว (โลโก้เป็น JPG พื้นขาว วางบนสีเขียวจะเห็นกรอบสี่เหลี่ยม) -->
-        <tr><td style="height:4px; background:${BRAND.primaryColor}; font-size:0; line-height:0;">&nbsp;</td></tr>
+        <!-- Header: โลโก้ + ป้ายสถานะ -->
         <tr>
-          <td style="padding:20px 28px; border-bottom:1px solid ${BRAND.borderColor};">
-            <table role="presentation" cellpadding="0" cellspacing="0">
+          <td style="padding:20px 28px; border-bottom:1px solid ${UI.divider};">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="vertical-align:middle;">
-                  <img src="${BRAND.logoUrl}" alt="" width="36" height="36" style="display:block; width:36px; height:36px; border:0;">
+                  <table role="presentation" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="vertical-align:middle;">
+                        <img src="${BRAND.logoUrl}" alt="" width="28" height="28" style="display:block; width:28px; height:28px; border:0;">
+                      </td>
+                      <td style="vertical-align:middle; padding-left:10px; font-size:20px; font-weight:700; color:${UI.text}; ${FONT}">${BRAND.name}</td>
+                      ${isAdmin ? `<td style="vertical-align:middle; padding-left:8px; font-size:13px; color:${UI.muted};">Admin</td>` : ''}
+                    </tr>
+                  </table>
                 </td>
-                <td style="vertical-align:middle; padding-left:10px; font-size:22px; font-weight:700; color:${BRAND.primaryColor}; font-family:${BRAND.fontFamily};">
-                  ${BRAND.name}
-                </td>
+                ${
+                  opts.badge && badge
+                    ? `<td align="right" style="vertical-align:middle;">
+                  <span style="display:inline-block; font-size:13px; font-weight:600; color:${badge.fg}; background:${badge.bg}; padding:4px 12px; border-radius:999px; white-space:nowrap;">${escapeHtml(opts.badge.label)}</span>
+                </td>`
+                    : ''
+                }
               </tr>
             </table>
           </td>
@@ -155,27 +364,31 @@ export function wrapHtml(opts: LayoutOptions): string {
 
         <!-- Body -->
         <tr>
-          <td style="padding:28px; line-height:1.7; font-size:16px; color:${BRAND.textColor}; font-family:${BRAND.fontFamily};">
+          <td style="padding:28px; line-height:1.6; font-size:16px; color:${UI.text}; ${FONT}">
             ${opts.bodyHtml}
             ${ctaButton}
+            ${secondary}
           </td>
         </tr>
 
-        <!-- Footer -->
+        <!-- Support -->
         <tr>
-          <td style="background:${BRAND.pageBackground}; padding:20px 28px; text-align:center; font-size:13px; line-height:1.7; color:${BRAND.mutedColor}; border-top:1px solid ${BRAND.borderColor}; font-family:${BRAND.fontFamily};">
-            <p style="margin:0 0 6px;">
-              ติดต่อสอบถาม: <a href="mailto:${BRAND.contactEmail}" style="color:${BRAND.primaryColor};">${BRAND.contactEmail}</a>
-            </p>
-            <p style="margin:0;">
-              ไม่ต้องการรับอีเมลแจ้งเตือน?
-              <a href="${escapeHtml(settingsUrl)}" style="color:${BRAND.primaryColor};">ตั้งค่าการรับอีเมล</a>
-            </p>
+          <td style="padding:18px 28px; border-top:1px solid ${UI.divider}; font-size:14px; line-height:1.6; color:${UI.muted}; ${FONT}">
+            ${support}
           </td>
         </tr>
 
       </table>
       <!--[if mso]></td></tr></table><![endif]-->
+
+      <!-- Footer นอกการ์ด -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; max-width:600px;">
+        <tr>
+          <td align="center" style="padding:16px 12px 0; font-size:12px; line-height:1.7; color:${UI.muted}; ${FONT}">
+            ${footerParts.join(' · ')}
+          </td>
+        </tr>
+      </table>
 
     </td></tr>
   </table>

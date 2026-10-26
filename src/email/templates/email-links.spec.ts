@@ -33,12 +33,22 @@ import type { BookingEmailContext } from './booking';
 
 const F = 'https://payung-care.com';
 
+/** อีเมลที่ตั้งใจไม่มีลิงก์เข้าเว็บ (ไม่มีปุ่ม + ไม่มีลิงก์ตั้งค่าการรับอีเมล) */
+const NO_LINK_EMAILS = new Set([
+  'adminDeactivated',
+  'adminScheduleDelete',
+  'adminAutoDeleted',
+  'userAutoDeleted',
+]);
+
 /** route ใน FE (App.tsx) ที่อีเมลลิงก์ไปได้ — `:id` = ส่วนที่เปลี่ยนได้ */
 const ROUTES_IN_FE = [
   /^\/login$/,
   /^\/notifications$/,
   /^\/kyc$/,
   /^\/caregiver-home$/,
+  /^\/caregiver\/settings\/job-reception$/,
+  /^\/booking\/new$/,
   /^\/bookings\/[^/]+$/,
   /^\/caregiver\/bookings\/[^/]+$/,
   /^\/admin\/disputes$/,
@@ -137,7 +147,8 @@ describe('PYG-703 email templates', () => {
     '%s: ทุกลิงก์เป็นหน้าที่มีจริงใน FE',
     (_name, e) => {
       const paths = internalPaths(e.html);
-      expect(paths.length).toBeGreaterThan(0); // อย่างน้อยลิงก์ตั้งค่าการรับอีเมลท้ายฉบับ
+      // PYG-732: อีเมลถึงแอดมิน (ไม่มีลิงก์ตั้งค่าการรับอีเมล) และอีเมลแจ้งว่าบัญชีถูกลบแล้ว อาจไม่มีลิงก์เข้าเว็บเลย
+      if (!NO_LINK_EMAILS.has(e.name)) expect(paths.length).toBeGreaterThan(0);
       for (const path of paths) {
         expect(ROUTES_IN_FE.some((r) => r.test(path))).toBe(true);
       }

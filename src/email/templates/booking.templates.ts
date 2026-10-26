@@ -17,9 +17,10 @@ import {
   emailSubject,
   greetingHtml,
   greetingText,
-  HEADING_STYLE,
+  titleBlock,
+  detailTable,
+  type EmailBadge,
 } from './layout';
-import { summaryRow, summaryTable } from './booking/helpers';
 import type { EmailTemplate } from './kyc.templates';
 
 /** ค่าที่ใช้สร้างอีเมล booking notification */
@@ -47,20 +48,20 @@ export type BookingEmailParams = {
   // ── ปุ่ม CTA (optional) ──
   ctaUrl?: string;
   ctaLabel?: string;
+  /** PYG-732: ป้ายสถานะมุมขวาบน — ไม่ส่ง = "อัปเดตการจอง" (info) */
+  badge?: EmailBadge;
 };
 
 /** สร้างตารางรายละเอียด — คืน '' ถ้าไม่มีข้อมูลสักแถว */
 function detailsTable(p: BookingEmailParams): string {
   const rows: Array<[string, string]> = [];
   if (p.caregiverName) rows.push(['ผู้ดูแล', p.caregiverName]);
-  if (p.dateText) rows.push(['วันที่', p.dateText]);
-  if (p.timeText) rows.push(['เวลา', p.timeText]);
+  const when = [p.dateText, p.timeText].filter(Boolean).join(' · ');
+  if (when) rows.push(['วันและเวลา', when]);
   if (p.serviceText) rows.push(['บริการ', p.serviceText]);
   if (p.amountText) rows.push(['ยอดรวม', p.amountText]);
-  // PYG-703: ใช้แถว/ตารางเดียวกับ per-event template (เดิมเขียน HTML ซ้ำ สีคนละชุด)
-  return summaryTable(
-    rows.map(([label, value]) => summaryRow(label, value)).join(''),
-  );
+  // PYG-732: ตารางรายละเอียดเดียวกับ per-event template (design)
+  return detailTable(rows.map(([label, value]) => ({ label, value })));
 }
 
 /** plain-text version ของตาราง (สำหรับ email client ที่ block HTML) */
@@ -78,13 +79,13 @@ function detailsText(p: BookingEmailParams): string {
  * สร้าง EmailTemplate สำหรับ booking notification
  * (ใช้ heading/intro จาก notification เดียวกับ in-app เพื่อให้ข้อความตรงกัน)
  */
-export function bookingNotificationTemplate(p: BookingEmailParams): EmailTemplate {
+export function bookingNotificationTemplate(
+  p: BookingEmailParams,
+): EmailTemplate {
   const subject = emailSubject(p.heading);
 
   const bodyHtml = `
-    <p>${greetingHtml(p.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(p.heading)}</h2>
-    <p>${escapeHtml(p.intro)}</p>
+    ${titleBlock(p.heading, `${greetingHtml(p.recipientName)} ${escapeHtml(p.intro)}`)}
     ${detailsTable(p)}
   `;
 
@@ -101,6 +102,7 @@ ${detailsText(p)}${p.ctaUrl ? `\n${p.ctaLabel ?? 'เปิดแอป Payung'}
       ctaUrl: p.ctaUrl,
       ctaLabel: p.ctaLabel,
       frontendUrl: p.frontendUrl,
+      badge: p.badge ?? { label: 'อัปเดตการจอง', tone: 'info' },
     }),
     text,
   };

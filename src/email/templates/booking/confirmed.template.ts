@@ -11,8 +11,7 @@ import {
   plainTextFooter,
   escapeHtml,
   emailSubject,
-  HEADING_STYLE,
-  BRAND,
+  titleBlock,
 } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
@@ -35,15 +34,12 @@ export const bookingConfirmedTemplate: BookingTemplateFn = (
       ? `เราได้ยืนยันการจองของคุณกับคุณ${escapeHtml(ctx.caregiverName)} เรียบร้อยแล้ว — กรุณาเตรียมพร้อมในวันให้บริการ`
       : `ลูกค้าชำระเงินและยืนยันการจองแล้ว — กรุณาเตรียมตัวให้บริการตามวันและเวลาที่ระบุ`;
 
-  // CG เห็นเบอร์ติดต่อลูกค้า (จาก patientName); PT เห็นเบอร์ผู้ดูแล
-  const contactRow =
-    ctx.recipientRole === 'patient' && ctx.caregiverPhone
-      ? `<p style="margin:8px 0 0; font-size:14px; color:${BRAND.mutedColor};">ติดต่อผู้ดูแล: <strong style="color:${BRAND.textColor};">${escapeHtml(ctx.caregiverPhone)}</strong></p>`
-      : '';
-
   const summary = formatBookingSummary({
     caregiverName:
       ctx.recipientRole === 'patient' ? ctx.caregiverName : undefined,
+    // ผู้รับบริการเห็นเบอร์ผู้ดูแลต่อท้ายชื่อ (design: "ชื่อ · เบอร์")
+    caregiverPhone:
+      ctx.recipientRole === 'patient' ? ctx.caregiverPhone : undefined,
     dateText: ctx.dateText,
     timeText: ctx.timeText,
     serviceText: ctx.serviceText,
@@ -52,11 +48,8 @@ export const bookingConfirmedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${summary}
-    ${contactRow}
   `;
 
   const ctaUrl = bookingDetailUrl(ctx);
@@ -88,6 +81,7 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
       ctaUrl,
       ctaLabel,
       frontendUrl: ctx.frontendUrl,
+      badge: { label: 'ยืนยันแล้ว', tone: 'success' },
     }),
     text,
   };

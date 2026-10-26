@@ -7,7 +7,7 @@ import {
   plainTextFooter,
   escapeHtml,
   emailSubject,
-  HEADING_STYLE,
+  titleBlock,
 } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
@@ -29,6 +29,7 @@ export const bookingCancelledTemplate: BookingTemplateFn = (
     : `ผู้ใช้บริการได้ยกเลิกการจองบริการ${escapeHtml(ctx.serviceText)} วันที่ ${escapeHtml(ctx.dateText)} แล้ว`;
 
   const summary = formatBookingSummary({
+    strikeDate: true,
     dateText: ctx.dateText,
     timeText: ctx.timeText,
     serviceText: ctx.serviceText,
@@ -37,9 +38,7 @@ export const bookingCancelledTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${summary}
   `;
 
@@ -70,6 +69,7 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
       ctaUrl,
       ctaLabel,
       frontendUrl: ctx.frontendUrl,
+      badge: { label: 'ยกเลิกแล้ว', tone: 'neutral' },
     }),
     text,
   };

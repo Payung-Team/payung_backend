@@ -43,7 +43,10 @@ const baseCtx: BookingEmailContext = {
 
 describe('Booking per-event templates', () => {
   describe('booking.created', () => {
-    const tpl = bookingCreatedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+    const tpl = bookingCreatedTemplate({
+      ...baseCtx,
+      recipientRole: 'caregiver',
+    });
     it('subject = "คุณมีคำขอจองใหม่ — Payung"', () => {
       expect(tpl.subject).toBe('คุณมีคำขอจองใหม่ — Payung');
     });
@@ -92,14 +95,20 @@ describe('Booking per-event templates', () => {
 
   describe('booking.confirmed (role-aware)', () => {
     it('patient เห็นเบอร์ติดต่อ caregiver', () => {
-      const tpl = bookingConfirmedTemplate({ ...baseCtx, recipientRole: 'patient' });
+      const tpl = bookingConfirmedTemplate({
+        ...baseCtx,
+        recipientRole: 'patient',
+      });
       expect(tpl.subject).toBe('การจองยืนยันแล้ว — Payung');
-      expect(tpl.html).toContain('ติดต่อผู้ดูแล');
+      // PYG-732: เบอร์อยู่ในแถว "ผู้ดูแล" ของตาราง (design: ชื่อ · เบอร์)
       expect(tpl.html).toContain('0812345678');
     });
 
     it('caregiver ไม่เห็นเบอร์ตัวเอง', () => {
-      const tpl = bookingConfirmedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+      const tpl = bookingConfirmedTemplate({
+        ...baseCtx,
+        recipientRole: 'caregiver',
+      });
       expect(tpl.html).not.toContain('ติดต่อผู้ดูแล');
       expect(tpl.html).toContain('เตรียมตัวให้บริการ');
     });
@@ -108,7 +117,10 @@ describe('Booking per-event templates', () => {
   describe('booking.completed (role-aware)', () => {
     // PYG-703: เดิม /bookings/{id}/review ไม่มี route ใน FE — ฟอร์มให้คะแนนอยู่ในหน้ารายละเอียดการจอง
     it('patient → CTA ให้คะแนน → หน้ารายละเอียดการจอง', () => {
-      const tpl = bookingCompletedTemplate({ ...baseCtx, recipientRole: 'patient' });
+      const tpl = bookingCompletedTemplate({
+        ...baseCtx,
+        recipientRole: 'patient',
+      });
       expect(tpl.subject).toBe('บริการเสร็จสิ้น — Payung');
       expect(tpl.html).toContain(
         'href="https://payung.app/bookings/booking-uuid-1"',
@@ -118,7 +130,10 @@ describe('Booking per-event templates', () => {
     });
 
     it('caregiver → CTA = ดูสรุปงาน (no review link)', () => {
-      const tpl = bookingCompletedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+      const tpl = bookingCompletedTemplate({
+        ...baseCtx,
+        recipientRole: 'caregiver',
+      });
       expect(tpl.html).not.toContain('/review');
       expect(tpl.html).toContain(
         'https://payung.app/caregiver/bookings/booking-uuid-1',
@@ -162,14 +177,20 @@ describe('Booking per-event templates', () => {
 
   describe('payment.captured (role-aware)', () => {
     it('patient เห็น "วิธีชำระเงิน"', () => {
-      const tpl = paymentCapturedTemplate({ ...baseCtx, recipientRole: 'patient' });
+      const tpl = paymentCapturedTemplate({
+        ...baseCtx,
+        recipientRole: 'patient',
+      });
       expect(tpl.subject).toBe('เรียกเก็บเงินแล้ว — Payung');
-      expect(tpl.html).toContain('วิธีชำระเงิน');
+      expect(tpl.html).toContain('ชำระด้วยบัตรเครดิต');
       expect(tpl.html).toContain('ดูใบเสร็จ');
     });
 
     it('caregiver ไม่เห็นวิธีชำระเงิน, เห็น "ค่าตอบแทน"', () => {
-      const tpl = paymentCapturedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+      const tpl = paymentCapturedTemplate({
+        ...baseCtx,
+        recipientRole: 'caregiver',
+      });
       expect(tpl.html).not.toContain('วิธีชำระเงิน');
       expect(tpl.html).toContain('ค่าตอบแทน');
       expect(tpl.html).toContain('ดูรายละเอียดงาน');
@@ -198,7 +219,10 @@ describe('Booking per-event templates', () => {
   });
 
   describe('booking.cancelled', () => {
-    const tpl = bookingCancelledTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+    const tpl = bookingCancelledTemplate({
+      ...baseCtx,
+      recipientRole: 'caregiver',
+    });
     it('subject', () => {
       expect(tpl.subject).toBe('การจองถูกยกเลิก — Payung');
     });
@@ -224,7 +248,7 @@ describe('Booking per-event templates', () => {
       expect(tpl.subject).toBe('แจ้งปัญหาใหม่ — Payung');
       expect(tpl.html).toContain('/admin/disputes');
       expect(tpl.html).toContain('ดูคิวปัญหา');
-      expect(tpl.html).toContain('รายละเอียดปัญหา');
+      expect(tpl.html).toContain('รายละเอียดที่ผู้แจ้งเขียน');
     });
 
     it('escape dispute reason ที่มี HTML', () => {
@@ -240,14 +264,20 @@ describe('Booking per-event templates', () => {
 
   describe('dispute.resolved', () => {
     it('patient CTA → /bookings/{id}', () => {
-      const tpl = disputeResolvedTemplate({ ...baseCtx, recipientRole: 'patient' });
+      const tpl = disputeResolvedTemplate({
+        ...baseCtx,
+        recipientRole: 'patient',
+      });
       expect(tpl.subject).toBe('ผลตรวจสอบปัญหา — Payung');
       expect(tpl.html).toContain('ดูผลการตรวจสอบ');
       expect(tpl.html).toContain('https://payung.app/bookings/booking-uuid-1');
     });
 
     it('caregiver ก็ได้ subject เดียวกัน', () => {
-      const tpl = disputeResolvedTemplate({ ...baseCtx, recipientRole: 'caregiver' });
+      const tpl = disputeResolvedTemplate({
+        ...baseCtx,
+        recipientRole: 'caregiver',
+      });
       expect(tpl.subject).toBe('ผลตรวจสอบปัญหา — Payung');
       expect(tpl.html).toContain('ดูผลการตรวจสอบ');
     });
@@ -276,7 +306,6 @@ describe('Booking per-event templates', () => {
         paymentHeldTemplate(baseCtx),
         paymentCapturedTemplate(baseCtx),
         refundIssuedTemplate(baseCtx),
-        disputeCreatedTemplate({ ...baseCtx, recipientRole: 'admin' }),
         disputeResolvedTemplate(baseCtx),
       ];
       for (const tpl of all) {
@@ -285,6 +314,28 @@ describe('Booking per-event templates', () => {
         expect(tpl.html).toContain('https://payung.app/notifications');
         expect(tpl.html).not.toContain('settings/email');
         expect(tpl.text).toContain('payung.care@gmail.com');
+      }
+    });
+
+    // PYG-732: อีเมลถึงแอดมินมีป้าย "Admin" และไม่มีลิงก์ตั้งค่าการรับอีเมล (แอดมินปิดรับไม่ได้)
+    it('อีเมลถึงแอดมิน: ป้าย Admin · ไม่มีลิงก์ตั้งค่าการรับอีเมล', () => {
+      const tpl = disputeCreatedTemplate({
+        ...baseCtx,
+        recipientRole: 'admin',
+      });
+      expect(tpl.html).toContain('>Admin</td>');
+      expect(tpl.html).not.toContain('/notifications');
+    });
+
+    it('ทุก template มีป้ายสถานะมุมขวาบน', () => {
+      for (const tpl of [
+        bookingCreatedTemplate(baseCtx),
+        bookingConfirmedTemplate(baseCtx),
+        paymentCapturedTemplate(baseCtx),
+      ]) {
+        expect(tpl.html).toMatch(
+          /border-radius:999px; white-space:nowrap;">[^<]+<\/span>/,
+        );
       }
     });
   });
