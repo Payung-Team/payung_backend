@@ -7,8 +7,12 @@ import { ExpressAdapter } from '@nestjs/platform-express';
 import express from 'express';
 import { AppModule } from './app.module';
 import { configureApp } from './configure-app';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { runScheduledTasks } from './cloudflare/run-scheduled';
-import { registerBackgroundWaitUntil } from './common/background-task';
+import {
+  keepEventListenersAlive,
+  registerBackgroundWaitUntil,
+} from './common/background-task';
 
 // งาน fire-and-forget (runInBackground) ต้องผูกกับ waitUntil ไม่งั้น Workers ตัดทิ้งหลังส่ง response
 registerBackgroundWaitUntil(waitUntil);
@@ -25,6 +29,8 @@ function getNestApp(): Promise<INestApplication> {
     );
     configureApp(app);
     await app.init();
+    // PYG-727 / PYG-726: event listener (notification, อีเมล, ใบ payout) ต้องรันจนจบหลังส่ง response
+    keepEventListenersAlive(app.get(EventEmitter2));
     return app;
   })();
 
