@@ -9,6 +9,8 @@ import { ServicePackageService } from './service-package.service';
 import { RecommendedServicePackagesResolver } from './service-package.resolver';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { findMemberCareProfile } from '../booking/member-care-profile';
+import { ConsentService } from '../consent/consent.service';
+import { POLICY_VERSION } from '../consent/consent.constants';
 
 /**
  * ชุดบริการที่แนะนำตอนจองแทนสมาชิกกลุ่ม — recommendedServicePackagesForMember
@@ -99,7 +101,9 @@ describe('findMemberCareProfile (shared with createBookingOnBehalf)', () => {
   it('prefers an assessed group profile and does not look at is_self', async () => {
     const tx = makeTx();
     profiles(tx, { group: true, self: true });
-    await expect(findMemberCareProfile(tx, GROUP, MEMBER)).resolves.toEqual({
+    await expect(
+      findMemberCareProfile(tx as never, GROUP, MEMBER),
+    ).resolves.toEqual({
       id: GROUP_PROFILE,
       name: 'Group',
       source: 'group',
@@ -113,7 +117,9 @@ describe('findMemberCareProfile (shared with createBookingOnBehalf)', () => {
   it("falls back to the member's own is_self profile only", async () => {
     const tx = makeTx();
     profiles(tx, { self: true });
-    await expect(findMemberCareProfile(tx, GROUP, MEMBER)).resolves.toEqual({
+    await expect(
+      findMemberCareProfile(tx as never, GROUP, MEMBER),
+    ).resolves.toEqual({
       id: SELF_PROFILE,
       name: 'Self',
       source: 'self',
@@ -131,7 +137,9 @@ describe('findMemberCareProfile (shared with createBookingOnBehalf)', () => {
   it('returns null when the member has neither', async () => {
     const tx = makeTx();
     profiles(tx, {});
-    await expect(findMemberCareProfile(tx, GROUP, MEMBER)).resolves.toBeNull();
+    await expect(
+      findMemberCareProfile(tx as never, GROUP, MEMBER),
+    ).resolves.toBeNull();
   });
 });
 
@@ -179,12 +187,15 @@ describe('ServicePackageService.recommendedForMember', () => {
       },
       select: { userId: true },
     });
-    expect(consent.findWithdrawnType).toHaveBeenCalledWith(MEMBER, [
-      'disclose_to_family_group',
-    ]);
+    expect(consent.findWithdrawnType).toHaveBeenCalledWith(
+      MEMBER,
+      ['disclose_to_family_group'],
+      tx,
+    );
     expect(consent.grantedCurrentUserIds).toHaveBeenCalledWith(
       [MEMBER],
       'disclose_to_family_group',
+      tx,
     );
   });
 
@@ -369,5 +380,97 @@ describe('recommendedServicePackagesForMember GraphQL field', () => {
       MEMBER,
       undefined,
     );
+  });
+});
+
+/**
+ * Worker: PrismaService เปิด pg pool ขนาด 1 connection ต่อ request
+ * transaction ถือ connection นั้นไว้ → อ่านอะไรผ่าน client นอก transaction ระหว่างนั้น = รอไม่มีวันได้
+ * จน transaction หมดเวลา (production 2026-10-27: หน้าจองแทนขึ้น "โหลดชุดบริการที่แนะนำไม่สำเร็จ")
+ * ใช้ ConsentService ตัวจริง — ด่านนี้พังเพราะ consent อ่านผ่าน this.prisma ไม่ใช่ tx
+ */
+describe('on the Worker one-connection pool (real ConsentService)', () => {
+  function oneConnectionPrisma(tx: ReturnType<typeof makeTx>) {
+    let inTransaction = false;
+    const outside = {
+      user_consents: {
+        // connection เดียวถูก transaction ถืออยู่ → รอไปเรื่อย ๆ
+        findMany: jest.fn(() =>
+          inTransaction
+            ? new Promise<never>(() => undefined)
+            : Promise.resolve([]),
+        ),
+      },
+    };
+    const txWithConsents = {
+      ...tx,
+      user_consents: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            user_id: MEMBER,
+            consent_type: 'disclose_to_family_group',
+            granted: true,
+            policy_version: POLICY_VERSION,
+          },
+        ]),
+      },
+    };
+    const prisma = {
+      ...outside,
+      // เหมือน interactive transaction ของ Prisma: ค้างเกินเวลา = ถูกปิดทิ้งพร้อม error
+      $transaction: async (
+        fn: (client: typeof txWithConsents) => Promise<unknown>,
+      ) => {
+        inTransaction = true;
+        try {
+          return await Promise.race([
+            fn(txWithConsents),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('Transaction already closed: timeout')),
+                200,
+              ),
+            ),
+          ]);
+        } finally {
+          inTransaction = false;
+        }
+      },
+    };
+    return { prisma, outside, txWithConsents };
+  }
+
+  it('member packages read consent through the open transaction and resolve', async () => {
+    const tx = makeTx();
+    profiles(tx, { self: true });
+    const { prisma, outside, txWithConsents } = oneConnectionPrisma(tx);
+    const service = new ServicePackageService(
+      prisma as never,
+      new ConsentService(prisma as never),
+    );
+    await expect(
+      service.recommendedForMember(BOOKER, GROUP, MEMBER),
+    ).resolves.toMatchObject({ careGroup: 'SOCIAL' });
+    expect(outside.user_consents.findMany).not.toHaveBeenCalled();
+    // findWithdrawnType + grantedCurrentUserIds
+    expect(txWithConsents.user_consents.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('a relative reading a shared group profile also resolves (existing query)', async () => {
+    const tx = makeTx();
+    tx.careRecipient.findUnique.mockResolvedValue({
+      patientId: MEMBER,
+      is_deleted: false,
+      familyGroupId: GROUP,
+    });
+    const { prisma, outside } = oneConnectionPrisma(tx);
+    const service = new ServicePackageService(
+      prisma as never,
+      new ConsentService(prisma as never),
+    );
+    await expect(
+      service.recommended(BOOKER, GROUP_PROFILE),
+    ).resolves.toMatchObject({ careGroup: 'SOCIAL' });
+    expect(outside.user_consents.findMany).not.toHaveBeenCalled();
   });
 });

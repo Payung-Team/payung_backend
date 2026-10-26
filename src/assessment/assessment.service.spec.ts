@@ -173,9 +173,11 @@ describe('AssessmentService', () => {
       is_deleted: false,
     });
     await expect(service.read('relative', ID)).resolves.toBeNull();
-    expect(consent.findWithdrawnType).toHaveBeenCalledWith(OWNER, [
-      'disclose_to_family_group',
-    ]);
+    expect(consent.findWithdrawnType).toHaveBeenCalledWith(
+      OWNER,
+      ['disclose_to_family_group'],
+      prisma,
+    );
     await expect(service.submit('relative', makeInput())).rejects.toMatchObject(
       { extensions: { code: 'ASSESSMENT_ACCESS_DENIED' } },
     );
