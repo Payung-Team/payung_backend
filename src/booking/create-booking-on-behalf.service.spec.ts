@@ -15,6 +15,8 @@ import { PrismaService } from '../common/prisma.service';
 import { BookingSettlementService } from '../payment/settlement/booking-settlement.service';
 import { JobQrService } from '../monitoring/qr/job-qr.service';
 import { ConsentService } from '../consent/consent.service';
+import { CONSENT_TYPE } from '../consent/consent.constants';
+import { CONSENT_ERROR } from '../consent/consent.errors';
 import { FG_ERROR } from '../family-group/family-group.errors';
 import { ACTIVITY_ACTION, ACTIVITY_TARGET } from '../family-group/family-group.constants';
 import { AvatarUrlService } from '../common/avatar-url.service';
@@ -562,19 +564,156 @@ describe('BookingService — createBookingOnBehalf (PYG-424)', () => {
       expect(jobQr.createForBooking).not.toHaveBeenCalled();
       expect(emitter.emit).not.toHaveBeenCalled();
     });
-    it('does not copy a personal profile or its assessment implicitly into the group', async () => {
-      prisma.careRecipient.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ name: 'Personal profile' });
-      await expect(service.createBookingOnBehalf(BOOKER_ID,
+    // PYG-729: ไม่คัดลอกยังเป็นกติกาเดิม (D6) — แต่ใบ is_self ของสมาชิกถูกผูกกับ booking ตรง ๆ แทน
+    it('does not copy a personal profile or its assessment into the group (links is_self as-is)', async () => {
+      const SELF_ID = '33333333-3333-4333-8333-333333333333';
+      prisma.careRecipient.findFirst.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.is_self ? { id: SELF_ID, name: 'Personal profile' } : null,
+          ),
+      );
+      await service.createBookingOnBehalf(
+        BOOKER_ID,
         makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined }),
-      )).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
+      );
+      expect(prisma.careRecipient.create).not.toHaveBeenCalled();
       expect(tx.careRecipient.create).not.toHaveBeenCalled();
-      expect(tx.booking.create).not.toHaveBeenCalled();
+      expect(tx.booking.create.mock.calls[0][0].data.careRecipientId).toBe(
+        SELF_ID,
+      );
     });
     it('a selected profile without assessment is rejected even when the booker has one', async () => {
       prisma.careRecipient.findUnique.mockResolvedValue({ id: RECIPIENT_ID, name: 'Relative', patientId: OWNER_ID, familyGroupId: GROUP_ID, is_deleted: false });
       tx.careRecipientAssessment.findUnique.mockResolvedValue(null);
       await expect(service.createBookingOnBehalf(BOOKER_ID, makeInput())).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
       expect(tx.careRecipientAssessment.findUnique).toHaveBeenCalledWith({ where: { careRecipientId: RECIPIENT_ID }, select: { id: true } });
+      expect(tx.booking.create).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── PYG-729: จองแทนสมาชิก (memberUserId) ด้วยใบ is_self ที่เจ้าตัวประเมินไว้ตอนสมัคร ──────
+  describe("PYG-729 — member-only booking uses the member's own assessed is_self profile", () => {
+    const SELF_ID = '33333333-3333-4333-8333-333333333333';
+    const GROUP_PROFILE_ID = '44444444-4444-4444-8444-444444444444';
+    const memberInput = () =>
+      makeInput({ memberUserId: OWNER_ID, careRecipientId: undefined });
+
+    /** ① โปรไฟล์ในกลุ่มที่ประเมินแล้ว · ② ใบ is_self — ตอบตาม where ที่ service ถาม */
+    function mockMemberProfiles(profiles: {
+      group?: object | null;
+      self?: object | null;
+    }) {
+      prisma.careRecipient.findFirst.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.is_self
+              ? (profiles.self ?? null)
+              : where.familyGroupId === GROUP_ID
+                ? (profiles.group ?? null)
+                : null,
+          ),
+      );
+    }
+
+    it("no assessed group profile → books against the member's is_self profile", async () => {
+      mockMemberProfiles({ self: { id: SELF_ID, name: 'สมศรี ใจดี' } });
+
+      const result = await service.createBookingOnBehalf(
+        BOOKER_ID,
+        memberInput(),
+      );
+
+      const data = tx.booking.create.mock.calls[0][0].data;
+      expect(data.careRecipientId).toBe(SELF_ID);
+      expect(data.patientName).toBe('สมศรี ใจดี');
+      // คนกดจองยังเป็นเจ้าของ booking (จ่ายเงิน) และ booking ยังอยู่ในบริบทกลุ่ม
+      expect(data.patientId).toBe(BOOKER_ID);
+      expect(data.familyGroupId).toBe(GROUP_ID);
+      expect(result.id).toBe(BOOKING_ID);
+    });
+
+    it('the assessment gate checks the is_self profile the booking is linked to', async () => {
+      mockMemberProfiles({ self: { id: SELF_ID, name: 'สมศรี ใจดี' } });
+
+      await service.createBookingOnBehalf(BOOKER_ID, memberInput());
+
+      expect(tx.careRecipientAssessment.findUnique).toHaveBeenCalledWith({
+        where: { careRecipientId: SELF_ID },
+        select: { id: true },
+      });
+    });
+
+    it("looks up assessed group profiles first, then only the member's is_self profile", async () => {
+      mockMemberProfiles({ self: { id: SELF_ID, name: 'สมศรี ใจดี' } });
+
+      await service.createBookingOnBehalf(BOOKER_ID, memberInput());
+
+      expect(prisma.careRecipient.findFirst).toHaveBeenNthCalledWith(1, {
+        where: {
+          patientId: OWNER_ID,
+          familyGroupId: GROUP_ID,
+          is_deleted: false,
+          assessment: { isNot: null },
+        },
+        select: { id: true, name: true },
+        orderBy: { updated_at: 'desc' },
+      });
+      // ★ is_self: true — โปรไฟล์ส่วนตัวใบอื่นของสมาชิก (คนที่เขาดูแล) ไม่ถูกหยิบมาเด็ดขาด
+      expect(prisma.careRecipient.findFirst).toHaveBeenNthCalledWith(2, {
+        where: {
+          patientId: OWNER_ID,
+          is_self: true,
+          familyGroupId: null,
+          is_deleted: false,
+        },
+        select: { id: true, name: true },
+        orderBy: { updated_at: 'desc' },
+      });
+    });
+
+    it('an assessed group profile still wins over is_self (existing behaviour)', async () => {
+      mockMemberProfiles({
+        group: { id: GROUP_PROFILE_ID, name: 'คุณยายสมศรี' },
+        self: { id: SELF_ID, name: 'สมศรี ใจดี' },
+      });
+
+      await service.createBookingOnBehalf(BOOKER_ID, memberInput());
+
+      expect(tx.booking.create.mock.calls[0][0].data.careRecipientId).toBe(
+        GROUP_PROFILE_ID,
+      );
+      expect(prisma.careRecipient.findFirst).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ is_self: true }),
+        }),
+      );
+    });
+
+    it('is_self without an assessment → ASSESSMENT_REQUIRED and nothing is written', async () => {
+      mockMemberProfiles({ self: { id: SELF_ID, name: 'สมศรี ใจดี' } });
+      tx.careRecipientAssessment.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createBookingOnBehalf(BOOKER_ID, memberInput()),
+      ).rejects.toMatchObject({ extensions: { code: 'ASSESSMENT_REQUIRED' } });
+      expect(tx.booking.create).not.toHaveBeenCalled();
+      expect(tx.careRecipient.create).not.toHaveBeenCalled();
+      expect(jobQr.createForBooking).not.toHaveBeenCalled();
+    });
+
+    it('member withdrew family-group disclosure → CONSENT_WITHDRAWN before any profile is read', async () => {
+      mockMemberProfiles({ self: { id: SELF_ID, name: 'สมศรี ใจดี' } });
+      consent.findWithdrawnType.mockResolvedValue(
+        CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      );
+
+      await expect(
+        service.createBookingOnBehalf(BOOKER_ID, memberInput()),
+      ).rejects.toMatchObject({
+        extensions: { code: CONSENT_ERROR.WITHDRAWN },
+      });
+      expect(prisma.careRecipient.findFirst).not.toHaveBeenCalled();
       expect(tx.booking.create).not.toHaveBeenCalled();
     });
   });
