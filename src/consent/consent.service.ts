@@ -74,6 +74,15 @@ export interface ConsentEvidence {
 /** client ที่ใช้เขียนได้ทั้ง prisma ปกติและ tx ของผู้เรียก */
 type PrismaWriter = Pick<PrismaService, 'user_consents'> | Prisma.TransactionClient;
 
+/**
+ * ตัวอ่าน user_consents — ส่ง tx มาเมื่อเรียกจากใน interactive transaction
+ *
+ * ★ บน Worker แต่ละ request มี pg pool ขนาด 1 connection (PrismaService max: 1)
+ *   transaction ถือ connection นั้นไว้ ถ้าอ่านผ่าน this.prisma ระหว่างนั้น คำขอจะรอ connection
+ *   ที่ไม่มีวันว่าง จน transaction หมดเวลา → ผู้ใช้เห็น error (เคยเกิดกับชุดบริการตอนจองแทนสมาชิก)
+ */
+export type ConsentReader = Pick<Prisma.TransactionClient, 'user_consents'>;
+
 /** ชนิดความยินยอมที่ระบบรู้จัก — กันไม่ให้เขียนค่ามั่วลงตารางที่แก้ย้อนหลังไม่ได้ */
 const KNOWN_CONSENT_TYPES: ReadonlySet<string> = new Set(Object.values(CONSENT_TYPE));
 
@@ -454,14 +463,17 @@ export class ConsentService {
    *   disclose_to_caregiver ที่ยังไม่มีจุดขอจริง จะจองไม่ได้ทั้งหมดถ้าตีความว่า
    *   "ไม่มีแถว = ไม่ยินยอม" · การขอความยินยอมย้อนหลังเป็นงานของ PYG-504
    *   → ด่านนี้บล็อกเฉพาะคนที่ "กดถอนเอง" จึงเปิดใช้ได้ทันทีโดยไม่กระทบผู้ใช้เดิม
+   *
+   * `db`: เรียกจากใน transaction ต้องส่ง tx มาด้วย — ดู ConsentReader
    */
   async findWithdrawnType(
     userId: string,
     types: readonly ConsentType[],
+    db: ConsentReader = this.prisma,
   ): Promise<ConsentType | null> {
     if (types.length === 0) return null;
 
-    const rows = await this.prisma.user_consents.findMany({
+    const rows = await db.user_consents.findMany({
       where: { user_id: userId, consent_type: { in: [...types] } },
       orderBy: { granted_at: 'desc' },
       select: { consent_type: true, granted: true },
@@ -511,15 +523,18 @@ export class ConsentService {
    *   ใช้ตอนจะ "เปิดเผยเพิ่ม" (เช่น โปรไฟล์ส่วนตัวให้สมาชิกกลุ่มเห็นตอนจองแทน)
    *   ซึ่งต้องมีความยินยอมชัดแจ้ง ไม่ใช่แค่ "ยังไม่ได้ถอน"
    * แถวล่าสุดต้อง granted = true และเป็นนโยบายเวอร์ชันปัจจุบัน — ยิง query เดียว
+   *
+   * `db`: เรียกจากใน transaction ต้องส่ง tx มาด้วย — ดู ConsentReader
    */
   async grantedCurrentUserIds(
     userIds: readonly string[],
     type: ConsentType,
+    db: ConsentReader = this.prisma,
   ): Promise<Set<string>> {
     const ids = [...new Set(userIds.filter(Boolean))];
     if (ids.length === 0) return new Set();
 
-    const rows = await this.prisma.user_consents.findMany({
+    const rows = await db.user_consents.findMany({
       where: { user_id: { in: ids }, consent_type: type },
       orderBy: { granted_at: 'desc' },
       select: { user_id: true, granted: true, policy_version: true },
