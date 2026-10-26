@@ -508,3 +508,21 @@ root query เป็น non-null จึงเกิด data=null เมื่อ
 ผู้ใช้สั่งทำ BE ต่อจาก contract นี้ในแชตวันที่ 19 ต.ค. 2026 และกำหนดให้กลุ่มที่ไม่รู้จักตอบว่างพร้อม log จึงแก้ §5/§6 ให้ตรงข้อกำหนดล่าสุด ขาอ่านใช้ฟังก์ชันตรวจสิทธิ์ร่วมกับ S08 (owner/ACTIVE family/consent) ไม่สร้างนโยบาย role ใหม่ และไม่เปลี่ยน logic booking
 
 Prisma models ทั้งสามมีอยู่แล้วและตรง migration PYG-627 จึงไม่เพิ่ม model ซ้ำหรือสร้าง migration ใหม่ Query อ่าน group และ package/items ใน read-only Repeatable Read transaction เดียว รวม items ด้วย include; ไม่ cache ข้ามคำขอ ชื่อบริการไทย/อังกฤษอ่านจาก catalog label ของ BE ซึ่งใช้รหัสเดียวกับประเภทงานกลาง ส่วนชุด/องค์ประกอบ/การจับคู่มาจาก DB ทั้งหมด
+
+## 13. จองแทนสมาชิกกลุ่ม — `recommendedServicePackagesForMember` (2026-10-27)
+
+ปัญหา: หน้าจองแทนสมาชิกกลุ่มไม่เคยมีชุดแนะนำ FE มีแค่ `memberUserId` (`groupBookingRecipients` ไม่คืน id โปรไฟล์) และแบบประเมินของสมาชิกส่วนใหญ่อยู่ที่ใบ `is_self` ส่วนตัว (`familyGroupId = null`) ซึ่ง §6 ไม่ให้สมาชิกคนอื่นอ่าน FE จึงปิดส่วนนี้ไว้
+
+```graphql
+recommendedServicePackagesForMember(
+  groupId: ID!
+  memberUserId: ID!
+  selectedServiceType: String
+): RecommendedServicePackages!
+```
+
+- ผลลัพธ์รูปเดียวกับ `recommendedServicePackages` ทุกอย่าง (§5, §7)
+- ใช้ใบเดียวกับที่ `createBookingOnBehalf(memberUserId)` ผูกจริง (`findMemberCareProfile`): ① โปรไฟล์ในกลุ่มที่ประเมินแล้ว ② ใบ `is_self` ของสมาชิก · ไม่มีทั้งคู่ = `careGroup: null, packages: []`
+- สิทธิ์: ผู้เรียกและสมาชิก ACTIVE ในกลุ่มทั้งคู่ · สมาชิกถอน `disclose_to_family_group` → ปฏิเสธ · ใบ `is_self` ต้องยินยอม `disclose_to_family_group` ชัดแจ้งเวอร์ชันปัจจุบัน (เกณฑ์เดียวกับ autofill ของ `groupBookingRecipients`) · ดูของตัวเองได้เสมอ
+- ไม่ผ่านสิทธิ์ทุกกรณีตอบ `ASSESSMENT_ACCESS_DENIED` (403) ตัวเดียวกับ §6 — FE แสดงเป็น "ยังแนะนำให้สมาชิกคนนี้ไม่ได้" ไม่ใช่ error ให้กดลองใหม่
+- query เดิมที่รับ `careRecipientId` ไม่เปลี่ยน

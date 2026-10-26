@@ -3,6 +3,7 @@ import { CaregiverNotEligibleError, assertCaregiverEligible, eligibleIdsForBooki
 import { bookingEvidenceReferenceDate } from '../matching/matching.policy';
 import { recalculateBookingRequirements } from './booking-requirements.persistence';
 import { readSavedBookingLevels, bookingLevelForRest } from './level/booking-level.read';
+import { findMemberCareProfile } from './member-care-profile';
 import {
   ConflictException,
   ForbiddenException,
@@ -512,31 +513,13 @@ export class BookingService {
     // ★ อยู่หลังเช็คสมาชิก — คนนอกกลุ่มจะใช้ error นี้แอบดูความยินยอมของใครไม่ได้
     await this.assertOnBehalfConsents(memberUserId, bookerId, groupId);
 
-    // ① โปรไฟล์ในกลุ่มที่มีแบบประเมินแล้ว
-    const assessedGroupProfile = await this.prisma.careRecipient.findFirst({
-      where: {
-        patientId: memberUserId,
-        familyGroupId: groupId,
-        is_deleted: false,
-        assessment: { isNot: null },
-      },
-      select: { id: true, name: true },
-      orderBy: { updated_at: 'desc' },
-    });
-    if (assessedGroupProfile) return assessedGroupProfile;
-
-    // ② ใบ is_self ของสมาชิก (ผู้ใช้หนึ่งคนมีใบเดียว — orderBy กันข้อมูลเก่าที่ซ้ำ)
-    const selfProfile = await this.prisma.careRecipient.findFirst({
-      where: {
-        patientId: memberUserId,
-        is_self: true,
-        familyGroupId: null,
-        is_deleted: false,
-      },
-      select: { id: true, name: true },
-      orderBy: { updated_at: 'desc' },
-    });
-    if (selfProfile) return selfProfile;
+    // ① โปรไฟล์ในกลุ่มที่ประเมินแล้ว ② ใบ is_self — ตัวหาเดียวกับชุดบริการที่แนะนำตอนจองแทน (S14)
+    const profile = await findMemberCareProfile(
+      this.prisma,
+      groupId,
+      memberUserId,
+    );
+    if (profile) return { id: profile.id, name: profile.name };
 
     return { name: await this.resolveMemberAccountName(memberUserId) };
   }
