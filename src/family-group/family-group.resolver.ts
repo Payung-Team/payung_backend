@@ -12,6 +12,7 @@ import { requestEvidenceOf } from '../common/utils/request-evidence';
 import type { GqlContext } from '../common/types/gql-context.type';
 import { UseGuards } from '@nestjs/common';
 import { FamilyGroupService } from './family-group.service';
+import { FamilyGroupAvatarService } from './family-group-avatar.service';
 import { CreateFamilyGroupInput } from './dto/create-family-group.input';
 import { RenameFamilyGroupInput } from './dto/rename-family-group.input';
 import { RemoveMemberInput } from './dto/remove-member.input';
@@ -75,7 +76,10 @@ const JOIN_RATE_LIMIT_NOTE =
 @Resolver(() => FamilyGroup)
 @UseGuards(SupabaseAuthGuard, RolesGuard, FamilyGroupGuard)
 export class FamilyGroupResolver {
-  constructor(private readonly familyGroupService: FamilyGroupService) {}
+  constructor(
+    private readonly familyGroupService: FamilyGroupService,
+    private readonly groupAvatarService: FamilyGroupAvatarService,
+  ) {}
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Queries
@@ -145,7 +149,26 @@ export class FamilyGroupResolver {
     @Args('groupId', { type: () => ID }) groupId: string,
     @CurrentUser() user: AuthUser,
   ): Promise<DeleteFamilyGroupResult> {
-    return this.familyGroupService.deleteFamilyGroup(user.id, groupId);
+    const result = await this.familyGroupService.deleteFamilyGroup(
+      user.id,
+      groupId,
+    );
+    // รูปกลุ่มอยู่ใน Storage ไม่ถูกลบตาม FK — ลบหลังลบกลุ่มสำเร็จ (ล้มแค่ log)
+    await this.groupAvatarService.removeQuietly(groupId);
+    return result;
+  }
+
+  @Mutation(() => FamilyGroup, {
+    description:
+      'ลบรูปกลุ่ม (เจ้าของเท่านั้น) — กลับไปแสดงตัวอักษรย่อของชื่อกลุ่ม. ไม่มีรูปอยู่แล้วก็สำเร็จ. อัปโหลด/เปลี่ยนรูปที่ POST /api/v1/family-groups/:groupId/avatar',
+  })
+  @GroupRole(GROUP_ROLE.OWNER)
+  async removeFamilyGroupAvatar(
+    @Args('groupId', { type: () => ID }) groupId: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<FamilyGroup> {
+    await this.groupAvatarService.remove(user.id, groupId);
+    return this.familyGroupService.familyGroup(user.id, groupId);
   }
 
   @Mutation(() => LeaveFamilyGroupResult, {

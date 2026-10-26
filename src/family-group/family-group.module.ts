@@ -5,9 +5,12 @@ import { FamilyGroupResolver } from './family-group.resolver';
 import { FamilyGroupGuard } from './guards/family-group.guard';
 import { FamilyBookingResolver } from './family-booking.resolver';
 import {
+  FamilyGroupAvatarResolver,
   FamilyGroupMemberAvatarResolver,
   FamilyGroupActivityActorAvatarResolver,
 } from './family-avatar.resolver';
+import { FamilyGroupAvatarService } from './family-group-avatar.service';
+import { FamilyGroupAvatarController } from './family-group-avatar.controller';
 import { BookingModule } from '../booking/booking.module';
 import { ConsentModule } from '../consent/consent.module';
 
@@ -29,6 +32,8 @@ import { ConsentModule } from '../consent/consent.module';
   // PYG-424: BookingModule ให้ BookingService สำหรับ mutation createBookingOnBehalf
   // PYG-540: ConsentModule ให้ ConsentService — ซ่อนโปรไฟล์/ฟีดของคนที่ถอนความยินยอมเปิดเผยให้กลุ่ม
   imports: [CommonModule, BookingModule, ConsentModule],
+  // รูปกลุ่ม: อัปโหลดเป็น REST เพราะต้องรับไฟล์ (ลบรูปเป็น mutation ใน FamilyGroupResolver)
+  controllers: [FamilyGroupAvatarController],
   providers: [
     FamilyGroupResolver,
     // PYG-424: จองแทน + ลิสต์ผู้รับบริการของกลุ่ม
@@ -36,6 +41,9 @@ import { ConsentModule } from '../consent/consent.module';
     // sign avatarUrl (storage path ของ bucket private) ของสมาชิก/ผู้ลงมือในฟีด
     FamilyGroupMemberAvatarResolver,
     FamilyGroupActivityActorAvatarResolver,
+    // รูปของกลุ่มเอง — ไฟล์ใน bucket profile-photos ที่ path ตายตัวต่อกลุ่ม
+    FamilyGroupAvatarResolver,
+    FamilyGroupAvatarService,
     FamilyGroupService,
     FamilyGroupGuard,
   ],
