@@ -1467,6 +1467,10 @@ enum EntityTypeEnum {
 }
 
 type FamilyGroup {
+  """
+  รูปกลุ่ม (signed URL หมดอายุ 1 ชม.) — null = ยังไม่ตั้งรูป ให้แสดงตัวอักษรย่อของชื่อกลุ่ม
+  """
+  avatarUrl: String
   createdAt: DateTime!
 
   """
@@ -2590,6 +2594,11 @@ type Mutation {
   Admin only: Reject a pending caregiver profile photo with a reason (required). The current avatar is kept. Records kyc_reviews (profile_photo_rejected) and notifies the caregiver.
   """
   rejectProfilePhoto(input: RejectProfilePhotoInput!): ProfilePhotoReviewResult!
+
+  """
+  ลบรูปกลุ่ม (เจ้าของเท่านั้น) — กลับไปแสดงตัวอักษรย่อของชื่อกลุ่ม. ไม่มีรูปอยู่แล้วก็สำเร็จ. อัปโหลด/เปลี่ยนรูปที่ POST /api/v1/family-groups/:groupId/avatar
+  """
+  removeFamilyGroupAvatar(groupId: ID!): FamilyGroup!
 
   """
   นำโปรไฟล์ออกจากกลุ่ม (unshare — โปรไฟล์ยังอยู่เป็นของส่วนตัวของเจ้าของ) — เฉพาะเจ้าของโปรไฟล์

@@ -19,6 +19,9 @@ import {
   GroupRoleMetadata,
 } from './decorators/group-role.decorator';
 import { GROUP_ROLE } from './family-group.constants';
+import { FamilyGroupService } from './family-group.service';
+import { FamilyGroupAvatarService } from './family-group-avatar.service';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
 
 describe('FamilyGroupResolver — สิทธิ์ของลิงก์เข้าร่วมกลุ่ม (SCR-FG2-001 Amendment 1)', () => {
   const reflector = new Reflector();
@@ -76,4 +79,77 @@ describe('FamilyGroupResolver — rate limit ของลิงก์เข้�
       expect(methodGuardsOf(method)).not.toContain(JoinLinkRateLimitGuard);
     },
   );
+});
+
+/**
+ * รูปกลุ่ม — ลบรูปต้องเป็นเจ้าของ และลบกลุ่มแล้วต้องลบไฟล์รูปตาม (ไฟล์ไม่หายตาม FK ของดีบี)
+ */
+describe('FamilyGroupResolver — รูปกลุ่ม', () => {
+  const reflector = new Reflector();
+  const USER = { id: 'user-owner' } as AuthUser;
+  const GROUP_ID = 'group-1';
+
+  let familyGroupService: {
+    deleteFamilyGroup: jest.Mock;
+    familyGroup: jest.Mock;
+  };
+  let groupAvatarService: { remove: jest.Mock; removeQuietly: jest.Mock };
+  let resolver: FamilyGroupResolver;
+
+  beforeEach(() => {
+    familyGroupService = {
+      deleteFamilyGroup: jest
+        .fn()
+        .mockResolvedValue({ id: GROUP_ID, deleted: true }),
+      familyGroup: jest.fn().mockResolvedValue({ id: GROUP_ID }),
+    };
+    groupAvatarService = {
+      remove: jest.fn().mockResolvedValue(undefined),
+      removeQuietly: jest.fn().mockResolvedValue(undefined),
+    };
+    resolver = new FamilyGroupResolver(
+      familyGroupService as unknown as FamilyGroupService,
+      groupAvatarService as unknown as FamilyGroupAvatarService,
+    );
+  });
+
+  it('removeFamilyGroupAvatar เป็นของเจ้าของเท่านั้น (@GroupRole OWNER)', () => {
+    const method = 'removeFamilyGroupAvatar' as const;
+    expect(
+      reflector.get<GroupRoleMetadata | undefined>(
+        GROUP_ROLE_KEY,
+        FamilyGroupResolver.prototype[method],
+      )?.role,
+    ).toBe(GROUP_ROLE.OWNER);
+  });
+
+  it('removeFamilyGroupAvatar ลบรูปแล้วคืนกลุ่ม (FE อัปเดต cache จากผลนี้)', async () => {
+    await expect(
+      resolver.removeFamilyGroupAvatar(GROUP_ID, USER),
+    ).resolves.toEqual({ id: GROUP_ID });
+    expect(groupAvatarService.remove).toHaveBeenCalledWith(USER.id, GROUP_ID);
+    expect(familyGroupService.familyGroup).toHaveBeenCalledWith(
+      USER.id,
+      GROUP_ID,
+    );
+  });
+
+  it('deleteFamilyGroup สำเร็จ → ลบไฟล์รูปของกลุ่มตาม', async () => {
+    await expect(resolver.deleteFamilyGroup(GROUP_ID, USER)).resolves.toEqual({
+      id: GROUP_ID,
+      deleted: true,
+    });
+    expect(groupAvatarService.removeQuietly).toHaveBeenCalledWith(GROUP_ID);
+  });
+
+  it('deleteFamilyGroup ล้ม → ไม่แตะไฟล์รูป', async () => {
+    familyGroupService.deleteFamilyGroup.mockRejectedValue(
+      new Error('not owner'),
+    );
+
+    await expect(resolver.deleteFamilyGroup(GROUP_ID, USER)).rejects.toThrow(
+      'not owner',
+    );
+    expect(groupAvatarService.removeQuietly).not.toHaveBeenCalled();
+  });
 });
