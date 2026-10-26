@@ -3445,6 +3445,11 @@ type Query {
   recommendedServicePackages(careRecipientId: ID!, selectedServiceType: String): RecommendedServicePackages!
 
   """
+  ชุดบริการที่แนะนำตอนจองแทนสมาชิกกลุ่มครอบครัว — ใช้โปรไฟล์เดียวกับที่ createBookingOnBehalf(memberUserId) จะผูกจริง. ผู้เรียกและสมาชิกต้อง ACTIVE ในกลุ่มนี้ · ไม่ผ่านสิทธิ์ = ASSESSMENT_ACCESS_DENIED · สมาชิกยังไม่มีโปรไฟล์/ผลประเมิน = careGroup null
+  """
+  recommendedServicePackagesForMember(groupId: ID!, memberUserId: ID!, selectedServiceType: String): RecommendedServicePackages!
+
+  """
   Admin only: reconciliation report (payments vs Omise vs payouts) for a date window.
   """
   reconciliationReport(input: ReconciliationReportInput!): ReconReport!
