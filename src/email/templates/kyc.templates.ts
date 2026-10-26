@@ -14,6 +14,10 @@
  */
 import {
   wrapHtml,
+  titleBlock,
+  stepList,
+  issueCard,
+  BRAND,
   plainTextFooter,
   escapeHtml,
   emailSubject,
@@ -37,10 +41,10 @@ export function kycSubmittedTemplate(
   const subject = emailSubject('รับเอกสารยืนยันตัวตนแล้ว');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName)}</p>
-    <p>เราได้รับเอกสารยืนยันตัวตนของคุณเรียบร้อยแล้ว 🎯</p>
-    <p>ทีมงานจะตรวจสอบและแจ้งผลภายใน <strong>1–2 วันทำการ</strong></p>
-    <p>คุณสามารถติดตามสถานะได้ที่หน้าโปรไฟล์</p>
+    ${titleBlock(
+      'เราได้รับเอกสารของคุณแล้ว',
+      `${greetingHtml(displayName)} ทีมงานกำลังตรวจสอบเอกสารยืนยันตัวตนของคุณ โดยปกติใช้เวลา <strong>1–2 วันทำการ</strong> เราจะแจ้งผลทางอีเมล`,
+    )}
   `;
 
   const text = `${greetingText(displayName)}
@@ -57,6 +61,7 @@ export function kycSubmittedTemplate(
       ctaUrl: `${frontendUrl}/kyc`,
       ctaLabel: 'ดูสถานะการตรวจสอบ',
       frontendUrl,
+      badge: { label: 'กำลังตรวจสอบ', tone: 'info' },
     }),
     text,
   };
@@ -71,15 +76,15 @@ export function kycVerifiedTemplate(
   const subject = emailSubject('ยืนยันตัวตนสำเร็จ! 🎉 พร้อมรับงานได้เลย');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName)}</p>
-    <p><strong>ยินดีด้วย! 🎉</strong> เอกสารของคุณผ่านการตรวจสอบเรียบร้อยแล้ว</p>
-    <p>ตอนนี้คุณสามารถ:</p>
-    <ul style="line-height:1.8;">
-      <li>เปิดรับงานจากผู้ใช้บริการ</li>
-      <li>ตั้งวันและช่วงเวลาที่สะดวกรับงาน</li>
-      <li>แก้ไขโปรไฟล์ให้ผู้ใช้บริการรู้จักคุณมากขึ้น</li>
-    </ul>
-    <p>เริ่มต้นรับงานแรกของคุณได้เลย!</p>
+    ${titleBlock(
+      'ยินดีด้วย คุณพร้อมรับงานแล้ว',
+      `${greetingHtml(displayName)} เอกสารของคุณผ่านการตรวจสอบเรียบร้อยแล้ว ทำ 3 อย่างนี้เพื่อเริ่มรับงานแรก`,
+    )}
+    ${stepList([
+      ['ตั้งวันและเวลาที่รับงาน', 'ลูกค้าจะเห็นคุณเฉพาะช่วงที่เปิดรับงาน'],
+      ['เพิ่มบัญชีรับเงิน', 'เพื่อรับค่าตอบแทนหลังจบงาน'],
+      ['เปิดการแจ้งเตือน', 'เพื่อไม่พลาดคำขอจองจากลูกค้า'],
+    ])}
   `;
 
   const text = `${greetingText(displayName)}
@@ -87,15 +92,19 @@ export function kycVerifiedTemplate(
 ยินดีด้วย! เอกสารของคุณผ่านการตรวจสอบเรียบร้อยแล้ว
 ตอนนี้คุณสามารถเปิดรับงานจากผู้ใช้บริการได้เลย
 
-เปิดรับงาน: ${frontendUrl}/caregiver-home${plainTextFooter(frontendUrl)}`;
+ตั้งวันและเวลาที่รับงาน: ${frontendUrl}/caregiver/settings/job-reception${plainTextFooter(frontendUrl)}`;
 
   return {
     subject,
     html: wrapHtml({
       bodyHtml,
-      ctaUrl: `${frontendUrl}/caregiver-home`,
-      ctaLabel: 'เปิดรับงาน',
+      ctaUrl: `${frontendUrl}/caregiver/settings/job-reception`,
+      ctaLabel: 'ตั้งวันและเวลาที่รับงาน',
+      secondaryLinks: [
+        { label: 'ไปหน้าหลักผู้ดูแล', url: `${frontendUrl}/caregiver-home` },
+      ],
       frontendUrl,
+      badge: { label: 'ยืนยันแล้ว', tone: 'success' },
     }),
     text,
   };
@@ -110,19 +119,13 @@ export function kycRejectedTemplate(
 ): EmailTemplate {
   const subject = emailSubject('เอกสารยืนยันตัวตนไม่ผ่าน');
 
-  // reason มาจาก admin → escape ก่อนใส่ HTML กัน XSS
-  const escapedReason = escapeHtml(reason);
-
+  // reason มาจาก admin — issueCard escape ให้ (กัน XSS)
   const bodyHtml = `
-    <p>${greetingHtml(displayName)}</p>
-    <p>เราต้องเสียใจที่จะแจ้งให้ทราบว่า เอกสารยืนยันตัวตนของคุณ <strong>ไม่ผ่านการตรวจสอบ</strong></p>
-
-    <div style="background:#fff5f5; border-left:4px solid #e53935; padding:12px 16px; margin:16px 0;">
-      <p style="margin:0; font-weight:600; color:#c62828;">เหตุผล:</p>
-      <p style="margin:8px 0 0;">${escapedReason}</p>
-    </div>
-
-    <p>กรุณาแก้ไขและส่งเอกสารใหม่อีกครั้ง — ทีมงานจะตรวจสอบให้โดยเร็วที่สุด</p>
+    ${titleBlock(
+      'เอกสารยืนยันตัวตนยังไม่ผ่าน',
+      `${greetingHtml(displayName)} ไม่ต้องกังวล แก้ไขตามเหตุผลด้านล่าง แล้วส่งเอกสารกลับมาได้เลย`,
+    )}
+    ${issueCard('เหตุผลจากทีมตรวจสอบ', reason)}
   `;
 
   const text = `${greetingText(displayName)}
@@ -138,8 +141,10 @@ export function kycRejectedTemplate(
     html: wrapHtml({
       bodyHtml,
       ctaUrl: `${frontendUrl}/kyc`,
-      ctaLabel: 'แก้ไขเอกสาร',
+      ctaLabel: 'แก้ไขและส่งเอกสารใหม่',
       frontendUrl,
+      badge: { label: 'ต้องแก้ไข', tone: 'danger' },
+      supportHtml: `ไม่แน่ใจว่าต้องแก้อย่างไร? ติดต่อทีม Payung ที่ <a href="mailto:${BRAND.contactEmail}" style="color:${BRAND.primaryColor};">${BRAND.contactEmail}</a>`,
     }),
     text,
   };
@@ -154,10 +159,10 @@ export function kycResubmittedTemplate(
   const subject = emailSubject('รับเอกสารใหม่แล้ว');
 
   const bodyHtml = `
-    <p>${greetingHtml(displayName)}</p>
-    <p>เราได้รับเอกสารยืนยันตัวตนชุดใหม่ของคุณแล้ว ✓</p>
-    <p>ทีมงานจะตรวจสอบและแจ้งผลภายใน <strong>1–2 วันทำการ</strong></p>
-    <p>ขอบคุณสำหรับความอดทนและความร่วมมือของคุณ</p>
+    ${titleBlock(
+      'ได้รับเอกสารที่แก้ไขแล้ว',
+      `ขอบคุณ${escapeHtml(displayName ? `คุณ${displayName}` : '')} เราได้รับเอกสารชุดใหม่ของคุณแล้ว และจะแจ้งผลภายใน <strong>1–2 วันทำการ</strong>`,
+    )}
   `;
 
   const text = `${greetingText(displayName)}
@@ -174,6 +179,7 @@ export function kycResubmittedTemplate(
       ctaUrl: `${frontendUrl}/kyc`,
       ctaLabel: 'ดูสถานะการตรวจสอบ',
       frontendUrl,
+      badge: { label: 'ตรวจสอบอีกครั้ง', tone: 'info' },
     }),
     text,
   };

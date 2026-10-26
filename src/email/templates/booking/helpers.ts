@@ -6,15 +6,30 @@
  * - input ที่เป็น Decimal/Date จาก Prisma → normalize ก่อนคำนวณ
  */
 import type { Prisma } from '@prisma/client';
-import { escapeHtml, greetingHtml, greetingText, BRAND } from '../layout';
+import {
+  detailTable,
+  greetingHtml,
+  greetingText,
+  type DetailRow,
+} from '../layout';
 import type { BookingEmailContext } from './types';
 // PYG-526: รูปแบบเวลาใบจองกลางของระบบ — อีเมลต้องแสดงเหมือนหน้าเว็บ
 import { formatBookingTimeRange } from '../../../booking/booking-time-display';
 
 // ─── Constants ──────────────────────────────────────────────────────────
 const THAI_MONTHS = [
-  'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
-  'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม',
+  'มกราคม',
+  'กุมภาพันธ์',
+  'มีนาคม',
+  'เมษายน',
+  'พฤษภาคม',
+  'มิถุนายน',
+  'กรกฎาคม',
+  'สิงหาคม',
+  'กันยายน',
+  'ตุลาคม',
+  'พฤศจิกายน',
+  'ธันวาคม',
 ];
 
 const SERVICE_LABEL: Record<string, string> = {
@@ -28,7 +43,9 @@ const SERVICE_LABEL: Record<string, string> = {
 // ─── Primitives ─────────────────────────────────────────────────────────
 
 /** Decimal | number | null → number (NaN ถ้า normalize ไม่ได้) */
-export function toNumber(value: Prisma.Decimal | number | null | undefined): number {
+export function toNumber(
+  value: Prisma.Decimal | number | null | undefined,
+): number {
   if (value === null || value === undefined) return NaN;
   if (typeof value === 'number') return value;
   if (typeof (value as Prisma.Decimal).toNumber === 'function') {
@@ -38,7 +55,9 @@ export function toNumber(value: Prisma.Decimal | number | null | undefined): num
 }
 
 /** "฿1,234.50" (no decimals if integer) */
-export function formatBaht(value: Prisma.Decimal | number | null | undefined): string {
+export function formatBaht(
+  value: Prisma.Decimal | number | null | undefined,
+): string {
   const n = toNumber(value);
   if (Number.isNaN(n)) return '-';
   return `฿${n.toLocaleString('th-TH', { maximumFractionDigits: 2 })}`;
@@ -70,7 +89,10 @@ export function formatTimeRange(
 }
 
 /** "4.8 ★ (รีวิว 12 ครั้ง)" — null avg → "ยังไม่มีรีวิว" */
-export function formatRating(avg: number | null, count: number | null | undefined): string {
+export function formatRating(
+  avg: number | null,
+  count: number | null | undefined,
+): string {
   const c = count ?? 0;
   if (avg === null || avg === undefined || c === 0) return 'ยังไม่มีรีวิว';
   return `${avg.toFixed(1)} ★ (รีวิว ${c} ครั้ง)`;
@@ -120,50 +142,50 @@ export function formatPriceBreakdown(
   };
 }
 
-/** ── HTML row builder (escape ภายใน) ── */
-export function summaryRow(label: string, value: string, opts?: { bold?: boolean }): string {
-  const valStyle = opts?.bold
-    ? `color:${BRAND.textColor}; font-size:14px; font-weight:700; text-align:right;`
-    : `color:${BRAND.textColor}; font-size:14px; font-weight:600; text-align:right;`;
-  return `
-    <tr>
-      <td style="padding:8px 12px 8px 0; color:${BRAND.mutedColor}; font-size:14px; white-space:nowrap; vertical-align:top;">${escapeHtml(label)}</td>
-      <td style="padding:8px 0; ${valStyle}">${escapeHtml(value)}</td>
-    </tr>`;
-}
-
-/** wrap rows ใน table — สำหรับใช้กับ summaryRow */
-export function summaryTable(rowsHtml: string): string {
-  if (!rowsHtml.trim()) return '';
-  return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-           style="margin:16px 0; border:1px solid ${BRAND.borderColor}; border-radius:12px; padding:8px 16px; background:#FBFDFC;">
-      ${rowsHtml}
-    </table>`;
-}
-
 /**
- * formatBookingSummary — render ตารางรายละเอียด booking มาตรฐาน
- * (ใช้กับ template ที่ไม่ต้อง custom row — เช่น booking_created, booking_confirmed)
+ * formatBookingSummary — ตารางรายละเอียดการจองมาตรฐาน (PYG-732: หน้าตาตาม design · detailTable)
+ * วันที่ + เวลารวมเป็นแถวเดียว "วันและเวลา" · ยอดรวมตัวใหญ่
  */
 export function formatBookingSummary(args: {
   caregiverName?: string;
+  /** แสดงต่อท้ายชื่อผู้ดูแล เช่น "เชอรี่ ใจงาม · 4.9 ★ (รีวิว 32 ครั้ง)" */
   ratingText?: string;
+  /** แสดงต่อท้ายชื่อผู้ดูแล (เบอร์ติดต่อ) */
+  caregiverPhone?: string | null;
   dateText?: string;
   timeText?: string;
   serviceText?: string;
   locationAddress?: string;
   totalText?: string;
+  /** แถวเพิ่มท้ายตาราง เช่น เหตุผล */
+  extraRows?: DetailRow[];
+  /** วันและเวลาแบบขีดฆ่า (นัดที่ถูกยกเลิก) */
+  strikeDate?: boolean;
 }): string {
-  const rows: string[] = [];
-  if (args.caregiverName) rows.push(summaryRow('ผู้ดูแล', args.caregiverName));
-  if (args.ratingText) rows.push(summaryRow('คะแนน', args.ratingText));
-  if (args.dateText) rows.push(summaryRow('วันที่', args.dateText));
-  if (args.timeText) rows.push(summaryRow('เวลา', args.timeText));
-  if (args.serviceText) rows.push(summaryRow('บริการ', args.serviceText));
-  if (args.locationAddress) rows.push(summaryRow('สถานที่', args.locationAddress));
-  if (args.totalText) rows.push(summaryRow('ยอดรวม', args.totalText, { bold: true }));
-  return summaryTable(rows.join(''));
+  const rows: DetailRow[] = [];
+  const when = [args.dateText, args.timeText].filter(Boolean).join(' · ');
+  if (when) {
+    rows.push({
+      label: args.strikeDate ? 'นัดเดิม' : 'วันและเวลา',
+      value: when,
+      ...(args.strikeDate ? { emphasis: 'strike' as const } : {}),
+    });
+  }
+  if (args.serviceText) rows.push({ label: 'บริการ', value: args.serviceText });
+  if (args.caregiverName) {
+    rows.push({
+      label: 'ผู้ดูแล',
+      value: [args.caregiverName, args.ratingText, args.caregiverPhone]
+        .filter(Boolean)
+        .join(' · '),
+    });
+  }
+  if (args.locationAddress)
+    rows.push({ label: 'สถานที่', value: args.locationAddress });
+  if (args.totalText)
+    rows.push({ label: 'ยอดรวม', value: args.totalText, emphasis: 'strong' });
+  rows.push(...(args.extraRows ?? []));
+  return detailTable(rows);
 }
 
 /** plain-text summary (สำหรับ text/plain ของอีเมล) */

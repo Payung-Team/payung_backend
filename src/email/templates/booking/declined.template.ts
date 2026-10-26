@@ -7,7 +7,7 @@ import {
   plainTextFooter,
   escapeHtml,
   emailSubject,
-  HEADING_STYLE,
+  titleBlock,
 } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
@@ -26,26 +26,18 @@ export const bookingDeclinedTemplate: BookingTemplateFn = (
   const heading = 'ผู้ดูแลไม่สามารถรับคำขอของคุณได้';
   const intro = `เราต้องเสียใจที่จะแจ้งให้ทราบว่า คุณ${escapeHtml(ctx.caregiverName)} ไม่สามารถรับงานนี้ได้ — กรุณาลองค้นหาผู้ดูแลท่านอื่นจากระบบของเรา`;
 
-  const reasonBlock = ctx.declineReason
-    ? `
-      <div style="background:#fff5f5; border-left:4px solid #e53935; padding:12px 16px; margin:16px 0;">
-        <p style="margin:0; font-weight:600; color:#c62828;">เหตุผล:</p>
-        <p style="margin:8px 0 0;">${escapeHtml(ctx.declineReason)}</p>
-      </div>`
-    : '';
-
   const summary = formatBookingSummary({
     dateText: ctx.dateText,
     timeText: ctx.timeText,
     serviceText: ctx.serviceText,
     locationAddress: ctx.locationAddress,
+    extraRows: ctx.declineReason
+      ? [{ label: 'เหตุผล', value: ctx.declineReason }]
+      : [],
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
-    ${reasonBlock}
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${summary}
   `;
 
@@ -73,6 +65,7 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
       ctaUrl,
       ctaLabel,
       frontendUrl: ctx.frontendUrl,
+      badge: { label: 'ไม่สำเร็จ', tone: 'neutral' },
     }),
     text,
   };

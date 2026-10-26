@@ -33,6 +33,8 @@ const FE_ROUTES = [
   /^\/notifications$/,
   /^\/kyc$/,
   /^\/caregiver-home$/,
+  /^\/caregiver\/settings\/job-reception$/,
+  /^\/booking\/new$/,
   /^\/bookings\/[^/]+$/,
   /^\/caregiver\/bookings\/[^/]+$/,
   /^\/admin\/disputes$/,

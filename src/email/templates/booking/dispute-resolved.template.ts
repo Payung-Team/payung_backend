@@ -11,7 +11,7 @@ import {
   plainTextFooter,
   escapeHtml,
   emailSubject,
-  HEADING_STYLE,
+  titleBlock,
 } from '../layout';
 import type { EmailTemplate } from '../kyc.templates';
 import type { BookingTemplateFn } from './types';
@@ -45,9 +45,7 @@ export const disputeResolvedTemplate: BookingTemplateFn = (
   });
 
   const bodyHtml = `
-    <p>${greeting(ctx.recipientName)}</p>
-    <h2 style="${HEADING_STYLE}">${escapeHtml(heading)}</h2>
-    <p>${intro}</p>
+    ${titleBlock(heading, `${greeting(ctx.recipientName)} ${intro}`)}
     ${summary}
   `;
 
@@ -76,6 +74,7 @@ ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
       ctaUrl,
       ctaLabel,
       frontendUrl: ctx.frontendUrl,
+      badge: { label: 'ตรวจสอบแล้ว', tone: 'success' },
     }),
     text,
   };
