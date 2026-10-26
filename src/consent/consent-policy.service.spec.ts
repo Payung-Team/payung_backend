@@ -157,10 +157,17 @@ describe('ConsentPolicyService (PYG-472)', () => {
     expect(policy.termsOfServiceEn).toContain('24 hours');
   });
 
-  it('ข้อความสิทธิ์เจ้าของข้อมูลมีช่องทางติดต่อ', () => {
+  it('ข้อความสิทธิ์เจ้าของข้อมูลบอกสิทธิ์ครบ แต่ไม่มีอีเมลติดต่อ (ช่องทางติดต่ออยู่ในประกาศฉบับเต็ม)', () => {
     const policy = service.getPolicy();
-    expect(policy.rightsNoteTh).toContain('privacy@payung.app');
-    expect(policy.rightsNoteEn).toContain('privacy@payung.app');
+    expect(policy.rightsNoteTh).toBe(
+      'คุณมีสิทธิ์ขอดู ขอแก้ไข ขอลบ ขอให้หยุดใช้ และขอถอนความยินยอมได้ทุกเมื่อ ' +
+        'การถอนความยินยอมไม่กระทบการใช้ข้อมูลที่เกิดขึ้นก่อนหน้านั้น',
+    );
+    expect(policy.rightsNoteEn).toContain('withdraw consent at any time');
+    expect(policy.rightsNoteTh).not.toContain('@');
+    expect(policy.rightsNoteEn).not.toContain('@');
+    // ประกาศฉบับเต็มยังมีช่องทางติดต่อ
+    expect(policy.privacyNoticeTh).toContain('privacy@payung.app');
   });
 
   // ── เวอร์ชัน ──────────────────────────────────────────────────────────
