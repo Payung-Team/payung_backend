@@ -17,7 +17,6 @@ import {
   CONSENT_TYPE,
   type ConsentType,
   DATA_RETENTION_YEARS,
-  DATA_CONTROLLER,
 } from './consent.constants';
 
 export interface ConsentItemContent {
@@ -164,12 +163,18 @@ export const CONSENT_SCREEN_COPY = {
   },
 } as const;
 
-/** ข้อความสิทธิ์ของเจ้าของข้อมูล — แสดงท้ายกล่อง consent ทุกจุด */
+/**
+ * ข้อความสิทธิ์ของเจ้าของข้อมูล — แสดงท้ายกล่อง consent ทุกจุด
+ *
+ * ★ ไม่ใส่อีเมลติดต่อในกล่อง consent (ทีมขอเอาออก 2026-10-27) — ช่องทางติดต่ออยู่ในประกาศ
+ *   ความเป็นส่วนตัวฉบับเต็ม (ลิงก์ "อ่านประกาศความเป็นส่วนตัว" ข้างข้อความนี้) และหน้าตั้งค่าความเป็นส่วนตัว
+ *   แก้ถ้อยคำอย่างเดียว ไม่เปลี่ยนวัตถุประสงค์/ผู้รับข้อมูล → ไม่ขึ้น POLICY_VERSION
+ */
 export const DATA_SUBJECT_RIGHTS_NOTE = {
   th:
     'คุณมีสิทธิ์ขอดู ขอแก้ไข ขอลบ ขอให้หยุดใช้ และขอถอนความยินยอมได้ทุกเมื่อ ' +
-    `ติดต่อ ${DATA_CONTROLLER.email} · การถอนความยินยอมไม่กระทบการใช้ข้อมูลที่เกิดขึ้นก่อนหน้านั้น`,
+    'การถอนความยินยอมไม่กระทบการใช้ข้อมูลที่เกิดขึ้นก่อนหน้านั้น',
   en:
     'You have the right to access, correct, delete, restrict the use of your data, and withdraw consent at any time. ' +
-    `Contact ${DATA_CONTROLLER.email}. Withdrawal does not affect processing that already happened.`,
+    'Withdrawal does not affect processing that already happened.',
 } as const;
