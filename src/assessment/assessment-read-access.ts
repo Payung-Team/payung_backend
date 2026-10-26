@@ -5,9 +5,19 @@ import { CONSENT_TYPE } from '../consent/consent.constants';
 import { assessmentAccessDenied } from './assessment.errors';
 import { findMemberCareProfile } from '../booking/member-care-profile';
 
+/**
+ * ตัวอ่านที่ helper ในไฟล์นี้ใช้ — consent ต้องอ่านผ่าน `db` ตัวเดียวกันเสมอ
+ * ★ ชุดบริการเรียกจากใน transaction · pool บน Worker มี 1 connection (ดู ConsentReader)
+ *   ถ้าอ่าน consent ผ่าน client อื่น จะรอ connection ที่ transaction ถืออยู่จนหมดเวลา
+ */
+type AccessDb = Pick<
+  Prisma.TransactionClient,
+  'careRecipient' | 'familyGroupMember' | 'user_consents'
+>;
+
 /** Shared S08/S09 read policy; extracting it does not grant new role access. */
 export async function assertAssessmentReadAccess(
-  db: Pick<Prisma.TransactionClient, 'careRecipient' | 'familyGroupMember'>,
+  db: AccessDb,
   consent: Pick<ConsentService, 'findWithdrawnType'>,
   actorId: string,
   careRecipientId: string,
@@ -31,9 +41,11 @@ export async function assertAssessmentReadAccess(
   if (new Set(members.map((member) => member.userId)).size !== 2)
     throw assessmentAccessDenied();
   if (
-    await consent.findWithdrawnType(recipient.patientId, [
-      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
-    ])
+    await consent.findWithdrawnType(
+      recipient.patientId,
+      [CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP],
+      db,
+    )
   )
     throw assessmentAccessDenied();
 }
@@ -56,7 +68,7 @@ export async function assertAssessmentReadAccess(
  * ทุกกรณีที่ไม่ผ่านตอบ ASSESSMENT_ACCESS_DENIED ตัวเดียวกัน — ไม่บอกว่าติดข้อไหน
  */
 export async function resolveMemberAssessmentRecipient(
-  db: Pick<Prisma.TransactionClient, 'careRecipient' | 'familyGroupMember'>,
+  db: AccessDb,
   consent: Pick<ConsentService, 'findWithdrawnType' | 'grantedCurrentUserIds'>,
   actorId: string,
   groupId: string,
@@ -74,9 +86,11 @@ export async function resolveMemberAssessmentRecipient(
   const viewingSelf = actorId === memberUserId;
   if (
     !viewingSelf &&
-    (await consent.findWithdrawnType(memberUserId, [
-      CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
-    ]))
+    (await consent.findWithdrawnType(
+      memberUserId,
+      [CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP],
+      db,
+    ))
   )
     throw assessmentAccessDenied();
 
@@ -86,6 +100,7 @@ export async function resolveMemberAssessmentRecipient(
     const granted = await consent.grantedCurrentUserIds(
       [memberUserId],
       CONSENT_TYPE.DISCLOSE_TO_FAMILY_GROUP,
+      db,
     );
     if (!granted.has(memberUserId)) throw assessmentAccessDenied();
   }

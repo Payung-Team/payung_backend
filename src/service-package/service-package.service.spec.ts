@@ -241,9 +241,12 @@ describe('S14 ServicePackageService', () => {
       },
       select: { userId: true },
     });
-    expect(consent.findWithdrawnType).toHaveBeenCalledWith('owner', [
-      'disclose_to_family_group',
-    ]);
+    // ต้องอ่านผ่าน tx — pool บน Worker มี 1 connection ที่ transaction ถืออยู่
+    expect(consent.findWithdrawnType).toHaveBeenCalledWith(
+      'owner',
+      ['disclose_to_family_group'],
+      tx,
+    );
   });
   it('denies inactive/departed relatives and duplicate membership rows', async () => {
     for (const members of [
