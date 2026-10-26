@@ -54,7 +54,7 @@ const CARD_INPUT = {
 describe('PaymentService.createPayment — saveCard (opt-in เก็บบัตร)', () => {
   let service: PaymentService;
   let prisma: {
-    booking: { findUnique: jest.Mock };
+    booking: { findUnique: jest.Mock; update: jest.Mock };
     payment: { findUnique: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -85,7 +85,7 @@ describe('PaymentService.createPayment — saveCard (opt-in เก็บบั�
       paymentStatusHistory: { create: jest.fn() },
     };
     prisma = {
-      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking), update: jest.fn() },
       payment: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn().mockImplementation((cb) => cb(tx)),
     };

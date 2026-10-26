@@ -46,7 +46,7 @@ import { Prisma, booking_service_type, booking_status, time_slot } from '@prisma
 // จะตัดสิน slot คนละแบบ
 import { overlappingSlots } from '../common/constants/time-slot.constant';
 import { caregiverHasTimeConflict } from './caregiver-time-conflict';
-import { activeHourlyPrice, estimatedCostOf } from '../common/pricing/service-price';
+import { activeHourlyPrice, bookingTotals, estimatedCostOf, platformFeePercentOf } from '../common/pricing/service-price';
 // PYG-424: จองแทนในนามกลุ่มครอบครัว
 // import เฉพาะไฟล์ค่าคงที่กับ error ซึ่งเป็น plain object/class ไม่มี DI
 // → ไม่ทำให้เกิด circular dependency ระหว่าง BookingModule กับ FamilyGroupModule
@@ -162,6 +162,7 @@ type BookingWithIncludes = {
   bookingDate: Date;
   notes: string | null;
   estimatedCost: { toNumber(): number } | null;
+  platformFee?: { toNumber(): number } | null;
   confirmedAt: Date | null;
   disputeStatus: string | null;
   disputeReason: string | null;
@@ -1508,6 +1509,7 @@ export class BookingService {
       estimatedCost:    booking.estimatedCost != null
                           ? booking.estimatedCost.toNumber()
                           : undefined,
+      ...bookingTotals(booking.estimatedCost, booking.platformFee, platformFeePercentOf(process.env.PLATFORM_FEE_PERCENT)),
       caregiver,
       // PYG-634: กิจกรรมจากสำเนา ณ ตอนจอง (ไม่อ่านค่าปัจจุบันของ care_activities)
       activities:       toBookingActivities(booking.activities),
@@ -1554,6 +1556,7 @@ export class BookingService {
       estimatedCost:    booking.estimatedCost != null
                           ? booking.estimatedCost.toNumber()
                           : undefined,
+      ...bookingTotals(booking.estimatedCost, booking.platformFee, platformFeePercentOf(process.env.PLATFORM_FEE_PERCENT)),
       caregiver,
       careRecipientName: booking.careRecipient?.name ?? undefined,
       patientName:              booking.patientName              ?? undefined,

@@ -199,7 +199,7 @@ model CaregiverPayoutAccount {
 ///
 /// PYG-330 (ก้อน A2) — fee snapshot:
 ///   gross_amount = payments.amount ของ booking นั้น
-///   fee_rate     = config PAYOUT_PLATFORM_FEE_RATE (default 0.10) — snapshot ลง row เสมอ
+///   fee_rate     = config PLATFORM_FEE_PERCENT ÷ 100 (default 0.10) — snapshot ลง row เสมอ
 ///                  ห้าม default ระดับ DB / ห้ามคำนวณจาก env ตอน query (นโยบายเปลี่ยน = ประวัติเพี้ยน)
 ///   platform_fee = round(gross_amount * fee_rate, 2) HALF_UP
 ///   amount       = gross_amount - platform_fee  ← ต้องได้จาก "ลบ" เท่านั้น

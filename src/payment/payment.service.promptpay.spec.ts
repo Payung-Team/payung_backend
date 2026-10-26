@@ -173,7 +173,7 @@ describe('PaymentService — PromptPay (PYG-278)', () => {
       const result = await service.createPayment(input, asUser(PATIENT_ID, ROLE_ID.PATIENT));
 
       // ใช้ createPromptPayCharge — ไม่ใช่ createCharge
-      expect(omise.createPromptPayCharge).toHaveBeenCalledWith(120000);
+      expect(omise.createPromptPayCharge).toHaveBeenCalledWith(132000); // 1200 + fee 10%
       expect(omise.createCharge).not.toHaveBeenCalled();
 
       // payment สร้างเป็น pending + paymentMethod=promptpay

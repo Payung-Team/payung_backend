@@ -13,7 +13,8 @@
  *
  * ⚠️ Money rules (ตาม CHECK constraint `payouts_amount_split_check`):
  *   - amount = grossAmount - platformFee (ต้อง "ลบ" ไม่ใช่ gross*(1-rate) แยก)
- *   - platformFee = grossAmount * feeRate (ROUND_HALF_UP 2 ทศนิยม)
+ *   - platformFee = grossAmount - bookings.estimated_cost (ลูกค้าจ่ายค่าธรรมเนียมเพิ่มตอนตัดบัตรแล้ว
+ *     ผู้ดูแลจึงได้ราคาบริการเต็ม ไม่ถูกหัก)
  *   - feeRate = env ณ เวลานั้น (snapshot ลง row ตลอดชีวิต — นโยบายเปลี่ยนก็ไม่กระทบ row เก่า)
  */
 import { Injectable, Logger } from '@nestjs/common';
@@ -51,6 +52,7 @@ export class PayoutService {
         id: true,
         caregiverId: true,
         completedAt: true,
+        estimatedCost: true,
         payment: {
           select: {
             id: true,
@@ -118,12 +120,20 @@ export class PayoutService {
     // platformFee = round(gross * rate, 2, HALF_UP)
     // amount      = gross - platformFee  ← ห้าม gross * (1-rate) แยก
     const grossAmount = booking.payment.amount as unknown as Prisma.Decimal;
+    // ค่าเดียวกับที่ PaymentService ใช้เก็บเพิ่มจากลูกค้า (PLATFORM_FEE_PERCENT เป็น % → ÷100)
     const feeRate = new Prisma.Decimal(
-      this.config.getOrThrow<string>('PAYOUT_PLATFORM_FEE_RATE'),
+      this.config.getOrThrow<string>('PLATFORM_FEE_PERCENT'),
+    ).div(100);
+    // ค่าธรรมเนียมเก็บเพิ่มจากลูกค้าตอนตัดบัตรแล้ว (payment.amount = estimated_cost + fee)
+    // ผู้ดูแลได้ราคาบริการเต็ม → platformFee = gross − estimated_cost (ไม่หักจากผู้ดูแล)
+    // payment เก่าที่ตัดเท่า estimated_cost → fee = 0 · ยังเป็น "ลบ" เพื่อให้ผ่าน payouts_amount_split_check
+    const estimatedCost = new Prisma.Decimal(
+      (booking.estimatedCost as unknown as Prisma.Decimal | null) ?? grossAmount,
     );
-    const platformFee = grossAmount
-      .mul(feeRate)
-      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    const platformFee = Prisma.Decimal.max(
+      grossAmount.sub(estimatedCost),
+      new Prisma.Decimal(0),
+    ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     const amount = grossAmount.sub(platformFee);
 
     const holdWindowDays = Number(
