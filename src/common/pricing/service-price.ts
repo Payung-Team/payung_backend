@@ -31,6 +31,47 @@ export async function activeHourlyPrice(
   return row.pricePerHour;
 }
 
+/**
+ * ค่าธรรมเนียมแพลตฟอร์ม (บาท) = ราคาบริการ × percent/100 ปัดสตางค์ HALF_UP
+ * เก็บเพิ่มจากลูกค้าบนราคาบริการ — ผู้ดูแลได้ราคาบริการเต็ม ไม่ถูกหัก
+ */
+export function platformFeeOf(estimatedCost: number, percent: number): number {
+  return new Prisma.Decimal(estimatedCost)
+    .mul(percent)
+    .div(100)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
+    .toNumber();
+}
+
+/** PLATFORM_FEE_PERCENT จาก env/config (string) → เลข · ไม่ตั้ง/เพี้ยน → default 10 */
+export function platformFeePercentOf(raw: string | number | undefined | null): number {
+  const n = raw == null || raw === '' ? 10 : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 10;
+}
+
+/**
+ * ยอดที่ลูกค้าต้องจ่ายของใบจอง = ราคาบริการ + ค่าธรรมเนียม (ตัวเลขเดียวกับที่ตัดบัตร)
+ * ใช้ platform_fee ที่เก็บไว้ถ้ามี (ตั้งตอนชำระ) ไม่งั้นคิดจาก percent ปัจจุบัน
+ */
+export function bookingTotals(
+  estimatedCost: { toNumber(): number } | number | null | undefined,
+  storedFee: { toNumber(): number } | number | null | undefined,
+  percent: number,
+): { platformFee?: number; totalCost?: number } {
+  if (estimatedCost == null) return {};
+  const base = typeof estimatedCost === 'number' ? estimatedCost : estimatedCost.toNumber();
+  const platformFee =
+    storedFee != null
+      ? typeof storedFee === 'number'
+        ? storedFee
+        : storedFee.toNumber()
+      : platformFeeOf(base, percent);
+  return {
+    platformFee,
+    totalCost: new Prisma.Decimal(base).add(platformFee).toDecimalPlaces(2).toNumber(),
+  };
+}
+
 /** price_per_hour × durationHours ปัดเป็นสตางค์ (HALF_UP) — คำนวณด้วย Decimal ไม่ผ่าน float */
 export function estimatedCostOf(
   pricePerHour: Prisma.Decimal,

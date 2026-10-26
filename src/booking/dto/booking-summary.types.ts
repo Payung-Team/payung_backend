@@ -75,6 +75,9 @@ export class BookingSummary {
   @Field(() => Float, { nullable: true })             locationLng?: number;
   @Field({ nullable: true })                          notes?: string;
   @Field(() => Float, { nullable: true })             estimatedCost?: number;
+  // ค่าธรรมเนียมแพลตฟอร์ม (เก็บเพิ่มจากลูกค้า) และยอดที่ลูกค้าจ่ายจริง = estimatedCost + platformFee
+  @Field(() => Float, { nullable: true })             platformFee?: number;
+  @Field(() => Float, { nullable: true })             totalCost?: number;
   @Field(() => CaregiverBriefDto, { nullable: true }) caregiver?: CaregiverBriefDto;
   @Field({ nullable: true })                          careRecipientName?: string;
   // ข้อมูลผู้รับบริการที่กรอกตอนจอง — หน้ารายละเอียดฝั่งผู้จองแสดงครบ

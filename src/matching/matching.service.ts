@@ -61,6 +61,7 @@ export class MatchingService {
         familyGroupId: true,
         careRecipientId: true,
         bookingDate: true,
+        serviceType: true,
         caregiverId: true,
         status: true,
         confirmedAt: true,
@@ -108,6 +109,8 @@ export class MatchingService {
               { page, limit: 50 },
               ids,
               tx,
+              // ราคาบนการ์ดต้องเป็นราคาของบริการที่จอง — คิดราคาอย่างเดียว ไม่กรองรายชื่อ
+              [b.serviceType],
             );
             caregivers.push(...result.data);
             if (page >= result.pagination.totalPages) break;

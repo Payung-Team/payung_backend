@@ -149,7 +149,7 @@ describe('PaymentService.refundPayment (PYG-374 — thin wrapper over RefundServ
 describe('PaymentService.createPayment — duplicate guard', () => {
   let service: PaymentService;
   let prisma: {
-    booking: { findUnique: jest.Mock };
+    booking: { findUnique: jest.Mock; update: jest.Mock };
     payment: { findUnique: jest.Mock };
   };
   let omise: { createCharge: jest.Mock };
@@ -177,7 +177,7 @@ describe('PaymentService.createPayment — duplicate guard', () => {
 
   beforeEach(async () => {
     prisma = {
-      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking), update: jest.fn() },
       payment: { findUnique: jest.fn() },
     };
     omise = { createCharge: jest.fn().mockRejectedValue(CHARGE_REACHED) };
@@ -298,7 +298,7 @@ describe('PaymentService.createPayment — duplicate guard', () => {
     prisma.payment.findUnique.mockResolvedValueOnce(null);
 
     await expect(service.createPayment({ ...cardInput, saveCard: false }, patient)).rejects.toBe(CHARGE_REACHED);
-    expect(omise.createCharge).toHaveBeenCalledWith(105050, 'tokn_test_1'); // สตางค์
+    expect(omise.createCharge).toHaveBeenCalledWith(115555, 'tokn_test_1'); // สตางค์ = 1050.50 + fee 10% (105.05)
   });
 
   it.each([
@@ -369,7 +369,7 @@ describe('PaymentService.findByBookingId (PYG-278)', () => {
 describe('PaymentService.createPayment — PYG-309 reconcile + failed record', () => {
   let service: PaymentService;
   let prisma: {
-    booking: { findUnique: jest.Mock };
+    booking: { findUnique: jest.Mock; update: jest.Mock };
     payment: { findUnique: jest.Mock; create: jest.Mock; update: jest.Mock };
     paymentStatusHistory: { create: jest.Mock };
     $transaction: jest.Mock;
@@ -392,7 +392,7 @@ describe('PaymentService.createPayment — PYG-309 reconcile + failed record', (
 
   beforeEach(async () => {
     prisma = {
-      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking) },
+      booking: { findUnique: jest.fn().mockResolvedValue(acceptedBooking), update: jest.fn() },
       payment: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
       paymentStatusHistory: { create: jest.fn() },
       $transaction: jest.fn(),
@@ -480,6 +480,7 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
     payment: { findUnique: jest.Mock; update: jest.Mock };
     caregiver: { findUnique: jest.Mock };
     caregiverPayoutAccount: { findUnique: jest.Mock };
+    booking: { findUnique: jest.Mock };
     $transaction: jest.Mock;
   };
   let tx: { payment: { update: jest.Mock } };
@@ -510,6 +511,8 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
       payment: { findUnique: jest.fn(), update: jest.fn() },
       caregiver: { findUnique: jest.fn() },
       caregiverPayoutAccount: { findUnique: jest.fn() },
+      // ราคาบริการ 1200 (ไม่รวมค่าธรรมเนียม) — ผู้ดูแลได้เต็มจำนวนนี้
+      booking: { findUnique: jest.fn().mockResolvedValue({ estimatedCost: new Prisma.Decimal(1200) }) },
       $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
     fsm = { transition: jest.fn(), recordCaptureFailure: jest.fn() };
@@ -641,9 +644,9 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
     expect(emitter.emit).not.toHaveBeenCalled();
   });
 
-  it('happy path: โอน 90% ของยอด captured (fee 10%), fsm.transition + emit ครั้งเดียว', async () => {
+  it('happy path: โอนราคาบริการเต็ม (ค่าธรรมเนียม 10% ลูกค้าจ่ายเพิ่มแล้ว ไม่หักผู้ดูแล), fsm.transition + emit ครั้งเดียว', async () => {
     prisma.payment.findUnique
-      .mockResolvedValueOnce(fakePayment()) // amount = 1200
+      .mockResolvedValueOnce(fakePayment({ amount: 1320 })) // ลูกค้าจ่าย 1200 + fee 120
       .mockResolvedValueOnce({ paymentStatus: 'captured', metadata: {} });
     prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow());
     prisma.caregiverPayoutAccount.findUnique
@@ -651,7 +654,7 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
       .mockResolvedValueOnce({ status: 'active', recipientStatus: 'verified' });
     omise.createTransfer.mockResolvedValueOnce({
       id: 'trsf_test_1',
-      amount: 108000,
+      amount: 120000,
       recipient: 'recp_test_1',
     });
     fsm.transition.mockResolvedValueOnce(fakePayment({ paymentStatus: 'transferred', metadata: {} }));
@@ -661,10 +664,10 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
 
     await service.transferPaymentToCaregiver(BOOKING_ID, asUser(ADMIN_ID, ROLE_ID.ADMIN));
 
-    // 1200 THB = 120000 satangs; fee 10% → transfer 108000 satangs (90%)
+    // ลูกค้าจ่าย 1320 THB (บริการ 1200 + fee 120) → ผู้ดูแลได้ 120000 satangs เต็ม
     expect(omise.createTransfer).toHaveBeenCalledWith(
       'recp_test_1',
-      108000,
+      120000,
       `transfer:${PAYMENT_ID}`,
     );
 
@@ -676,7 +679,7 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
         metadata: expect.objectContaining({
           omiseTransferId: 'trsf_test_1',
           platformFeePercent: 10,
-          transferAmountSatangs: 108000,
+          transferAmountSatangs: 120000,
         }),
       }),
       tx,
@@ -689,7 +692,7 @@ describe('PaymentService.transferPaymentToCaregiver (PYG-266)', () => {
         bookingId: BOOKING_ID,
         caregiverId: CAREGIVER_ID,
         metadata: expect.objectContaining({
-          transferAmountSatangs: 108000,
+          transferAmountSatangs: 120000,
           omiseTransferId: 'trsf_test_1',
         }),
       }),
