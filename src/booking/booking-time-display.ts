@@ -60,6 +60,9 @@ export function formatStartTime(
  *   (เช่นเริ่ม 21:58 ยาว 4 ชม.) → วนรอบเป็น "01:58" แทนที่จะได้ "25:58"
  *   จำนวนชั่วโมงในวงเล็บที่แสดงคู่กันทำให้ผู้ใช้อ่านออกว่าเป็นเช้าวันถัดไป
  *
+ * ★ จบเที่ยงคืนพอดี (24:00) แสดงเป็น "23:59" ไม่ใช่ "00:00" — ตรงกับที่ผู้ใช้เลือกในฟอร์ม
+ *   (BOOKING_END_OF_DAY_TIME ใน booking-time.ts) · "23:00 – 00:00" ดูเหมือนข้ามวัน
+ *
  * @returns undefined ถ้าไม่มีเวลาเริ่ม หรือจำนวนชั่วโมงไม่ถูกต้อง (≤ 0 / ไม่ใช่ตัวเลข)
  */
 export function computeEndTime(
@@ -70,7 +73,9 @@ export function computeEndTime(
   const hours = toPositiveHours(durationHours);
   if (!start || hours === null) return undefined;
   const startMinute = startTime!.getUTCHours() * 60 + startTime!.getUTCMinutes();
-  return minuteToHm(startMinute + Math.round(hours * 60));
+  const endMinute = startMinute + Math.round(hours * 60);
+  if (endMinute === MINUTES_PER_DAY) return '23:59';
+  return minuteToHm(endMinute);
 }
 
 /**

@@ -408,7 +408,7 @@ describe('BookingService — new REST methods', () => {
         serviceType:      'elderly_care',
         caregiverId:      CAREGIVER_ID,
         startTime:        '09:00',
-        endTime:          '11:00', // อยู่ใน morning (06:00–12:00) ล้วน
+        endTime:          '11:00', // อยู่ใน morning (00:00–12:00) ล้วน
         locationAddress:  '123 Main St',
         bookingDate:      '2026-07-01',
       };
@@ -461,6 +461,76 @@ describe('BookingService — new REST methods', () => {
           }),
         ).rejects.toThrow('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
         expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      // ── feature/booking-24h: จองได้ทั้งวัน ────────────────────────────────
+      // เดิมงานหลัง 22:00 ไม่คาบเกี่ยว slot ไหนเลย → requiredSlots = [] → ด่านนี้ผ่านทุกครั้ง
+      // ([].every = true) ผู้ดูแลที่ไม่ได้เปิดรับก็ถูกจองได้ — ตอนนี้ต้องเช็คช่วงจริง
+
+      it('ดึก 22:00–23:59 แต่ผู้ดูแลไม่ได้เปิดรับ "เย็น" → ถูกปฏิเสธ', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([]);
+
+        await expect(
+          service.createBooking(PATIENT_ID, {
+            ...availDto,
+            startTime: '22:00',
+            endTime: '23:59',
+          }),
+        ).rejects.toThrow('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+        // 2026-07-01 = วันพุธ → dayOfWeek 3
+        expect(prisma.caregiverAvailability.findMany).toHaveBeenCalledWith({
+          where: {
+            caregiverId: CAREGIVER_ID,
+            dayOfWeek: 3,
+            isActive: true,
+            timeSlot: { in: ['evening'] },
+          },
+          select: { timeSlot: true },
+        });
+        expect(prisma.booking.create).not.toHaveBeenCalled();
+      });
+
+      it('ดึก 22:00–23:59 ผู้ดูแลเปิดรับ "เย็น" → ผ่าน · เก็บ 2 ชม. + evening', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([
+          { timeSlot: 'evening' },
+        ]);
+
+        await service.createBooking(PATIENT_ID, {
+          ...availDto,
+          startTime: '22:00',
+          endTime: '23:59',
+        });
+
+        expect(prisma.booking.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              durationHours: 2,
+              timeSlot: 'evening',
+              startTime: new Date('1970-01-01T22:00:00Z'),
+            }),
+          }),
+        );
+      });
+
+      it('เช้ามืด 03:00–05:00 ต้องเปิดรับ "เช้า" — ไม่ได้เปิด → ถูกปฏิเสธ', async () => {
+        prisma.caregiverAvailability.findMany.mockResolvedValue([]);
+
+        await expect(
+          service.createBooking(PATIENT_ID, {
+            ...availDto,
+            startTime: '03:00',
+            endTime: '05:00',
+          }),
+        ).rejects.toThrow('ผู้ดูแลไม่ได้เปิดรับงานในช่วงเวลานี้');
+        expect(prisma.caregiverAvailability.findMany).toHaveBeenCalledWith({
+          where: {
+            caregiverId: CAREGIVER_ID,
+            dayOfWeek: 3,
+            isActive: true,
+            timeSlot: { in: ['morning'] },
+          },
+          select: { timeSlot: true },
+        });
       });
 
       it('ไม่ส่ง caregiverId มา (จองแบบ unmatched) → ไม่เช็ค availability เลย', async () => {

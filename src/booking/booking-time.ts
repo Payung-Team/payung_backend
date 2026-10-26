@@ -28,6 +28,18 @@ export const BOOKING_TIME_STEP_MINUTES = 30;
 export const BOOKING_MIN_DURATION_MINUTES = 60;
 export const BOOKING_MAX_DURATION_MINUTES = 12 * 60;
 
+/**
+ * เวลาสิ้นสุด "23:59" = เที่ยงคืน (จองได้ทั้งวัน — feature/booking-24h)
+ *
+ * ★ ทำไมเป็น 23:59 ไม่ใช่ 24:00
+ *   ชั่วโมงในระบบเป็น 00–23 ("24:00" ไม่ผ่าน TIME_PATTERN และคอลัมน์ TIME) — ผู้ใช้จึงเลือก 23:59
+ *   แต่คิดระยะเวลา/ราคาเป็น 24:00 → 23:00–23:59 = 1 ชม. เต็ม ไม่ใช่ 59 นาที
+ *   รับเฉพาะ "23:59" พอดีเป็นเวลาสิ้นสุด — เวลาเริ่มหรือเวลาอื่นที่ไม่ลง :00 / :30 ยังไม่ผ่าน
+ *   การแสดงผลกลับเป็น "23:59" อยู่ที่ computeEndTime (booking-time-display.ts)
+ */
+export const BOOKING_END_OF_DAY_TIME = '23:59';
+export const BOOKING_END_OF_DAY_MINUTE = 24 * 60;
+
 /** "HH:mm" หรือ "HH:mm:ss" (FE เดิมส่ง "09:00:00") — ชั่วโมง 00–23 */
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
 
@@ -92,27 +104,33 @@ export function resolveBookingTime(
       'รูปแบบเวลาสิ้นสุดไม่ถูกต้อง (ต้องเป็น HH:mm เช่น 13:00)',
     );
   }
-  // แบบใหม่รับแค่ขั้นละ 30 นาที — วินาทีที่ไม่ใช่ 00 ก็ถือว่าไม่ลงขั้น
+  // "23:59" (วินาที 00) = เที่ยงคืน → คิดเป็นนาทีที่ 1440 · ดู BOOKING_END_OF_DAY_TIME
+  const endIsEndOfDay =
+    end.minute === BOOKING_END_OF_DAY_MINUTE - 1 && end.second === 0;
+  const endMinute = endIsEndOfDay ? BOOKING_END_OF_DAY_MINUTE : end.minute;
+
+  // แบบใหม่รับแค่ขั้นละ 30 นาที — วินาทีที่ไม่ใช่ 00 ก็ถือว่าไม่ลงขั้น (ยกเว้นสิ้นสุด 23:59)
   if (
     start.second !== 0 ||
     end.second !== 0 ||
     start.minute % BOOKING_TIME_STEP_MINUTES !== 0 ||
-    end.minute % BOOKING_TIME_STEP_MINUTES !== 0
+    endMinute % BOOKING_TIME_STEP_MINUTES !== 0
   ) {
     throw new BadRequestException(
-      'เวลาเริ่มและเวลาสิ้นสุดต้องลงที่ :00 หรือ :30 เท่านั้น',
+      'เวลาเริ่มและเวลาสิ้นสุดต้องลงที่ :00 หรือ :30 (สิ้นสุดเที่ยงคืนใช้ 23:59)',
     );
   }
   // ★ ไม่รับข้ามเที่ยงคืนในเฟสนี้ — การเช็คเวลาชนคิดภายในวันเดียว (bookingDate เดียว)
   //   ถ้ารับ 20:00–02:00 งานส่วนหลังเที่ยงคืนจะไม่ถูกเทียบกับนัดของวันถัดไปเลย
   //   ผลคือเวลาสิ้นสุดที่น้อยกว่าเวลาเริ่มถูกปฏิเสธด้วยข้อความเดียวกับ "สิ้นสุดก่อนเริ่ม"
-  if (end.minute <= start.minute) {
+  //   ช้าสุดจึงจบได้แค่เที่ยงคืน (23:59) ของวันจอง
+  if (endMinute <= start.minute) {
     throw new BadRequestException(
       'เวลาสิ้นสุดต้องหลังเวลาเริ่ม และอยู่ในวันเดียวกัน',
     );
   }
 
-  const durationMinutes = end.minute - start.minute;
+  const durationMinutes = endMinute - start.minute;
   if (durationMinutes < BOOKING_MIN_DURATION_MINUTES) {
     throw new BadRequestException('ต้องจองอย่างน้อย 1 ชั่วโมง');
   }
@@ -120,9 +138,11 @@ export function resolveBookingTime(
     throw new BadRequestException('จองได้สูงสุด 12 ชั่วโมงต่อครั้ง');
   }
 
+  // slot ครอบ 00:00–24:00 แล้ว (time-slot.constant.ts) — เวลาเริ่มที่ parse ผ่านมี slot เสมอ
+  // คงด่านนี้ไว้กันวันที่มีคนหด slot กลับ แล้วใบจองหลุดไปโดยไม่มี time_slot
   const timeSlot = inferTimeSlot(start.minute);
   if (!timeSlot) {
-    throw new BadRequestException('เวลาเริ่มต้องอยู่ระหว่าง 06:00 ถึง 21:30');
+    throw new BadRequestException('เวลาเริ่มอยู่นอกช่วงที่เปิดให้จอง');
   }
 
   return {

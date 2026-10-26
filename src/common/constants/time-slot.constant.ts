@@ -13,8 +13,15 @@
  *   หน้าตั้งเวลารับงานของผู้ดูแล (JobReceptionTab) — ผู้ดูแลติ๊กตารางว่างตามข้อความนั้นไปแล้ว
  *   ถ้าจะเปลี่ยนตัวเลข ต้องแก้ข้อความสองหน้านั้นพร้อมกัน
  *
+ * ★ จองได้ทั้งวัน (feature/booking-24h, 2026-10-26): เดิม 06:00–22:00 นอกนั้นไม่มี slot
+ *   ตอนนี้ขยายช่วงหัวท้ายให้ครอบ 24 ชม. โดยไม่เพิ่มค่าใน enum time_slot (ไม่ต้อง migrate)
+ *   · morning 06:00 → 00:00 (เช้ามืด 00:00–06:00 นับเป็นช่วงเช้า)
+ *   · evening 22:00 → 24:00 (ดึก 22:00–24:00 นับเป็นช่วงเย็น)
+ *   ผู้ดูแลที่เปิดรับ "เช้า"/"เย็น" ไว้แล้วจะได้คำขอช่วงนี้ด้วย (ยังกดรับ/ปฏิเสธเองได้)
+ *   FE แก้ข้อความใน JobReceptionTab เป็น 00:00–12:00 / 17:00–24:00 พร้อมกัน
+ *
  * ช่วงเป็นแบบ [start, end) หน่วยนาทีนับจากเที่ยงคืน — 12:00 เป็นของ afternoon ไม่ใช่ morning
- * นอก 06:00–22:00 ไม่มี slot → ไม่รับจอง
+ * ครบ 00:00–24:00 → ทุกเวลาเริ่มมี slot · ทุกงานที่ยาว > 0 คาบเกี่ยวอย่างน้อย 1 slot
  */
 
 export const TIME_SLOTS = ['morning', 'afternoon', 'evening'] as const;
@@ -28,9 +35,9 @@ export interface TimeSlotRange {
 }
 
 export const TIME_SLOT_RANGES: Readonly<Record<TimeSlot, TimeSlotRange>> = {
-  morning: { startMinute: 6 * 60, endMinute: 12 * 60 },
+  morning: { startMinute: 0, endMinute: 12 * 60 },
   afternoon: { startMinute: 12 * 60, endMinute: 17 * 60 },
-  evening: { startMinute: 17 * 60, endMinute: 22 * 60 },
+  evening: { startMinute: 17 * 60, endMinute: 24 * 60 },
 };
 
 /** เวลาเริ่มที่เร็วที่สุด / ช้าที่สุด (ไม่รวม) ที่มี slot รองรับ */
@@ -39,7 +46,7 @@ export const SERVICE_DAY_END_MINUTE = TIME_SLOT_RANGES.evening.endMinute;
 
 /**
  * slot ที่เวลาเริ่มตกอยู่ — ใช้เก็บลง bookings.time_slot ให้ข้อมูล/การแสดงผลเดิมใช้ต่อได้
- * คืน null ถ้าอยู่นอกทุกช่วง (ก่อน 06:00 หรือตั้งแต่ 22:00)
+ * คืน null ถ้าอยู่นอกทุกช่วง — ตอนนี้ครบ 24 ชม. แล้ว เหลือแค่ค่าผิดรูป (ติดลบ / ≥ 24:00)
  */
 export function inferTimeSlot(startMinute: number): TimeSlot | null {
   for (const slot of TIME_SLOTS) {
