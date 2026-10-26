@@ -13,6 +13,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/prisma.service';
 import { ClockService } from '../common/clock.service';
+import { platformFeeOf, platformFeePercentOf } from '../common/pricing/service-price';
 import { BOOKING_EVENTS } from '../notification/events/booking-event';
 // PYG-461/462: deadline ชำระเงิน — สูตรเดียวกับ acceptBooking และ cron หมดอายุ
 import {
@@ -256,6 +257,11 @@ export class PaymentService {
     }
   }
 
+  /** ConfigService.get เป็นแค่ type cast — ต้อง Number() เอง · ค่าเพี้ยน → default 10 */
+  private platformFeePercent(): number {
+    return platformFeePercentOf(this.config.get<string>('PLATFORM_FEE_PERCENT', '10'));
+  }
+
   // ── PYG-281: Authorize Payment ───────────────────────────────────────────
 
   async createPayment(input: CreatePaymentInput, user: AuthUser): Promise<Payment> {
@@ -325,8 +331,17 @@ export class PaymentService {
       throw new UnprocessableEntityException('Booking has an invalid price');
     }
 
+    // ค่าธรรมเนียมแพลตฟอร์มเก็บเพิ่มจากลูกค้า (PLATFORM_FEE_PERCENT ของราคาบริการ) — ไม่หักจากผู้ดูแล
+    // ยอดตัด = estimated_cost + platform_fee · ผู้ดูแลได้ estimated_cost เต็ม (ดู transfer / PayoutService)
+    // เขียน bookings.platform_fee ไว้ด้วยให้ breakdown ในอีเมล/หน้าจอตรงกับยอดที่ตัด
+    const platformFee = platformFeeOf(estimatedCost, this.platformFeePercent());
+    await this.prisma.booking.update({
+      where: { id: booking.id },
+      data: { platformFee },
+    });
+
     // Payment.amount expects Baht, Omise expects Satangs
-    const amountBaht = Math.round(estimatedCost * 100) / 100;
+    const amountBaht = Math.round((estimatedCost + platformFee) * 100) / 100;
     const amountSatangs = Math.round(amountBaht * 100);
 
     // ── PYG-278: PromptPay branch — แยกออกจาก flow card 100% ─────────────────
@@ -483,7 +498,8 @@ export class PaymentService {
    *  + Omise-Idempotency-Key เพื่อกัน Omise ทำซ้ำถ้ายิง 2 ครั้งพร้อมกัน
    *  + FSM transition: ปิด state machine — captured → transferred เท่านั้น (terminal state)
    *
-   * ยอดที่โอน = capturedAmount * (1 - PLATFORM_FEE_PERCENT / 100) (default 10% → caregiver ได้ 90%)
+   * ยอดที่โอน = ราคาบริการเต็ม (bookings.estimated_cost) — ค่าธรรมเนียมแพลตฟอร์มเก็บเพิ่มจากลูกค้าตอนตัดบัตรแล้ว
+   * ไม่หักจากผู้ดูแล (capturedAmount = estimated_cost + platform_fee)
    */
   async transferPaymentToCaregiver(bookingId: string, admin: AuthUser): Promise<Payment> {
     // Guard 1: role — เผื่อ resolver ไม่ได้ guard
@@ -542,12 +558,18 @@ export class PaymentService {
     // คำนวณยอดโอน — ทำงานในหน่วย satangs ตลอดเพื่อกัน float precision error
     // ConfigService.get<T>() เป็นแค่ type cast ไม่ได้ coerce runtime — ต้อง Number() เอง
     // ไม่งั้น platformFeePercent จะเป็น string "10" ปนอยู่ใน metadata (JSON) แทนที่จะเป็น number
-    const platformFeePercent = Number(this.config.get<string>('PLATFORM_FEE_PERCENT', '10'));
-    const capturedAmountBaht = this.toBahtNumber(payment.amount);
-    const capturedAmountSatangs = Math.round(capturedAmountBaht * 100);
-    const transferAmountSatangs = Math.round(
-      capturedAmountSatangs * (1 - platformFeePercent / 100),
-    );
+    const platformFeePercent = this.platformFeePercent();
+    const bookingRow = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { estimatedCost: true },
+    });
+    const capturedAmountSatangs = Math.round(this.toBahtNumber(payment.amount) * 100);
+    // โอนราคาบริการเต็ม · payment เก่า (ตัดเท่า estimated_cost) ก็ได้ยอดเท่าเดิม ไม่เกินที่ capture
+    const serviceSatangs =
+      bookingRow?.estimatedCost != null
+        ? Math.round(Number(bookingRow.estimatedCost) * 100)
+        : capturedAmountSatangs;
+    const transferAmountSatangs = Math.min(serviceSatangs, capturedAmountSatangs);
 
     // Guard 6: re-check ทั้ง payment status และ payout account status ก่อนยิง Omise
     // (ปิดช่องที่ webhook recipient.failed แทรกเข้ามาระหว่าง guard 5 กับตรงนี้)

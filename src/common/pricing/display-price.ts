@@ -17,6 +17,8 @@ type StartingPriceReader = {
  * ราคา "เริ่มต้น" ต่อชั่วโมงของผู้ดูแลแต่ละคน
  *   = ราคาต่ำสุดใน catalog (is_active) ของประเภทงานที่ผู้ดูแลคนนั้นรับ
  *   ส่ง jobTypes มา → คิดเฉพาะประเภทที่อยู่ในชุดนั้น (ตรงกับตัวกรอง jobType ของหน้า Search)
+ *   ส่ง priceJobTypes มา → คิดราคาอย่างเดียว: ใช้ราคา catalog ของประเภทนั้นตรงๆ กับทุกคน
+ *   ไม่ขึ้นกับประเภทงานที่ผู้ดูแลรับ และชนะ jobTypes (ตรงกับ booking ที่ตัดเงินตามบริการที่จอง)
  * ผู้ดูแลที่ไม่มีประเภทงานที่มีราคาเลย → ไม่อยู่ใน Map
  *
  * ★ กติกาเดียวกับ SQL ใน SearchService.searchCaregivers — แก้ที่หนึ่งต้องแก้อีกที่
@@ -25,9 +27,21 @@ export async function startingHourlyPrices(
   prisma: StartingPriceReader,
   caregiverIds: string[],
   jobTypes: string[] = [],
+  priceJobTypes: string[] = [],
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (caregiverIds.length === 0) return result;
+
+  if (priceJobTypes.length > 0) {
+    const rows = await prisma.servicePriceCatalog.findMany({
+      where: { isActive: true, serviceType: { in: priceJobTypes } },
+      select: { pricePerHour: true },
+    });
+    if (rows.length === 0) return result;
+    const price = Math.min(...rows.map((r) => Number(r.pricePerHour)));
+    for (const id of caregiverIds) result.set(id, price);
+    return result;
+  }
 
   const [jobs, catalog] = await Promise.all([
     prisma.caregiverJobType.findMany({

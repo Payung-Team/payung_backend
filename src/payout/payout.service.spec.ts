@@ -30,7 +30,7 @@ const CREATED_PAYOUT_ID = 'payout-created-1';
 
 function makeConfig(overrides: Record<string, string> = {}) {
   const values: Record<string, string> = {
-    PAYOUT_PLATFORM_FEE_RATE: '0.10',
+    PLATFORM_FEE_PERCENT: '10',
     PAYOUT_HOLD_WINDOW_DAYS: '7',
     PAYOUT_START_FROM: '2026-07-18T00:00:00+07:00',
     ...overrides,
@@ -49,7 +49,9 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     id: BOOKING_ID,
     caregiverId: CAREGIVER_ID,
     completedAt: new Date('2026-08-01T10:00:00Z'),
-    payment: { id: 'pay-1', amount: new Prisma.Decimal('1000.00') },
+    // ลูกค้าจ่าย 1000 (ราคาบริการ) + ค่าธรรมเนียม 100 = 1100 · ผู้ดูแลได้ 1000 เต็ม
+    estimatedCost: new Prisma.Decimal('1000.00'),
+    payment: { id: 'pay-1', amount: new Prisma.Decimal('1100.00') },
     ...overrides,
   };
 }
@@ -228,7 +230,7 @@ describe('PayoutService', () => {
 
   // ── Fee math ─────────────────────────────────────────────────────────────
 
-  it('gross=1000, rate=0.10 → platformFee=100, amount=900', async () => {
+  it('gross=1100 (บริการ 1000 + fee 100) → platformFee=100, ผู้ดูแลได้ amount=1000 เต็ม', async () => {
     prisma.booking.findUnique.mockResolvedValue(makeBooking());
     tx.payout.create.mockResolvedValue({ id: CREATED_PAYOUT_ID });
 
@@ -236,10 +238,10 @@ describe('PayoutService', () => {
 
     expect(tx.payout.create).toHaveBeenCalledTimes(1);
     const args = tx.payout.create.mock.calls[0][0];
-    expect(args.data.grossAmount.toString()).toBe('1000');
+    expect(args.data.grossAmount.toString()).toBe('1100');
     expect(args.data.feeRate.toString()).toBe('0.1');
     expect(args.data.platformFee.toString()).toBe('100');
-    expect(args.data.amount.toString()).toBe('900');
+    expect(args.data.amount.toString()).toBe('1000');
     // invariant
     const gross = args.data.grossAmount as Prisma.Decimal;
     const fee = args.data.platformFee as Prisma.Decimal;
@@ -247,10 +249,11 @@ describe('PayoutService', () => {
     expect(fee.add(net).equals(gross)).toBe(true);
   });
 
-  it('HALF_UP — gross=333.33 → fee=33.33 net=300', async () => {
+  it('gross=366.66 บริการ 333.33 → fee=33.33 ผู้ดูแลได้ 333.33 (ไม่หักผู้ดูแล)', async () => {
     prisma.booking.findUnique.mockResolvedValue(
       makeBooking({
-        payment: { id: 'pay-1', amount: new Prisma.Decimal('333.33') },
+        estimatedCost: new Prisma.Decimal('333.33'),
+        payment: { id: 'pay-1', amount: new Prisma.Decimal('366.66') },
       }),
     );
     tx.payout.create.mockResolvedValue({ id: CREATED_PAYOUT_ID });
@@ -258,21 +261,19 @@ describe('PayoutService', () => {
 
     const args = tx.payout.create.mock.calls[0][0];
     expect(args.data.platformFee.toString()).toBe('33.33');
-    expect(args.data.amount.toString()).toBe('300');
+    expect(args.data.amount.toString()).toBe('333.33');
   });
 
-  it('HALF_UP — 0.005 rounds up to 0.01 (banker rounding would be 0.00)', async () => {
+  it('payment เก่าที่ตัดเท่าราคาบริการ (ไม่มี fee เพิ่ม) → fee=0 ผู้ดูแลได้เต็ม', async () => {
     prisma.booking.findUnique.mockResolvedValue(
-      makeBooking({
-        payment: { id: 'pay-1', amount: new Prisma.Decimal('0.05') },
-      }),
+      makeBooking({ payment: { id: 'pay-1', amount: new Prisma.Decimal('1000.00') } }),
     );
     tx.payout.create.mockResolvedValue({ id: CREATED_PAYOUT_ID });
     await service.createFromCompletedBooking(BOOKING_ID);
 
     const args = tx.payout.create.mock.calls[0][0];
-    expect(args.data.platformFee.toString()).toBe('0.01');
-    expect(args.data.amount.toString()).toBe('0.04');
+    expect(args.data.platformFee.toString()).toBe('0');
+    expect(args.data.amount.toString()).toBe('1000');
   });
 
   // ── Snapshot ─────────────────────────────────────────────────────────────
@@ -286,7 +287,7 @@ describe('PayoutService', () => {
 
     // env change
     config.getOrThrow.mockImplementation((key: string) => {
-      if (key === 'PAYOUT_PLATFORM_FEE_RATE') return '0.15';
+      if (key === 'PLATFORM_FEE_PERCENT') return '15';
       if (key === 'PAYOUT_HOLD_WINDOW_DAYS') return '7';
       if (key === 'PAYOUT_START_FROM') return '2026-07-18T00:00:00+07:00';
       throw new Error('missing');

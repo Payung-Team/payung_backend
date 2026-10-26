@@ -45,7 +45,7 @@ export class SearchService {
    * - Outer query: กรอง min_rating (อ้าง alias avg_rating ได้หลัง CTE) + COUNT(*) OVER() สำหรับ pagination
    * - $queryRaw: ใช้ Prisma.sql สำหรับ dynamic WHERE fragments (safe parameterization)
    */
-  async searchCaregivers(input: SearchCaregiverInput, eligibleIds?: readonly string[], db: Pick<Prisma.TransactionClient, '$queryRaw'> = this.prismaService): Promise<SearchCaregiverPayload> {
+  async searchCaregivers(input: SearchCaregiverInput, eligibleIds?: readonly string[], db: Pick<Prisma.TransactionClient, '$queryRaw'> = this.prismaService, priceJobTypes: readonly string[] = []): Promise<SearchCaregiverPayload> {
     const page  = Math.max(1, input.page  ?? 1);
     const limit = Math.min(50, Math.max(1, input.limit ?? 10));
     const offset = (page - 1) * limit;
@@ -79,11 +79,19 @@ export class SearchService {
     // ─── ราคาเริ่มต้นจาก service_price_catalog (ฟีดแบ็กอาจารย์ Sprint 9 ข้อ 2) ───
     // = ราคาต่ำสุดของประเภทงานที่ผู้ดูแลรับ (เฉพาะแถว is_active) · กรอง jobType มา → คิดเฉพาะประเภทนั้น
     // ไม่ใช่ caregivers.hourly_rate ที่ผู้ดูแลตั้งเองอีกต่อไป
+    // priceJobTypes = คิดราคาอย่างเดียว ไม่กรองรายชื่อ (booking กายภาพ → ราคาของบริการที่จอง ตรงกับ estimated_cost)
+    //   ส่งมา → ใช้ราคาใน catalog ของประเภทเหล่านั้นตรงๆ ไม่ขึ้นกับประเภทงานอื่นที่ผู้ดูแลรับ · ชนะ jobType
     // ★ กติกาเดียวกับ startingHourlyPrices() ใน common/pricing/display-price.ts — แก้ที่หนึ่งต้องแก้อีกที่
     const priceJobTypeFilter = jobTypes.length > 0
       ? Prisma.sql`AND jt.job_type::text = ANY(${jobTypes}::text[])`
       : Prisma.sql``;
-    const startingPrice = Prisma.sql`(
+    const startingPrice = priceJobTypes.length > 0
+      ? Prisma.sql`(
+      SELECT MIN(spc.price_per_hour)::float8
+      FROM service_price_catalog spc
+      WHERE spc.is_active = true AND spc.service_type = ANY(${[...priceJobTypes]}::text[])
+    )`
+      : Prisma.sql`(
       SELECT MIN(spc.price_per_hour)::float8
       FROM caregiver_job_types jt
       JOIN service_price_catalog spc
