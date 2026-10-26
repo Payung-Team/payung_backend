@@ -397,7 +397,8 @@ export class BookingService {
       recipientId = recipient.id;
       recipientName = recipient.name;
     } else if (input.memberUserId) {
-      // Resolve the existing profile for this member; S08 blocks provisioning during booking.
+      // Resolve the member's existing profile (group profile, else their own is_self profile);
+      // S08 still blocks provisioning or copying a profile during booking.
       const resolved = await this.resolveGroupPatientProfile(
         input.groupId,
         input.memberUserId,
@@ -469,8 +470,28 @@ export class BookingService {
     return this.toSummary(booking);
   }
 
-  /** Resolve an existing shared profile; S08 requires it to be assessed before
-   * booking. A missing profile is never provisioned or copied by booking now. */
+  /**
+   * หาโปรไฟล์ผู้รับบริการของสมาชิกที่ถูกจองแทน (เส้นทาง memberUserId)
+   *
+   * ลำดับ:
+   *   ① โปรไฟล์ที่แชร์อยู่ในกลุ่มนี้ และมีแบบประเมินแล้ว → ใช้ใบนั้น (พฤติกรรมเดิม)
+   *   ② โปรไฟล์ is_self ของสมาชิกคนนั้น → ผูก booking กับใบนั้นตรง ๆ
+   *   ③ ไม่มีทั้งคู่ → คืนแค่ชื่อ ด่าน assertBookingAssessment จะตอบ ASSESSMENT_REQUIRED
+   *   (ใบ is_self ที่ยังไม่มีแบบประเมินก็ถูกด่านเดียวกันกันไว้)
+   *
+   * PYG-729 — ทำไมต้องมี ②:
+   *   แบบประเมินผูกกับ profile ID และเจ้าตัวทำไว้ที่ใบ is_self ที่สร้างตอนสมัคร (familyGroupId = null)
+   *   PYG-609 เอาขั้น "คัดลอกโปรไฟล์ส่วนตัวเข้ากลุ่ม" ของ PYG-500 ออก (สัญญา S08 ข้อ D6
+   *   ห้ามคัดลอกข้อมูลสุขภาพ/แบบประเมินข้ามใบ) แต่ไม่ได้ใส่ทางใหม่แทน → ① หาไม่เจอแทบทุกครั้ง
+   *   จองแทนสมาชิกจึงโดน ASSESSMENT_REQUIRED ทั้งที่สมาชิกทำแบบประเมินแล้ว
+   *   ผูกกับใบ is_self ตรง ๆ = ไม่สร้างใบใหม่ ไม่คัดลอกข้อมูลสุขภาพ ไม่คัดลอก/ปลอมแบบประเมิน
+   *   ด่านแบบประเมินยังตรวจ "ใบที่ booking ผูกจริง" ตามสัญญา S08 §9
+   *
+   * ★ เฉพาะใบ is_self — โปรไฟล์ส่วนตัวใบอื่นของสมาชิกคือคนที่เขาดูแล (เช่นแม่ของเขา) ไม่ใช่ตัวสมาชิก
+   * ★ ด่านความยินยอมอยู่ก่อนอ่านโปรไฟล์ใด ๆ — ถอน disclose_to_family_group / ความยินยอมการจองไว้
+   *   → CONSENT_WITHDRAWN ไม่ถึงขั้นนี้
+   * ★ booking ส่งให้คนจองแค่ชื่อโปรไฟล์ (careRecipient.name) ไม่ได้เปิดข้อมูลสุขภาพในใบ
+   */
   private async resolveGroupPatientProfile(
     groupId: string,
     memberUserId: string,
@@ -490,13 +511,31 @@ export class BookingService {
     // ★ อยู่หลังเช็คสมาชิก — คนนอกกลุ่มจะใช้ error นี้แอบดูความยินยอมของใครไม่ได้
     await this.assertOnBehalfConsents(memberUserId, bookerId, groupId);
 
-    // ① โปรไฟล์ในกลุ่มที่มีอยู่แล้ว
-    const existing = await this.prisma.careRecipient.findFirst({
-      where: { patientId: memberUserId, familyGroupId: groupId, is_deleted: false },
+    // ① โปรไฟล์ในกลุ่มที่มีแบบประเมินแล้ว
+    const assessedGroupProfile = await this.prisma.careRecipient.findFirst({
+      where: {
+        patientId: memberUserId,
+        familyGroupId: groupId,
+        is_deleted: false,
+        assessment: { isNot: null },
+      },
       select: { id: true, name: true },
       orderBy: { updated_at: 'desc' },
     });
-    if (existing) return existing;
+    if (assessedGroupProfile) return assessedGroupProfile;
+
+    // ② ใบ is_self ของสมาชิก (ผู้ใช้หนึ่งคนมีใบเดียว — orderBy กันข้อมูลเก่าที่ซ้ำ)
+    const selfProfile = await this.prisma.careRecipient.findFirst({
+      where: {
+        patientId: memberUserId,
+        is_self: true,
+        familyGroupId: null,
+        is_deleted: false,
+      },
+      select: { id: true, name: true },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (selfProfile) return selfProfile;
 
     return { name: await this.resolveMemberAccountName(memberUserId) };
   }
