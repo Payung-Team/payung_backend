@@ -63,6 +63,9 @@ export class CaregiverBookingSummary {
   // (งานเสร็จแล้วไม่ได้แปลว่าเงินเข้าบัญชีแล้วเสมอไป)
   @Field({ nullable: true }) payoutStatus?: string;
   @Field(() => Float, { nullable: true }) payoutAmount?: number;
+  // ยอดที่ลูกค้าจ่ายจริง (payments.amount = ค่าบริการ + ค่าธรรมเนียม) · null = ยังไม่ได้ชำระ
+  // ผู้ดูแลได้ min(estimatedCost, paidAmount) — สูตรเดียวกับ PayoutService
+  @Field(() => Float, { nullable: true }) paidAmount?: number;
 
   @Field({ nullable: true }) locationAddress?: string;
 

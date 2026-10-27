@@ -4,7 +4,7 @@
  *
  * Render ต่างกันตาม recipientRole:
  *   - patient   → "เราเรียกเก็บเงินจากบัตรของคุณเรียบร้อย"
- *   - caregiver → "ระบบเรียกเก็บเงินจากลูกค้าเรียบร้อย เตรียมโอนค่าตอบแทน"
+ *   - caregiver → "ลูกค้าชำระเรียบร้อย ค่าตอบแทนของคุณ X จะถูกโอน" — X = ค่าตอบแทน (totalText) ไม่ใช่ยอดที่ลูกค้าจ่าย
  */
 import {
   wrapHtml,
@@ -27,7 +27,8 @@ export const paymentCapturedTemplate: BookingTemplateFn = (
   const intro =
     ctx.recipientRole === 'patient'
       ? `เราได้เรียกเก็บเงิน <strong>${escapeHtml(ctx.paymentAmountText)}</strong> จากบัตรของคุณเรียบร้อยแล้ว สำหรับบริการของคุณ${escapeHtml(ctx.caregiverName)}`
-      : `ระบบได้เรียกเก็บเงิน <strong>${escapeHtml(ctx.paymentAmountText)}</strong> จากลูกค้าเรียบร้อย — ค่าตอบแทนของคุณจะถูกโอนตามรอบที่กำหนด`;
+      : // ผู้ดูแลเห็นค่าตอบแทนของตัวเอง (totalText) ไม่ใช่ยอดที่ลูกค้าจ่ายซึ่งรวมค่าธรรมเนียมแพลตฟอร์ม
+        `ลูกค้าชำระค่าบริการเรียบร้อยแล้ว — ค่าตอบแทนของคุณ <strong>${escapeHtml(ctx.totalText)}</strong> จะถูกโอนตามรอบที่กำหนด`;
 
   const paymentMethodText = ctx.chargeId
     ? `บัตรเครดิต (ref: ${ctx.chargeId})`
@@ -38,7 +39,10 @@ export const paymentCapturedTemplate: BookingTemplateFn = (
       ['บริการ', ctx.serviceText],
       ['วันที่', ctx.dateText],
     ],
-    total: ['ยอดที่เรียกเก็บ', ctx.paymentAmountText],
+    total:
+      ctx.recipientRole === 'caregiver'
+        ? ['ค่าตอบแทนของคุณ', ctx.totalText]
+        : ['ยอดที่เรียกเก็บ', ctx.paymentAmountText],
     // วิธีชำระเงินเป็นข้อมูลของผู้จ่าย — ผู้ดูแลไม่ต้องเห็น
     note:
       ctx.recipientRole === 'patient'
@@ -61,12 +65,12 @@ ${heading}
 ${
   ctx.recipientRole === 'patient'
     ? `เราเรียกเก็บเงิน ${ctx.paymentAmountText} จากบัตรของคุณแล้ว — บริการกับคุณ${ctx.caregiverName}`
-    : `เรียกเก็บเงิน ${ctx.paymentAmountText} จากลูกค้าเรียบร้อย — ค่าตอบแทนจะถูกโอนตามรอบ`
+    : `ลูกค้าชำระค่าบริการเรียบร้อย — ค่าตอบแทน ${ctx.totalText} จะถูกโอนตามรอบ`
 }
 
 การจอง: ${ctx.serviceText}
 วันที่: ${ctx.dateText}
-ยอดที่เรียกเก็บ: ${ctx.paymentAmountText}${ctx.recipientRole === 'patient' ? `\nวิธีชำระเงิน: ${paymentMethodText}` : ''}
+${ctx.recipientRole === 'caregiver' ? `ค่าตอบแทนของคุณ: ${ctx.totalText}` : `ยอดที่เรียกเก็บ: ${ctx.paymentAmountText}`}${ctx.recipientRole === 'patient' ? `\nวิธีชำระเงิน: ${paymentMethodText}` : ''}
 
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 

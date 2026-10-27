@@ -754,6 +754,7 @@ type CaregiverBookingSummary {
   locationLat: Float
   locationLng: Float
   notes: String
+  paidAmount: Float
   patient: PatientBriefDto!
   patientProfile: PatientProfileType
   payoutAmount: Float

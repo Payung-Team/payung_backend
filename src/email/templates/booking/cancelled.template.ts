@@ -35,6 +35,7 @@ export const bookingCancelledTemplate: BookingTemplateFn = (
     serviceText: ctx.serviceText,
     locationAddress: ctx.locationAddress,
     totalText: ctx.totalText,
+    totalLabel: ctx.totalLabel,
   });
 
   const bodyHtml = `
@@ -59,6 +60,7 @@ ${plainBookingSummary({
   serviceText: ctx.serviceText,
   locationAddress: ctx.locationAddress,
   totalText: ctx.totalText,
+  totalLabel: ctx.totalLabel,
 })}
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 
