@@ -41,6 +41,7 @@ export const bookingCompletedTemplate: BookingTemplateFn = (
     timeText: ctx.timeText,
     serviceText: ctx.serviceText,
     totalText: ctx.totalText,
+    totalLabel: ctx.totalLabel,
   });
 
   const bodyHtml = `
@@ -69,6 +70,7 @@ ${plainBookingSummary({
   timeText: ctx.timeText,
   serviceText: ctx.serviceText,
   totalText: ctx.totalText,
+  totalLabel: ctx.totalLabel,
 })}
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 

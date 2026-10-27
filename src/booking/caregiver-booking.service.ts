@@ -61,6 +61,7 @@ type CaregiverBookingRow = {
     status: string;
     amount: { toNumber(): number } | number;
   } | null;
+  payment: { amount: { toNumber(): number } | number } | null;
   acceptedAt: Date | null;
   confirmedAt: Date | null;
   rejectionReason: string | null;
@@ -107,6 +108,8 @@ const BOOKING_INCLUDE = {
     },
   },
   payout: { select: { status: true, amount: true } },
+  // ยอดที่ลูกค้าจ่ายจริง — FE ใช้คิดรายได้สุทธิด้วยสูตรเดียวกับ PayoutService (net = paid − max(paid − estimated, 0))
+  payment: { select: { amount: true } },
 } as const;
 
 /**
@@ -566,6 +569,7 @@ export class CaregiverBookingService {
       estimatedCost: b.estimatedCost != null ? this.toNumber(b.estimatedCost) : undefined,
       payoutStatus: b.payout?.status ?? undefined,
       payoutAmount: b.payout != null ? this.toNumber(b.payout.amount) : undefined,
+      paidAmount: b.payment != null ? this.toNumber(b.payment.amount) : undefined,
       locationAddress: b.locationAddress ?? undefined,
       // PYG-352: หน้าเช็คอินต้องใช้พิกัดคู่นี้วาดหมุดจุดงาน + วงรัศมี
       locationLat: b.locationLat != null ? this.toNumber(b.locationLat) : undefined,

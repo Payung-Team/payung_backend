@@ -195,6 +195,19 @@ describe('Booking per-event templates', () => {
       expect(tpl.html).toContain('ค่าตอบแทน');
       expect(tpl.html).toContain('ดูรายละเอียดงาน');
     });
+
+    it('caregiver เห็นค่าตอบแทน (totalText) ไม่ใช่ยอดที่ลูกค้าจ่าย (paymentAmountText)', () => {
+      const tpl = paymentCapturedTemplate({
+        ...baseCtx,
+        recipientRole: 'caregiver',
+        totalText: '฿1,000',
+        paymentAmountText: '฿1,100',
+      });
+      expect(tpl.html).toContain('฿1,000');
+      expect(tpl.html).not.toContain('฿1,100');
+      expect(tpl.text).toContain('ค่าตอบแทนของคุณ: ฿1,000');
+      expect(tpl.text).not.toContain('฿1,100');
+    });
   });
 
   describe('refund.issued', () => {

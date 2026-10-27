@@ -32,6 +32,7 @@ export const disputeCreatedTemplate: BookingTemplateFn = (
     serviceText: ctx.serviceText,
     locationAddress: ctx.locationAddress,
     totalText: ctx.totalText,
+    totalLabel: ctx.totalLabel,
     extraRows: [
       ...(ctx.patientName
         ? [{ label: 'ผู้ใช้บริการ', value: ctx.patientName }]
@@ -65,6 +66,7 @@ ${plainBookingSummary({
   serviceText: ctx.serviceText,
   locationAddress: ctx.locationAddress,
   totalText: ctx.totalText,
+  totalLabel: ctx.totalLabel,
 })}
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 

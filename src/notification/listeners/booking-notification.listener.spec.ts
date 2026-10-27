@@ -104,6 +104,49 @@ describe('BookingNotificationListener — เวลาใบจอง (PYG-526)'
     );
   });
 
+  describe('ยอดเงินในอีเมลถึงผู้ดูแล = ค่าตอบแทน ไม่ใช่ยอดที่ลูกค้าจ่าย', () => {
+    // ค่าบริการ 300 + ค่าธรรมเนียม 30 → ลูกค้าจ่าย 330 · ผู้ดูแลได้ 300
+    const paid = () =>
+      bookingRow({
+        estimatedCost: new Prisma.Decimal('300'),
+        platformFee: new Prisma.Decimal('30'),
+        payment: { amount: new Prisma.Decimal('330'), omiseChargeId: 'chrg_1' },
+      });
+
+    it('booking.completed: ผู้ดูแลเห็น ฿300 ส่วนผู้รับบริการเห็น ฿330', async () => {
+      prisma.booking.findUnique.mockResolvedValue(paid());
+      await listener.handleBookingEvent(event(BOOKING_EVENTS.COMPLETED));
+
+      const [patientCall, caregiverCall] = emailService.sendBookingEmail.mock.calls;
+      const render = (call: unknown[]) =>
+        (call[1] as (p: { recipientName: string | null; frontendUrl: string }) => EmailTemplate)({
+          recipientName: 'x',
+          frontendUrl: 'http://fe.test',
+        });
+      expect(render(patientCall).text).toContain('ยอดรวม: ฿330');
+      const cg = render(caregiverCall);
+      expect(cg.text).toContain('ค่าตอบแทนของคุณ: ฿300');
+      expect(cg.text).not.toContain('฿330');
+      expect(cg.html).not.toContain('฿330');
+      expect(cg.html).not.toContain('฿270');
+    });
+
+    it('payment.transferred (generic email): ยอดคือยอดโอนจริง ไม่ใช่ payments.amount', async () => {
+      prisma.booking.findUnique.mockResolvedValue(paid());
+      await listener.handleBookingEvent({
+        ...event(BOOKING_EVENTS.PAYMENT_TRANSFERRED),
+        metadata: { transferAmountSatangs: 30000 },
+      });
+
+      expect(emailService.sendBookingNotification).toHaveBeenCalledWith(
+        CAREGIVER_USER_ID,
+        expect.objectContaining({ amountText: '฿300' }),
+      );
+      expect(firstBody()).toContain('฿300');
+      expect(firstBody()).not.toContain('หลังหักค่าธรรมเนียม');
+    });
+  });
+
   it('ใบจองไม่มีเวลาเริ่ม → แสดงแค่วันที่ ไม่มี "เวลา -"', async () => {
     prisma.booking.findUnique.mockResolvedValue(bookingRow({ startTime: null }));
 

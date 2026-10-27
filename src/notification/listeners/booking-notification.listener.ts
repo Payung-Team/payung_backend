@@ -36,6 +36,7 @@ import {
 } from '../../email/templates/booking';
 import {
   bookingDetailPath,
+  caregiverEarnings,
   formatBaht as formatBahtEmail,
   formatPriceBreakdown,
   formatRating,
@@ -66,7 +67,7 @@ interface NotifyContext {
    */
   timeText?: string;
   amountText: string;
-  /** PYG-266: ยอดสุทธิที่ caregiver ได้รับจริง (หลังหักค่าธรรมเนียมแพลตฟอร์ม) — ใช้เฉพาะ PAYMENT_TRANSFERRED */
+  /** PYG-266: ค่าตอบแทนที่ผู้ดูแลได้รับ (= ค่าบริการ ไม่รวมค่าธรรมเนียมที่ลูกค้าจ่ายเพิ่ม) — ใช้กับผู้รับที่เป็นผู้ดูแล */
   netAmountText: string;
   reason?: string;
 }
@@ -272,7 +273,8 @@ const EVENT_CONFIG: Partial<Record<BookingEventType, EventConfig>> = {
     type: NotificationType.payment_transferred,
     recipient: 'caregiver',
     title: 'โอนเงินเรียบร้อย',
-    body: (c) => `เราได้โอนเงิน ${c.netAmountText} เข้าบัญชีของคุณเรียบร้อยแล้ว (หลังหักค่าธรรมเนียมแพลตฟอร์ม)`,
+    // ค่าธรรมเนียมแพลตฟอร์มเก็บเพิ่มจากลูกค้า ไม่ได้หักจากผู้ดูแล — ห้ามเขียนว่า "หลังหักค่าธรรมเนียม"
+    body: (c) => `เราได้โอนค่าตอบแทน ${c.netAmountText} เข้าบัญชีของคุณเรียบร้อยแล้ว`,
     email: true,
     ctaLabel: 'ดูรายละเอียด',
   },
@@ -354,14 +356,16 @@ export class BookingNotificationListener {
       const refundAmountRaw =
         typeof event.metadata?.amount === 'number' ? event.metadata.amount : undefined;
 
-      // PYG-307: transferAmountSatangs (ยอดสุทธิหลังหักค่าธรรมเนียม) มากับ event metadata
-      // เท่านั้น — event อื่นไม่มีค่านี้ จึง fallback ไปใช้ amountText เดิม (ไม่ถูกใช้จริงนอก
-      // PAYMENT_TRANSFERRED template แต่ต้องมีค่าเสมอเพราะ NotifyContext บังคับ field นี้)
+      // PYG-307: transferAmountSatangs (ยอดที่โอนให้ผู้ดูแลจริง) มากับ event metadata เฉพาะ
+      // PAYMENT_TRANSFERRED — event อื่นใช้ค่าตอบแทนที่คิดจากใบจอง (ค่าบริการ ไม่รวมค่าธรรมเนียม)
+      // เดิม fallback เป็น payments.amount ซึ่งเป็นยอดที่ลูกค้าจ่าย (รวมค่าธรรมเนียมแล้ว) → ผู้ดูแลเห็นยอดเกินจริง
       const transferAmountSatangs = event.metadata?.transferAmountSatangs;
       const netAmountText =
         typeof transferAmountSatangs === 'number'
           ? this.formatBaht(transferAmountSatangs / 100)
-          : this.formatBaht(booking.payment?.amount ?? booking.estimatedCost);
+          : formatBahtEmail(
+              caregiverEarnings(booking.estimatedCost, booking.payment?.amount),
+            );
 
       const ctx: NotifyContext = {
         caregiverName: booking.caregiver?.fullName ?? 'ผู้ดูแล',
@@ -403,6 +407,15 @@ export class BookingNotificationListener {
         booking.payment?.amount,
       );
 
+      // ผู้ดูแลต้องเห็น "ค่าตอบแทนของตัวเอง" ไม่ใช่ยอดที่ลูกค้าจ่าย (ค่าบริการ + ค่าธรรมเนียมแพลตฟอร์ม)
+      // และไม่ต้องเห็นบรรทัดค่าธรรมเนียมที่ลูกค้าจ่ายเพิ่ม
+      const caregiverPrice = {
+        serviceCostText: undefined,
+        platformFeeText: undefined,
+        totalText: netAmountText,
+        totalLabel: 'ค่าตอบแทนของคุณ',
+      };
+
       for (const { userId, role } of recipients) {
         // in-app (insert → Supabase realtime ดันให้ FE)
         await this.notificationService.create(userId, config.type, title, body, data);
@@ -429,7 +442,7 @@ export class BookingNotificationListener {
                 timeText: formatTimeRange(booking.startTime, booking.durationHours),
                 serviceText: formatServiceType(booking.serviceType),
                 locationAddress: booking.locationAddress,
-                ...priceBreakdown,
+                ...(role === 'caregiver' ? caregiverPrice : priceBreakdown),
                 paymentAmountText: formatBahtEmail(
                   booking.payment?.amount ?? booking.estimatedCost,
                 ),
@@ -453,7 +466,8 @@ export class BookingNotificationListener {
             dateText: ctx.dateText,
             timeText: ctx.timeText, // PYG-526: generic template เคยมีแต่วันที่
             serviceText: ctx.serviceText,
-            amountText: ctx.amountText,
+            // ผู้ดูแล (เช่น payment_transferred) → ยอดที่ได้รับจริง ไม่ใช่ยอดที่ลูกค้าจ่าย
+            amountText: role === 'caregiver' ? ctx.netAmountText : ctx.amountText,
             // PYG-703: path ตามบทบาทผู้รับ — เดิมใช้ data.link (/bookings/{id} หน้าของ patient)
             //   ทำให้ผู้ดูแลที่ได้อีเมล fallback (เช่น payment_transferred) กดแล้วไม่เห็นงานของตัวเอง
             ctaPath: bookingDetailPath(event.bookingId, role),

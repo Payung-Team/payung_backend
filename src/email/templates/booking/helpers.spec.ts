@@ -4,6 +4,7 @@
  * - greeting + escape behaviour (กัน XSS)
  */
 import {
+  caregiverEarnings,
   formatBaht,
   formatPriceBreakdown,
   formatRating,
@@ -140,6 +141,21 @@ describe('booking template helpers', () => {
 
     it('คืน fallback ถ้า name = null', () => {
       expect(greeting(null)).toBe('สวัสดี');
+    });
+  });
+
+  describe('caregiverEarnings', () => {
+    it('ลูกค้าจ่าย 330 (300 + ค่าธรรมเนียม 30) → ผู้ดูแลได้ 300 ไม่ใช่ 330 หรือ 270', () => {
+      expect(caregiverEarnings(300, 330)).toBe(300);
+    });
+    it('payment เก่าที่ตัดเท่า estimated_cost → ได้ยอดเท่าที่ตัด', () => {
+      expect(caregiverEarnings(300, 300)).toBe(300);
+    });
+    it('ยังไม่มี payment → estimated_cost', () => {
+      expect(caregiverEarnings(300, null)).toBe(300);
+    });
+    it('ไม่มีข้อมูลเลย → NaN (formatBaht แสดง "-")', () => {
+      expect(formatBaht(caregiverEarnings(null, null))).toBe('-');
     });
   });
 });

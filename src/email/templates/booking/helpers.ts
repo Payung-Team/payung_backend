@@ -109,9 +109,9 @@ export function formatServiceType(serviceType: string): string {
  * Price breakdown สำหรับอีเมล
  *
  * ⚠️ ยอดรวม (totalText) = "ยอดที่เรียกเก็บจริง" เท่านั้น — ห้ามคำนวณ +10% จากสูตร
- *   ลูกค้าจ่าย = estimated_cost (ตรวจ live DB: payments.amount = estimated_cost ratio 1.0000)
- *   ค่าคอม 10% หักจากฝั่ง caregiver ตอน payout (PYG-330: gross − fee = net) ไม่ได้บวกจากลูกค้า
+ *   ลูกค้าจ่าย = estimated_cost + platform_fee (ค่าธรรมเนียมเก็บเพิ่มจากลูกค้า ไม่หักจากผู้ดูแล)
  *   → paidAmount (payments.amount) ถ้ามี, ไม่งั้น estimated_cost (เช่น ตอน booking.created)
+ *   ยอดนี้เป็นของ "ผู้จ่าย" — อีเมลถึงผู้ดูแลใช้ caregiverEarnings() แทน (listener สลับให้)
  *
  * ⚠️ ค่าบริการ/ค่าธรรมเนียม (serviceCostText/platformFeeText): แสดงเฉพาะเมื่อมี platform_fee จริง
  *   ตอนนี้ bookings.platform_fee = NULL ทุกแถว (คอลัมน์ตาย จะเคลียร์ตอน PYG-341)
@@ -143,6 +143,23 @@ export function formatPriceBreakdown(
 }
 
 /**
+ * ค่าตอบแทนของผู้ดูแลสำหรับใบจองนี้ (บาท) — ตรงกับยอดที่ PaymentService.transferPaymentToCaregiver โอน
+ *   = min(estimated_cost, payments.amount) · ค่าธรรมเนียมแพลตฟอร์มเก็บเพิ่มจากลูกค้า ไม่ได้หักจากผู้ดูแล
+ *   (ลูกค้าจ่าย 330 = ค่าบริการ 300 + ค่าธรรมเนียม 30 → ผู้ดูแลได้ 300)
+ * ยังไม่มี payment (เช่น booking.created) → estimated_cost · ไม่มีทั้งคู่ → NaN (formatBaht แสดง "-")
+ */
+export function caregiverEarnings(
+  estimatedCost: Prisma.Decimal | number | null | undefined,
+  paidAmount: Prisma.Decimal | number | null | undefined,
+): number {
+  const service = toNumber(estimatedCost);
+  const paid = toNumber(paidAmount);
+  if (Number.isNaN(service)) return paid;
+  if (Number.isNaN(paid)) return service;
+  return Math.min(service, paid);
+}
+
+/**
  * formatBookingSummary — ตารางรายละเอียดการจองมาตรฐาน (PYG-732: หน้าตาตาม design · detailTable)
  * วันที่ + เวลารวมเป็นแถวเดียว "วันและเวลา" · ยอดรวมตัวใหญ่
  */
@@ -157,6 +174,8 @@ export function formatBookingSummary(args: {
   serviceText?: string;
   locationAddress?: string;
   totalText?: string;
+  /** ป้ายแถวยอดเงิน — default "ยอดรวม" · ผู้ดูแลเห็น "ค่าตอบแทนของคุณ" (ดู BookingEmailContext.totalLabel) */
+  totalLabel?: string;
   /** แถวเพิ่มท้ายตาราง เช่น เหตุผล */
   extraRows?: DetailRow[];
   /** วันและเวลาแบบขีดฆ่า (นัดที่ถูกยกเลิก) */
@@ -183,7 +202,11 @@ export function formatBookingSummary(args: {
   if (args.locationAddress)
     rows.push({ label: 'สถานที่', value: args.locationAddress });
   if (args.totalText)
-    rows.push({ label: 'ยอดรวม', value: args.totalText, emphasis: 'strong' });
+    rows.push({
+      label: args.totalLabel ?? 'ยอดรวม',
+      value: args.totalText,
+      emphasis: 'strong',
+    });
   rows.push(...(args.extraRows ?? []));
   return detailTable(rows);
 }
@@ -197,6 +220,7 @@ export function plainBookingSummary(args: {
   serviceText?: string;
   locationAddress?: string;
   totalText?: string;
+  totalLabel?: string;
 }): string {
   const lines: string[] = [];
   if (args.caregiverName) lines.push(`ผู้ดูแล: ${args.caregiverName}`);
@@ -205,7 +229,8 @@ export function plainBookingSummary(args: {
   if (args.timeText) lines.push(`เวลา: ${args.timeText}`);
   if (args.serviceText) lines.push(`บริการ: ${args.serviceText}`);
   if (args.locationAddress) lines.push(`สถานที่: ${args.locationAddress}`);
-  if (args.totalText) lines.push(`ยอดรวม: ${args.totalText}`);
+  if (args.totalText)
+    lines.push(`${args.totalLabel ?? 'ยอดรวม'}: ${args.totalText}`);
   return lines.length ? `\n${lines.join('\n')}\n` : '';
 }
 

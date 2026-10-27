@@ -45,6 +45,7 @@ export const bookingConfirmedTemplate: BookingTemplateFn = (
     serviceText: ctx.serviceText,
     locationAddress: ctx.locationAddress,
     totalText: ctx.totalText,
+    totalLabel: ctx.totalLabel,
   });
 
   const bodyHtml = `
@@ -71,6 +72,7 @@ ${plainBookingSummary({
   serviceText: ctx.serviceText,
   locationAddress: ctx.locationAddress,
   totalText: ctx.totalText,
+  totalLabel: ctx.totalLabel,
 })}${ctx.recipientRole === 'patient' && ctx.caregiverPhone ? `ติดต่อผู้ดูแล: ${ctx.caregiverPhone}\n` : ''}
 ${ctaLabel}: ${ctaUrl}${plainTextFooter(ctx.frontendUrl)}`;
 

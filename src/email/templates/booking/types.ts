@@ -33,8 +33,14 @@ export interface BookingEmailContext {
   serviceCostText?: string;
   /** ค่าธรรมเนียม — undefined เมื่อ platform_fee = NULL → template ซ่อนบรรทัด (ห้ามเดา/ห้าม ฿0.00) */
   platformFeeText?: string;
-  /** ยอดรวม = ยอดที่เรียกเก็บจริง (payments.amount ?? estimated_cost) — ไม่ ×1.1 */
+  /**
+   * ยอดเงินหลักของอีเมล
+   *   - patient/admin → ยอดที่เรียกเก็บจริง (payments.amount ?? estimated_cost) — ไม่ ×1.1
+   *   - caregiver     → ค่าตอบแทนของผู้ดูแล (caregiverEarnings) ไม่ใช่ยอดที่ลูกค้าจ่าย
+   */
   totalText: string;
+  /** ป้ายของ totalText — undefined = "ยอดรวม" · ผู้ดูแล = "ค่าตอบแทนของคุณ" */
+  totalLabel?: string;
 
   // ── refund / payment ──
   /** payment hold/captured amount (อาจต่างจาก total เล็กน้อยใน edge case) */
