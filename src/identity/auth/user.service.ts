@@ -379,7 +379,7 @@ export class UserService {
    * ทำสองอย่างใน transaction เดียว — ถ้าครึ่งหลังล้มแล้วครึ่งแรกติด จะได้ users ที่มีชื่อ
    * แต่ไม่มีโปรไฟล์ ซึ่ง onboardingCompleted ยังเป็น false → ผู้ใช้โดนเด้งกลับมากรอกใหม่
    * ทั้งที่ชื่อถูกบันทึกไปแล้ว
-   *   ① users.first_name / last_name (+ display_name ถ้ายังเป็นค่าเริ่มต้นจากอีเมล)
+   *   ① users.first_name / last_name (+ display_name ถ้าเป็นครั้งแรก หรือยังเป็นค่าเริ่มต้นจากอีเมล)
    *   ② care_recipients ใบ is_self — มีอยู่แล้วก็อัปเดต ยังไม่มีก็สร้าง
    *
    * เรียกซ้ำได้ (ผู้ใช้กลับมาแก้ข้อมูล) — ไม่สร้างใบ is_self ซ้ำ
@@ -391,7 +391,13 @@ export class UserService {
   ): Promise<User> {
     const user = await this.prismaService.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, role: true, displayName: true },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        displayName: true,
+        firstName: true,
+      },
     });
     if (!user) throw new NotFoundException(`User with ID "${userId}" not found`);
 
@@ -446,7 +452,12 @@ export class UserService {
           // PYG-603: บัญชีที่สมัครด้วยเบอร์ไม่มีอีเมล ระบบจึงตั้ง display_name = null
           //   null ก็คือ "ยังไม่เคยตั้งเอง" เหมือนกัน → ทับด้วยชื่อจริงได้
           //   (เดิมเรียก user.email.split ตรง ๆ → บัญชีไม่มีอีเมลกด Onboarding แล้ว 500)
-          ...(isSystemDefaultDisplayName(user.displayName, user.email)
+          // Onboarding ครั้งแรก (ยังไม่มี first_name) → ทับเสมอ
+          //   สมัครด้วย Google ได้ display_name เป็นชื่อบัญชี Google จาก trigger ของ auth.users
+          //   ซึ่งไม่ใช่ prefix อีเมล isSystemDefaultDisplayName จึงจับไม่ได้ แต่ผู้ใช้ก็ยังไม่เคย
+          //   ตั้งเอง — ผู้สูงอายุที่ยังไม่ผ่าน Onboarding เข้าหน้าแก้โปรไฟล์ไม่ได้ (PatientOnboardingGuard)
+          ...(!user.firstName ||
+          isSystemDefaultDisplayName(user.displayName, user.email)
             ? { displayName: fullName }
             : {}),
         },

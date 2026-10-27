@@ -237,12 +237,28 @@ describe('UserService — completeOnboarding (PYG-498)', () => {
     expect(userUpdate.data.displayName).toBe('สมศรี ใจดี');
   });
 
-  it('★ ผู้ใช้ตั้ง display_name เองแล้ว → ไม่ทับ', async () => {
+  it('★ สมัครด้วย Google (display_name = ชื่อบัญชี Google) ครั้งแรก → ทับด้วยชื่อจริง', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: USER_ID,
+      email: EMAIL,
+      role: ROLE_ID.PATIENT,
+      displayName: 'Somsri J.',
+      firstName: null,
+    });
+
+    await service.completeOnboarding(USER_ID, makeInput(), EVIDENCE);
+
+    const userUpdate = callArg<{ data: { displayName?: string } }>(prisma.user.update);
+    expect(userUpdate.data.displayName).toBe('สมศรี ใจดี');
+  });
+
+  it('★ เคย Onboarding แล้ว และผู้ใช้ตั้ง display_name เอง → กลับมาแก้ก็ไม่ทับ', async () => {
     prisma.user.findUnique.mockResolvedValue({
       id: USER_ID,
       email: EMAIL,
       role: ROLE_ID.PATIENT,
       displayName: 'ยายศรี',
+      firstName: 'สมศรี',
     });
 
     await service.completeOnboarding(USER_ID, makeInput(), EVIDENCE);
