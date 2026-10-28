@@ -92,6 +92,7 @@ Deno.serve(async (request) => {
       sender,
       msisdn: phone,
       message: `รหัสยืนยัน Payung: ${otp} ห้ามเปิดเผยรหัสนี้แก่ผู้อื่น`,
+      force: 'corporate',
     });
 
     // HTTP Auth Hooks ต้องตอบภายใน 5 วินาที จึงเผื่อเวลาให้ Supabase
