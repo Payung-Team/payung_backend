@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { GraphQLError } from 'graphql';
 import { publicCaregiverConditions } from '../caregiver-public/caregiver-public.policy';
 import { readSavedRequiredSkills } from '../booking/required-skills/required-skills.read';
+import { RequiredSkillSource } from '../booking/required-skills/required-skills.types';
 import { LICENSE_DOC_TYPE } from '../identity/kyc/license/license.constants';
 import {
   PROFESSION_CHANGE_ACTION,
@@ -48,10 +49,16 @@ export async function loadMatchingBooking(
   const skills = (await readSavedRequiredSkills(tx, [bookingId])).get(
     bookingId,
   );
+  // Matching uses only skills derived from the services selected in the booking.
+  // ADL/flag-derived skills stay on the booking for display but never filter caregivers.
   const result = {
     requiredLevel: row.required_level,
     requiredSkills:
-      skills?.map(({ skill }) => {
+      skills
+        ?.filter(({ sources }) =>
+          sources.includes(RequiredSkillSource.SERVICE),
+        )
+        .map(({ skill }) => {
         if (!skill.lockedProfessions) throw new BookingNotMatchableError();
         return { code: skill.code, lockedProfessions: skill.lockedProfessions };
       }) ?? null,
