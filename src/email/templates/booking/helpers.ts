@@ -78,7 +78,7 @@ export function formatThaiDate(date: Date): string {
  *   ตอนนี้ส่งต่อให้ formatBookingTimeRange (ที่เดียวในระบบ) → อีเมล หน้าเว็บ และแจ้งเตือนในแอป
  *   แสดงเวลาเหมือนกันทุกตัวอักษร ถ้าจะเปลี่ยนรูปแบบให้แก้ที่ booking-time-display.ts
  * - startTime จาก Prisma เป็น Date object (@db.Time) — UTC components คือเวลาจริง
- * - durationHours เป็น Decimal — รองรับ 0.5/1.5 ชม.
+ * - durationHours เป็น Decimal — เศษชั่วโมงแสดงเป็นนาที เช่น 1.5 → "1 ชม. 30 นาที"
  * - ไม่มีเวลาเริ่ม → "-" (ตารางในอีเมลต้องมีค่าเสมอ)
  */
 export function formatTimeRange(

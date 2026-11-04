@@ -53,18 +53,31 @@ describe('booking-time-display (PYG-526)', () => {
   });
 
   describe('formatDurationHours', () => {
-    it('จำนวนเต็มไม่มีทศนิยม, เศษแสดงตามจริง', () => {
+    it('ชั่วโมงเต็มแสดงแค่ชั่วโมง, เศษแสดงเป็นนาที', () => {
       expect(formatDurationHours(4)).toBe('4 ชม.');
-      expect(formatDurationHours(new Prisma.Decimal('4.5'))).toBe('4.5 ชม.');
+      expect(formatDurationHours(new Prisma.Decimal('4.5'))).toBe(
+        '4 ชม. 30 นาที',
+      );
+      expect(formatDurationHours(4.25)).toBe('4 ชม. 15 นาที');
     });
 
-    it('ปัด 2 ตำแหน่งกันเลขลอยจากใบจองเก่า', () => {
-      expect(formatDurationHours(4 / 3)).toBe('1.33 ชม.');
+    it('ขั้น 5 นาที: ทศนิยมไม่รู้จบแสดงเป็นนาทีเต็ม', () => {
+      expect(formatDurationHours(65 / 60)).toBe('1 ชม. 5 นาที');
+      expect(formatDurationHours(new Prisma.Decimal(725 / 60))).toBe(
+        '12 ชม. 5 นาที',
+      );
+      expect(formatDurationHours(115 / 60)).toBe('1 ชม. 55 นาที');
+    });
+
+    it('ใบจองเก่า: ปัดเป็นนาทีที่ใกล้สุด · ไม่ถึงชั่วโมงแสดงแค่นาที', () => {
+      expect(formatDurationHours(4 / 3)).toBe('1 ชม. 20 นาที');
+      expect(formatDurationHours(0.5)).toBe('30 นาที');
     });
 
     it('ค่าไม่ถูกต้อง → undefined', () => {
       expect(formatDurationHours(0)).toBeUndefined();
       expect(formatDurationHours(null)).toBeUndefined();
+      expect(formatDurationHours(0.001)).toBeUndefined();
     });
   });
 
