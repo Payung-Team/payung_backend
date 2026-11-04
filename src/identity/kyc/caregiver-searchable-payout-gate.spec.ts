@@ -13,6 +13,7 @@ const USER_ID = 'user-1';
 
 describe('CaregiverService.setSearchableByUser — payout gate', () => {
   let service: CaregiverService;
+  let env: Record<string, string | undefined>;
   let prisma: {
     caregiver: { findUnique: jest.Mock; update: jest.Mock };
     caregiverPayoutAccount: { findUnique: jest.Mock };
@@ -31,6 +32,7 @@ describe('CaregiverService.setSearchableByUser — payout gate', () => {
   });
 
   beforeEach(() => {
+    env = {};
     prisma = {
       caregiver: {
         findUnique: jest.fn().mockResolvedValue(caregiverRow()),
@@ -43,7 +45,7 @@ describe('CaregiverService.setSearchableByUser — payout gate', () => {
     service = new CaregiverService(
       prisma as unknown as PrismaService,
       {} as SupabaseService,
-      {} as ConfigService,
+      { get: (key: string) => env[key] } as unknown as ConfigService,
       {} as CareSkillService, // PYG-652 — เส้น setSearchable ไม่ได้ใช้
     );
   });
@@ -88,6 +90,36 @@ describe('CaregiverService.setSearchableByUser — payout gate', () => {
 
     expect(res.isSearchable).toBe(false);
     expect(prisma.caregiverPayoutAccount.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each(['false', ' FALSE '])(
+    'SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT=%j → เปิดรับงานได้แม้ไม่มีบัญชี และไม่เช็คบัญชี',
+    async (value) => {
+      env.SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT = value;
+
+      const res = await service.setSearchableByUser(USER_ID, true);
+
+      expect(res.isSearchable).toBe(true);
+      expect(prisma.caregiverPayoutAccount.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
+  it('SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT=true → ยังบล็อกเมื่อไม่มีบัญชี', async () => {
+    env.SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT = 'true';
+    prisma.caregiverPayoutAccount.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.setSearchableByUser(USER_ID, true)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('gate ปิดอยู่ แต่ KYC ยังไม่ verified → ยังถูกบล็อก', async () => {
+    env.SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT = 'false';
+    prisma.caregiver.findUnique.mockResolvedValueOnce(caregiverRow({ kycStatus: 'pending' }));
+
+    await expect(service.setSearchableByUser(USER_ID, true)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 
   it('KYC ยังไม่ verified → ถูกบล็อกก่อนเช็คบัญชี', async () => {
