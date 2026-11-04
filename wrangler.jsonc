@@ -38,7 +38,8 @@
     "HOLD_REFRESH_CRON_ENABLED": "false",
     "NODE_ENV": "production",
     "PAYOUT_KILLSWITCH_ENABLED": "true",
-    "PAYOUT_RECIPIENT_SYNC_ENABLED": "true"
+    "PAYOUT_RECIPIENT_SYNC_ENABLED": "true",
+    "SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT": "false"
   },
   "hyperdrive": [
     {

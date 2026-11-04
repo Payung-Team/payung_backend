@@ -401,7 +401,10 @@ export class CaregiverService {
     // ── 2.5: Guard — เปิดรับงาน (true) ต้องมีบัญชีรับเงินที่ Omise accept แล้ว ──
     // ปิด (false) ทำได้เสมอ — caregiver ต้องหยุดรับงานได้โดยไม่ติดเงื่อนไข
     // KYC อนุมัติแยกจากสถานะ Omise (ตัวเลือก C) จึงต้องกันที่จุดนี้แทน
-    if (isSearchable) {
+    // ปิด gate ชั่วคราวได้ด้วย env SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT=false (ไม่ตั้ง = เปิด gate)
+    const requirePayout =
+      this.configService.get<string>('SEARCHABLE_REQUIRE_PAYOUT_ACCOUNT')?.trim().toLowerCase() !== 'false';
+    if (isSearchable && requirePayout) {
       const payoutAccount = await this.prismaService.caregiverPayoutAccount.findUnique({
         where: { caregiverId: existing.id },
         select: { status: true, recipientStatus: true, omiseRecipientId: true },
