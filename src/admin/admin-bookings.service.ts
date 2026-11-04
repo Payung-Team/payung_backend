@@ -90,6 +90,10 @@ export class AdminBookingsService {
         caregiver: { select: { userId: true, fullName: true, caregiverNumber: true, phone: true, user: { select: userSelect } } },
         payment: true,
         statusHistory: { orderBy: { createdAt: 'asc' } },
+        bookingRequiredSkills: {
+          select: { skillCode: true, sources: true, skill: { select: { nameTh: true } } },
+          orderBy: { skillCode: 'asc' },
+        },
       },
     });
     if (!b) throw new NotFoundException('ไม่พบรายการจอง');
@@ -127,6 +131,16 @@ export class AdminBookingsService {
       caregiverUserId: b.caregiver?.userId ?? null,
       careRecipientName: b.careRecipient?.name ?? null,
       bookedByName: b.bookedBy && b.bookedBy !== b.patientId ? fullName(b.bookedByUser) : null,
+      requiredLevel: b.requiredLevel,
+      levelFromAdl: b.levelFromAdl,
+      levelFromFlags: b.levelFromFlags,
+      levelFromServices: b.levelFromServices,
+      levelCalculatedAt: b.levelCalculatedAt,
+      requiredSkills: b.bookingRequiredSkills.map((s) => ({
+        code: s.skillCode,
+        nameTh: s.skill.nameTh,
+        sources: s.sources,
+      })),
       timeSlot: b.timeSlot,
       serviceLocations: b.serviceLocations,
       locationAddress: b.locationAddress,
