@@ -36,6 +36,104 @@ input AddGroupCareRecipientInput {
   nickname: String
 }
 
+type AdminBookingConnection {
+  hasNextPage: Boolean!
+  limit: Int!
+  nodes: [AdminBookingRow!]!
+  page: Int!
+  totalCount: Int!
+}
+
+type AdminBookingDetail {
+  acceptedAt: DateTime
+  bookedByName: String
+  bookingDate: DateTime!
+  careRecipientName: String
+  caregiverId: ID
+  caregiverName: String
+  caregiverNumber: String
+  caregiverPhone: String
+  completedAt: DateTime
+  confirmedAt: DateTime
+  createdAt: DateTime!
+  dayOfContactName: String
+  dayOfContactPhone: String
+  dayOfContactRelationship: String
+  disputeReason: String
+  disputeStatus: String!
+  durationHours: Float!
+  estimatedCost: Float
+  id: ID!
+  locationAddress: String!
+  notes: String
+  patientEmail: String
+  patientId: ID!
+  patientName: String!
+  patientPhone: String
+  payment: AdminBookingPaymentInfo
+  paymentStatus: String
+  platformFee: Float
+  rejectionReason: String
+  serviceLocations: [String!]!
+  serviceType: String!
+  startTime: String!
+  status: String!
+  statusHistory: [AdminBookingStatusChange!]!
+  tasks: [String!]!
+  timeSlot: String!
+}
+
+type AdminBookingPaymentInfo {
+  amount: Float!
+  capturedAmount: Float
+  createdAt: DateTime!
+  failureMessage: String
+  id: ID!
+  omiseChargeId: String
+  paymentMethod: String!
+  paymentStatus: String!
+  refundedAmount: Float!
+}
+
+type AdminBookingRow {
+  bookingDate: DateTime!
+  caregiverId: ID
+  caregiverName: String
+  caregiverNumber: String
+  createdAt: DateTime!
+  disputeStatus: String!
+  durationHours: Float!
+  estimatedCost: Float
+  id: ID!
+  patientId: ID!
+  patientName: String!
+  patientPhone: String
+  paymentStatus: String
+  serviceType: String!
+  startTime: String!
+  status: String!
+}
+
+type AdminBookingStatusChange {
+  changedByName: String
+  createdAt: DateTime!
+  fromStatus: String
+  id: ID!
+  reason: String
+  toStatus: String!
+}
+
+input AdminBookingsInput {
+  limit: Int
+  page: Int
+
+  """ค้นหาจากรหัส booking / ชื่อผู้จอง / ชื่อผู้ดูแล"""
+  search: String
+
+  """กรองตามสถานะ booking (ไม่ระบุ = ทั้งหมด)"""
+  status: String
+}
+
 input AdminCareActivitiesFilter {
   """BASIC | INTERMEDIATE | ADVANCED"""
   careLevel: String
@@ -3207,6 +3305,14 @@ type ProofOfWorkSummary {
 }
 
 type Query {
+  """Admin only: รายละเอียด booking + การชำระเงิน + ประวัติสถานะ"""
+  adminBookingDetail(id: ID!): AdminBookingDetail!
+
+  """
+  Admin only: รายการ booking ทั้งระบบ พร้อมผู้จอง/ผู้ดูแล — กรองสถานะ + ค้นหา, ใหม่ → เก่า
+  """
+  adminBookings(input: AdminBookingsInput): AdminBookingConnection!
+
   """
   Admin only: all care activities including inactive ones, filtered by category / careLevel / isActive / search
   """
