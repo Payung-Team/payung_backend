@@ -34,6 +34,12 @@ export class MatchReportCaregiver {
   @Field() fullName!: string;
   @Field(() => CaregiverProfession) profession!: CaregiverProfession;
   @Field(() => CareLevel, { nullable: true }) careLevel!: CareLevel | null;
+  // ── ข้อมูลประกอบสำหรับแอดมิน (ไม่ใช้ตัดสินผลจับคู่ — การจับคู่ไม่ได้กรองตามพื้นที่) ──
+  /** users.id — ลิงก์ไปหน้า /admin/users/:id */
+  @Field(() => ID, { nullable: true }) userId?: string | null;
+  @Field(() => String, { nullable: true }) caregiverNumber?: string | null;
+  @Field(() => String, { nullable: true }) serviceAreaProvince?: string | null;
+  @Field(() => String, { nullable: true }) serviceAreaDistrict?: string | null;
 }
 @ObjectType()
 export class BookingCaregiverMatchResult {

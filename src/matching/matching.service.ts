@@ -149,6 +149,19 @@ export class MatchingService {
         const booking = await loadMatchingBooking(tx, bookingId);
         const referenceDate = bookingEvidenceReferenceDate(b.bookingDate);
         const candidates = await loadMatchCandidates(tx, referenceDate);
+        // ข้อมูลประกอบสำหรับแอดมิน — query แยก ไม่แตะ loadMatchCandidates ที่ฝั่งผู้จองใช้ร่วม
+        const extras = candidates.length
+          ? await tx.caregiver.findMany({
+              where: { id: { in: candidates.map((c) => c.id) } },
+              select: {
+                id: true,
+                caregiverNumber: true,
+                serviceAreaProvince: true,
+                serviceAreaDistrict: true,
+              },
+            })
+          : [];
+        const extraById = new Map(extras.map((e) => [e.id, e]));
         return {
           bookingId,
           evaluatedAt: this.clock.now(),
@@ -160,6 +173,10 @@ export class MatchingService {
               fullName: c.fullName,
               profession: c.profession as CaregiverProfession,
               careLevel: careLevelFromDb(c.careLevel),
+              userId: c.userId,
+              caregiverNumber: extraById.get(c.id)?.caregiverNumber ?? null,
+              serviceAreaProvince: extraById.get(c.id)?.serviceAreaProvince ?? null,
+              serviceAreaDistrict: extraById.get(c.id)?.serviceAreaDistrict ?? null,
             },
             ...evaluateCaregiverMatch(booking, c, referenceDate),
           })),

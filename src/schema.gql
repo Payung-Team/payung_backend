@@ -75,6 +75,10 @@ type AdminBookingDetail {
   durationHours: Float!
   estimatedCost: Float
   id: ID!
+  levelCalculatedAt: DateTime
+  levelFromAdl: String
+  levelFromFlags: String
+  levelFromServices: String
   locationAddress: String!
   notes: String
   patientEmail: String
@@ -85,6 +89,8 @@ type AdminBookingDetail {
   paymentStatus: String
   platformFee: Float
   rejectionReason: String
+  requiredLevel: String
+  requiredSkills: [AdminBookingRequiredSkill!]!
   serviceLocations: [String!]!
   serviceType: String!
   startTime: String!
@@ -104,6 +110,12 @@ type AdminBookingPaymentInfo {
   paymentMethod: String!
   paymentStatus: String!
   refundedAmount: Float!
+}
+
+type AdminBookingRequiredSkill {
+  code: String!
+  nameTh: String!
+  sources: [String!]!
 }
 
 type AdminBookingRow {
@@ -2511,9 +2523,13 @@ type MatchRejection {
 
 type MatchReportCaregiver {
   careLevel: CareLevel
+  caregiverNumber: String
   fullName: String!
   id: ID!
   profession: CaregiverProfession!
+  serviceAreaDistrict: String
+  serviceAreaProvince: String
+  userId: ID
 }
 
 type MatchingAdminContact {

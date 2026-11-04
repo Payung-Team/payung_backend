@@ -96,7 +96,23 @@ export class AdminBookingPaymentInfo {
 }
 
 @ObjectType()
+export class AdminBookingRequiredSkill {
+  @Field() code: string;
+  @Field() nameTh: string;
+  /** adl | flag | service — ทักษะนี้ถูกต้องการเพราะอะไร */
+  @Field(() => [String]) sources: string[];
+}
+
+@ObjectType()
 export class AdminBookingDetail extends AdminBookingRow {
+  /** ระดับขั้นต่ำที่ booking ต้องการ (basic | intermediate | advanced) = ค่าสูงสุดของ 3 แหล่งด้านล่าง */
+  @Field(() => String, { nullable: true }) requiredLevel?: string | null;
+  @Field(() => String, { nullable: true }) levelFromAdl?: string | null;
+  @Field(() => String, { nullable: true }) levelFromFlags?: string | null;
+  @Field(() => String, { nullable: true }) levelFromServices?: string | null;
+  /** null = ยังไม่เคยคำนวณระดับ (booking เก่า) */
+  @Field(() => Date, { nullable: true }) levelCalculatedAt?: Date | null;
+  @Field(() => [AdminBookingRequiredSkill]) requiredSkills: AdminBookingRequiredSkill[];
   @Field(() => String, { nullable: true }) patientEmail?: string | null;
   @Field(() => String, { nullable: true }) caregiverPhone?: string | null;
   /** users.id ของผู้ดูแล — ใช้ลิงก์ไปหน้า /admin/users/:id (caregiverId คือ caregivers.id ใช้แทนไม่ได้) */
