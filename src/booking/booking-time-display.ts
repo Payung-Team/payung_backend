@@ -79,13 +79,24 @@ export function computeEndTime(
 }
 
 /**
- * จำนวนชั่วโมง → "4 ชม." / "4.5 ชม."
- * ปัดทศนิยม 2 ตำแหน่งกันเลขลอย (เช่น 1.3333 จากใบจองเก่า) — undefined ถ้าไม่ถูกต้อง
+ * จำนวนชั่วโมง → "4 ชม." / "4 ชม. 30 นาที" / "1 ชม. 5 นาที" / "30 นาที"
+ *
+ * ★ แสดงเป็นชั่วโมง + นาที ไม่ใช่ทศนิยม — จองได้ทีละ 5 นาที (booking-time.ts)
+ *   65 นาที = 1.08333… ชม. ถ้าโชว์ "1.08 ชม." ผู้ใช้อ่านไม่ออก
+ *   ปัดเป็นนาทีที่ใกล้สุด (ใบจองเก่าอย่าง 1.3333 ชม. → "1 ชม. 20 นาที")
+ * ★ FE (lib/bookingTime.ts formatDurationHours) ต้องได้ข้อความเดียวกันทุกตัวอักษร
+ *
+ * @returns undefined ถ้าไม่มีค่า / ≤ 0 / ปัดแล้วไม่ถึง 1 นาที
  */
 export function formatDurationHours(durationHours: HoursValue): string | undefined {
   const hours = toPositiveHours(durationHours);
   if (hours === null) return undefined;
-  return `${Math.round(hours * 100) / 100} ชม.`;
+  const totalMinutes = Math.round(hours * 60);
+  if (totalMinutes <= 0) return undefined;
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (m === 0) return `${h} ชม.`;
+  return h === 0 ? `${m} นาที` : `${h} ชม. ${m} นาที`;
 }
 
 /**

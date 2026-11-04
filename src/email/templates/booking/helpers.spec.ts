@@ -37,7 +37,7 @@ describe('booking template helpers', () => {
 
     it('รองรับครึ่งชั่วโมง (Decimal-ish)', () => {
       const start = new Date(Date.UTC(1970, 0, 1, 8, 30, 0));
-      expect(formatTimeRange(start, 1.5)).toBe('08:30 – 10:00 (1.5 ชม.)');
+      expect(formatTimeRange(start, 1.5)).toBe('08:30 – 10:00 (1 ชม. 30 นาที)');
     });
 
     it('คืน "-" ถ้า startTime null', () => {

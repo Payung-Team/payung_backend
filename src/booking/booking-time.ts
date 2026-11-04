@@ -23,8 +23,16 @@ import {
   type TimeSlot,
 } from '../common/constants/time-slot.constant';
 
-/** ขั้นของเวลา — สอดคล้องกับ durationHours >= 0.5 เดิม */
-export const BOOKING_TIME_STEP_MINUTES = 30;
+/**
+ * ขั้นของเวลา — เลือกนาทีได้ทีละ 5 (:00 / :05 / … / :55) · เดิมทีละ 30 นาที
+ *
+ * ★ durationHours = นาที / 60 จึงเป็นทศนิยมไม่รู้จบได้ (65 นาที = 1.08333… ชม.)
+ *   - คอลัมน์ duration_hours เป็น DECIMAL ไม่จำกัดทศนิยม → เก็บได้ ไม่ต้อง migrate
+ *   - ทุกจุดที่แปลงกลับเป็นนาทีใช้ Math.round(hours × 60) (เช็คเวลาชน / matching / endTime)
+ *   - ราคา (estimatedCostOf) ปัดเป็นสตางค์อยู่แล้ว
+ *   - การแสดงผลใช้ "1 ชม. 5 นาที" (formatDurationHours) ไม่โชว์ทศนิยม
+ */
+export const BOOKING_TIME_STEP_MINUTES = 5;
 export const BOOKING_MIN_DURATION_MINUTES = 60;
 export const BOOKING_MAX_DURATION_MINUTES = 12 * 60;
 
@@ -34,7 +42,7 @@ export const BOOKING_MAX_DURATION_MINUTES = 12 * 60;
  * ★ ทำไมเป็น 23:59 ไม่ใช่ 24:00
  *   ชั่วโมงในระบบเป็น 00–23 ("24:00" ไม่ผ่าน TIME_PATTERN และคอลัมน์ TIME) — ผู้ใช้จึงเลือก 23:59
  *   แต่คิดระยะเวลา/ราคาเป็น 24:00 → 23:00–23:59 = 1 ชม. เต็ม ไม่ใช่ 59 นาที
- *   รับเฉพาะ "23:59" พอดีเป็นเวลาสิ้นสุด — เวลาเริ่มหรือเวลาอื่นที่ไม่ลง :00 / :30 ยังไม่ผ่าน
+ *   รับเฉพาะ "23:59" พอดีเป็นเวลาสิ้นสุด — เวลาเริ่มหรือเวลาอื่นที่ไม่ลงขั้น 5 นาทียังไม่ผ่าน
  *   การแสดงผลกลับเป็น "23:59" อยู่ที่ computeEndTime (booking-time-display.ts)
  */
 export const BOOKING_END_OF_DAY_TIME = '23:59';
@@ -109,7 +117,7 @@ export function resolveBookingTime(
     end.minute === BOOKING_END_OF_DAY_MINUTE - 1 && end.second === 0;
   const endMinute = endIsEndOfDay ? BOOKING_END_OF_DAY_MINUTE : end.minute;
 
-  // แบบใหม่รับแค่ขั้นละ 30 นาที — วินาทีที่ไม่ใช่ 00 ก็ถือว่าไม่ลงขั้น (ยกเว้นสิ้นสุด 23:59)
+  // แบบใหม่รับแค่ขั้นละ 5 นาที — วินาทีที่ไม่ใช่ 00 ก็ถือว่าไม่ลงขั้น (ยกเว้นสิ้นสุด 23:59)
   if (
     start.second !== 0 ||
     end.second !== 0 ||
@@ -117,7 +125,7 @@ export function resolveBookingTime(
     endMinute % BOOKING_TIME_STEP_MINUTES !== 0
   ) {
     throw new BadRequestException(
-      'เวลาเริ่มและเวลาสิ้นสุดต้องลงที่ :00 หรือ :30 (สิ้นสุดเที่ยงคืนใช้ 23:59)',
+      'เวลาเริ่มและเวลาสิ้นสุดต้องลงทีละ 5 นาที (:00, :05, …, :55 · สิ้นสุดเที่ยงคืนใช้ 23:59)',
     );
   }
   // ★ ไม่รับข้ามเที่ยงคืนในเฟสนี้ — การเช็คเวลาชนคิดภายในวันเดียว (bookingDate เดียว)
