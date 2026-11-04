@@ -36,6 +36,16 @@ input AddGroupCareRecipientInput {
   nickname: String
 }
 
+type AdminAdlAnswer {
+  code: String!
+  value: Int
+}
+
+type AdminAvailabilitySlot {
+  dayOfWeek: Int!
+  timeSlot: String!
+}
+
 type AdminBookingConnection {
   hasNextPage: Boolean!
   limit: Int!
@@ -53,6 +63,7 @@ type AdminBookingDetail {
   caregiverName: String
   caregiverNumber: String
   caregiverPhone: String
+  caregiverUserId: ID
   completedAt: DateTime
   confirmedAt: DateTime
   createdAt: DateTime!
@@ -144,6 +155,43 @@ input AdminCareActivitiesFilter {
 
   """ค้นในชื่อไทย / อังกฤษ / รหัส"""
   search: String
+}
+
+type AdminCareRecipient {
+  allergies: String
+  assessment: AdminRecipientAssessment
+  bloodType: String
+  careNotes: String
+  currentMedications: String
+  dateOfBirth: DateTime
+  emergencyContactName: String
+  emergencyContactPhone: String
+  emergencyContactRel: String
+  gender: String
+  hasInfectiousDisease: Boolean
+  heightCm: Float
+  id: ID!
+  isSelf: Boolean!
+  medicalConditions: [String!]!
+  mobilityLevel: String
+  name: String!
+  nickname: String
+  preferredHospital: String
+  weightKg: Float
+}
+
+type AdminCaregiverWorkInfo {
+  availability: [AdminAvailabilitySlot!]!
+  careLevel: String
+  careLevelSetAt: DateTime
+  careLevelSetByName: String
+  caregiverId: ID!
+  isAcceptingJobs: Boolean!
+  jobTypes: [String!]!
+  payoutAccount: AdminPayoutAccountInfo
+  serviceAreaDistrict: String
+  serviceAreaProvince: String
+  serviceLocations: [String!]!
 }
 
 """
@@ -266,10 +314,57 @@ type AdminKycListPayload {
   totalPages: Int!
 }
 
+type AdminPatientBookingBrief {
+  bookingDate: DateTime!
+  careRecipientName: String
+  caregiverName: String
+  estimatedCost: Float
+  id: ID!
+  serviceType: String!
+  status: String!
+}
+
+type AdminPatientBookingStats {
+  active: Int!
+  cancelled: Int!
+  completed: Int!
+  total: Int!
+  totalPaid: Float!
+}
+
+type AdminPatientProfile {
+  address: String
+  avatarUrl: String
+  bookingStats: AdminPatientBookingStats!
+  careRecipients: [AdminCareRecipient!]!
+  createdAt: DateTime!
+  email: String
+  id: ID!
+  isActive: Boolean!
+  isSuspended: Boolean!
+  lastLoginAt: DateTime
+  name: String!
+  phone: String
+  recentBookings: [AdminPatientBookingBrief!]!
+  role: Int!
+}
+
 input AdminPaymentsInput {
   limit: Int
   page: Int
   status: PaymentStatus
+}
+
+type AdminPayoutAccountInfo {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  notReadyReason: String
+  ready: Boolean!
+  recipientStatus: String!
+  status: String!
+  updatedAt: DateTime!
+  verifiedAt: DateTime
 }
 
 """Caregiver payout bank account summary for admin review"""
@@ -354,6 +449,19 @@ type AdminProfilePhotoReviewPayload {
   idCardDocuments: [KycDocument!]!
   pendingPhoto: ProfilePhotoDocument
   reviews: [KycReview!]!
+}
+
+type AdminRecipientAssessment {
+  adlTotalScore: Int!
+  answers: [AdminAdlAnswer!]!
+  assessedAt: DateTime!
+  assessedByName: String
+  careGroup: String
+  dementiaSevere: Boolean
+  flags: [String!]!
+  hasUnsureFlag: Boolean!
+  noSpecialConditions: Boolean!
+  unsureCount: Int!
 }
 
 input AdminTransactionsInput {
@@ -3319,6 +3427,11 @@ type Query {
   adminCareActivities(filter: AdminCareActivitiesFilter): [CareActivity!]!
 
   """
+  Admin only: สถานะรับงาน ตารางวันรับงาน ระดับผู้ดูแล และบัญชีรับเงิน (เลขบัญชีเฉพาะ 4 ตัวท้าย) — ใช้ users.id
+  """
+  adminCaregiverWorkInfo(userId: ID!): AdminCaregiverWorkInfo!
+
+  """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
   """
   adminDashboard: AdminDashboardPayload!
@@ -3337,6 +3450,11 @@ type Query {
   Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
   """
   adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: โปรไฟล์ผู้ใช้ (ผู้จอง) + ผู้รับการดูแลและแบบประเมิน ADL + สรุปการจอง — ใช้ users.id
+  """
+  adminPatientProfile(userId: ID!): AdminPatientProfile!
 
   """
   Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
