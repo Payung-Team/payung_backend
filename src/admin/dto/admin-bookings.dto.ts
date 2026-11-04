@@ -99,6 +99,8 @@ export class AdminBookingPaymentInfo {
 export class AdminBookingDetail extends AdminBookingRow {
   @Field(() => String, { nullable: true }) patientEmail?: string | null;
   @Field(() => String, { nullable: true }) caregiverPhone?: string | null;
+  /** users.id ของผู้ดูแล — ใช้ลิงก์ไปหน้า /admin/users/:id (caregiverId คือ caregivers.id ใช้แทนไม่ได้) */
+  @Field(() => ID, { nullable: true }) caregiverUserId?: string | null;
   @Field(() => String, { nullable: true }) careRecipientName?: string | null;
   @Field(() => String, { nullable: true }) bookedByName?: string | null;
   @Field() timeSlot: string;
