@@ -29,6 +29,7 @@ import { evaluateCaregiverMatch } from './matching.evaluate';
 import {
   assertCaregiverEligible,
   assertSelectionSchedule,
+  filterScheduleAvailable,
   loadMatchCandidates,
   loadMatchingBooking,
 } from './matching.persistence';
@@ -95,11 +96,16 @@ export class MatchingService {
         const booking = await loadMatchingBooking(tx, bookingId);
         const referenceDate = bookingEvidenceReferenceDate(b.bookingDate);
         const candidates = await loadMatchCandidates(tx, referenceDate);
-        const ids = candidates
-          .filter(
-            (c) => evaluateCaregiverMatch(booking, c, referenceDate).passed,
-          )
-          .map((c) => c.id);
+        // แสดงเฉพาะผู้ดูแลที่ว่างในวัน/เวลาของ booking (กฎเดียวกับตอนกดเลือก)
+        const ids = await filterScheduleAvailable(
+          tx,
+          bookingId,
+          candidates
+            .filter(
+              (c) => evaluateCaregiverMatch(booking, c, referenceDate).passed,
+            )
+            .map((c) => c.id),
+        );
         const caregivers: CaregiverSummary[] = [];
         // Filter in SQL before the existing List pagination; never sign rejected avatars.
         if (ids.length) {

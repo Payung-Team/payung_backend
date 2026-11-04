@@ -1,6 +1,7 @@
 import { bookingEvidenceReferenceDate } from './matching.policy';
 import { time_slot } from '@prisma/client';
 import {
+  CAREGIVER_BUSY_STATUSES,
   caregiverHasTimeConflict,
   lockCaregiverSchedule,
 } from '../booking/caregiver-time-conflict';
@@ -209,6 +210,65 @@ export async function assertCaregiverEligible(
     throw new CaregiverNotEligibleError();
 }
 
+/**
+ * Bulk schedule filter for the booking's date/time — same rules as selection:
+ * weekly availability must cover every overlapping slot, and no busy booking may overlap.
+ */
+export async function filterScheduleAvailable(
+  tx: Tx,
+  bookingId: string,
+  caregiverIds: readonly string[],
+): Promise<string[]> {
+  if (!caregiverIds.length) return [];
+  const b = await tx.booking.findUniqueOrThrow({
+    where: { id: bookingId },
+    select: { bookingDate: true, startTime: true, durationHours: true },
+  });
+  const start = b.startTime.getUTCHours() * 60 + b.startTime.getUTCMinutes();
+  const end = start + Math.round(Number(b.durationHours) * 60);
+  const required = overlappingSlots(start, end);
+  if (!required.length) return [];
+  const [slots, busy] = await Promise.all([
+    tx.caregiverAvailability.findMany({
+      where: {
+        caregiverId: { in: [...caregiverIds] },
+        dayOfWeek: b.bookingDate.getUTCDay(),
+        isActive: true,
+        timeSlot: { in: required as time_slot[] },
+      },
+      select: { caregiverId: true, timeSlot: true },
+    }),
+    tx.booking.findMany({
+      where: {
+        caregiverId: { in: [...caregiverIds] },
+        bookingDate: b.bookingDate,
+        status: { in: CAREGIVER_BUSY_STATUSES },
+        id: { not: bookingId },
+      },
+      select: { caregiverId: true, startTime: true, durationHours: true },
+    }),
+  ]);
+  const slotsBy = new Map<string, Set<string>>();
+  for (const s of slots) {
+    if (!slotsBy.has(s.caregiverId)) slotsBy.set(s.caregiverId, new Set());
+    slotsBy.get(s.caregiverId)!.add(s.timeSlot);
+  }
+  const conflicted = new Set(
+    busy
+      .filter((x) => {
+        const s = x.startTime.getUTCHours() * 60 + x.startTime.getUTCMinutes();
+        const e = s + Math.round(Number(x.durationHours) * 60);
+        return start < e && s < end;
+      })
+      .map((x) => x.caregiverId),
+  );
+  return caregiverIds.filter(
+    (id) =>
+      !conflicted.has(id) &&
+      required.every((s) => slotsBy.get(id)?.has(s)),
+  );
+}
+
 /** Keep the existing weekly-slot and accepted-booking checks on the new selector. */
 export async function assertSelectionSchedule(
   tx: Tx,
@@ -221,19 +281,8 @@ export async function assertSelectionSchedule(
   });
   const start = b.startTime.getUTCHours() * 60 + b.startTime.getUTCMinutes();
   const end = start + Math.round(Number(b.durationHours) * 60);
-  const required = overlappingSlots(start, end);
-  const slots = await tx.caregiverAvailability.findMany({
-    where: {
-      caregiverId,
-      dayOfWeek: b.bookingDate.getUTCDay(),
-      isActive: true,
-      timeSlot: { in: required as time_slot[] },
-    },
-    select: { timeSlot: true },
-  });
   if (
-    !required.length ||
-    !required.every((s) => slots.some((row) => row.timeSlot === s)) ||
+    !(await filterScheduleAvailable(tx, bookingId, [caregiverId])).length ||
     (await caregiverHasTimeConflict(tx, {
       caregiverId,
       bookingDate: b.bookingDate,
@@ -256,7 +305,8 @@ export async function eligibleIdsForBooking(
   });
   const referenceDate = bookingEvidenceReferenceDate(b.bookingDate);
   const booking = await loadMatchingBooking(tx, bookingId);
-  return (await loadMatchCandidates(tx, referenceDate))
+  const ids = (await loadMatchCandidates(tx, referenceDate))
     .filter((c) => evaluateCaregiverMatch(booking, c, referenceDate).passed)
     .map((c) => c.id);
+  return filterScheduleAvailable(tx, bookingId, ids);
 }
