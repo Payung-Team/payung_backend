@@ -30,6 +30,8 @@ import { AdminCareLevelService } from './admin-care-level.service';
 import { AdminCleanupService } from './admin-cleanup.service';
 import { AdminBookingsResolver } from './admin-bookings.resolver';
 import { AdminBookingsService } from './admin-bookings.service';
+import { AdminCaregiverWorkResolver } from './admin-caregiver-work.resolver';
+import { AdminCaregiverWorkService } from './admin-caregiver-work.service';
 import { UserCleanupService } from './user-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -59,6 +61,8 @@ import { PaymentModule } from '../payment/payment.module';
     AdminCareLevelService,
     AdminBookingsResolver, // แอดมินติดตาม booking ทั้งระบบ (หน้า Payment › Transaction)
     AdminBookingsService,
+    AdminCaregiverWorkResolver, // หน้ารายละเอียดผู้ดูแล: สถานะรับงาน / วันรับงาน / ระดับ / บัญชีรับเงิน
+    AdminCaregiverWorkService,
     AdminCleanupService,
     UserCleanupService,
     SupabaseAuthGuard,

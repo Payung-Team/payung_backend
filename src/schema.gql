@@ -36,6 +36,11 @@ input AddGroupCareRecipientInput {
   nickname: String
 }
 
+type AdminAvailabilitySlot {
+  dayOfWeek: Int!
+  timeSlot: String!
+}
+
 type AdminBookingConnection {
   hasNextPage: Boolean!
   limit: Int!
@@ -53,6 +58,7 @@ type AdminBookingDetail {
   caregiverName: String
   caregiverNumber: String
   caregiverPhone: String
+  caregiverUserId: ID
   completedAt: DateTime
   confirmedAt: DateTime
   createdAt: DateTime!
@@ -144,6 +150,20 @@ input AdminCareActivitiesFilter {
 
   """ค้นในชื่อไทย / อังกฤษ / รหัส"""
   search: String
+}
+
+type AdminCaregiverWorkInfo {
+  availability: [AdminAvailabilitySlot!]!
+  careLevel: String
+  careLevelSetAt: DateTime
+  careLevelSetByName: String
+  caregiverId: ID!
+  isAcceptingJobs: Boolean!
+  jobTypes: [String!]!
+  payoutAccount: AdminPayoutAccountInfo
+  serviceAreaDistrict: String
+  serviceAreaProvince: String
+  serviceLocations: [String!]!
 }
 
 """
@@ -270,6 +290,18 @@ input AdminPaymentsInput {
   limit: Int
   page: Int
   status: PaymentStatus
+}
+
+type AdminPayoutAccountInfo {
+  accountName: String!
+  accountNumberLast4: String!
+  bankCode: String!
+  notReadyReason: String
+  ready: Boolean!
+  recipientStatus: String!
+  status: String!
+  updatedAt: DateTime!
+  verifiedAt: DateTime
 }
 
 """Caregiver payout bank account summary for admin review"""
@@ -3317,6 +3349,11 @@ type Query {
   Admin only: all care activities including inactive ones, filtered by category / careLevel / isActive / search
   """
   adminCareActivities(filter: AdminCareActivitiesFilter): [CareActivity!]!
+
+  """
+  Admin only: สถานะรับงาน ตารางวันรับงาน ระดับผู้ดูแล และบัญชีรับเงิน (เลขบัญชีเฉพาะ 4 ตัวท้าย) — ใช้ users.id
+  """
+  adminCaregiverWorkInfo(userId: ID!): AdminCaregiverWorkInfo!
 
   """
   Admin only: Dashboard overview with KYC stats, weekly submission trends, average review time, and recent admin activity.
