@@ -36,6 +36,11 @@ input AddGroupCareRecipientInput {
   nickname: String
 }
 
+type AdminAdlAnswer {
+  code: String!
+  value: Int
+}
+
 type AdminAvailabilitySlot {
   dayOfWeek: Int!
   timeSlot: String!
@@ -150,6 +155,29 @@ input AdminCareActivitiesFilter {
 
   """ค้นในชื่อไทย / อังกฤษ / รหัส"""
   search: String
+}
+
+type AdminCareRecipient {
+  allergies: String
+  assessment: AdminRecipientAssessment
+  bloodType: String
+  careNotes: String
+  currentMedications: String
+  dateOfBirth: DateTime
+  emergencyContactName: String
+  emergencyContactPhone: String
+  emergencyContactRel: String
+  gender: String
+  hasInfectiousDisease: Boolean
+  heightCm: Float
+  id: ID!
+  isSelf: Boolean!
+  medicalConditions: [String!]!
+  mobilityLevel: String
+  name: String!
+  nickname: String
+  preferredHospital: String
+  weightKg: Float
 }
 
 type AdminCaregiverWorkInfo {
@@ -286,6 +314,41 @@ type AdminKycListPayload {
   totalPages: Int!
 }
 
+type AdminPatientBookingBrief {
+  bookingDate: DateTime!
+  careRecipientName: String
+  caregiverName: String
+  estimatedCost: Float
+  id: ID!
+  serviceType: String!
+  status: String!
+}
+
+type AdminPatientBookingStats {
+  active: Int!
+  cancelled: Int!
+  completed: Int!
+  total: Int!
+  totalPaid: Float!
+}
+
+type AdminPatientProfile {
+  address: String
+  avatarUrl: String
+  bookingStats: AdminPatientBookingStats!
+  careRecipients: [AdminCareRecipient!]!
+  createdAt: DateTime!
+  email: String
+  id: ID!
+  isActive: Boolean!
+  isSuspended: Boolean!
+  lastLoginAt: DateTime
+  name: String!
+  phone: String
+  recentBookings: [AdminPatientBookingBrief!]!
+  role: Int!
+}
+
 input AdminPaymentsInput {
   limit: Int
   page: Int
@@ -386,6 +449,19 @@ type AdminProfilePhotoReviewPayload {
   idCardDocuments: [KycDocument!]!
   pendingPhoto: ProfilePhotoDocument
   reviews: [KycReview!]!
+}
+
+type AdminRecipientAssessment {
+  adlTotalScore: Int!
+  answers: [AdminAdlAnswer!]!
+  assessedAt: DateTime!
+  assessedByName: String
+  careGroup: String
+  dementiaSevere: Boolean
+  flags: [String!]!
+  hasUnsureFlag: Boolean!
+  noSpecialConditions: Boolean!
+  unsureCount: Int!
 }
 
 input AdminTransactionsInput {
@@ -3374,6 +3450,11 @@ type Query {
   Admin only: Get paginated list of caregiver KYC submissions. Filter by status, search by name. Pending items shown first.
   """
   adminKycList(input: AdminKycListInput!): AdminKycListPayload!
+
+  """
+  Admin only: โปรไฟล์ผู้ใช้ (ผู้จอง) + ผู้รับการดูแลและแบบประเมิน ADL + สรุปการจอง — ใช้ users.id
+  """
+  adminPatientProfile(userId: ID!): AdminPatientProfile!
 
   """
   Admin only: Paginated payments list filtered by status (default: captured = pending transfer). Sorted oldest-first (FIFO).
