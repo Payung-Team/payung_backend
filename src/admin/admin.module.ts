@@ -28,6 +28,8 @@ import { AdminProfessionChangeResolver } from './admin-profession-change.resolve
 import { AdminCareLevelResolver } from './admin-care-level.resolver';
 import { AdminCareLevelService } from './admin-care-level.service';
 import { AdminCleanupService } from './admin-cleanup.service';
+import { AdminBookingsResolver } from './admin-bookings.resolver';
+import { AdminBookingsService } from './admin-bookings.service';
 import { UserCleanupService } from './user-cleanup.service';
 import { SupabaseAuthGuard } from '../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -55,6 +57,8 @@ import { PaymentModule } from '../payment/payment.module';
     AdminProfessionChangeResolver, // PYG-575: คิว + อนุมัติ/ปฏิเสธคำขอเปลี่ยนวิชาชีพ (service มาจาก KycModule)
     AdminCareLevelResolver, // PYG-581: แอดมินแก้ระดับผู้ดูแลหลังอนุมัติ + อ่านประวัติ
     AdminCareLevelService,
+    AdminBookingsResolver, // แอดมินติดตาม booking ทั้งระบบ (หน้า Payment › Transaction)
+    AdminBookingsService,
     AdminCleanupService,
     UserCleanupService,
     SupabaseAuthGuard,
