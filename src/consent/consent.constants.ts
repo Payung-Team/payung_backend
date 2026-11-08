@@ -114,7 +114,7 @@ export const CONSENTS_BY_SOURCE: Record<ConsentSource, readonly ConsentType[]> =
  * ★ ข้อกำหนดการใช้บริการ + ประกาศความเป็นส่วนตัว คือเงื่อนไขของการ "มีบัญชี" ไม่ใช่ฟีเจอร์หนึ่ง
  *   ถ้าเปิดปุ่มถอนให้ ระบบก็ไม่มีผลอะไรที่ทำจริงได้นอกจากปิดบัญชี — ได้แค่ธง granted = false
  *   ในตารางโดยที่ทุกอย่างทำงานเหมือนเดิม ซึ่งการ์ดเตือนไว้ว่า "แย่กว่าไม่มีปุ่มถอนเลย"
- *   ผู้ใช้ที่ไม่ต้องการใช้บริการต่อให้ขอลบบัญชีทาง privacy@payung.app (สิทธิ์ลบข้อมูล = คนละการ์ด)
+ *   ผู้ใช้ที่ไม่ต้องการใช้บริการต่อให้ขอลบบัญชีทาง payung.care@gmail.com (สิทธิ์ลบข้อมูล = คนละการ์ด)
  */
 export const NON_WITHDRAWABLE_CONSENTS: readonly ConsentType[] = [
   CONSENT_TYPE.TERMS_OF_SERVICE,
@@ -183,5 +183,5 @@ export const DATA_RETENTION_YEARS = {
 export const DATA_CONTROLLER = {
   nameTh: 'ทีมงาน Payung',
   nameEn: 'Payung Team',
-  email: 'privacy@payung.app',
+  email: 'payung.care@gmail.com',
 } as const;

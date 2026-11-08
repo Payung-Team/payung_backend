@@ -10,7 +10,7 @@ This notice explains what information Payung collects about you, what we do with
 
 ## 1. Who holds your information
 
-The Payung team is the data controller. For anything about your personal data, contact **privacy@payung.app**.
+The Payung team is the data controller. For anything about your personal data, contact **payung.care@gmail.com**.
 
 ---
 
@@ -90,7 +90,7 @@ Consent records deliberately outlive the data itself — deleting them together 
 
 ## 6. Your rights
 
-You have the following rights. To use any of them, contact **privacy@payung.app**.
+You have the following rights. To use any of them, contact **payung.care@gmail.com**.
 
 1. **Access** the information we hold about you, and request a copy
 2. **Correct** information that is wrong or out of date
