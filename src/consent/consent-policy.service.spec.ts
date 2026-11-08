@@ -167,7 +167,7 @@ describe('ConsentPolicyService (PYG-472)', () => {
     expect(policy.rightsNoteTh).not.toContain('@');
     expect(policy.rightsNoteEn).not.toContain('@');
     // ประกาศฉบับเต็มยังมีช่องทางติดต่อ
-    expect(policy.privacyNoticeTh).toContain('privacy@payung.app');
+    expect(policy.privacyNoticeTh).toContain('payung.care@gmail.com');
   });
 
   // ── เวอร์ชัน ──────────────────────────────────────────────────────────
