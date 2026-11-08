@@ -90,4 +90,4 @@ Reviews must reflect real experiences and be respectful. We may hide reviews tha
 
 Payung is responsible for performing its role as an intermediary under these terms, to the extent permitted by law. These terms are governed by the laws of Thailand.
 
-Contact the team at **privacy@payung.app**
+Contact the team at **payung.care@gmail.com**
